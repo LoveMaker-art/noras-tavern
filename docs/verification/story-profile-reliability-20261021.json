@@ -1,0 +1,345 @@
+{
+  "schema": "nora-story-profile-acceptance/1",
+  "date": "2026-10-21",
+  "task": "偏好复盘整条流程修复：提取、保存、口味总结、失败恢复及 Windows/Mac 验证",
+  "accepted_scope": {
+    "outcome": "Repair full preference reflection workflow on independent branch; preserve existing chats/preferences/history; verify current model extraction/save/summary/recovery and native Windows+Mac; no packaging/publication",
+    "rules": [
+      "PB-05",
+      "PB-07",
+      "N-14",
+      "N-Q01",
+      "N-15",
+      "T-24"
+    ],
+    "preserve": [
+      "chat and profile files",
+      "two-stage learning and derived summary",
+      "foreground story save",
+      "existing bounded Nora memory projection"
+    ],
+    "acceptance": [
+      "opt-in only automatic calls",
+      "bounded prompt and actual source coverage",
+      "strict response validation",
+      "transactional preservation and revision-aware summary",
+      "partial result recovery without duplicate learning",
+      "native Windows and Mac evidence",
+      "real currently selected model pipeline"
+    ],
+    "authorization": "Source changes, isolated native test deployment and real model tests authorized; no build/push/publish",
+    "baseline": "cfec1b97457508f83a9cd6af2773b76c48ed26fb"
+  },
+  "source": {
+    "branch": "codex/story-profile-reliability-20261021",
+    "base_commit": "cfec1b97457508f83a9cd6af2773b76c48ed26fb",
+    "state": "独立分支工作区中的源码变更；未提交、合并或推送",
+    "sha256": {
+      "story-profile/core/reflection.py": "f8851271b8053f280fec98839c48103a1354ae289001800c9c3cdf97a2210a92",
+      "story-profile/core/story_profile.py": "ad596e7e43f2cc85ada5a8df1011472cae4db47aef672d75b34a452bc11c5403",
+      "story-profile/adapters/nora/cli.py": "e629a1e6ebdbb4484406329b8f1a9a5b7ed9ed39a9d8f8fdc40956e2fad0d653",
+      "story-profile/adapters/nora/model-config.js": "fead92798385bedb040c494839d4112bea4128a7bc27da4a521d40231b8e534c",
+      "story-profile/adapters/nora/preference-checkpoint.js": "c4275166a5ea1a01b299fbf9f2d9ce4bdb86763aa6a4429a4974cdc100d37d94",
+      "story-profile/public/actor.js": "4a1af4365b4d93f7a0f8d7d0e83a6a485251472948fe4fa0610ac6b0e54c3aa9",
+      "app/engine/sillytavern/src/nora-story-profile-adapter.js": "ce0153a86be0dd112677d6e39f364d83335b076412e5e016823f5ee611d464ef",
+      "app/engine/sillytavern/src/nora-story-profile.js": "37d6f840377294c74cff24e6a45bf9b3fd6ede53eb718f9413e9d15f973952d2",
+      "app/engine/sillytavern/src/endpoints/nora-story-profile.js": "40f28dbf54a1f7bb3d81d1c562b77ca86209b39100fb3b5e3e69f4d32bdb6b15"
+    },
+    "generated_runtime_revision": "sha256:537ce44d52a1455d282e4d2c532111aad15a066839e08a2f540c0c01a3ef16a4",
+    "generated_source_and_runtime_checks": "PASS"
+  },
+  "authorization_boundary": {
+    "production_runtime_replaced": false,
+    "production_service_restarted": false,
+    "installer_built": false,
+    "release_published": false,
+    "remote_code_pushed": false,
+    "development_test_compilation_only": [
+      "MCP TypeScript",
+      "隔离 Tavern 服务所需前端依赖库"
+    ]
+  },
+  "behavioral_changes": [
+    {
+      "area": "触发与费用",
+      "result": "自动复盘默认关闭；明确选择后按既有15个有效用户轮次资格执行。手动复盘不打开自动开关，纯读取不调用模型，关闭后停止新自动请求。"
+    },
+    {
+      "area": "取材与上下文",
+      "result": "首次从最近最多15个用户轮次开始，之后按世界/会话及实际处理范围增量取材；不自动补全部历史。完整提示最多24000 UTF-8字节，并为配置输出额度及1024余量预留空间；这是保守估算。已有偏好最多3000字节用于去重，不发送完整成长年表或阶段归档。超长用户消息明确报错，不悄悄丢弃或推进进度。"
+    },
+    {
+      "area": "当前模型配置",
+      "result": "输出额度跟随酒馆配置；保留自定义兼容接口的请求头/请求体设置及实际代理选择。直连和HTTP(S)代理可用；SOCKS/PAC明确不支持，不静默绕过。"
+    },
+    {
+      "area": "提取与解析",
+      "result": "明确无新增与空答、截断、格式错误、内容/权限拒绝分别呈现。最多3个候选，每个必须指向本次用户消息证据；角色对白或仅作上下文的消息不能成为偏好证据。"
+    },
+    {
+      "area": "保存与已有内容",
+      "result": "文件提交有原子写入、跨进程锁及可核验的提交恢复；源回执去重，同源重放不新增事件。精确重复不重复写入；相近但不同的文本保留为待核对候选，不覆盖旧偏好或锁定文本。损坏记录不当成空档案。"
+    },
+    {
+      "area": "总结与恢复",
+      "result": "偏好保存、总结和派生投影分阶段记录。总结失败保留已保存偏好，只补总结；已生成内容只补保存。总结写入校验来源修订，阻止旧总结覆盖新偏好。未知请求不自动重发；提交恢复不调用模型。"
+    },
+    {
+      "area": "界面及MCP",
+      "result": "保留既有档案、统计和编辑入口；增加明确选择、处理范围、阶段错误及适用恢复动作。轮数、记录笔数和待总结状态分开。手动/MCP/自动调度使用同一任务结果；MCP仍检查确认和模型调用许可。"
+    }
+  ],
+  "native_live_acceptance": [
+    {
+      "case": "Mac 原生完整 HTTP 链路",
+      "environment": "native macOS ARM64, real Tavern HTTP server + child Python + current saved text model",
+      "model": {
+        "id": "deepseek-v4.1-flash",
+        "host": "asiasouth.up.railway.app",
+        "output_budget": 4000,
+        "context": 30000
+      },
+      "fixture_scope": "controlled benign story in isolated copy; original user files never modified",
+      "duration_seconds": 46.19,
+      "result": "completed",
+      "processed_user_turns": 15,
+      "prompt_bytes": 4961,
+      "event_count_before": 1,
+      "event_count_after": 2,
+      "preference_count_before": 3,
+      "preference_count_after": 5,
+      "old_event_ids_preserved": true,
+      "old_preference_ids_preserved": true,
+      "taste_fields": 8,
+      "taste_stale": false,
+      "readback": {
+        "status": "completed",
+        "stage": "complete",
+        "reflected_at_turns": 15,
+        "processed": {
+          "world_id": "world:ff78ba61-ef4e-4507-868d-393a86bc4901",
+          "session_id": "session:5451898b-4fe3-49e0-b711-77dd0d3132d8",
+          "revision": "8fd1fb150bfa67421a8cdb6e76eb95f4152ea4750dbfa748ef0ef108b98a593c",
+          "from_user_turn": 1,
+          "to_user_turn": 15,
+          "skipped_before": 0,
+          "input_bytes": 4961,
+          "input_budget_bytes": 24000,
+          "budget_method": "conservative_utf8_bytes",
+          "total_user_turns": 15
+        },
+        "summary_status": "current",
+        "running": false,
+        "last_code": ""
+      },
+      "source_note": "此首次完整服务验收早于最后的代理/总结确认收尾；以下 Mac 中断验收使用最终源码。",
+      "evidence": "mac-live-http.json"
+    },
+    {
+      "case": "Mac 最终源码：保存后实际终止子进程，再通过 HTTP 恢复",
+      "worker_really_interrupted": true,
+      "interrupted_response": {
+        "http": 502,
+        "ok": false,
+        "status": "partial",
+        "stage": "summary",
+        "code": "STORY_PROFILE_SUMMARY_PENDING",
+        "extraction_complete": true
+      },
+      "status_after_interruption": {
+        "status": "partial",
+        "stage": "summary",
+        "extraction_complete": true,
+        "summary_status": "pending",
+        "reflected_at_turns": 15,
+        "running": false,
+        "resume_available": true
+      },
+      "summary_only_recovery": {
+        "http": 200,
+        "ok": true,
+        "status": null,
+        "code": null
+      },
+      "finished_task_replay": {
+        "http": 200,
+        "ok": true,
+        "status": "completed",
+        "stage": "complete",
+        "job_id": "reflect_813b38d4977e6c80a2c71a0c27963f6b",
+        "summary_status": "current"
+      },
+      "final_status": {
+        "status": "completed",
+        "stage": "complete",
+        "summary_status": "current",
+        "running": false,
+        "last_code": ""
+      },
+      "event_count_before": 2,
+      "event_count_after": 3,
+      "old_event_ids_preserved": true,
+      "old_preference_ids_preserved": true,
+      "taste_fields": 8,
+      "taste_stale": false,
+      "duration_seconds": 45.65,
+      "passed": true,
+      "evidence": "mac-http-interruption.json"
+    },
+    {
+      "case": "Windows 最终源码：真实模型提取、保存及新进程总结恢复",
+      "platform": "Windows-10-10.0.26300-SP0",
+      "python": "3.11.17",
+      "model": "deepseek-v4.1-flash",
+      "output_budget": 4000,
+      "injected_failure": "偏好已写入后，在总结请求前抛出可识别异常；并非真实服务商拒绝",
+      "first": {
+        "ok": false,
+        "status": "partial",
+        "stage": "summary",
+        "code": "STORY_PROFILE_ACCEPTANCE_INTERRUPTION",
+        "written": true,
+        "extraction_complete": true,
+        "summary_status": "failed",
+        "processed": {
+          "world_id": "windows-live",
+          "session_id": "windows-live-session",
+          "revision": "controlled-15-turns",
+          "from_user_turn": 1,
+          "to_user_turn": 15,
+          "skipped_before": 0,
+          "input_bytes": 3107,
+          "input_budget_bytes": 24000,
+          "budget_method": "conservative_utf8_bytes",
+          "total_user_turns": 15
+        }
+      },
+      "real_extraction_calls": 1,
+      "fresh_process_recovery": {
+        "exit": 0,
+        "ok": true,
+        "status": "completed",
+        "stage": "complete",
+        "code": "",
+        "extraction_complete": true,
+        "summary_status": "current"
+      },
+      "completed_replay_without_model": true,
+      "event_count_before": 1,
+      "event_count_after": 2,
+      "old_event_ids_preserved": true,
+      "old_preference_ids_preserved": true,
+      "taste_fields": 8,
+      "taste_stale": false,
+      "duration_seconds": 48.31,
+      "passed": true,
+      "source_hashes": {
+        "story-profile/core/reflection.py": "f8851271b8053f280fec98839c48103a1354ae289001800c9c3cdf97a2210a92",
+        "story-profile/core/story_profile.py": "ad596e7e43f2cc85ada5a8df1011472cae4db47aef672d75b34a452bc11c5403",
+        "story-profile/adapters/nora/cli.py": "e629a1e6ebdbb4484406329b8f1a9a5b7ed9ed39a9d8f8fdc40956e2fad0d653"
+      },
+      "evidence": "windows-live-frozen-source.json"
+    }
+  ],
+  "focused_checks": {
+    "mac_python": {
+      "passed": 45,
+      "failed": 0,
+      "skipped": 0,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s story-profile/tests",
+      "evidence": "mac-python-final.txt"
+    },
+    "mac_node": {
+      "passed": 80,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "profile API、统计/取材、源码/资源、子进程、调度/模型配置、故障恢复及UI事件合同",
+      "evidence": "mac-node-final.txt"
+    },
+    "windows_native_offline": {
+      "python_passed": 45,
+      "node_passed": 41,
+      "failed": 0,
+      "skipped": 0,
+      "transferred_source_files": 68,
+      "source_hash_mismatches": [],
+      "existing_runtime_unchanged": true,
+      "source_archive_sha256": "85522ee9a92784b900e5249efed31c7e7d659e5c05ed8ba780a50ef5f9080306",
+      "evidence": "windows-native-offline-final.json"
+    },
+    "mcp": {
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0,
+      "command": "tsc -p nora-mcp/tsconfig.json; node --test nora-mcp/tests/story-profile.test.mjs nora-mcp/tests/control.test.mjs",
+      "evidence": "mcp-final.txt"
+    },
+    "static": "MCP TypeScript 检查、相关后端 JS ESLint、生成副本与源一致性、git diff --check 均通过"
+  },
+  "preservation": {
+    "checked_original_files": 592,
+    "unchanged_original_files": 591,
+    "changed_or_missing_original_files": [
+      "/Users/sorrymakerx/Library/NoraTavern/tavern/tavern-state/native/default-user/nora-telemetry/performance.ndjson"
+    ],
+    "original_preferences_events_unchanged": true,
+    "original_tavern_http": 200
+  },
+  "cleanup": {
+    "owned_test_server_stopped": true,
+    "test_port_18879_closed": true,
+    "removed_task_private_copies": [
+      "private-mac/state/native",
+      "private-mac/original-target-chat.jsonl"
+    ],
+    "original_tavern_http": 200,
+    "original_runtime_replaced": false
+  },
+  "known_root_causes_addressed": [
+    "复盘固定输出上限与酒馆模型配置不一致。",
+    "空白/截断等失败与合法无新增没有充分区分，任务与处理进度缺乏可靠分阶段结果。",
+    "保存偏好与派生总结之间缺少可复用的持久结果，失败容易重复调用或状态不准确。",
+    "取材、并发保存与总结来源修订需要一致的边界。",
+    "Windows 实测发现 Python 自行读取系统代理，而酒馆当前走直连；现改为使用酒馆实际选定的路径。",
+    "Windows 原生存储回归发现 SQLite 连接未显式关闭；已在真实原生回归中确认修正。"
+  ],
+  "remaining_blockers": {
+    "requested_current_model_native_source_workflow": [],
+    "conditional": [
+      "若使用SOCKS/PAC代理，当前实现会明确阻止复盘；需另行增加该协议支持才能使用这种连接方式。",
+      "当前真实配置为自定义OpenAI兼容接口，不能由此推断所有原生供应商适配或第三方模型都通过。",
+      "服务商可能拒绝内容、权限或配额；这种失败会保留已存数据并报告，不能由本地代码保证服务商成功。",
+      "单条用户内容或全部待总结偏好超出明确输入预算时会停止对应阶段，保留原数据；没有实现额外的批次历史回填产品。"
+    ]
+  },
+  "unverified_or_outside_scope": [
+    "真实模型验收使用现有档案的隔离副本和可控故事片段；未接触截图对应用户的311轮现场，不能将其唯一原因定论。",
+    "UI事件与状态回归通过，但未进行浏览器/原生窗口视觉验收。Mac 使用ARM本机，未覆盖Intel原生机器。",
+    "相近偏好保留为候选并告知；未新增完整逐条确认/编辑/拒绝产品界面。",
+    "没有自动补读全部历史聊天；旧300多轮不会一次灌入上下文，也不宣称已将其全部学完。",
+    "未构建安装包、未做成品安装/更新验收、未合并推送或正式部署；按用户本轮先不打包发布的范围执行。"
+  ],
+  "evidence_directory": "local-state/story-profile-reliability-20261021（本机忽略目录；私密原文及凭据不纳入Git）",
+  "evidence_sha256": {
+    "mac-live-http.json": "68be8f0872fdc4913502f990f0dad797a9a21de2620d150bbf112076f01c0bb2",
+    "mac-http-interruption.json": "932609d840e9d3e5a8b614bfbed108839332bfaf7a96829a8ec36050fb3380d3",
+    "windows-live-frozen-source.json": "78e0aec56bcab1fd08ed5c1a881c10d206341f348cc90a7e73d7c9232fc2376b",
+    "windows-native-offline-final.json": "7d0ec2be3853ec8b1bb6518f54e446490d264d1cd32a91de912e3295c332daf5",
+    "mac-node-final.txt": "63da5570acb8ac7eaa999b900882b7f59a29313881815f9109ea4093f707cbe0",
+    "mcp-final.txt": "b3e3fce2655d547eaf77a861b73f273c8dcfbb796f8f5545c04cbf2e23e69148",
+    "preservation-final.json": "48d06dc33e4b346fc52db48b8eabe16044cbc72765eb82050df164fb83ce35c5",
+    "cleanup-final.json": "233b594f74d28ac40246e67e1477ccfe351e0cd2d8ab94d8c0e3e52f079a0fb9",
+    "mac-python-final.txt": "ef6d16b078de005b6dc31f681be22499765216ac6ca879edef15c07f30d54c56"
+  },
+  "credential_hygiene": {
+    "current_and_default_test_keys_in_changed_or_untracked_repository_files": 0,
+    "files_scanned": 44,
+    "current_model_credential_read_in_process_only": true,
+    "private_settings_and_chat_test_copy_removed": true,
+    "windows_model_credential_file_created": false
+  },
+  "follow_up_correction": {
+    "record": "story-profile-preview-live-20261021.json",
+    "reason": "Later real long-story and expanded fault acceptance found overlap budget and saved-summary projection/concurrent-recovery gaps. These were corrected and native regressions added. Earlier results apply to their recorded old source hashes."
+  }
+}

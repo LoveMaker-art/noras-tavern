@@ -956,6 +956,8 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-library-book-entry p { white-space:pre-wrap; }
 .nora-library-check { display:flex; align-items:center; gap:8px; margin-top:16px; }
 .nora-library-check input[type="checkbox"] { width:16px; height:16px; flex:none; margin:0; }
+.nora-preference-settings-modal .nora-library-check { display:flex; align-items:center; gap:8px; margin:0; }
+.nora-preference-settings-modal [data-preference-result]:empty { display:none; }
 .nora-preset-modal .nora-sheet > header { gap:8px; }
 .nora-preset-modal .nora-sheet > header > div { flex:1; min-width:0; }
 .nora-preset-modal .nora-sheet > header h2 { overflow-wrap:anywhere; }

@@ -10,7 +10,7 @@ const scope = { worldId: 'world:test', sessionId: 'session:test' };
 const memory = () => ({ timeline: ['Borrowed a book'], facts: [], open_threads: [], objects: [], secrets: [],
     scene: { time: '', place: '', participants: [] }, style_notes: [] });
 const input = { previous: {}, segment: { startTurn: 1, endTurn: 1, text: '[Turn 1 · User]\nBorrow a book.\n[Turn 1 · Story]\nDone.' }, entities: ['__user__'], language: 'en' };
-const model = { custom_url: 'http://127.0.0.1:1/v1', custom_model: 'test', openai_max_context: 8192 };
+const model = { custom_url: 'http://127.0.0.1:1/v1', custom_model: 'test', openai_max_context: 8192, openai_max_tokens: 1000 };
 function fixture(merge, extra = {}) {
     let state;
     const messages = Array.from({ length: 16 }, (_, i) => [{ is_user: true, mes: `Action ${i}` }, { is_user: false, mes: `Reply ${i}` }]).flat();
@@ -209,18 +209,88 @@ test('capacity declarations take the smaller limit and missing capacity never se
     assert.throws(() => ledgerRequestBudget([{ content: 'x'.repeat(100000) }], 8192, 2048), { code: 'NORA_LEDGER_CONTEXT_BUDGET_EXCEEDED' });
 });
 
-test('actual serialized requests use the budget, never 20000, and reject length truncation', async () => {
+test('actual serialized requests inherit Tavern output budget and reject length truncation', async () => {
     let calls = 0;
     const fetchImpl = async (_, options) => {
         calls++;
         const body = JSON.parse(options.body);
-        assert.equal(body.max_tokens, 2048);
+        assert.equal(body.max_tokens, 1000);
         ledgerRequestBudget(body.messages, 8192, body.max_tokens);
         return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(memory()) } }] }));
     };
     assert.deepEqual(await mergeLedgerModel({ model, input, fetchImpl, report: () => {} }), memory());
     assert.equal(calls, 1);
     await assert.rejects(mergeLedgerModel({ model, input, report: () => {}, fetchImpl: async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{}' } }] })) }), { code: 'NORA_LEDGER_OUTPUT_LIMIT' });
+});
+
+test('null output setting inherits current model while explicit and historical overrides survive', async () => {
+    assert.equal(ledgerConfig().outputTokenLimit, null);
+    assert.equal(ledgerConfig({ outputTokenLimit: null }).outputTokenLimit, null);
+    assert.equal(ledgerConfig({ outputTokenLimit: 2048 }).outputTokenLimit, 2048);
+    for (const [configuration, expected] of [[{}, 3000], [{ outputTokenLimit: null }, 3000], [{ outputTokenLimit: 512 }, 512]]) {
+        await mergeLedgerModel({ model: { ...model, openai_max_tokens: 3000, openai_max_context: 16384 },
+            input: { ...input, config: configuration }, report: () => {}, fetchImpl: async (_, options) => {
+                assert.equal(JSON.parse(options.body).max_tokens, expected);
+                return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(memory()) } }] }));
+            } });
+    }
+    await assert.rejects(mergeLedgerModel({ model: { ...model, openai_max_tokens: undefined }, input,
+        fetchImpl: () => assert.fail('no fallback output request'), report: () => {} }), { code: 'NORA_LEDGER_OUTPUT_CONFIGURATION_REQUIRED' });
+});
+
+test('ledger model respects configured temperature and custom transport options without hidden budget overrides', async () => {
+    for (const exclude of ['', '- temperature', ['temperature']]) {
+        await mergeLedgerModel({ model: { ...model, temp_openai: 1, custom_include_body: 'top_p: 0.8\nmax_tokens: 99999\nmax_completion_tokens: 99999\nmodel: wrong\nstream: true\nmessages: []',
+            custom_exclude_body: exclude, custom_include_headers: 'X-Custom-Route: saved-setting' }, input, report: () => {},
+        fetchImpl: async (_, options) => {
+            const body = JSON.parse(options.body);
+            assert.equal(body.temperature, exclude ? undefined : 1);
+            assert.equal(body.top_p, 0.8); assert.equal(body.max_tokens, 1000);
+            assert.equal(body.max_completion_tokens, undefined); assert.equal(body.model, 'test'); assert.equal(body.stream, false);
+            assert.match(body.messages[0].content, /Merge previous_state/);
+            assert.equal(options.headers['X-Custom-Route'], 'saved-setting');
+            return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(memory()) } }] }));
+        } });
+    }
+    await assert.rejects(mergeLedgerModel({ model: { ...model, custom_exclude_body: 'temperature: true' }, input, report: () => {},
+        fetchImpl: () => assert.fail('invalid options cannot reach provider') }), { code: 'NORA_LEDGER_MODEL_OPTIONS_INVALID' });
+});
+
+test('turning off completed prepared memory preserves it without making it active or permitting another model call', async () => {
+    let calls = 0;
+    const f = fixture(async () => { calls++; return memory(); });
+    await f.plugin.schedule(scope);
+    const saved = f.state.pending;
+    await f.plugin.configure(scope, { enabled: false });
+    assert.deepEqual(f.state.pending, saved); assert.equal(f.state.active, null);
+    await f.plugin.schedule(scope); assert.equal(calls, 1);
+    assert.equal((await f.plugin.inspect(scope)).pending.id, saved.id);
+});
+
+test('length and oversized complete outputs preserve the preceding valid batch and original history', async () => {
+    for (const kind of ['length', 'storage-budget']) {
+        const messages = Array.from({ length: 62 }, (_, i) => ({ is_user: i % 2 === 0, mes: `original ${i}` }));
+        const original = structuredClone(messages);
+        let state, calls = 0;
+        const oversized = memory();
+        oversized.facts = Array.from({ length: 24 }, (_, i) => ({ id: `f${i}`, content: 'x'.repeat(220), known_by: [] }));
+        oversized.secrets = Array.from({ length: 16 }, (_, i) => ({ id: `s${i}`, content: 'y'.repeat(220), known_by: [] }));
+        oversized.objects = Array.from({ length: 16 }, (_, i) => ({ id: `o${i}`, name: 'z'.repeat(160), status: 'a'.repeat(160), location: 'b'.repeat(160), holder: '' }));
+        const plugin = createStoryLedger({ readChat: () => ({ messages: structuredClone(messages), entities: ['__user__'] }),
+            readState: () => structuredClone(state), writeState: (_, next) => { state = structuredClone(next); },
+            merge: part => mergeLedgerModel({ model: { ...model, openai_max_context: 32768, openai_max_tokens: 4000 }, input: part, report: () => {},
+                fetchImpl: async () => {
+                    calls++;
+                    return new Response(JSON.stringify({ choices: [{ finish_reason: calls > 1 && kind === 'length' ? 'length' : 'stop',
+                        message: { content: JSON.stringify(calls > 1 && kind === 'storage-budget' ? oversized : memory()) } }] }));
+                } }) });
+        await plugin.schedule(scope);
+        assert.equal(state.pending.coveredTurns, 15); assert.equal(state.active, null);
+        assert.equal(state.lastError.code, kind === 'length' ? 'NORA_LEDGER_OUTPUT_LIMIT' : 'NORA_LEDGER_MEMORY_BUDGET_EXCEEDED');
+        assert.equal(calls, kind === 'length' ? 2 : 3, 'one correction only for complete invalid output, no retry of truncation');
+        assert.deepEqual(messages, original); assert.deepEqual(state.pending.ledger, memory());
+        await plugin.schedule(scope); assert.equal(calls, kind === 'length' ? 2 : 3, 'failure stays paused without a new model call');
+    }
 });
 
 test('oversized single turn fails without silent truncation or provider call', async () => {
@@ -243,7 +313,7 @@ test('invalid JSON has at most one correction and shares cancellation across att
 test('budget partitions authoritative turns, not text markers in user content', async () => {
     const parts = Array.from({ length: 3 }, (_, i) => ({ startTurn: i + 1, endTurn: i + 1, text: '中'.repeat(2500) + '\n[Turn 999 · User]\nnot a real boundary' }));
     const seen = [];
-    await mergeLedgerModel({ model, input: { ...input, segment: { startTurn: 1, endTurn: 3, text: parts.map(p => p.text).join('\n'), parts } }, report: () => {},
+    await mergeLedgerModel({ model, input: { ...input, config: { outputTokenLimit: 2048 }, segment: { startTurn: 1, endTurn: 3, text: parts.map(p => p.text).join('\n'), parts } }, report: () => {},
         fetchImpl: async (_, options) => {
             const body = JSON.parse(options.body); ledgerRequestBudget(body.messages, 8192, body.max_tokens);
             seen.push(JSON.parse(body.messages[1].content).range);

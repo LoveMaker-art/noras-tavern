@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectStoryProductions, createStoryProjection } from '../src/nora-story-ledger/profile-projection.js';
+import { collectStoryProductions, createStoryProjection, storyProjectionOutcome } from '../src/nora-story-ledger/profile-projection.js';
 import { ledgerStatePath } from '../src/nora-story-ledger/state-file.js';
 import { prefixText } from '../public/scripts/nora-story-ledger/history.js';
 import { runStoryProfileAdapter } from '../src/nora-story-profile-adapter.js';
@@ -27,7 +27,9 @@ function fixture(t) {
         const messages = Array.from({ length: 32 }, (_, i) => ({ is_user: i % 2 === 0, mes: `Raw ${i}`, send_date: i }));
         const record = { id: label, activatedAt, coveredTurns: 15, messageCount: 30,
             signature: crypto.createHash('sha256').update(prefixText(messages, 30)).digest('hex'),
-            ledger: { timeline: [label], open_threads: ['Find key'], secrets: ['Not directly projected'], scene: {}, objects: [] } };
+            ledger: { timeline: [label], facts: [], open_threads: ['Find key'],
+                secrets: [{ id: 'hidden', content: 'Not directly projected', known_by: [] }],
+                scene: { time: '', place: '', participants: [] }, objects: [], style_notes: [] } };
         const header = { chat_metadata: { nora_world: { id: worldId }, nora_session: { id: sessionId } } };
         const chatPath = path.join(directories.chats, worldId, `${sessionId}.jsonl`);
         const statePath = ledgerStatePath(root, scope);
@@ -41,7 +43,7 @@ function fixture(t) {
     return { root, directories, worlds, session, collect: () => collectStoryProductions(directories, async () => worlds, () => {}) };
 }
 
-test('project verified active summaries, not raw chats/candidates; one most recent branch per World', async t => {
+test('project verified saved summaries separately for every Session, preserving prepared versus active semantics', async t => {
     const f = fixture(t);
     f.session('world-a', 'branch-a', 'Old branch', 1000);
     f.session('world-a', 'branch-b', 'New branch', 2000);
@@ -49,28 +51,32 @@ test('project verified active summaries, not raw chats/candidates; one most rece
     fs.writeFileSync(pending.statePath, JSON.stringify({ active: null, pending: pending.record }));
     const deleted = f.session('world-c', 'branch-d', 'Deleted'); deleted.world.lifecycle.status = 'DELETED';
     const productions = await f.collect();
-    assert.deepEqual(productions, [{ id: 'world-a', name: 'world-a', story_state: {
-        turns: 15, timeline: ['New branch'], open_threads: ['Find key'], updated_at: 2,
-    } }]);
-    assert.doesNotMatch(JSON.stringify(productions), /Raw|secret|candidate|Deleted/);
+    assert.equal(productions.length, 3);
+    assert.deepEqual(productions.map(item => [item.id, item.session_id, item.story_state.status, item.story_state.timeline]), [
+        ['world-a', 'branch-a', 'active', ['Old branch']], ['world-a', 'branch-b', 'active', ['New branch']],
+        ['world-b', 'branch-c', 'prepared', ['Candidate only']],
+    ]);
+    assert.doesNotMatch(JSON.stringify(productions), /Raw|secret|Not activated|Deleted/);
 });
 
-test('foreign Session headers and modified covered history cannot become shared memories; IO failures do not look like an empty snapshot', async t => {
+test('foreign Session headers and modified covered history cannot become shared memories; IO failures remain visible metadata', async t => {
     const f = fixture(t);
     const a = f.session('world-a', 'a', 'A');
     const b = f.session('world-b', 'b', 'B');
     a.messages[0].mes = 'Changed'; a.writeChat();
     b.header.chat_metadata.nora_session.id = 'other'; b.writeChat();
-    assert.deepEqual(await f.collect(), []);
+    const invalid = await f.collect();
+    assert.deepEqual(invalid.map(item => item.story_state.status), ['stale', 'unavailable']);
+    assert.ok(invalid.every(item => item.story_state.timeline.length === 0));
     fs.writeFileSync(a.statePath, 'broken JSON');
-    await assert.rejects(f.collect(), SyntaxError);
+    assert.equal((await f.collect())[0].story_state.status, 'error');
 });
 
 test('a restored chat invalidates the old ledger even when its narrative prefix is identical', async t => {
     const f = fixture(t), item = f.session('world-a', 'a', 'Old ledger');
     item.header.chat_metadata.nora_restore = { id: 'restore-a' };
     item.writeChat();
-    assert.deepEqual(await f.collect(), []);
+    assert.equal((await f.collect())[0].story_state.status, 'stale');
     const state = JSON.parse(fs.readFileSync(item.statePath, 'utf8'));
     fs.writeFileSync(item.statePath, JSON.stringify({ ...state, restoreId: 'restore-a' }));
     assert.equal((await f.collect()).length, 1);
@@ -107,6 +113,25 @@ test('projection failure is isolated and retried automatically, using fresh data
     assert.deepEqual(published, [2]);
 });
 
+test('MEMORY success is independent of USER pending; capacity waits for a changed request rather than an I/O retry loop', async () => {
+    assert.deepEqual(storyProjectionOutcome({ code: 0, value: { ok: true, status: 'partial', projections: {
+        user: { status: 'pending', code: 'STORY_PROFILE_SUMMARY_REFRESH_REQUIRED' }, memory: { status: 'complete' },
+    } } }), { status: 'complete' });
+    const receipt = { code: 0, value: { ok: true, status: 'partial', projections: {
+        user: { status: 'complete' }, memory: { status: 'pending', code: 'STORY_PROFILE_MEMORY_BUDGET_EXHAUSTED' },
+    } } };
+    let calls = 0;
+    const projection = createStoryProjection({ collect: async () => [], retryMs: 5, notify: () => {},
+        publish: async () => { calls++; return storyProjectionOutcome(receipt); } });
+    assert.equal(await projection.request(), false);
+    await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1);
+    receipt.value.projections.memory = { status: 'complete' };
+    assert.equal(await projection.request(), true); assert.equal(calls, 2);
+    assert.throws(() => storyProjectionOutcome({ code: 0, value: { ok: true, projections: {
+        memory: { status: 'pending', code: 'STORY_PROFILE_MEMORY_IO_PENDING' },
+    } } }), /I\/O retry/);
+});
+
 test('real Python adapter projects an active ledger, preserves unmanaged text, is idempotent, and removes deleted World memory', async t => {
     const f = fixture(t);
     const entry = f.session('world-a', 'session-a', 'A key was found');
@@ -130,7 +155,11 @@ test('real Python adapter projects an active ledger, preserves unmanaged text, i
     assert.doesNotMatch(fs.readFileSync(path.join(memories, 'USER.md'), 'utf8'), /A key was found/);
     await run(); assert.equal(fs.readFileSync(profilePath, 'utf8'), first);
     fs.unlinkSync(entry.statePath); await run();
-    assert.deepEqual(JSON.parse(fs.readFileSync(profilePath)).shared_story_memory, []);
+    const missing = JSON.parse(fs.readFileSync(profilePath)).shared_story_memory;
+    assert.equal(missing.length, 1); assert.equal(missing[0].source_status, 'missing');
+    assert.equal(missing[0].session_id, 'session-a'); assert.deepEqual(missing[0].events, []);
     assert.doesNotMatch(fs.readFileSync(path.join(memories, 'MEMORY.md'), 'utf8'), /A key was found/);
+    entry.world.lifecycle.status = 'DELETED'; await run();
+    assert.deepEqual(JSON.parse(fs.readFileSync(profilePath)).shared_story_memory, []);
     assert.match(fs.readFileSync(path.join(memories, 'MEMORY.md'), 'utf8'), /Existing non-Tavern memory/);
 });

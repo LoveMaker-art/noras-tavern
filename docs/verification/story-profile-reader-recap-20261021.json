@@ -1,0 +1,105 @@
+{
+  "schema": "nora-yearbook-reader-recap-acceptance/1",
+  "date": "2026-10-21",
+  "design_version": "1.27",
+  "branch": "codex/story-profile-reliability-20261021",
+  "source_sha256": {
+    "story-profile/public/actor.js": "ba7d258c83e0ffbb8df0ff88f30ef09b0489962c7fe06bcd73d2c8ebd653b839",
+    "story-profile/public/i18n.js": "fdc04b785a8e2eeea84a093c420dd2ee1467d8393ae0261d2b522570f0c208a2",
+    "story-profile/public/console.css": "d750779b661bf5f01ca6ecbf4302b308c70808e6cd1733637f40b699f9c7ef35",
+    "app/engine/sillytavern/src/nora-story-ledger/recap.js": "a683191c14eeec91ab42c001b6c28d83f9cae0a47c0d210e2fce22a58555cd48",
+    "app/engine/sillytavern/src/nora-story-ledger/model.js": "a0d2859dfa7a0d72606db4080c107e95e55b1c550369b976a120d50486df94fa",
+    "app/engine/sillytavern/src/nora-story-ledger/core.js": "8c53b6f9ef5e920db7c8ea018abe251663d99756a558fa601c161f7e19feb40e",
+    "app/engine/sillytavern/src/nora-story-ledger/profile-projection.js": "a677db71b821c3031b835428929b1c82e66e9e9a440b2c30802ee44e0de2254f",
+    "app/story_profile_runtime/manifest.json": "718f3eb93ef01f5cff2b833dd8ce8eebdb67940129e8ae224ac9a908f9500cd4"
+  },
+  "accepted_behavior": [
+    "story name, brief situation, <=3 consequential turning points, <=2 unresolved matters; <=300 Unicode characters",
+    "default3 most recently played stories; rest under read-only disclosure",
+    "no automatic ids, session counts, processing/adoption/coverage states or raw timeline dump",
+    "same normal compression request creates full seven-field continuity ledger and separate saved reader prose",
+    "invalid prose cannot discard valid continuity memory or trigger prose-only paid retries",
+    "reads never generate, activate, repair, write memories or alter model settings",
+    "old records conservatively show an established player scene; no automatic paid migration",
+    "original data, preferences, history and USER/MEMORY budget preserved"
+  ],
+  "tests": {
+    "focused_cases": 145,
+    "passed": 145,
+    "failed": 0,
+    "skipped": 0,
+    "final_timestamp_and_partition_checks": 9,
+    "lint": "passed",
+    "generated_source_parity": "passed",
+    "coverage": [
+      "normal model envelope; legacy seven-field model response",
+      "strict prose length/counts and no truncation",
+      "valid ledger survives absent/bad recap",
+      "record save and subsequent read without activation",
+      "real loopback HTTP generation, source-bound save and projection",
+      "continuity prompts and MEMORY exclude reader prose",
+      "multi-part model requests pass forward only continuity ledger",
+      "read-only source/branch/restore/corrupt guards",
+      "recent play ordering ignores summary timestamp and refuses non-date strings",
+      "default3/expand, meaningful branch names, no operation fields",
+      "legacy scene fallback, retained preferences/intimacy/personality controls",
+      "preserved original CSS rules and multilingual labels"
+    ]
+  },
+  "real_model": {
+    "provider": "kimi-for-coding",
+    "requests": 1,
+    "synthetic_story_only": true,
+    "source_hashes_match": true,
+    "passed": true,
+    "checks": {
+      "separate_persistable_prose": true,
+      "full_ledger_preserved": true,
+      "within_caps": true,
+      "current_scene": true,
+      "unfinished_goal": true,
+      "no_secret_location": true,
+      "no_technical_fields": true,
+      "no_preference_instead_of_story": true
+    },
+    "actual_recap": {
+      "current": "第三天上午，林岚与顾舟在港口咖啡店整理线索，账本第二页仍未找到。",
+      "milestones": [
+        "整本账本找回并查明原因",
+        "阿青身份与住址均已查明",
+        "决定核对旧码头仓储记录"
+      ],
+      "threads": [
+        "第二页可能在旧码头待验证",
+        "停电目击者姓名未查明"
+      ]
+    }
+  },
+  "actual_preview": {
+    "url": "http://127.0.0.1:18880/actor.html",
+    "backend_restarted": true,
+    "yearbook_entries": 1,
+    "technical_fields_visible": false,
+    "horizontal_overflow": false,
+    "current_source_type": "legacy record; established scene fallback verified",
+    "existing_file_hashes_checked": 598,
+    "changed": [],
+    "screenshot": "local-state/story-profile-preview-20261021/yearbook-content-20261021/preview-yearbook.png"
+  },
+  "evidence_boundaries": [
+    "Single real-model synthetic sample does not guarantee every provider output or universal semantic fidelity.",
+    "No real user story sent to external models for this acceptance.",
+    "Current preview old record has no reader recap; scene fallback is shown until next normal compression.",
+    "No retrospective reconstruction of permanent chapter history.",
+    "No new native Windows UI/installer, production ClawChat, merge, push, packaging or publication this round."
+  ],
+  "phase_status": {
+    "implemented": true,
+    "technically_verified": true,
+    "actual_preview_verified": true,
+    "production_deployed": false,
+    "known_requested_phase_blockers": []
+  },
+  "superseded_by": "story-profile-yearbook-display-correction-20261021.json",
+  "acceptance_correction": "User rejected the one-line legacy fallback. Historical test results are retained, but they do not establish the requested yearbook content outcome. The reader-prose generation protocol was withdrawn in design1.28."
+}

@@ -18,6 +18,24 @@ function isActive(world) {
     return world.lifecycle.status !== 'DELETED';
 }
 
+function addValidatedWorld(worlds, value) {
+    const world = validateWorldManifest(value);
+    if (worlds.has(world.world_id)) throw new NoraWorldCoreError('NORA_WORLD_STORAGE_CORRUPT', 'Duplicate World identity in storage.');
+    if (world.source.import_operation_id
+        && [...worlds.values()].some(existing => existing.source.import_operation_id === world.source.import_operation_id)) {
+        throw new NoraWorldCoreError('NORA_WORLD_STORAGE_CORRUPT', 'Duplicate import operation binding in storage.');
+    }
+    const resources = new ResourceCatalog([...worlds.values(), world].filter(isActive));
+    worlds.set(world.world_id, world);
+    return resources;
+}
+
+function sortedActiveWorlds(worlds) {
+    return [...worlds.values()].filter(isActive)
+        .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.world_id.localeCompare(right.world_id))
+        .map(cloneJson);
+}
+
 function resourceBindings(world, ownedOnly = false) {
     if (!world) return [];
     return [world.runtime_card, ...world.knowledge, ...world.sessions.items]
@@ -63,14 +81,7 @@ export class WorldStore {
         for (const entry of entries) {
             const filePath = path.join(this.worldsDirectory, entry.name);
             try {
-                const world = validateWorldManifest(await readJsonFile(filePath, { fileSystem: this.#fileSystem }));
-                if (worlds.has(world.world_id)) throw new NoraWorldCoreError('NORA_WORLD_STORAGE_CORRUPT', 'Duplicate World identity in storage.');
-                if (world.source.import_operation_id
-                    && [...worlds.values()].some(existing => existing.source.import_operation_id === world.source.import_operation_id)) {
-                    throw new NoraWorldCoreError('NORA_WORLD_STORAGE_CORRUPT', 'Duplicate import operation binding in storage.');
-                }
-                resources = new ResourceCatalog([...worlds.values(), world].filter(isActive));
-                worlds.set(world.world_id, world);
+                resources = addValidatedWorld(worlds, await readJsonFile(filePath, { fileSystem: this.#fileSystem }));
             } catch {
                 await quarantineFile(filePath, this.quarantineDirectory, { fileSystem: this.#fileSystem });
                 quarantined += 1;
@@ -111,10 +122,34 @@ export class WorldStore {
 
     async list() {
         await this.load();
-        return [...this.#worlds.values()]
-            .filter(isActive)
-            .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.world_id.localeCompare(right.world_id))
-            .map(cloneJson);
+        return sortedActiveWorlds(this.#worlds);
+    }
+
+    // A fresh, validated disk snapshot for content reads. Do not initialize
+    // journals, quarantine sources, or prime/replace the writer's loaded cache.
+    async inspectList() {
+        let entries;
+        try {
+            entries = await this.#fileSystem.readdir(this.worldsDirectory, { withFileTypes: true });
+        } catch (cause) {
+            if (cause.code === 'ENOENT') return [];
+            throw new NoraWorldCoreError('NORA_WORLD_STORAGE_UNREADABLE', 'World storage could not be read.', { cause });
+        }
+        const worlds = new Map();
+        for (const entry of entries.filter(item => item.isFile() && item.name.endsWith('.json')).sort((left, right) => left.name.localeCompare(right.name))) {
+            let value;
+            try {
+                value = await readJsonFile(path.join(this.worldsDirectory, entry.name), { fileSystem: this.#fileSystem });
+            } catch (cause) {
+                const code = cause instanceof SyntaxError ? 'NORA_WORLD_STORAGE_CORRUPT' : 'NORA_WORLD_STORAGE_UNREADABLE';
+                throw new NoraWorldCoreError(code, 'World source could not be verified; it has been preserved.', { cause });
+            }
+            try { addValidatedWorld(worlds, value); }
+            catch (cause) {
+                throw new NoraWorldCoreError('NORA_WORLD_STORAGE_CORRUPT', 'World identity or resources could not be verified; sources have been preserved.', { cause });
+            }
+        }
+        return sortedActiveWorlds(worlds);
     }
 
     async #commit(worldId, manifest, expectedRevision) {

@@ -1,0 +1,85 @@
+{
+  "schema": "nora-story-profile-user-budget/1",
+  "date": "2026-10-21",
+  "branch": "codex/story-profile-reliability-20261021",
+  "product_design": "1.23",
+  "accepted_outcome": "Increase Nora Hermes USER.md default1375 to1875 (+500); use actual whole-file limit minus103 reserve for projection; preserve existing user content",
+  "source_sha256": {
+    "deployment/update/update.py": "aad3b80e31298fcff3a2ed96a8dd44aad4535fa542ab6fa336c91db9286562fe",
+    "story-profile/core/story_profile.py": "776bc2c9fd22fa155f71719b2cf9e5350a450405401007deb2879cb1de55dda1",
+    "story-profile/tests/test_projections.py": "e63963f1d54a2069779d72d69ee5142842133eeb830169972b17663ea6423a37",
+    "tests/deployment/test_launcher_shared_logic.py": "86618ffb043ef869f5a2a6825c354e62889969fc039c9708c0fcd73508a247de"
+  },
+  "migration": {
+    "missing_or1375": 1875,
+    "already1875": "unchanged",
+    "other_custom_positive_integers": "preserved",
+    "malformed_settings": "preserved with failure",
+    "partial_repair": "preserves config byte-for-byte; migration occurs on next normal update"
+  },
+  "verification": {
+    "story_profile_tests": {
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused_install_update_config_tests": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "related_install_context_regression": {
+      "passed": 26,
+      "failed": 0,
+      "skipped": 1
+    },
+    "targeted_node_tests": {
+      "passed": 53,
+      "failed": 0,
+      "skipped": 0
+    },
+    "native_hermes": {
+      "configured_limit": 1875,
+      "initial_chars": 1772,
+      "new_memory_chars": 100,
+      "delimiter_chars": 3,
+      "final_chars": 1875,
+      "new_memory_accepted": true,
+      "over_limit_rejected": true,
+      "model_calls": 0,
+      "preview_summary_entries": 32,
+      "preview_summary_entries_missing": 0
+    },
+    "live_preview": {
+      "configured_user_char_limit": 1875,
+      "whole_USER_chars": 1011,
+      "sync_ceiling_with_reserve": 1772,
+      "protected_files_checked": 261,
+      "expected_projection_changes": [
+        "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/hermes/memories/USER.md"
+      ],
+      "other_protected_files_changed": [],
+      "preview_auto_enabled": true,
+      "preview_http": 200,
+      "production_http": 200,
+      "model_calls": 0,
+      "preview_python_runtime": "existing Hermes venv with PyYAML"
+    },
+    "source_runtime_parity": "PASS",
+    "diff_check": "PASS"
+  },
+  "scope_limits": [
+    "This change covers capacity config and whole-file projection limits, not pending classification/12-item retirement/topic-reader redesign.",
+    "Native budget boundary exercised on Mac, not Windows in this follow-up.",
+    "No new real model call or new conversation-adoption acceptance. Earlier such evidence retains original hashes.",
+    "Existing Hermes PyYAML runtime is used by the private preview for the YAML-backed budget."
+  ],
+  "delivery": {
+    "preview_updated": true,
+    "production_updated": false,
+    "installer_built": false,
+    "committed_or_pushed": false,
+    "published": false
+  },
+  "evidence_directory": "local-state/story-profile-preview-20261021/user-budget-1875"
+}

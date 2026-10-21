@@ -28,6 +28,7 @@ export function createNoraWorldCore(options) {
         getOperation: core.getOperation.bind(core),
         getWorld: core.getWorld.bind(core),
         listWorlds: core.listWorlds.bind(core),
+        inspectWorlds: core.inspectWorlds.bind(core),
         setWorldTheme: core.setWorldTheme.bind(core),
         updateWorld: core.updateWorld.bind(core),
         prepareOpen: core.prepareOpen.bind(core),

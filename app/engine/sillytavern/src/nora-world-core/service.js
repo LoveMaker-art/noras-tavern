@@ -13,6 +13,7 @@ import {
     normalizeCreateCommand,
     normalizeIdempotencyKey,
     normalizeMaterialization,
+    normalizeSessionName,
     operationIdForKey,
     OPERATION_STAGES,
     settleWorldCapabilityAttempt,
@@ -327,6 +328,10 @@ export class NoraWorldCore {
         return this.#store.list();
     }
 
+    async inspectWorlds() {
+        return this.#store.inspectList();
+    }
+
     async restartWorld(worldId, { name, idempotencyKey, expectedRevision } = {}) {
         await this.#initialize();
         const key = normalizeIdempotencyKey(idempotencyKey);
@@ -364,7 +369,15 @@ export class NoraWorldCore {
         await this.#initialize();
         const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
         if (!patch || Array.isArray(patch) || typeof patch !== 'object'
-            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships', 'cardProfileEnabled', 'removeSetting', 'preset'].includes(key))) invalid('Unsupported World edit.');
+            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships', 'cardProfileEnabled', 'removeSetting', 'preset', 'session'].includes(key))) invalid('Unsupported World edit.');
+        let sessionEdit;
+        if ('session' in patch) {
+            const session = patch.session;
+            if (!session || typeof session !== 'object' || Array.isArray(session)
+                || !Object.hasOwn(session, 'name') || typeof session.name !== 'string' || typeof session.session_id !== 'string' || !session.session_id.trim()
+                || Object.keys(session).some(key => !['session_id', 'name'].includes(key))) invalid('Invalid Story Session name edit.');
+            sessionEdit = { sessionId: session.session_id.trim(), name: normalizeSessionName(session.name) };
+        }
         let preset;
         if ('preset' in patch) {
             try { preset = normalizeWorldPreset(patch.preset); validateWorldPresetParameters(preset.preset); } catch (error) { invalid(error.message); }
@@ -384,6 +397,7 @@ export class NoraWorldCore {
             }
             if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
             if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before editing.');
+            if (sessionEdit && !current.sessions.items.some(session => session.session_id === sessionEdit.sessionId)) invalid('The specified Story Session does not belong to this World.');
             let context = current.story_context;
             try {
                 if ('removeSetting' in patch) context = normalizeStoryContext({ ...(context ?? createStoryContext(current.persona)),
@@ -398,6 +412,12 @@ export class NoraWorldCore {
                 }
             } catch (error) { invalid(error.message); }
             return { ...current, ...(patch.name === undefined ? {} : { name: patch.name.trim() }),
+                ...(sessionEdit ? { sessions: { ...current.sessions, items: current.sessions.items.map(session => {
+                    if (session.session_id !== sessionEdit.sessionId) return session;
+                    const existing = { ...session };
+                    delete existing.name;
+                    return { ...existing, ...(sessionEdit.name === undefined ? {} : { name: sessionEdit.name }) };
+                }) } } : {}),
                 ...(preset ? { preset } : {}),
                 ...(context ? { story_context: context } : {}),
                 persona: { ...current.persona, ...patch.persona }, updated_at: this.#now() };

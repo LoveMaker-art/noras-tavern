@@ -227,6 +227,31 @@ class SharedLogicTests(unittest.TestCase):
         result = yaml.safe_load(first_install.render_mcp(self.home, self.tavern))
         self.assertEqual(result['approvals'], {'destructive_slash_confirm': True, 'mode': 'manual'})
 
+    def test_user_memory_default_increases_once_and_preserves_custom_settings(self):
+        import yaml
+        target = self.home / 'config.yaml'
+        for previous, expected in ((None, 2000), (1375, 2000), (1875, 2000),
+                                   (2000, 2000), (1000, 1000), (1999, 1999), (3000, 3000)):
+            original = {'model': {'default': 'test-model'}, 'memory': {'memory_char_limit': 2200}}
+            if previous is not None:
+                original['memory']['user_char_limit'] = previous
+            target.write_text(yaml.safe_dump(original), encoding='utf-8')
+            for writer in (update.render_mcp, first_install.render_mcp):
+                rendered = writer(self.home, self.tavern, 18899)
+                value = yaml.safe_load(rendered)
+                self.assertEqual(value['memory'], {'memory_char_limit': 2200, 'user_char_limit': expected})
+                self.assertEqual(value['model'], original['model'])
+                target.write_bytes(rendered)
+
+    def test_invalid_user_memory_settings_do_not_get_replaced(self):
+        target = self.home / 'config.yaml'
+        for content in ('memory: false\n', 'memory:\n  user_char_limit: false\n',
+                        'memory:\n  user_char_limit: 0\n', 'memory:\n  user_char_limit: null\n'):
+            target.write_text(content, encoding='utf-8')
+            with self.assertRaises(RuntimeError):
+                update.render_mcp(self.home, self.tavern)
+            self.assertEqual(target.read_text(), content)
+
     def test_shared_defaults_do_not_assume_a_desktop_install(self):
         with patch.dict(os.environ, {"HERMES_HOME": str(self.home)}, clear=True):
             self.assertEqual(update.default_hermes_home(), self.home)

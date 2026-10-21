@@ -80,6 +80,25 @@ test('default-on settings show scope, actual model configuration and the three b
     assert.equal(await f.guard(), true, 'unchanged settings must remain dismissible');
 });
 
+test('an empty output override visibly inherits current model and saves null, while existing explicit values remain explicit', async () => {
+    const f = fixture(); f.changeState({ effectiveConfig: { contextLimitOverride: null, outputTokenLimit: null, timeoutSeconds: 300 },
+        model: { name: 'current-model', contextLimit: 32768, outputTokenLimit: 6000 },
+        pending: { id: 'prepared', coveredTurns: 15 }, active: null, totalTurns: 16 });
+    await f.open();
+    assert.equal(f.select('[data-ledger-output]').value, '');
+    assert.match(f.select('[data-ledger-output-source]').textContent, /继承模型配置.*6000/);
+    assert.match(f.select('[data-ledger-metric]').textContent, /15 \/ 16.*待续写采用/);
+    f.select('[data-ledger-output]').value = '1024';
+    await f.select('[data-ledger-form]').fire('submit');
+    assert.equal(f.state().effectiveConfig.outputTokenLimit, 1024);
+    assert.match(f.select('[data-ledger-output-source]').textContent, /当前会话.*1024/);
+    f.select('[data-ledger-output]').value = '';
+    await f.select('[data-ledger-form]').fire('submit');
+    assert.equal(f.requests.filter(item => item.action === 'configure').at(-1).patch.outputTokenLimit, null);
+    assert.equal(f.select('[data-ledger-output]').value, '');
+    assert.match(f.select('[data-ledger-output-source]').textContent, /继承模型配置.*6000/);
+});
+
 test('consecutive saves read back the new revision without replacing the editor or producing stale conflicts', async () => {
     const f = fixture(); await f.open();
     const field = f.select('[data-ledger-timeout]');

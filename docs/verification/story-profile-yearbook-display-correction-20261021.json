@@ -1,0 +1,83 @@
+{
+  "schema": "nora-yearbook-display-acceptance/1",
+  "date": "2026-10-21",
+  "design_version": "1.28",
+  "branch": "codex/story-profile-reliability-20261021",
+  "cause": "Missing presentation-only recap made the old renderer discard existing events and unresolved matters. A handwritten preview field did not repair that defect.",
+  "behavior": [
+    "Read the validated existing ledger directly for both old and new records",
+    "Show scene, player activity/status, latest three source events and first two unresolved matters",
+    "Read-only disclosure preserves earlier events and remaining matters, with complete source sentences",
+    "Retain default three recently played stories and expansion for other stories",
+    "Hide session identifiers, runtime processing status, raw chat and preference history in the yearbook",
+    "Withdraw added reader-prose model prompt/envelope/storage; no generated recap needed",
+    "Ignore existing recap metadata without deleting user records; undo only the earlier agent-written isolated-preview field"
+  ],
+  "checks": {
+    "regression_before_change": {
+      "failed_for_reported_symptom": 3,
+      "passed": 10
+    },
+    "focused_tests": {
+      "selected": 76,
+      "passed": 75,
+      "failed": 0,
+      "skipped": 1,
+      "skip_reason": "Opt-in 125-second slow-provider test not required for this display change"
+    },
+    "projected_loopback_http_workflow": {
+      "passed": 1,
+      "failed": 0,
+      "uses_real_external_model": false
+    },
+    "eslint": "passed",
+    "source_snapshot_parity": "passed",
+    "diff_check": "passed"
+  },
+  "actual_preview": {
+    "url": "http://127.0.0.1:18880/actor.html",
+    "source_events": 12,
+    "source_unresolved_matters": 12,
+    "default_items": 5,
+    "disclosure_extra_items": 19,
+    "expanded": {
+      "open": true,
+      "height_px": 887.4765625
+    },
+    "collapsed": {
+      "open": false,
+      "height_px": 31.1953125
+    },
+    "horizontal_overflow": false,
+    "manual_recap_removed": true,
+    "source_ledger_restored_byte_for_byte": true,
+    "private_screenshot": "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/yearbook-display-correction-20261021/yearbook-original-data.png"
+  },
+  "data_verification": {
+    "preview_files_compared": 598,
+    "preview_files_changed": 0,
+    "production_files_compared": 8,
+    "production_files_changed_since_correction": 0,
+    "ready_records": 1,
+    "source_event_count": 12,
+    "source_thread_count": 12,
+    "has_generated_recap": false,
+    "external_model_requests_this_correction": 0
+  },
+  "source_sha256": {
+    "story-profile/public/actor.js": "cdae9b67491259faf31542b2d81ff6fb40ce8f94a5bbd7cea4bcba4e58ce209c",
+    "story-profile/public/console.css": "bbac10f1fde7f8b4872c01db0d6074e2093e6da55d3a82df9164b8bb10fdb2a8",
+    "story-profile/public/i18n.js": "ac406bfc6f6092de7d899478a4a45474c38ee6ddaafd1674fa406d92d158ea7c",
+    "app/engine/sillytavern/src/nora-story-ledger/core.js": "37963997f5f8ddc4e4a2e001c030b4029176d9a15f7b9649535b0d09e7b5268e",
+    "app/engine/sillytavern/src/nora-story-ledger/model.js": "92f6fcbc7f333f5e81f968dfc4711539e538793999fc18a7f3ec17931cef1d9d",
+    "app/engine/sillytavern/src/nora-story-ledger/profile-projection.js": "f89e731602a8be91a4b2feac1916324d084cfb20c0b0c428d03c5d9250d40c4e",
+    "app/story_profile_runtime/manifest.json": "0a475c5966196450169987e312760ddb4853101a31e819fb553d1e929c7f87da"
+  },
+  "limits": [
+    "Displays the saved rolling ledger, not a reconstructed permanent chapter history",
+    "Exact-text deduplication and recency ordering do not establish semantic importance ranking or repair semantic ledger errors",
+    "No new Windows native UI or installer acceptance; no merge, push, build, release or production runtime deployment"
+  ],
+  "evidence_level": "user-outcome verified in isolated preview",
+  "production_deployed": false
+}

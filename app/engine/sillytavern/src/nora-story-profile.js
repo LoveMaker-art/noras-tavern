@@ -16,8 +16,11 @@ const INTIMACY_LADDER = [
 function readJson(filePath, fallback) {
     try {
         return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch {
-        return fallback;
+    } catch (cause) {
+        if (cause.code === 'ENOENT') return fallback;
+        throw Object.assign(new Error('故事档案文件无法读取；原数据已保留。', { cause }), {
+            code: 'STORY_PROFILE_STORAGE_UNREADABLE', file: path.basename(filePath),
+        });
     }
 }
 
@@ -160,10 +163,21 @@ export function resolveStoryProfileStateDirectory(environment = process.env) {
 }
 
 export function readStoryProfileState(stateDirectory = resolveStoryProfileStateDirectory()) {
-    return {
-        profile: readJson(path.join(stateDirectory, 'story_profile.json'), {}),
-        eras: readJson(path.join(stateDirectory, 'profile_eras.json'), []),
+    if (fs.existsSync(path.join(stateDirectory, 'profile_commit.json'))) {
+        throw Object.assign(new Error('档案保存尚未确认完成；请先恢复保存结果，原数据已保留。'), { code: 'STORY_PROFILE_COMMIT_PENDING' });
+    }
+    const profile = readJson(path.join(stateDirectory, 'story_profile.json'), null);
+    const eras = readJson(path.join(stateDirectory, 'profile_eras.json'), []);
+    if ((profile !== null && (typeof profile !== 'object' || Array.isArray(profile) || profile.schema_version !== 1 || !Array.isArray(profile.preferences))) || !Array.isArray(eras)) {
+        throw Object.assign(new Error('故事档案格式不正确；原数据已保留。'), { code: 'STORY_PROFILE_STORAGE_UNREADABLE' });
+    }
+    if (profile === null && (fs.existsSync(path.join(stateDirectory, 'profile_events.jsonl')) || eras.length)) {
+        throw Object.assign(new Error('主档案缺失，但历史记录仍存在；已保留历史，请先恢复档案。'), { code: 'STORY_PROFILE_STORAGE_UNREADABLE' });
+    }
+    return { profile: profile || {}, eras,
         identity: readJson(path.join(stateDirectory, 'app_identity.json'), {}),
+        profile_storage_state: profile === null ? 'missing' : 'ready',
+        taste_profile_stale: Boolean(profile?.taste_profile_stale),
     };
 }
 
@@ -231,13 +245,61 @@ export async function loadStoryProfileProgress({
         revision: snapshot.revision, user_turns: snapshot.reflectionTurns };
 }
 
+/** Read every existing story Session through the canonical ledger reader.
+ * This does not schedule compression, recover projections, or write memories.
+ */
+export async function loadStoryProfileStoryProgress({
+    directories,
+    worldId = '',
+    sessionId = '',
+    worlds,
+    listWorldsFn = runtimeDirectories => resolveNoraWorldCore(runtimeDirectories).inspectWorlds(),
+    collectProgressFn = async (...args) => {
+        const { collectStoryProgress } = await import('./nora-story-ledger/profile-projection.js');
+        return collectStoryProgress(...args);
+    },
+} = {}) {
+    if (!directories?.root || !directories?.chats) throw new TypeError('Nora World Core and chat directories are required.');
+    const allWorlds = worlds ?? await listWorldsFn(directories);
+    const selectedWorlds = worldId ? allWorlds.filter(world => worldIdentity(world) === worldId) : allWorlds;
+    if (worldId && selectedWorlds.length === 0) throw Object.assign(new Error('找不到指定故事。'), { code: 'WORLD_NOT_FOUND' });
+    if (sessionId && !selectedWorlds.some(world => world.sessions?.items?.some(session => session.session_id === sessionId))) {
+        throw Object.assign(new Error('找不到指定故事会话。'), { code: 'STORY_SESSION_NOT_FOUND' });
+    }
+    const scopedWorlds = sessionId ? selectedWorlds.map(world => ({ ...world,
+        sessions: { ...world.sessions, items: world.sessions.items.filter(session => session.session_id === sessionId) } })) : selectedWorlds;
+    const progress = await collectProgressFn(directories, async () => scopedWorlds);
+    if (!Array.isArray(progress)) throw Object.assign(new Error('无法确认故事进度读取结果。'), { code: 'STORY_PROGRESS_UNAVAILABLE' });
+    return sessionId ? progress.filter(item => item.session_id === sessionId) : progress;
+}
+
+/** Exact on-demand read; no profile loading, statistics pruning, model envelope,
+ * World writer initialization or implicit recent-chat attachment. */
+export async function loadStoryProfileStoryRead({ directories, payload = {},
+    listWorldsFn = runtimeDirectories => resolveNoraWorldCore(runtimeDirectories).inspectWorlds(),
+    readSnapshotFn,
+} = {}) {
+    if (!directories?.root || !directories?.chats) throw new TypeError('Nora World Core and chat directories are required.');
+    const { readStoryOnDemand } = await import('./nora-story-ledger/story-read.js');
+    const worlds = await listWorldsFn(directories);
+    return readStoryOnDemand({ directories, worlds, payload, readSnapshotFn,
+        verifyScopeFn: async (world, session) => {
+            const fresh = (await listWorldsFn(directories)).find(item => item.world_id === world.world_id);
+            const branch = fresh?.sessions?.items?.find(item => item.session_id === session.session_id);
+            return Boolean(fresh && branch && JSON.stringify([fresh.name, fresh.revision, fresh.lifecycle,
+                fresh.runtime_card?.binding, fresh.story_context, branch]) === JSON.stringify([world.name, world.revision,
+                world.lifecycle, world.runtime_card?.binding, world.story_context, session]));
+        } });
+}
+
 export async function loadStoryProfileCard({
     directories,
     stateDirectory = resolveStoryProfileStateDirectory(),
     now,
     getCharacterFn,
-    listWorldsFn = runtimeDirectories => resolveNoraWorldCore(runtimeDirectories).listWorlds(),
+    listWorldsFn = runtimeDirectories => resolveNoraWorldCore(runtimeDirectories).inspectWorlds(),
     statistics,
+    collectProgressFn,
 } = {}) {
     if (!directories?.root || !directories?.chats) {
         throw new TypeError('Nora World Core and chat directories are required.');
@@ -255,5 +317,18 @@ export async function loadStoryProfileCard({
     const characters = (await Promise.all(avatars.map(avatar => getCharacterFn(directories, avatar))))
         .filter(Boolean);
     const state = readStoryProfileState(stateDirectory);
-    return buildStoryProfileCard({ worlds, statsByWorld, characters, now, ...state });
+    const card = buildStoryProfileCard({ worlds, statsByWorld, characters, now, ...state });
+    let storyProgress;
+    let storyProgressError;
+    try {
+        storyProgress = await loadStoryProfileStoryProgress({ directories, worlds, collectProgressFn });
+    } catch (error) {
+        storyProgressError = { code: error?.code || 'STORY_PROGRESS_UNAVAILABLE' };
+    }
+    return { ...card, profile_storage_state: state.profile_storage_state, taste_profile_stale: state.taste_profile_stale,
+        story_progress: storyProgress ?? null, story_progress_state: storyProgress ? 'ready' : 'error',
+        ...(storyProgressError ? { story_progress_error: storyProgressError } : {}),
+        reflection_worlds: worlds.map(world => ({ world_id: worldIdentity(world), world_name: text(world.name) || worldIdentity(world),
+            session_id: statsByWorld[worldIdentity(world)].session_id,
+            user_turns: statsByWorld[worldIdentity(world)].reflectionTurns })) };
 }

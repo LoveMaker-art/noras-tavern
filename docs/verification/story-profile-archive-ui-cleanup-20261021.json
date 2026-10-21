@@ -1,0 +1,57 @@
+{
+  "schema": "nora-story-profile-archive-ui-cleanup/1",
+  "date": "2026-10-21",
+  "branch": "codex/story-profile-reliability-20261021",
+  "product_design": "1.21",
+  "source_and_preview_only": true,
+  "changes": {
+    "removed": "New archive reflection panel, its handlers, scoped CSS and translations",
+    "restored": "Original archive markup/styles/labels, existing personality editor and error handling",
+    "relocated": "Tavern side panel > Story curator > Preference settings; one global auto-review toggle with purpose and cost notice",
+    "manual_and_recovery": "Existing curator handoff, API/MCP and backend recovery retained; newly added archive buttons intentionally removed per latest user request"
+  },
+  "verification": {
+    "targeted_node_tests": {
+      "pass": 87,
+      "fail": 0,
+      "skipped": 0
+    },
+    "final_archive_and_settings_tests": {
+      "pass": 16,
+      "fail": 0,
+      "skipped": 0
+    },
+    "eslint_changed_frontend": "PASS",
+    "frontend_preview_compilation": "PASS",
+    "generated_runtime_parity": "PASS",
+    "git_diff_check": "PASS",
+    "browser_archive": "Original archive content and timeline present; no reflection panel",
+    "browser_settings": "Existing curator entry opens a dialog with purpose/cost notice and one unchecked toggle; no world selector/manual/repair controls",
+    "browser_alignment": {
+      "checkbox_label_display": "flex",
+      "align_items": "center"
+    },
+    "current_auto_choice": false,
+    "settings_write_during_live_visual_verification": false,
+    "protected_files_checked": 258,
+    "protected_files_changed": [],
+    "backend_source_hashes_unchanged": {
+      "story-profile/core/reflection.py": "fc16cb12b390d5662217aba315a917055d30e6c9278e30abdd6c88db6d102763",
+      "story-profile/core/story_profile.py": "ad596e7e43f2cc85ada5a8df1011472cae4db47aef672d75b34a452bc11c5403",
+      "story-profile/adapters/nora/preference-checkpoint.js": "c4275166a5ea1a01b299fbf9f2d9ce4bdb86763aa6a4429a4974cdc100d37d94"
+    },
+    "production_health_http": 200,
+    "preview_health_http": 200
+  },
+  "preview_runtime_change": "Only this task private extension CSS synchronized to authored source after backup; source server refreshed for new immutable asset namespace",
+  "evidence_directory": "local-state/story-profile-preview-20261021/archive-ui-cleanup",
+  "preserved_evidence": "Earlier fault reports retain their original source hashes. Old archive-panel UI expectations are superseded by this user-requested removal. Current test entry verifies the restored archive and relocated consent.",
+  "delivery": {
+    "installer_built": false,
+    "production_runtime_replaced": false,
+    "production_service_restarted": false,
+    "committed_or_pushed": false,
+    "published": false
+  },
+  "remaining_task_blockers": []
+}

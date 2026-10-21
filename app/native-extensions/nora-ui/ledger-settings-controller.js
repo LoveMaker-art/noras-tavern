@@ -7,6 +7,10 @@ const errors = {
     NORA_LEDGER_OUTPUT_INVALID: '模型未返回有效的剧情记忆', NORA_LEDGER_CONFIGURATION_STALE: '设置已发生变化，请保留修改后重新打开',
     NORA_LEDGER_MODEL_SCOPE_UNAVAILABLE: '请先打开目标世界', NORA_LEDGER_COMPRESSION_FAILED: '整理失败',
     NORA_LEDGER_MODEL_CHANGED: '整理期间模型发生变化，请确认配置后重试',
+    NORA_LEDGER_OUTPUT_CONFIGURATION_REQUIRED: '缺少模型输出额度配置',
+    NORA_LEDGER_MEMORY_BUDGET_EXCEEDED: '整理结果超过存储上限，旧记忆已保留',
+    NORA_LEDGER_SCHEMA_LIMIT_EXCEEDED: '整理结果超出字段限制，旧记忆已保留',
+    NORA_LEDGER_MODEL_OPTIONS_INVALID: '模型的自定义连接参数格式无效',
 };
 
 export function createLedgerSettingsController({ dialogs, select, escapeHtml: esc, request, isGenerating = () => false }) {
@@ -30,7 +34,7 @@ export function createLedgerSettingsController({ dialogs, select, escapeHtml: es
                 <button class="nora-secondary" data-ledger-compress type="button" hidden>${tr('重新整理')}</button>
                 <form class="nora-ledger-form" data-ledger-form><details class="nora-ledger-options"><summary>${tr('高级设置')}</summary>
                 <label for="nora-ledger-context">${tr('上下文上限（tokens）')}</label><input id="nora-ledger-context" name="context" data-ledger-context type="number" min="512" max="2000000">
-                <label for="nora-ledger-output">${tr('整理输出上限（tokens）')}</label><input id="nora-ledger-output" name="output" data-ledger-output type="number" required min="128" max="16384">
+                <label for="nora-ledger-output">${tr('整理输出上限（tokens）')}</label><input id="nora-ledger-output" name="output" data-ledger-output type="number" min="128" max="16384"><small data-ledger-output-source></small>
                 <label for="nora-ledger-timeout">${tr('总超时（秒）')}</label><input id="nora-ledger-timeout" name="timeout" data-ledger-timeout type="number" required min="60" max="1800">
                 <footer class="nora-ledger-save"><span data-ledger-draft role="status"></span><button class="nora-primary" data-ledger-save type="button">${tr('保存设置')}</button></footer></details></form>
                 <section class="nora-ledger-reset"><button class="nora-secondary" data-ledger-reset type="button"><i class="fa-solid fa-arrow-rotate-left" aria-hidden="true"></i> ${tr('重置剧情记忆')}</button></section>
@@ -54,17 +58,23 @@ export function createLedgerSettingsController({ dialogs, select, escapeHtml: es
             };
             const fill = () => {
                 fields[0].value = state.effectiveConfig.contextLimitOverride ?? '';
-                fields[1].value = state.effectiveConfig.outputTokenLimit;
+                fields[1].value = state.effectiveConfig.outputTokenLimit ?? '';
                 fields[2].value = state.effectiveConfig.timeoutSeconds;
                 remember();
             };
             const renderState = () => {
                 toggle.checked = state.enabled;
                 select('[data-ledger-status]', modal).textContent = tr(ledgerPhase(state));
-                select('[data-ledger-metric]', modal).textContent = t`${state.active?.coveredTurns || 0} 轮`;
+                const summary = state.pending || state.active;
+                const stage = state.pending ? tr('已整理，待续写采用') : state.active ? tr('已用于续写') : '';
+                select('[data-ledger-metric]', modal).textContent = `${summary?.coveredTurns || 0} / ${state.totalTurns ?? '?'} ${tr('轮')}${stage ? ` · ${stage}` : ''}`;
                 select('[data-ledger-model]', modal).textContent = state.model?.name || tr('未配置');
                 select('[data-ledger-capacity]', modal).textContent = state.model?.contextLimit ? `${state.model.contextLimit} tokens` : tr('未配置');
                 fields[0].placeholder = state.model?.contextLimit ? t`继承模型配置：${state.model.contextLimit}` : tr('继承模型配置');
+                fields[1].placeholder = state.model?.outputTokenLimit ? t`继承模型配置：${state.model.outputTokenLimit}` : tr('继承模型配置');
+                const output = state.outputBudget?.limit ?? state.effectiveConfig.outputTokenLimit ?? state.model?.outputTokenLimit;
+                select('[data-ledger-output-source]', modal).textContent = state.effectiveConfig.outputTokenLimit === null
+                    ? `${tr('继承模型配置')}${output ? ` · ${output} tokens` : ''}` : `${tr('当前会话')} · ${output} tokens`;
                 const error = select('[data-ledger-error]', modal);
                 error.hidden = !state.lastError;
                 error.textContent = state.lastError ? errorText(state.lastError) : '';
@@ -81,7 +91,7 @@ export function createLedgerSettingsController({ dialogs, select, escapeHtml: es
                 try {
                     const patch = { expectedRevision: formRevision,
                         contextLimitOverride: fields[0].value === '' ? null : Number(fields[0].value),
-                        outputTokenLimit: Number(fields[1].value), timeoutSeconds: Number(fields[2].value) };
+                        outputTokenLimit: fields[1].value === '' ? null : Number(fields[1].value), timeoutSeconds: Number(fields[2].value) };
                     await request('configure', scope, patch);
                     const fresh = await request('inspect', scope);
                     if (!alive()) return;

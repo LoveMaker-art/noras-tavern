@@ -1,0 +1,212 @@
+{
+  "schema": "nora-story-profile-multi-world-layout-acceptance/1",
+  "date": "2026-10-21",
+  "design_version": "1.28",
+  "branch": "codex/story-profile-reliability-20261021",
+  "accepted_scope": {
+    "execute": "Inspect actual multi-world archive layout and independent disclosures using explicit isolated synthetic test data.",
+    "propose_only": "Replace persistent plot injection into MEMORY.md with fast, precise on-demand ledger access. No memory policy/source/runtime edits in this phase."
+  },
+  "fixture": {
+    "port": 18881,
+    "url": "http://127.0.0.1:18881/actor.html?lang=zh",
+    "valid_worlds": 5,
+    "valid_records": 6,
+    "additional_unsummarized_worlds": 2,
+    "real_world_core_and_validated_ledger_reader": true,
+    "uses_actual_profile_http_and_static_ui": true,
+    "uses_production_model": false,
+    "synthetic_story_content": true,
+    "not_model_generation_acceptance": true
+  },
+  "browser": {
+    "baseline": {
+      "allCards": 6,
+      "horizontalOverflow": false,
+      "innerStates": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "otherCount": 3,
+      "otherOpen": false,
+      "primary": [
+        "雾港调查【测试】",
+        "星舰远航【测试】",
+        "山城书店【测试】"
+      ]
+    },
+    "toggleEvidence": [
+      [
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      [
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    ],
+    "otherEvidence": {
+      "allStates": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "horizontalOverflow": false,
+      "longTitleWidth": 395,
+      "open": true,
+      "otherTitles": [
+        "雾港调查【测试】",
+        "白塔遗迹与群山之间那条尚未走完的归途——用于检查长世界名称的换行【测试】",
+        "青原旅店【测试】"
+      ]
+    },
+    "nestedEvidence": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ],
+    "states_after_reset": {
+      "inner": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "outerOpen": true,
+      "overflow": false,
+      "viewport": {
+        "height": 893,
+        "width": 799
+      }
+    }
+  },
+  "actual_read_tool": {
+    "implementation": "Existing compiled NoraControlPlane.storyProgress -> actual local progress/ledger-inspect HTTP routes",
+    "results": [
+      {
+        "world": "雾港调查【测试】",
+        "worldId": "world:448d6f59-cfc2-4158-be8c-5f2b496754ed",
+        "sessionId": "session:284dfb9a-54ec-4db4-8312-8d3802b13530",
+        "ms": 26.38,
+        "summaryEvents": 5,
+        "uncoveredMessages": 2
+      },
+      {
+        "world": "星舰远航【测试】",
+        "worldId": "world:727313c1-b39b-46d4-b6d8-ba8cbae94c80",
+        "sessionId": "session:0fb0c43a-8274-43b6-9372-bcab051f9b3b",
+        "ms": 6,
+        "summaryEvents": 4,
+        "uncoveredMessages": 2
+      },
+      {
+        "world": "山城书店【测试】",
+        "worldId": "world:7911f295-db02-423c-8ec9-735ef5954964",
+        "sessionId": "session:10e5b046-35a1-4a60-9fef-538162736c42",
+        "ms": 5.86,
+        "summaryEvents": 4,
+        "uncoveredMessages": 2
+      },
+      {
+        "world": "雾港调查【测试】",
+        "worldId": "world:448d6f59-cfc2-4158-be8c-5f2b496754ed",
+        "sessionId": "session:layout-harbor-branch",
+        "ms": 5.83,
+        "summaryEvents": 4,
+        "uncoveredMessages": 2
+      },
+      {
+        "world": "白塔遗迹与群山之间那条尚未走完的归途——用于检查长世界名称的换行【测试】",
+        "worldId": "world:311fb98b-d35e-47a5-806b-bf9600a7a0b0",
+        "sessionId": "session:e27e74be-8a9d-483e-892c-90ddd58bd1f8",
+        "ms": 5.27,
+        "summaryEvents": 4,
+        "uncoveredMessages": 2
+      },
+      {
+        "world": "青原旅店【测试】",
+        "worldId": "world:42f015b9-6f7a-4a56-9faf-57c780ed3308",
+        "sessionId": "session:128f60c7-70ce-4b66-a687-a3927815f288",
+        "ms": 5.4,
+        "summaryEvents": 4,
+        "uncoveredMessages": 2
+      }
+    ],
+    "passed": 6,
+    "source_writes": false,
+    "external_model_calls": 0,
+    "limits": "Small synthetic files, warm local process. This does not demonstrate live Hermes model tool selection or large-history latency."
+  },
+  "source_fingerprints": {
+    "story-profile/public/actor.js": "cdae9b67491259faf31542b2d81ff6fb40ce8f94a5bbd7cea4bcba4e58ce209c",
+    "app/engine/sillytavern/src/nora-world-core/domain.js": "b50f8360c4ea931b6fdd0feaeb3d0907a76ae88f134b2573502b108e31cd8649",
+    "app/engine/sillytavern/src/nora-story-ledger/profile-projection.js": "f89e731602a8be91a4b2feac1916324d084cfb20c0b0c428d03c5d9250d40c4e",
+    "nora-mcp/src/nora-control-plane.ts": "4728f0d272185d971fe12902e397fc02c9e960a09c2ceb56375c1adcf5d3ed84",
+    "nora-mcp/dist/nora-control-plane.js": "47f10c959797c632cce590c756480ca9a0398b16dc12dcc2e2c0f9a6ca19c071"
+  },
+  "observed_gap": {
+    "code": "STORY_SESSION_DISPLAY_NAME_NOT_PERSISTED",
+    "facts": [
+      "profile projection reads session.name",
+      "WorldStore validates manifests with validateWorldManifest",
+      "domain.js session normalization retains id/engine/binding/opening_state and drops name",
+      "actual six-record test shows both same-world sessions with empty session_name"
+    ],
+    "impact": "Same-world branches do not have durable human-readable names; identities stay distinct internally, but the user must currently distinguish them by scene.",
+    "fix_status": "not implemented; required in proposed precise lookup scheme"
+  },
+  "preservation": {
+    "original_preview_files": 598,
+    "original_preview_changed": 0,
+    "production_files": 8,
+    "production_changed": 0,
+    "isolated_fixture_port": 18881,
+    "original_preview_port": 18880
+  },
+  "proof_screenshots": [
+    "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/multi-world-acceptance-20261021/recent-worlds.png",
+    "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/multi-world-acceptance-20261021/other-worlds.png"
+  ],
+  "not_done": [
+    "No plot MEMORY policy changes",
+    "No fabricated AI extraction success",
+    "No new Windows native UI acceptance",
+    "No production deployment, merge, push, packaging or publication"
+  ]
+}

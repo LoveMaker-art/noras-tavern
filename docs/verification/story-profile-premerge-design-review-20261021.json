@@ -1,0 +1,167 @@
+{
+  "schema": "nora-premerge-product-baseline-review/1",
+  "date": "2026-10-21",
+  "verdict": "暂不建议直接合并",
+  "reviewed_worktree": "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern",
+  "reviewed_branch": "codex/story-profile-reliability-20261021",
+  "branch_HEAD": "cfec1b97457508f83a9cd6af2773b76c48ed26fb",
+  "pinned_main": "117bfa5efd5998b25d19bf917d0711bf9d434ad2",
+  "merge_base": "cfec1b97457508f83a9cd6af2773b76c48ed26fb",
+  "review_scope": {
+    "tracked_modified": 69,
+    "untracked_new": 38,
+    "all_paths": 107,
+    "includes": "完整工作区差异与新增文件；产品文档、实现、测试、运行规则、生成副本及已有验收记录。没有把工作区误当成已提交分支差异。"
+  },
+  "baseline_authority": "固定主线1.22中的已确认/已取消事项，加本会话用户明确批准的最新变化。分支1.29版本号本身不证明涵盖主线。",
+  "approved_differences_to_preserve": [
+    "四类偏好正文1400字符与USER整份2000额度/预留，保留旧偏好及历史原件",
+    "偏好设置入口移到既有酒馆设置，移除档案新操作面板；默认开启但保留已有关闭",
+    "年表直接使用既有有效账本，三进展两事项、最近三个故事及只读展开，不增第二次模型总结",
+    "停止剧情常驻MEMORY，只在可核验范围备份移除旧托管剧情，其他记忆/USER/故事数据保留",
+    "世界与分支精准有界只读、歧义选择、来源时效、必要近期消息窗口及分支名保存"
+  ],
+  "findings": [
+    {
+      "id": "SP-01",
+      "axis": "Spec",
+      "priority": "P1",
+      "title": "主分支格式的旧关闭选择未被兼容",
+      "file": "story-profile/adapters/nora/preference-checkpoint.js",
+      "line": 32,
+      "baseline": "main@117bfa5 docs/product/nora.md N-Q01:215-217；当前分支N-Q01同样要求保留旧关闭与损坏设置。",
+      "trigger": "已有default-user/story_profile_preferences.json，automatic_reflection.enabled=false或原文件损坏；新story_profile_preference_settings.json尚不存在。",
+      "observed": "主分支不调度；本分支按无设置默认开启，达到15轮后runReflection计数为1。原文件虽保留，但选择未生效。",
+      "impact": "用户明确关闭后可能重新发生自动故事内容发送与模型费用。",
+      "recommendation": "沿用或兼容主分支实际设置路径与格式；有效旧关闭必须保留，损坏旧记录须报告而不是套用开启默认。",
+      "evidence": "legacy-auto-choice-repro.json",
+      "regression": "分别覆盖旧关闭、旧开启、无旧设置、损坏旧文件及新旧记录冲突，不调用真实模型。"
+    },
+    {
+      "id": "SP-02",
+      "axis": "Spec",
+      "priority": "P1",
+      "title": "提取运行中关闭后仍发起新总结请求",
+      "file": "story-profile/adapters/nora/cli.py",
+      "line": 65,
+      "baseline": "main@117bfa5 docs/product/nora.md N-Q01:215,223要求停止新请求，Node/Python逐请求判断一致；不要求撤回已发请求。",
+      "trigger": "自动提取请求已开始，用户在该响应返回前关闭开关。",
+      "observed": "实际CLI模型工厂与分支reflect_context合成复现：主线只派发提取1次；分支在开关false后仍派发总结，总数2。",
+      "impact": "开关关闭后还会新增模型请求，可能新增费用与内容发送。",
+      "recommendation": "在每个自动模型请求派发前复核同一持久设置；保留已提取结果并停在可恢复阶段，手动复盘授权独立处理。",
+      "evidence": "disable-during-reflection-repro.json",
+      "regression": "分别覆盖提取前关闭、提取中关闭、总结前关闭、已派发请求完成及手动复盘不改变自动开关。"
+    },
+    {
+      "id": "SP-03",
+      "axis": "Spec",
+      "priority": "P2",
+      "title": "产品设计漏合并主线已确认撤回与修复状态",
+      "file": "docs/product/README.md",
+      "line": 126,
+      "baseline": "main@117bfa5 docs/product/README.md:9-10 #copy-rollback；main docs/product/tavern.md:411-415。",
+      "trigger": "以分支1.29整份替换当前main1.22设计，或后续开发仅按分支文档执行。",
+      "observed": "分支恢复了已取消的格式扩写、候选按钮改名等要求；tavern.md:417-418又把主线已修复并验收的创建/删除问题登记为尚未修复。",
+      "impact": "唯一产品依据将错误指导后续开发；这是文档/交付冲突，不据此声称这些按钮已在运行界面重新改变。",
+      "recommendation": "保留当前主线的已确认/已取消决定及真实修复状态，仅叠加本会话明确批准的故事档案变化。",
+      "evidence": "main-README.md + main-tavern.md + review.patch",
+      "regression": "逐项对照主线取消事项、分支新增授权、N-Q01与T-D02/T-D03状态；不把版本号更高视为自动包含主线。"
+    },
+    {
+      "id": "SP-04",
+      "axis": "Standards",
+      "priority": "P2",
+      "title": "旧剧情提示缓存清理失败被汇总为全部完成",
+      "file": "story-profile/core/story_profile.py",
+      "line": 1033,
+      "baseline": "docs/product/nora.md:211要求清理含旧剧情的活动提示缓存并可重试；README共同状态要求部分/失败与完成分别反馈。",
+      "trigger": "MEMORY文件可清理，但Hermes的有效SQLite数据库被另一写者锁住。",
+      "observed": "MEMORY旧块已移除，活动ClawChat缓存仍含旧剧情；prompt_cache.checked=false、database is locked，但reflection._saved_result返回ok=true/status=completed/code为空。",
+      "impact": "诺拉当前会话可能继续带旧剧情，上层却没有准确呈现尚待完成的清理。",
+      "recommendation": "文件保存结果保留；缓存清理作为独立未完成阶段进入整体partial及可重试反馈，不重新生成偏好。",
+      "evidence": "cache-lock-repro.json + root-standards-repro.json",
+      "regression": "正常清理、无缓存库、有效数据库锁冲突、损坏数据库、结构不支持、解锁后仅补清理。"
+    },
+    {
+      "id": "SP-05",
+      "axis": "Standards",
+      "priority": "P2",
+      "title": "来源修订缺失或损坏的MEMORY块仍会被移除",
+      "file": "story-profile/core/story_profile.py",
+      "line": 897,
+      "baseline": "docs/product/nora.md:211只允许唯一完整且来源修订可核验的托管块先备份再移除。",
+      "trigger": "MEMORY托管边界完整唯一，但PROJECTION_REVISION缺失或损坏。",
+      "observed": "两种合成文件均返回complete/removed_legacy_story_block并删除托管区块。完整原文件备份验证正确。",
+      "impact": "清理范围核验门槛低于已确认合同；没有证据证明聊天被删或数据不可恢复。",
+      "recommendation": "缺失/坏修订先保留并报告待核验；若确需支持无修订历史块，应先确认受支持旧格式与判定依据，再同步设计和验收。",
+      "evidence": "root-standards-repro.json",
+      "regression": "缺修订、坏修订、重复/冲突修订、当前/更旧/更新修订、完整备份与仅移除已核验区块。"
+    }
+  ],
+  "counts": {
+    "Spec": 3,
+    "Standards": 2,
+    "P1": 2,
+    "P2": 3,
+    "runtime_repro_groups": 4,
+    "document_comparison_groups": 1
+  },
+  "positive_checks": [
+    {
+      "area": "USER精简/额度与原始数据保留",
+      "result": "实现和已有定向证据一致；本轮没有重新声称所有模型和安装包已通过。"
+    },
+    {
+      "area": "年表展示、分支名称、精准读取/预算/分页/来源校验",
+      "result": "代码、最新明确授权及既有定向验收相符；未发现本轮其他确证的设计冲突。"
+    },
+    {
+      "area": "authored Story Profile 与运行副本",
+      "result": "本轮实际check-source=PASS；actor.js的HTTP请求适配差异由生成器明确变换，不是冗余手改。"
+    },
+    {
+      "area": "已有验收证据",
+      "result": "固定107文件与latest on-demand source hashes均匹配，但过去通过不覆盖本轮新增反例，不能据此继续称无阻断。"
+    },
+    {
+      "area": "测试入口",
+      "result": "新增JS测试纳入tests/nora-*.test.mjs及MCP tests/*.test.mjs glob；Python discover可发现新增文件。"
+    }
+  ],
+  "integration_preconditions": {
+    "branch_changes_uncommitted": true,
+    "branch_new_commits_since_main_base": 0,
+    "main_overlap_paths": 42,
+    "temporary_three_way_text_conflicts": 19,
+    "binary_overlap": 4,
+    "interpretation": "临时副本merge-file预演，不是真实Git合并。修复后需整合当前main、处理文本/生成产物冲突、重新生成副本并验收实际合并结果；不按整份ours覆盖，也不将工作区未提交文件误认为会随git merge进入主线。"
+  },
+  "verification_this_review": {
+    "synthetic_repros_rerun_by_root": true,
+    "valid_SQLite_writer_lock_repro": true,
+    "generated_source_parity": true,
+    "diff_check": true,
+    "all_107_review_input_hashes_unchanged": true,
+    "main_ref_unchanged_at_last_check": true,
+    "source_or_product_baseline_edited": false,
+    "services_or_browser_operated": false,
+    "real_model_requests": 0,
+    "merged_built_or_published": false
+  },
+  "earlier_claim_correction": "此前“无本轮代码阻断”仅基于当时定向主流程，缺少主线设置格式兼容及缓存失败等反例覆盖；本次审查后不再沿用该结论。",
+  "out_of_scope_candidate": "任一损坏世界元数据导致整体只读清单失败的候选未升级为缺陷：尚不能排除全局身份完整性要求，且整页读取失败已有明确行为。本轮不以此要求新架构。",
+  "evidence_root": "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/premerge-product-review-20261021",
+  "repro_commands": [
+    "<Node24> /Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/premerge-product-review-20261021/legacy-auto-choice-repro.mjs",
+    "<Python3.11> -B /Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/premerge-product-review-20261021/disable-during-reflection-repro.py",
+    "<Python3.11> -B /Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/premerge-product-review-20261021/standards-memory-repro.py",
+    "<Python3.11> -B /Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern/local-state/story-profile-preview-20261021/premerge-product-review-20261021/cache-lock-repro.py"
+  ],
+  "subsequent_resolution": {
+    "date": "2026-10-21",
+    "record": "docs/verification/story-profile-postreview-fixes-20261021.json",
+    "five_findings": "implemented and technically verified",
+    "original_findings_and_reproductions_preserved": true,
+    "main_source_integration_still_required_before_merge": true
+  }
+}

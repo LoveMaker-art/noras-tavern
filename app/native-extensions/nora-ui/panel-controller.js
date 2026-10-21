@@ -42,6 +42,7 @@ export function createPanelController({
     executeControl = async () => { throw new Error(tr('扩展管理尚未就绪，请稍后重试。')); },
     agentUserId = () => '',
     currentUrl = () => globalThis.location?.href || '/',
+    openPreferenceSettings = () => {},
 }) {
     let castEditing = false;
     let worldbookEditing = false;
@@ -193,7 +194,7 @@ export function createPanelController({
             ? `<a class="pLink" href="${escapeHtml(reviewHref)}" target="_blank" rel="noopener external"><i class="fa-solid fa-comments" aria-hidden="true"></i>${tr("找主理人复盘")}</a>`
             : `<span class="pLink" aria-disabled="true" title="${tr("主理人的 ClawChat 身份尚未就绪")}"><i class="fa-solid fa-comments" aria-hidden="true"></i>${tr("找主理人复盘")}</span>`;
         const archiveHref = storyProfileHref(currentUrl());
-        const actorSection = `<div class="pSection actorSec"><div class="pHead">${tr("故事主理人")}</div>${reviewLink}<a class="pLink" href="${escapeHtml(archiveHref)}"><i class="fa-solid fa-book-open" aria-hidden="true"></i>${tr("主理人的故事档案")}</a></div>`;
+        const actorSection = `<div class="pSection actorSec"><div class="pHead pHeadAction"><span>${tr("故事主理人")}</span><button class="sectionEdit" data-action="preference-settings" type="button">${tr('偏好设置')}</button></div>${reviewLink}<a class="pLink" href="${escapeHtml(archiveHref)}"><i class="fa-solid fa-book-open" aria-hidden="true"></i>${tr("主理人的故事档案")}</a></div>`;
         const modelDisplay = projectTextModelDisplay({ nativeModel: readState().model, uiSettings: settings() });
         const modelSection = `<div class="pSection modelSection"><div class="pHead">${tr("模型")}</div><div class="modelGroup"><div class="modelUnit"><div class="modelUnitHead">${tr("文本模型")}</div><p class="mdlCur">${escapeHtml(modelDisplay.label)}</p><button class="actorMore" data-action="model" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr("切换 / 管理")}</button></div></div></div>`;
         const librarySection = `<div class="pSection librarySec"><div class="pHead">${tr("库")}</div><div class="libraryLinks"><button class="actorMore" data-action="library" type="button"><i class="fa-solid fa-address-book" aria-hidden="true"></i>${tr("世界卡库")}</button><button class="actorMore" data-action="preset-library" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr('预设库')}</button><button class="actorMore" data-action="plugin-library" type="button"><i class="fa-solid fa-puzzle-piece" aria-hidden="true"></i>${tr('插件库')}</button></div><div class="librarySupport">${actorSection}${modelSection}</div></div>`;
@@ -289,6 +290,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
+        if (action === 'preference-settings') return openPreferenceSettings();
         const actions = { backups: openBackups, extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'plugin-library': openPluginLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
         return actions[action]?.();
     }

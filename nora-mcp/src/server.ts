@@ -19,14 +19,14 @@ const mcp = new McpServer({
 });
 const server = { tool: createToolRegistrar(mcp, config, http) };
 
-function textResult(value: unknown) {
+function textResult(value: unknown, compact = false) {
   const result = value as { ok?: boolean; operation?: { status?: string } } | null;
   return {
     isError: result?.ok === false || result?.operation?.status === "FAILED" || ["failed", "unknown", "expired"].includes(String((value as { status?: string })?.status)),
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify(value, null, 2),
+        text: compact ? JSON.stringify(value) : JSON.stringify(value, null, 2),
       },
     ],
   };
@@ -197,11 +197,12 @@ server.tool("nora.story.checkpoint.status", "Read Story Profile checkpoint statu
   worldId: z.string(),
 }, async ({ worldId }) => textResult(await nora.storyCheckpointStatus(worldId)));
 
-server.tool("nora.story.checkpoint", "Schedule or run Story Profile checkpoint for a Nora World. Requires confirm: true.", {
+server.tool("nora.story.checkpoint", "Manually reflect on a Nora World once; does not enable automatic reflection. Requires confirm and allowModelCall. Read status after timeout; retry:true explicitly permits another potentially paid request.", {
   worldId: z.string(),
   allowModelCall: z.literal(true),
   confirm: z.boolean().optional(),
-}, async ({ worldId, confirm }) => textResult(await nora.storyCheckpoint(worldId, confirm)));
+  retry: z.boolean().optional(),
+}, async ({ worldId, confirm, retry }) => textResult(await nora.storyCheckpoint(worldId, confirm, retry)));
 
 server.tool("nora.story.reflect_preview", "PAID model reflection preview without saving; not a free context inspection. Do not retry automatically after timeout.", {
   worldId: z.string(),
@@ -269,6 +270,13 @@ server.tool("nora.export", "Export a native card (PNG/JSON), preset/worldbook (J
   kind: z.enum(["card", "preset", "worldbook", "profile"]), target: z.string().min(1), format: z.enum(["json", "png"]).default("json"), confirm: z.literal(true),
 }, async request => textResult(await nora.exportFile(request)));
 const scopeSchema = { worldId: z.string().min(1), sessionId: z.string().min(1) };
+server.tool("nora.story.progress", "Read the exact requested World's/branch's ledger without persistent plot memory. Pass confirmed IDs or exact human names; ambiguous names return choices. Default: source-backed overview only, no recent chat or model call. Use view facts/objects/threads and query for focused questions. Include recent chat only when the ledger is missing/behind and needed. Total JSON budget defaults to3000 characters, max6000; complete items and unread ranges/cursors are explicit. A cursor must stay on the same source revision. Resolve choices before answering; never switch to another branch silently. model_called=false means no additional ledger-generation call by the endpoint, not that Nora's conversation is model-free. Copy full human names exactly. A recent window cannot establish unread earlier plot; report returned message IDs/count and unread count, do not guess unread contents or unprovided turn ranges.", {
+  worldId: z.string().trim().min(1).max(200).optional(), worldName: z.string().trim().min(1).max(500).optional(),
+  sessionId: z.string().trim().min(1).max(200).optional(), sessionName: z.string().trim().min(1).max(500).optional(),
+  view: z.enum(["overview", "facts", "objects", "threads"]).optional(), query: z.string().trim().max(128).optional(),
+  includeRecent: z.boolean().optional(), recentLimit: z.number().int().min(1).max(10).optional(),
+  maxChars: z.number().int().min(1000).max(6000).optional(), cursor: z.string().min(1).max(16000).optional(),
+}, async request => textResult(await nora.storyProgress(request), true));
 const backupIdSchema = { id: z.string().regex(/^[a-f0-9-]{36}$/) };
 const backupProofSchema = { ...backupIdSchema, sha256: z.string().regex(/^[a-f0-9]{64}$/) };
 server.tool("nora.backup.list", "List verified chat backups with bounded paging, optional exact World/Session filtering, retention policy and maintenance status. Legacy inventory is optional and read-only; it cannot be restored or deleted by these tools. No model call.", {

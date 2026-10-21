@@ -1,0 +1,116 @@
+{
+  "schema": "nora-story-on-demand-delivery/1",
+  "date": "2026-10-21",
+  "design_version": "1.29",
+  "worktree": "/Users/sorrymakerx/.codex/worktrees/story-profile-flow/tavern",
+  "branch": "codex/story-profile-reliability-20261021",
+  "scope": "Optional branch name persistence; retire resident plot MEMORY with safe legacy cleanup; exact bounded World/Session reads; preserve USER and data; actual Nora dialogue. No installer or release.",
+  "phase_results": {
+    "implemented": true,
+    "technically_verified": true,
+    "user_outcome_verified": "Isolated actual engine preview and installed Hermes AIAgent with real Kimi for Coding requests; synthetic worlds only.",
+    "production_deployed": false,
+    "merged_to_main": false,
+    "packaged_or_published": false,
+    "changes_committed": false
+  },
+  "behavior": {
+    "branch_name": "Survives create/normalize/save/restart and revision-guarded exact branch edit; old nameless records remain unchanged.",
+    "memory": "Normal sync/refresh/recover and legacy context no longer inject plot. Verified unique legacy managed block backed up as whole original file before removing only block; unrelated bytes and USER retained. Ambiguous/failed/concurrent cleanup stays pending.",
+    "read": "Exact IDs or unique full names; ambiguity choices; valid prepared/active source readable with auto off; scope-bound revision-aware cache/cursor; secrets/unknown facts withheld; no automatic model, activation or writes.",
+    "budget": {
+      "whole_compact_JSON_default_chars": 3000,
+      "max_chars": 6000,
+      "recent_default": false,
+      "max_recent_messages": 10,
+      "query_max_chars": 128,
+      "recent": "Actual userTurn and inclusive 0-based complement of message IDs not returned on this page; never equate it with one prefix."
+    },
+    "USER": "Existing compact preference policy retained; no new increase or deletion in this phase."
+  },
+  "verification": {
+    "mac_backend": {
+      "tests": 73,
+      "pass": 73,
+      "fail": 0,
+      "skipped": 0
+    },
+    "mac_named_branch": 5,
+    "mcp_contract_and_stdio": 9,
+    "mac_memory_python": 75,
+    "windows_memory_python": {
+      "pass": 75,
+      "fail": 0,
+      "error": 0,
+      "skip": 0
+    },
+    "windows_branch": {
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0
+    },
+    "windows_reader": {
+      "tests": 12,
+      "pass": 12,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0
+    },
+    "real_Nora": {
+      "USER_preference_used": true,
+      "world_branch_exact": true,
+      "ambiguous_branch_choice": true,
+      "choice_follow_up": true,
+      "fresh_source_revision": true,
+      "targeted_object_read": true,
+      "missing_ledger_bounded_chat": true,
+      "exact_omission_ranges": true
+    },
+    "preservation": {
+      "original_user_preview_and_production_files_hash_unchanged": 606,
+      "read_only_fixture_and_test_memory_files_hash_unchanged": 30
+    },
+    "source_runtime_snapshot_parity": true,
+    "typescript_and_diff_check": true
+  },
+  "source_sha256": {
+    "app/engine/sillytavern/src/nora-world-core/domain.js": "8996abbec838fd36bba966ee452cad42bbc38e9934778a2d9b2c49d1d7791ee5",
+    "app/engine/sillytavern/src/nora-world-core/service.js": "a44c0f1037b6791efd41e5a87307100a656067756b3243286db8621df321d592",
+    "app/engine/sillytavern/src/nora-story-ledger/read-snapshot.js": "36a31ca16e6dc56738fef9a39107ebab25b62a4a8e0f900ad5e01b60780cf407",
+    "app/engine/sillytavern/src/nora-story-ledger/story-read.js": "c7bc2483e1f6d0027b30766a8132f48a84bab8b6e5f2b4d8e2c197e40dd17060",
+    "app/engine/sillytavern/src/nora-story-profile.js": "5c72e7c959ba0f56fc3dcea4f08434fd778403a0bfc0cbb8cb033172ab3ec9fb",
+    "app/engine/sillytavern/src/endpoints/nora-story-profile.js": "7dea7183657d5fa06bca57ec46a03d14df8744158c2e5a9f25e6d9ba07df692c",
+    "story-profile/core/story_profile.py": "cd06cd16b3568aa8dc3df617918a61cb0ddf93a2487f8f6e839c80b7e900519a",
+    "nora-mcp/src/server.ts": "4dcf314a4d09b1a5a642ff1fae654113c67ecf85e46a9bcbd990de6776fe049d",
+    "nora-mcp/src/nora-control-plane.ts": "96b283c38bdc39fa3514724d714fdcd5dc813033e06f8b59988cf7cfc3947041",
+    "nora/AGENTS.md": "a77992896b015d6b7760dfbd661bbd525de7d3a508b1f2863a2a799edcf7d560",
+    "nora/skills/creative/tavern/SKILL.md": "236f408c688c16a1cc3c573ed221c5cf02f68b4cd79a141567ec85b559d03863",
+    "nora/skills/creative/tavern/references/chat-ledger.md": "b1dbab6831cec032c74593f814ba561b38ead5cf03bdef63a1b8bdfb019dec80",
+    "nora/skills/creative/tavern/references/story-profile.md": "84365a11a5e8f06687914991e59e15c17d38a8040cc96c6f8346313ad7693f06"
+  },
+  "evidence": {
+    "real_Nora": "local-state/story-profile-preview-20261021/on-demand-implementation-20261021/real-nora-acceptance.json",
+    "actual_transcript": "local-state/story-profile-preview-20261021/on-demand-implementation-20261021/real-nora-transcript.md",
+    "raw_attempts": "local-state/story-profile-preview-20261021/on-demand-implementation-20261021/live-nora-results.json",
+    "reader": "local-state/story-profile-preview-20261021/story-read-acceptance.json",
+    "memory_cleanup": "local-state/story-profile-preview-20261021/on-demand-implementation-20261021/hermes-legacy-cleanup.json",
+    "windows": [
+      "local-state/story-profile-preview-20261021/no-resident-memory-20261021/windows-native.json",
+      "local-state/story-profile-preview-20261021/no-resident-memory-20261021/js-branch-windows-native.json",
+      "local-state/story-profile-preview-20261021/no-resident-memory-20261021/js-reader-windows-native.json"
+    ],
+    "screenshot": "local-state/story-profile-preview-20261021/on-demand-implementation-20261021/yearbook-branch-detail.jpg"
+  },
+  "test_environment_correction": "An older restart test lacked HERMES isolation and generated six new default-profile files. Exact created files were audited and archived; original protected data remained unchanged. The test now isolates/restores environment and awaits its projection. Evidence is in session-name-verification.json and unintended-default-profile-archive/manifest.json.",
+  "known_task_code_blockers": [],
+  "not_claimed": [
+    "Production deployment or main-branch merge",
+    "Installer acceptance, build, package or release",
+    "A new complete ClawChat gateway/pairing test",
+    "Other model providers or universal model wording guarantees",
+    "Generated-ledger semantic quality from hand-authored synthetic fixtures",
+    "Performance rerun after the final additive recent-metadata change (earlier figures are separately labelled)"
+  ]
+}

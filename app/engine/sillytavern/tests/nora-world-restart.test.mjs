@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import express from 'express';
+import { requestStoryProjection } from '../src/nora-story-ledger/profile-projection.js';
 import { createNoraWorldsV2Router } from '../src/endpoints/nora-worlds-v2.js';
 import { createWorldCoreClient } from '../public/scripts/nora-worlds/world-core-client.js';
 import { createNoraWorldCore } from '../src/nora-world-core/index.js';
@@ -13,10 +14,34 @@ import { createStoryContext, editStoryCharacter } from '../public/scripts/nora-w
 import { createWorldPreset } from '../public/scripts/nora-worlds/world-preset.js';
 import { isWorldCardProfileEnabled, setWorldCharacterContext } from '../public/scripts/nora-worlds/character-activation.js';
 
+// Real deletion includes asynchronous Story Profile publication. Bind every
+// child-process target to this test file, including its retry environment.
+const profileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-restart-profile-'));
+const isolatedEnvironment = {
+    HERMES_HOME: path.join(profileRoot, 'hermes'),
+    TAVERN_DATA_ROOT: profileRoot,
+    TAVERN_STATE_DIR: path.join(profileRoot, 'profile'),
+    TAVERN_HERMES_MEMORIES_DIR: path.join(profileRoot, 'memories'),
+    TAVERN_HERMES_STATE_DB: path.join(profileRoot, 'missing-state.db'),
+};
+const previousEnvironment = Object.fromEntries(Object.keys(isolatedEnvironment).map(key => [key, process.env[key]]));
+Object.assign(process.env, isolatedEnvironment);
+after(async () => {
+    try { await fs.rm(profileRoot, { recursive: true, force: true }); }
+    finally {
+        for (const [key, value] of Object.entries(previousEnvironment)) {
+            if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+    }
+});
+
 async function fixture(t, { fail = () => {}, authoredWorld = false } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-restart-test-'));
-    t.after(() => fs.rm(root, { force: true, recursive: true }));
     const directories = Object.fromEntries(['characters', 'chats', 'worlds', 'userImages'].map(key => [key, path.join(root, key)]));
+    t.after(async () => {
+        try { if (directories.root) await requestStoryProjection(directories); }
+        finally { await fs.rm(root, { force: true, recursive: true }); }
+    });
     const stagingRoot = path.join(root, 'nora-world-core', 'staging');
     await Promise.all([...Object.values(directories), stagingRoot].map(p => fs.mkdir(p, { recursive: true })));
     const materializer = createStBackendMaterializer({ directories, stagingRoot, checkpoint: fail });

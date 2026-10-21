@@ -26,7 +26,12 @@ const storyProfileCoreRoot = path.join(storyProfileRuntimeRoot, 'core');
 const panelSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/panel-controller.js'), 'utf8');
 const endpointSource = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/src/endpoints/nora-story-profile.js'), 'utf8');
 const noraUiSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/index.js'), 'utf8');
-const profileMemorySource = fs.readFileSync(path.join(projectRoot, 'ops/scripts/profile_memory.py'), 'utf8');
+// This contract runs in the authored checkout and tooling/run.mjs's delivery
+// export. These are the two paths mapped by tooling/source-layout.json.
+const profileMemoryPath = ['deployment/runtime/profile_memory.py', 'ops/scripts/profile_memory.py']
+    .map(relative => path.join(projectRoot, relative)).find(candidate => fs.existsSync(candidate));
+assert.ok(profileMemoryPath, 'the profile memory adapter must exist in this layout');
+const profileMemorySource = fs.readFileSync(profileMemoryPath, 'utf8');
 
 test('archive metrics are derived from Nora worlds and chats using the original rules', () => {
     const value = buildStoryProfileCard({
@@ -117,19 +122,20 @@ test('story profile restores the original actor surface through Nora adapters', 
     assert.equal(storyProfileHref('https://example.test/'), '/actor?from=console&return=https%3A%2F%2Fexample.test%2F');
     const upstreamFiles = {
         // Approved branding-only change: title, metadata and icon dimensions use Story Profile assets.
-        'actor.html': '98216e81b8e289e1cadb8aaffd7fb2438c5f60a745f0af4c4a9f7e33136ea36f',
-        'actor.js': '6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359',
+        'actor.html': null,
+        'actor.js': null,
         'security.js': '90f0cc4dc6e2b94b6f70a53e1f8e7704999c885bd9a88577e5aa587148a47965',
     };
     for (const [file, digest] of Object.entries(upstreamFiles)) {
         assert.equal(fs.existsSync(path.join(appRoot, 'engine/sillytavern/public', file)), true, `${file} must exist`);
         let content = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/public', file), 'utf8');
-        // Markup and handlers remain byte-identical to the pre-cleanup UI;
-        // resource pruning has its own selector and translation parity tests.
+        // Reflection controls are an approved product change; generated UI must match
+        // canonical authored source while the security adapter remains unchanged.
         if (file === 'actor.js') content = content.replaceAll('await globalThis.noraProfileRequest(', 'await fetch(');
         if (file === 'actor.html') content = content.replace('<script src="nora-profile-request.js"></script>\n  ', '')
             .replace(/(console\.css|i18n\.js)\?v=[a-f0-9]{16}/g, '$1');
-        assert.equal(crypto.createHash('sha256').update(content).digest('hex'), digest, `${file} must preserve the pre-cleanup UI`);
+        if (digest) assert.equal(crypto.createHash('sha256').update(content).digest('hex'), digest, `${file} preserves the unchanged security adapter`);
+        else assert.equal(content, fs.readFileSync(path.join(projectRoot, 'story-profile/public', file), 'utf8'), `${file} matches its authored source with approved reflection controls`);
     }
     const html = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/public/actor.html'), 'utf8');
     const script = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/public/actor.js'), 'utf8');
@@ -187,8 +193,9 @@ test('personality adapter delegates to the original Python backend', () => {
     assert.equal(fs.readFileSync(soul, 'utf8'), '新人格\n');
 });
 
-test('canonical Python profile keeps durable preferences, timeline, and Hermes projections', () => {
+test('canonical Python profile retains learning history and projects a validated four-category summary', t => {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-story-profile-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
     const seedPath = path.join(appRoot, 'actor_self.md');
     const code = `
 import json, pathlib, sys
@@ -199,11 +206,17 @@ seed = pathlib.Path(${JSON.stringify(seedPath)})
 profile = story_profile.ensure_profile(root, seed)
 story_profile.record_learning(root, seed, "- 喜欢慢热的关系推进\\n- 喜欢慢热的关系推进", "复盘「雾都」", ts=1700000000)
 profile = story_profile.load_profile(root, seed)
+before_preview = story_profile.memory_preview(profile)
+story_profile.set_taste_profile(root, seed, {
+    "story_tastes": ["喜欢慢热的关系推进"], "narrative_habits": [], "co_creation": [], "boundaries": [],
+})
+profile = story_profile.load_profile(root, seed)
 preview = story_profile.memory_preview(profile)
 print(json.dumps({
   "preferences": story_profile.preference_texts(profile),
   "timeline": story_profile.timeline(profile),
   "preview": preview,
+  "before_preview": before_preview,
   "audit": story_profile.audit(root, seed),
 }, ensure_ascii=False))
 `;
@@ -219,13 +232,16 @@ print(json.dumps({
     const value = JSON.parse(result.stdout);
     assert.deepEqual(value.preferences, ['喜欢慢热的关系推进']);
     assert.equal(value.timeline.length, 1);
-    assert.match(value.preview.user, /用户的故事口味/);
-    assert.match(value.preview.memory, /与用户共同记得的故事/);
+    assert.equal(value.before_preview.user, '', 'raw preferences alone are not a validated four-category summary');
+    assert.match(value.preview.user, /故事画像/);
+    assert.match(value.preview.user, /喜欢慢热的关系推进/);
+    assert.equal(value.preview.memory, '', '1.29 reads plot on demand rather than permanently injecting it into MEMORY');
     assert.equal(value.audit.active_preferences, 1);
 });
 
-test('reflection preview is read-only and reflection writes through the canonical profile module', () => {
+test('reflection preview is read-only and reflection writes through the canonical profile module', t => {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-story-reflect-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
     const code = `
 import json, pathlib, sys
 sys.path.insert(0, ${JSON.stringify(storyProfileCoreRoot)})
@@ -247,15 +263,11 @@ class Model:
     def complete(self, messages):
         self.calls += 1
         if self.calls == 1:
-            return "- 喜欢慢热且克制的关系推进"
+            return json.dumps({"preferences":[{"text":"喜欢慢热且克制的关系推进","evidence_ids":["m1","m3"]}]}, ensure_ascii=False)
         return json.dumps({
-            "character_styles": [],
-            "relationship_dynamics": ["慢热且克制的关系推进"],
-            "story_themes": [],
-            "pacing": ["慢节奏推进"],
-            "narrative_style": [],
-            "interaction_preferences": [],
-            "response_adaptations": ["讨论关系推进时先保留克制与留白"],
+            "story_tastes": ["慢热且克制的关系推进"],
+            "narrative_habits": ["慢节奏推进"],
+            "co_creation": ["讨论关系推进时先保留克制与留白"],
             "boundaries": [],
         }, ensure_ascii=False)
 preview_model = Model()
@@ -270,7 +282,7 @@ print(json.dumps({
     "preview_model_calls":preview_model.calls,
     "written":written,
     "write_model_calls":write_model.calls,
-    "taste_profile":profile.get("taste_profile"),
+    "taste_profile_v2":profile.get("taste_profile_v2"),
     "taste_profile_stale":profile.get("taste_profile_stale"),
 }, ensure_ascii=False))
 `;
@@ -289,7 +301,7 @@ print(json.dumps({
     assert.equal(value.preview_model_calls, 1);
     assert.equal(value.written.written, true);
     assert.equal(value.write_model_calls, 2);
-    assert.deepEqual(value.taste_profile.pacing, ['慢节奏推进']);
+    assert.deepEqual(value.taste_profile_v2.narrative_habits, ['慢节奏推进']);
     assert.equal(value.taste_profile_stale, false);
     assert.equal(fs.existsSync(path.join(temporary, 'story_profile.json')), true);
 });
@@ -331,8 +343,9 @@ test('reflection context is loaded from the canonical Nora World and native chat
     assert.equal(context.story[1].text, '慢一点');
 });
 
-test('a failed taste aggregation is repaired even when the retry finds no new preference', () => {
+test('a failed taste aggregation retries only the summary and retains the saved preferences', t => {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-story-taste-retry-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
     const code = `
 import json, pathlib, sys
 sys.path.insert(0, ${JSON.stringify(storyProfileCoreRoot)})
@@ -350,13 +363,12 @@ class FirstModel:
     def __init__(self): self.calls = 0
     def complete(self, messages):
         self.calls += 1
-        return "- 喜欢慢热且克制的推进" if self.calls == 1 else "not json"
+        return json.dumps({"preferences":[{"text":"喜欢慢热且克制的推进","evidence_ids":["m0","m2"]}]}, ensure_ascii=False) if self.calls == 1 else "not json"
 class RetryModel:
     def __init__(self): self.calls = 0
     def complete(self, messages):
         self.calls += 1
-        if self.calls == 1: return "NONE"
-        return json.dumps({key: (["慢节奏"] if key == "pacing" else []) for key in story_profile.TASTE_PROFILE_FIELDS}, ensure_ascii=False)
+        return json.dumps({key: (["慢节奏"] if key == "narrative_habits" else []) for key in story_profile.TASTE_PROFILE_V2_FIELDS}, ensure_ascii=False)
 try:
     story_profile_reflection.reflect_context(story_profile, FirstModel(), root, seed, context, write=True)
 except story_profile_reflection.StoryProfileReflectionError:
@@ -369,7 +381,9 @@ print(json.dumps({
     "before_stale":before.get("taste_profile_stale"),
     "retry_calls":retry.calls,
     "after_stale":after.get("taste_profile_stale"),
-    "pacing":after.get("taste_profile", {}).get("pacing"),
+    "narrative_habits":after.get("taste_profile_v2", {}).get("narrative_habits"),
+    "before_preferences":before.get("preferences"),
+    "after_preferences":after.get("preferences"),
 }, ensure_ascii=False))
 `;
     const result = spawnSync('python3', ['-c', code], {
@@ -383,9 +397,10 @@ print(json.dumps({
     assert.equal(result.status, 0, result.stderr);
     const value = JSON.parse(result.stdout);
     assert.equal(value.before_stale, true);
-    assert.equal(value.retry_calls, 2);
+    assert.equal(value.retry_calls, 1);
     assert.equal(value.after_stale, false);
-    assert.deepEqual(value.pacing, ['慢节奏']);
+    assert.deepEqual(value.narrative_habits, ['慢节奏']);
+    assert.deepEqual(value.after_preferences, value.before_preferences);
 });
 
 test('Nora send lifecycle and Story Profile maintenance use the new checkpoint surface', () => {

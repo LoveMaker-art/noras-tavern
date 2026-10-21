@@ -1,0 +1,30 @@
+{
+  "schema": "nora-yearbook-display-correction/1",
+  "design_version": "1.26",
+  "branch": "codex/story-profile-reliability-20261021",
+  "cause": "yearbook mapped the complete backend Session read model without display filtering; unorganized/empty entries were rendered as cards and counted",
+  "correction": "show ready + active/prepared + positive covered turns only; count filtered entries; preserve unavailable versus unsummarized empty states",
+  "verification": {
+    "before_fix": "2 targeted UI regressions failed; five cards rendered instead of one",
+    "after_fix": "11 UI cases plus24 resource/progress/statistic cases passed",
+    "actual_iab": {
+      "url": "http://127.0.0.1:18880/actor.html",
+      "before_count": 8,
+      "after_count": 1,
+      "unorganized_entries": 0,
+      "known_preferences": 8,
+      "horizontal_overflow": false
+    },
+    "existing_files_checked": 598,
+    "data_changes": [],
+    "model_requests": 0
+  },
+  "source_sha256": {
+    "story-profile/public/actor.js": "c7e25d27e3d2c8ec65b05b30e4d41ee2ba815b175c7dd1753b627ea530ec436e",
+    "story-profile/public/i18n.js": "43ed2d8ac77202628ec37dfe7c7199f3e0f3640eef6937584fc257563e4a5402"
+  },
+  "scope": "display only; backend read model, MEMORY/USER writing, story source and preference/history behavior unchanged",
+  "production_deployed": false,
+  "packaged": false,
+  "previous_evidence": "story-profile-plot-memory-flow-20261021.json describes the earlier1.25 source; yearbook display assertions superseded by this correction"
+}

@@ -1,7 +1,17 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
+import https from 'node:https';
 
 const adapterPath = fileURLToPath(new URL('../../../story_profile_runtime/adapters/nora/cli.py', import.meta.url));
+
+/** Resolve the active Tavern agent route without consulting OS proxy settings. */
+export function resolveStoryProfileProxy(target, { httpAgent = http.globalAgent, httpsAgent = https.globalAgent } = {}) {
+    const protocol = new URL(target).protocol;
+    if (!['http:', 'https:'].includes(protocol)) throw new TypeError('Unsupported model URL protocol.');
+    const agent = protocol === 'https:' ? httpsAgent : httpAgent;
+    return typeof agent?.getProxyForUrl === 'function' ? agent.getProxyForUrl(target) : '';
+}
 
 export function runStoryProfileAdapter(command, payload, { env = process.env } = {}) {
     const input = payload === undefined ? '' : JSON.stringify(payload);

@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { parse as parseYaml } from 'yaml';
 import { estimateTokens, normalizeLedger } from './schema.js';
 import { ledgerConfig } from './config.js';
 
@@ -24,6 +25,7 @@ scene: the single scene at batch end. Carry forward the last established value u
 style_notes: up to 6 existing POV/tense/continuity conventions, not plot facts or new writing instructions.
 Reuse stable ids for existing facts, objects and secrets. Preserve unresolved threads, secrets, objects, major promises, conflicts and user choices until explicitly resolved or changed.
 At limited space remove duplicate/expired detail and completed minor actions first. timeline <=120 characters/item, facts/secrets content <=220, open_threads <=140, full JSON <=15000 characters.
+Stable fact/secret ids <=80 characters; object ids/name/status/location and all scene time/place/location/activity/condition text <=160 characters; scene.participants <=24, style_notes <=120 characters/item. Never truncate an id, condition, negation or unresolved causal fact to meet these limits. Use concise wording and remove only genuinely duplicate/expired detail. Duplicate ids must represent exactly the same item, never conflicting facts or custody.
 Only use allowed_entities in known_by, holder and scene.character_id. Empty holder is permitted. Nora runtime cards are not necessarily characters: if no registered entity exists, retain the named person's causal/knowledge facts in content, use empty reference arrays, do not invent ids or assign a card narrator as an NPC.
 __user__ identifies ONLY the player-controlled persona specified in entity_bindings, never a companion, all participants collectively, or an unknown owner. Do not substitute __user__ for unregistered characters. For an object held by an unregistered NPC, holder MUST be ""; retain that NPC's name in status/location. Do not mark the player as knowing a fact solely because the narrator described it. Preserve named knowledge boundaries in content when the actual knower has no registered id.
 scene.participants may contain each allowed character_id AT MOST ONCE. Put unregistered NPC locations/actions in named facts, not another __user__ participant. Textual custody and holder must agree; unknown or ambiguous ownership uses "".
@@ -54,7 +56,9 @@ export async function snapshotActiveLedgerModel(directories, scope) {
         return { model: structuredClone(model), apiKey };
     };
     const captured = read();
-    const identity = value => JSON.stringify([value.model.custom_url, value.model.custom_model, value.model.openai_max_context, value.apiKey]);
+    const identity = value => JSON.stringify([value.model.custom_url, value.model.custom_model, value.model.openai_max_context,
+        value.model.openai_max_tokens, value.model.temp_openai, value.model.custom_include_body,
+        value.model.custom_exclude_body, value.model.custom_include_headers, value.apiKey]);
     const original = identity(captured);
     const isCurrent = () => { try { return identity(read()) === original; } catch { return false; } };
     return Object.freeze({
@@ -64,6 +68,38 @@ export async function snapshotActiveLedgerModel(directories, scope) {
 }
 
 const failure = code => Object.assign(new Error(code), { code });
+function modelOption(model, name, fallback) {
+    const raw = model[name];
+    if (raw == null || raw === '') return fallback;
+    try {
+        const parsed = typeof raw === 'string' ? parseYaml(raw) : raw;
+        if (Array.isArray(fallback) ? !Array.isArray(parsed) || !parsed.every(key => typeof key === 'string')
+            : !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('Invalid model option.');
+        return parsed;
+    } catch { throw failure('NORA_LEDGER_MODEL_OPTIONS_INVALID'); }
+}
+
+function ledgerTransport(model, apiKey, messages, outputLimit) {
+    const body = {};
+    if (model.temp_openai != null && model.temp_openai !== '') {
+        if (!Number.isFinite(Number(model.temp_openai))) throw failure('NORA_LEDGER_MODEL_OPTIONS_INVALID');
+        body.temperature = Number(model.temp_openai);
+    }
+    Object.assign(body, modelOption(model, 'custom_include_body', {}));
+    for (const key of modelOption(model, 'custom_exclude_body', [])) delete body[key];
+    // Model identity, source messages and the measured output reservation are
+    // mandatory ledger invariants, even when custom foreground options differ.
+    delete body.max_completion_tokens;
+    Object.assign(body, { model: model.custom_model, messages, stream: false, max_tokens: outputLimit });
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`,
+        ...modelOption(model, 'custom_include_headers', {}) };
+    return { body, headers };
+}
+export function ledgerOutputLimit(model, configuration) {
+    const limit = configuration.outputTokenLimit ?? Number(model.openai_max_tokens);
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw failure('NORA_LEDGER_OUTPUT_CONFIGURATION_REQUIRED');
+    return limit;
+}
 export function ledgerCapacity(model, configuration) {
     const configured = Number(model.openai_max_context);
     const override = configuration.contextLimitOverride;
@@ -84,6 +120,9 @@ export function ledgerRequestBudget(messages, capacity, outputLimit) {
 export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch, report = console.info, isCurrent = () => true }) {
     const configuration = ledgerConfig(input.config);
     const capacity = ledgerCapacity(model, configuration);
+    const outputLimit = ledgerOutputLimit(model, configuration);
+    // Validate connection options before any billable request or retry wait.
+    ledgerTransport(model, apiKey, [], outputLimit);
     const timeout = AbortSignal.timeout(configuration.timeoutSeconds * 1000);
     const deadline = Date.now() + configuration.timeoutSeconds * 1000;
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
@@ -96,11 +135,12 @@ export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch
         let text = '', end = position;
         while (end < turns.length) {
             const candidate = text ? `${text}\n${turns[end].text}` : turns[end].text;
-            try { ledgerRequestBudget(ledgerPrompt({ ...input, previous, segment: { ...input.segment, text: candidate } }), capacity, configuration.outputTokenLimit); } catch (error) { if (!text) throw error; break; }
+            try { ledgerRequestBudget(ledgerPrompt({ ...input, previous, segment: { ...input.segment, text: candidate } }), capacity, outputLimit); } catch (error) { if (!text) throw error; break; }
             text = candidate; end++;
         }
-        previous = await requestLedgerPart({ ...input, previous, segment: { ...input.segment, text,
+        const merged = await requestLedgerPart({ ...input, previous, segment: { ...input.segment, text,
             startTurn: turns[position].startTurn, endTurn: turns[end - 1].endTurn } });
+        previous = merged;
         position = end;
     }
     return previous;
@@ -110,7 +150,7 @@ export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch
         for (let attempt = 0; attempt < 2; attempt++) {
             signal.throwIfAborted();
             if (!isCurrent()) throw failure('NORA_LEDGER_MODEL_CHANGED');
-            const budget = ledgerRequestBudget(messages, capacity, configuration.outputTokenLimit);
+            const budget = ledgerRequestBudget(messages, capacity, outputLimit);
             const startedAt = performance.now();
             const reportAttempt = (phase, details = {}) => report('[Story Ledger] model-attempt', {
                 startTurn: part.segment.startTurn, endTurn: part.segment.endTurn, attempt: attempt + 1,
@@ -120,10 +160,11 @@ export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch
             let response;
             let retryDelay = 1000;
             try {
+                const transport = ledgerTransport(model, apiKey, messages, outputLimit);
                 response = await fetchImpl(url, {
                     method: 'POST', signal, size: 2 * 1024 * 1024,
-                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-                    body: JSON.stringify({ model: model.custom_model, messages, stream: false, temperature: 0.1, max_tokens: configuration.outputTokenLimit }),
+                    headers: transport.headers,
+                    body: JSON.stringify(transport.body),
                 });
             } catch (error) {
                 signal.throwIfAborted();
@@ -148,13 +189,18 @@ export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch
                     const content = String(data.choices?.[0]?.message?.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
                     reportAttempt('body', { finishReason: data.choices?.[0]?.finish_reason || null,
                         outputChars: content.length, completionTokens: data.usage?.completion_tokens ?? null });
-                    return normalizeLedger(JSON.parse(content), part.previous, input.entities);
+                    const parsed = JSON.parse(content);
+                    return normalizeLedger(parsed, part.previous, input.entities);
                 } catch (error) {
                     if (signal.aborted) signal.throwIfAborted();
                     if (error.code === 'NORA_LEDGER_OUTPUT_LIMIT') throw error;
                     reportAttempt('invalid-output', { error: error.name });
-                    if (attempt === 1) throw failure('NORA_LEDGER_OUTPUT_INVALID');
-                    if (messages.length === 2) messages.push({ role: 'user', content: 'The previous output did not match the exact JSON schema, reference rules or memory preservation rules. Correct the complete output; return only JSON.' });
+                    if (attempt === 1) throw failure(error.code === 'NORA_LEDGER_MEMORY_BUDGET_EXCEEDED' ? error.code : 'NORA_LEDGER_OUTPUT_INVALID');
+                    if (messages.length === 2) messages.push({ role: 'user', content: error.code === 'NORA_LEDGER_MEMORY_BUDGET_EXCEEDED'
+                        ? 'The complete JSON exceeded the 15000-character storage budget. Rewrite it concisely within 15000 characters, removing duplicated or expired details while retaining established causal facts, unresolved promises, threads and knowledge boundaries. Return all schema fields; never drop an arbitrary oldest item just to fit.'
+                        : error.code === 'NORA_LEDGER_SCHEMA_LIMIT_EXCEEDED'
+                            ? 'A field length or collection count exceeded the stated schema limits. Rewrite the complete JSON within every stated limit without truncating ids, negations or conditions, or dropping unresolved causal facts. Retain all schema fields and consistent unique ids.'
+                            : 'The previous output did not match the exact JSON schema, reference rules or memory preservation rules. Correct the complete output; return only JSON.' });
                 }
             }
             await new Promise((resolve, reject) => {

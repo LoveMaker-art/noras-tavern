@@ -1,0 +1,110 @@
+{
+  "schema": "nora-story-profile-premerge-fixes/1",
+  "date": "2026-10-21",
+  "branch": "codex/story-profile-reliability-20261021",
+  "product_design": "1.30",
+  "review_source": "docs/verification/story-profile-premerge-design-review-20261021.json",
+  "authorization": "用户批准严谨执行审查后的修正，并允许独立分支产品策略同步原设计基线；保留数据，不合并打包发布。",
+  "evidence_level": "implemented-and-technically-verified",
+  "fixed_findings": [
+    {
+      "id": "SP-01",
+      "result": "兼容主线旧设置路径和布尔选择，冲突关闭优先，显式改动绑定旧源指纹；坏设置保留并阻止默认自动调用。"
+    },
+    {
+      "id": "SP-02",
+      "result": "每次自动模型派发前检查同一持久开关；提取进行中关闭后保存已得结果，不再发总结；手动仅补总结不重复学习。"
+    },
+    {
+      "id": "SP-03",
+      "result": "产品1.30叠加固定主线已确认撤回/修复事实和本会话批准的故事策略；历史报告逐字保留，未把文档同步当代码整合。"
+    },
+    {
+      "id": "SP-04",
+      "result": "适用提示缓存锁定/损坏/不支持报告partial；无库not-needed；解锁后仅补本地清理不再调用模型，文件保存结果保留。"
+    },
+    {
+      "id": "SP-05",
+      "result": "托管边界与来源修订须唯一完整整行可核验，缺失/损坏/重复/冲突/较新均保留原字节；有效旧/当前修订先完整备份再只移除该块。"
+    }
+  ],
+  "preserved_ui": {
+    "frontend_changed_since_review": [],
+    "automatic_preferences_switch": "右侧角色与设定 → 故事主理人 → 偏好设置 → 自动整理故事偏好",
+    "default": "无设置记录时开启；已有明确关闭保留",
+    "new_archive_operations_panel": "保持移除",
+    "plot_ledger_switch": "保留当前世界原开关，与自动偏好分别管理"
+  },
+  "verification": {
+    "mac": {
+      "node_pass": 41,
+      "node_fail": 0,
+      "python_pass": 77,
+      "python_fail": 0,
+      "basis": "原5组74项+新guard3项；SQLite fixture关闭修正后storage25项及reflection11项重跑，业务源码未再改变。",
+      "http_chain": "HTTP → actual adapter → real Python client，模型传输以本地离线响应替身验证；不代表真实服务商调用验收。"
+    },
+    "windows": {
+      "python": {
+        "tests": 77,
+        "pass": 77,
+        "fail": 0,
+        "error": 0,
+        "skip": 0
+      },
+      "node": {
+        "tests": 41,
+        "pass": 41,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "source_files": 116,
+      "all_source_hashes_current": true,
+      "source_hashes_unchanged_after_native_run": true,
+      "external_network_attempts": 0,
+      "source_directory": "C:\\NoraProfilePostReview-20261021\\postreview-20261021-200328-147bbba7"
+    },
+    "source_runtime_parity": "PASS",
+    "targeted_eslint": "PASS",
+    "diff_check": "PASS",
+    "baseline_main_rules_and_product_links": "PASS",
+    "protected_files": 606,
+    "protected_files_changed": 0
+  },
+  "first_windows_attempt": {
+    "kept": true,
+    "product_failures_confirmed": 0,
+    "execution_method": "Python UTF8启动配置和Node file URI导入已修正，仅测试进程",
+    "test_fixture": "SQLite初始化连接未关闭造成Windows清理WinError32，改closing并完整重跑；产品已使用closing且未改业务源。"
+  },
+  "business_source_sha256": {
+    "story-profile/adapters/nora/preference-checkpoint.js": "88b027efb659e92d70fe02a0b9ea9947897c31533e370f38a4bac56be15f9bdf",
+    "story-profile/adapters/nora/cli.py": "4e13e7c79a3c0d14feea7f9dbf03cdb8cc4fe9e081590db6ef8d7ebb26ceaabc",
+    "story-profile/core/story_profile.py": "6b25d3e2badf64f127ae34487953a4f7e9bbe9071c3e6f563e28279eab5926e0",
+    "story-profile/core/reflection.py": "86870c90b009eba9385178844dfc36ae799fa305bf6332656e01990ec2e8f9a9",
+    "app/engine/sillytavern/src/endpoints/nora-story-profile.js": "bd8d5a4c3988d48ff37b300c6877b36ba3ca89abe19e4bd9270aac9b5e30c482"
+  },
+  "evidence_root": "local-state/story-profile-preview-20261021/premerge-product-review-20261021",
+  "windows_manifest_sha256": "d11e3c5577e4ba7d15eb03962b07e7c4e7b0564ddf55b53bb47fd788bca832a9",
+  "remaining_scope_blockers": [],
+  "integration_boundary": {
+    "current_main": "117bfa5efd5998b25d19bf917d0711bf9d434ad2",
+    "main_integrated": false,
+    "changes_committed": false,
+    "remaining_before_merge": "旧分支与主线重叠差异尚需正式整合及合并结果验收，之前临时预演的冲突不由本次文档修正自动解决。",
+    "merge_not_authorized_this_phase": true
+  },
+  "delivery": {
+    "preview_restarted": false,
+    "production_changed": false,
+    "real_provider_calls_this_fix_phase": 0,
+    "installer_built": false,
+    "packaged": false,
+    "published": false
+  },
+  "limits": [
+    "本轮为Mac/Windows源码、实际本地HTTP→Python链与故障恢复回归，不是界面视觉、安装包或真实模型语义/费用验收。",
+    "本会话之前的真实诺拉模型与预览证据保留原来源与范围；未把它们冒充本轮新模型调用。"
+  ]
+}

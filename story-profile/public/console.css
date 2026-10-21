@@ -480,3 +480,16 @@ button:focus-visible {
     padding: 14px 8px 4px;
   }
 }
+
+/* Read-only ledger display; existing archive styles remain unchanged. */
+.acRecapTitle { font-family: var(--serif); font-size: 15px; color: var(--ink); font-weight: 600; margin-bottom: 6px; }
+.acRecapLabel { font-size: 11px; color: var(--muted); margin: 9px 0 3px; }
+.acStoryRecap { margin: 14px 0 20px; }
+.acOtherStories { margin-top: 14px; }
+.acOtherStories > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 6px 0; }
+.acOtherStories > summary:focus-visible { outline: 2px solid var(--ink2); outline-offset: 3px; }
+
+.acStoryDetails { margin-top: 10px; }
+.acStoryDetails > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 6px 0; }
+.acStoryDetails > summary:focus-visible { outline: 2px solid var(--ink2); outline-offset: 3px; }
+.acStoryRecap .acKnow, .acStoryRecap .acEntryText, .acStoryRecap .acEntryMeta, .acRecapTitle { overflow-wrap: anywhere; }

@@ -36,13 +36,23 @@ fields when evidence is absent.
 ## Sources and projection
 
 The existing Story Profile backend owns archive and preference generation.
-The ledger separately owns compressed plot context; its shared_story_memory
-projection is not a second profile model generation performed by this skill.
+The ledger separately owns compressed plot context. The archive's story
+timeline reads validated saved progress, including prepared results not yet
+used for generation. Existing preference-learning events remain historical
+records and do not become plot events. Its shared_story_memory projection is
+not a second profile model generation performed by this skill.
 
-Existing managed projection rules put bounded taste/response adaptations in
-USER.md and bounded activated plot memory in MEMORY.md. The agent does not
-append to these files or replace their non-managed content. Projection is not
-authorization to claim story events are facts about the real user.
+Managed projection keeps four-group story preferences (body up to1400 characters)
+in USER.md under Hermes' actual whole-file budget. Plot progress remains in the
+World/Session ledgers and the archive, not persistent MEMORY.md. The maintained
+backend backs up and removes only a verified old Tavern plot block; Hermes'
+unrelated memory and all source profile/chat history remain intact. Pending old
+block cleanup is distinct from USER preference saving or a missing story.
+
+Use `nora.story.progress` through chat-ledger.md to read the intended story on
+demand; ask for a choice on ambiguous worlds/branches, and request bounded recent
+chat only when needed. The agent does not append plot to MEMORY.md, remove its
+unmanaged contents, or treat fictional events as facts about the real user.
 
 Fine-grained preference confirm/reject/edit/lock and an explicit memory-sync
 operation are not exposed by the current MCP. Report the exact missing operation;

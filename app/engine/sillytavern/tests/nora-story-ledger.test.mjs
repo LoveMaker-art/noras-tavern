@@ -34,6 +34,48 @@ test('one registered player cannot stand in for multiple unregistered story char
     assert.equal(normalizeLedger(ledger).objects[0].holder, '', 'Unregistered NPC custody is textual, never remapped to the player.');
 });
 
+test('oversized ledger is rejected intact rather than deleting its earliest facts and open threads', () => {
+    const value = memory('First important event');
+    value.facts = Array.from({ length: 24 }, (_, i) => ({ id: `fact-${i}`, content: `${i} ${'x'.repeat(210)}`, known_by: ['__user__'] }));
+    value.secrets = Array.from({ length: 16 }, (_, i) => ({ id: `secret-${i}`, content: `${i} ${'y'.repeat(210)}`, known_by: [] }));
+    value.objects = Array.from({ length: 16 }, (_, i) => ({ id: `object-${i}`, name: 'z'.repeat(160), status: 'a'.repeat(160), location: 'b'.repeat(160), holder: '' }));
+    value.open_threads = ['First unresolved promise'];
+    const before = copy(value);
+    assert.throws(() => normalizeLedger(value), { code: 'NORA_LEDGER_MEMORY_BUDGET_EXCEEDED' });
+    assert.deepEqual(value, before);
+});
+
+test('field and collection limits reject complete over-budget memories without clipping their meaning or stable IDs', () => {
+    for (const change of [
+        value => { value.facts = [{ id: 'f', content: `${'x'.repeat(220)}不是凶手`, known_by: [] }]; },
+        value => { value.facts = [{ id: 'f'.repeat(81), content: 'stable identity must remain intact', known_by: [] }]; },
+        value => { value.objects = [{ id: 'o'.repeat(161), name: 'Key', status: '', location: '', holder: '' }]; },
+        value => { value.timeline = Array.from({ length: 13 }, (_, i) => `Important event ${i}`); },
+        value => { value.facts = Array.from({ length: 25 }, (_, i) => ({ id: `f${i}`, content: `Relevant causal fact ${i}`, known_by: [] })); },
+        value => { value.facts = [{ id: 'same-id', content: 'Player has key', known_by: [] }, { id: 'same-id', content: 'Companion has key', known_by: [] }]; },
+    ]) {
+        const value = memory(); change(value);
+        const before = copy(value);
+        assert.throws(() => normalizeLedger(value));
+        assert.deepEqual(value, before);
+    }
+});
+
+test('lossless whitespace and identical-item deduplication preserve full registered character references', () => {
+    const value = memory();
+    value.timeline = ['  Important   event  ', 'Important event'];
+    value.facts = [{ id: 'same', content: 'A complete fact', known_by: [] }, { id: 'same', content: 'A complete fact', known_by: [] }];
+    const actorId = `actor-${'a'.repeat(170)}`;
+    const objectId = 'o'.repeat(160);
+    value.objects = [{ id: objectId, name: 'Key', status: '', location: '', holder: actorId }];
+    value.scene.participants = [{ character_id: actorId, location: '', activity: '', condition: '' }];
+    const normalized = normalizeLedger(value, {}, ['__user__', actorId]);
+    assert.deepEqual(normalized.timeline, ['Important event']); assert.equal(normalized.facts.length, 1);
+    assert.equal(normalized.objects[0].holder, actorId); assert.equal(normalized.scene.participants[0].character_id, actorId);
+    assert.equal(normalized.objects[0].id, objectId, 'the historical 160-character object id remains supported');
+    assert.equal(value.timeline.length, 2, 'normalizing never mutates the original model response');
+});
+
 test('provider deadline keeps raw history and reports a stable timeout code, not DOMException number 23', async () => {
     const f = fixture(16, async () => { throw new DOMException('Deadline exceeded', 'TimeoutError'); });
     await f.plugin.schedule(scope);
@@ -41,6 +83,38 @@ test('provider deadline keeps raw history and reports a stable timeout code, not
     assert.equal(f.state.pending, null);
     assert.equal(f.state.lastError.code, 'NORA_LEDGER_COMPRESSION_TIMEOUT');
     assert.equal(countTurns(f.messages), 16);
+});
+
+test('opt-in stale-ledger read exposes current raw history without activating, repairing or weakening edit protection', async () => {
+    const messages = chat(16);
+    const active = { id: 'stale-active', coveredTurns: 15, messageCount: 31, signature: 'old-source', activatedAt: 1000, ledger: memory() };
+    const state = { active, pending: null, enabled: true };
+    const plugin = createStoryLedger({ readChat: () => ({ messages: copy(messages) }), readState: () => copy(state),
+        writeState: () => assert.fail('readonly fallback must never repair'), merge: () => assert.fail('no paid work') });
+    await assert.rejects(plugin.inspect(scope), { code: 'NORA_LEDGER_STORAGE_CONFLICT' });
+    const result = await plugin.inspect(scope, { limit: 2, offset: 30, allowStaleLedgerRead: true });
+    assert.equal(result.staleActive, true); assert.equal(result.active, null);
+    assert.equal(result.messages.length, 2); assert.equal(result.messages[0].text, messages[30].mes);
+    assert.equal(result.messages[0].editable, false); assert.equal(result.expectedSignature, fingerprint(messages));
+    await assert.rejects(plugin.writeChat(scope, messages, () => assert.fail('no destructive bypass')), { code: 'NORA_LEDGER_STORAGE_CONFLICT' });
+    assert.equal(state.active.id, 'stale-active');
+});
+
+test('opt-in canonical-chat fallback survives restore-invalidated and corrupt state without repairing either', async () => {
+    for (const kind of ['restore', 'corrupt']) {
+        const messages = chat(16);
+        const state = { active: { id: 'old-active', coveredTurns: 15, messageCount: 31, signature: fingerprint(messages.slice(0, 31)), activatedAt: 1000, ledger: memory() } };
+        const readState = () => { if (kind === 'corrupt') throw new SyntaxError('private contents'); return copy(state); };
+        const plugin = createStoryLedger({ readChat: () => ({ messages: copy(messages), metadata: { nora_restore: { id: 'restored-now', ledgerEnabled: false } } }),
+            readState, writeState: () => assert.fail('must not repair'), merge: () => assert.fail('no model') });
+        const result = await plugin.inspect(scope, { limit: 2, offset: 29, allowStaleLedgerRead: true });
+        assert.equal(result.active, null); assert.equal(result.pending, null); assert.equal(result.messageCount, messages.length);
+        assert.equal(result.messages.length, 2); assert.ok(result.messages.every(item => item.editable === false));
+        if (kind === 'restore') assert.equal(result.restoreChanged, true);
+        else assert.deepEqual(result.stateError, { code: 'NORA_LEDGER_STATE_UNREADABLE' });
+        assert.doesNotMatch(JSON.stringify(result), /private contents/);
+        assert.equal(state.active.id, 'old-active');
+    }
 });
 function fixture(turns = 16, model = async input => memory(`Through ${input.segment.endTurn}`)) {
     let messages = chat(turns);

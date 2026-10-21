@@ -35,8 +35,9 @@ function locale({ query = '', session = '', browser = 'en', blocked = false, doc
 }
 
 test('profile keeps the original CSS declarations, cascade, dark theme and mobile rules', () => {
-    const rules = normalizeRules(parse(style).stylesheet.rules);
+    const rules = normalizeRules(parse(style).stylesheet.rules.filter(rule => !rule.selectors?.some(selector => /\.ac(?:Recap|StoryRecap|OtherStories|StoryDetails)/.test(selector))));
     assert.equal(sha(JSON.stringify(rules)), baseline.cssDigest);
+    assert.doesNotMatch(style, /\.acReflection/);
     assert.ok(rules.some(r => r.media === '(prefers-color-scheme: dark)'));
     assert.ok(rules.some(r => r.media === '(max-width:760px)'));
     assert.match(style, /\.hidden\s*\{\s*display: none!important/);
@@ -49,9 +50,17 @@ test('every static and dynamic profile label remains in the translation contract
         ...[...actor.matchAll(/\bt\('([^']+)'/g)].map(m => m[1]),
         ...[...html.matchAll(/data-(?:i18n(?:-aria|-placeholder|-title)?|doc-title)="([^"]+)"/g)].map(m => m[1]),
     ])].sort();
-    assert.deepEqual(keys, baseline.uiKeys);
+    // The yearbook now renders story progress. Legacy learning labels remain
+    // translated for API/UI compatibility but are no longer yearbook controls.
+    const retiredYearbookLabels = new Set(['acEntriesCount', 'acTimelineEmpty']);
+    assert.deepEqual(keys.filter(key => !/^story(?:Progress|Recap)/.test(key)), baseline.uiKeys.filter(key => !retiredYearbookLabels.has(key)));
+    for (const language of ['zh', 'zh-Hant', 'en']) {
+        const labels = locale({ query: '?lang=' + language });
+        for (const key of keys.filter(key => /^story(?:Progress|Recap)/.test(key))) assert.notEqual(labels.t(key), key, `${language}: ${key}`);
+    }
+    assert.doesNotMatch(html + actor, /reflectionPanel|reflectionWorld|reflectionRun/);
     assert.doesNotMatch(i18n, /newWorld:|modelSheetTitle:|worldbookLibrary:|function renderName/);
-    assert.ok(Buffer.byteLength(i18n) < 11000);
+    assert.ok(Buffer.byteLength(i18n) < 20000);
 });
 
 test('profile resources have stable content-versioned URLs after deployment', () => {

@@ -22,7 +22,7 @@ import { createWorldController } from './world-controller.js';
 import { createWorldbookController } from './worldbook-controller.js';
 import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public/scripts/nora-adapters/tavern-helper-action-adapter.js';
 import { createLedgerRequest } from './extension-controller.js';
-import { createStoryProfileCheckpoint } from './story-profile-controller.js';
+import { createStoryProfileCheckpoint, createStoryPreferenceSettings } from './story-profile-controller.js';
 (() => {
     'use strict';
 
@@ -397,6 +397,7 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
             headers: transport.requestHeaders, openExtensions: () => panelController.openExtensions(),
             isGenerating: () => messageController.isGenerating() });
         panelController = createPanelController({
+            openPreferenceSettings: createStoryPreferenceSettings({ dialogs, select: $, escapeHtml, requestHeaders: transport.requestHeaders }).open,
             openPluginLibrary: pluginLibrary.open,
             openBackups: async () => {
                 try {

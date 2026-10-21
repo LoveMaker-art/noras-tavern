@@ -11,8 +11,9 @@ router.post('/inspect', async (request, response) => {
     try {
         const scope = { worldId: request.body?.worldId, sessionId: request.body?.sessionId };
         const runtime = resolveStoryLedger(request.user.directories, { recoverProjection: false });
-        await runtime.resolve(scope);
-        const status = await runtime.plugin.inspect(scope, { offset: request.body?.offset ?? 0, limit: request.body?.limit ?? 0 });
+        await runtime.resolve(scope, null, { readOnly: true });
+        const status = await runtime.plugin.inspect(scope, { offset: request.body?.offset ?? 0, limit: request.body?.limit ?? 0,
+            allowStaleLedgerRead: request.body?.allowStaleLedgerRead === true });
         let model = null;
         try {
             const payload = readSettingsPayload(request.user.directories, 'runtime');
@@ -21,10 +22,15 @@ router.post('/inspect', async (request, response) => {
             const projected = settings?.extension_settings?.nora_ui?.lastWorldId;
             if ((!projected || projected === scope.worldId) && configured?.chat_completion_source === 'custom') {
                 const capacity = Number(configured.openai_max_context);
-                model = { name: String(configured.custom_model || ''), contextLimit: Number.isSafeInteger(capacity) && capacity >= 512 ? capacity : null };
+                const output = Number(configured.openai_max_tokens);
+                model = { name: String(configured.custom_model || ''), contextLimit: Number.isSafeInteger(capacity) && capacity >= 512 ? capacity : null,
+                    outputTokenLimit: Number.isSafeInteger(output) && output > 0 ? output : null };
             }
         } catch { /* Missing model configuration must not hide the ledger settings. */ }
-        return response.json({ ...status, model });
+        return response.json({ ...status, model, outputBudget: {
+            source: status.effectiveConfig.outputTokenLimit === null ? 'model' : 'ledger',
+            limit: status.effectiveConfig.outputTokenLimit ?? model?.outputTokenLimit ?? null,
+        } });
     } catch (error) {
         return response.status(error.status || 400).json({ code: error.code || 'NORA_LEDGER_REQUEST_FAILED', error: 'Story ledger inspection failed.' });
     }

@@ -40,6 +40,17 @@ function requireId(value, field) {
     return normalized;
 }
 
+export function normalizeSessionName(value, field = 'session.name') {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value.length > 500) invalid(`${field} must be text of at most 500 characters.`, { field });
+    return value.trim() || undefined;
+}
+
+function sessionNameFields(value, field) {
+    const name = normalizeSessionName(value, field);
+    return name === undefined ? {} : { name };
+}
+
 function normalizeBinding(value, field) {
     const binding = requireRecord(value, field);
     if (!Object.keys(binding).length) invalid(`${field} cannot be empty.`, { field });
@@ -234,6 +245,7 @@ export function normalizeMaterialization(value) {
             ownership: normalizeOwnership(runtimeCard.ownership, 'materialization.runtimeCard.ownership'),
         },
         defaultSession: {
+            ...sessionNameFields(defaultSession.name, 'materialization.defaultSession.name'),
             engine: requireString(defaultSession.engine, 'materialization.defaultSession.engine'),
             binding: normalizeBinding(defaultSession.binding, 'materialization.defaultSession.binding'),
             openingState: ['empty', 'message'].includes(defaultSession.openingState) ? defaultSession.openingState : 'empty',
@@ -292,6 +304,7 @@ export function createWorldManifest({ operation, command, materialization, now }
             default_session_id: operation.session_id,
             items: [{
                 session_id: operation.session_id,
+                ...sessionNameFields(materialization.defaultSession.name, 'materialization.defaultSession.name'),
                 engine: materialization.defaultSession.engine,
                 binding: materialization.defaultSession.binding,
                 opening_state: materialization.defaultSession.openingState,
@@ -331,6 +344,7 @@ export function validateWorldManifest(value) {
         const session = requireRecord(item, `manifest.sessions.items[${index}]`);
         return {
             session_id: requireId(session.session_id, `manifest.sessions.items[${index}].session_id`),
+            ...sessionNameFields(session.name, `manifest.sessions.items[${index}].name`),
             engine: requireString(session.engine, `manifest.sessions.items[${index}].engine`),
             binding: normalizeBinding(session.binding, `manifest.sessions.items[${index}].binding`),
             opening_state: ['empty', 'message'].includes(session.opening_state) ? session.opening_state : 'empty',
@@ -525,6 +539,7 @@ export function materializationFromWorld(value) {
             ownership: world.runtime_card.ownership,
         },
         defaultSession: {
+            ...sessionNameFields(defaultSession.name, 'materialization.defaultSession.name'),
             engine: defaultSession.engine,
             binding: defaultSession.binding,
             openingState: defaultSession.opening_state,

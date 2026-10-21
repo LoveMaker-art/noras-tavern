@@ -30,6 +30,7 @@ UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
 UPDATE_CHECK_SCHEDULE = "0 9 * * *"
 UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py", "nora-instance.py")
+NORA_USER_CHAR_LIMIT = 2000
 HOST_HOOK = Path("hooks/tavern-liveware-register")
 MANAGED_BACKUP_FILES = ("SOUL.md", "SOUL.nora-tavern.example.md",
                         "nora-installation.json", "cron/jobs.json", "clawchat-skills")
@@ -1060,7 +1061,19 @@ def render_mcp(hermes_home, install_root, port=8799):
         raise RuntimeError("Hermes Python 缺少 PyYAML，无法写入 MCP 配置") from error
     path = hermes_home / "config.yaml"
     value = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    value = value or {}
+    value = {} if value is None else value
+    if not isinstance(value, dict):
+        raise RuntimeError("Hermes 配置格式无效，未修改配置")
+    memory = value.setdefault("memory", {})
+    if not isinstance(memory, dict):
+        raise RuntimeError("Hermes 记忆配置格式无效，未修改配置")
+    if "user_char_limit" not in memory:
+        memory["user_char_limit"] = NORA_USER_CHAR_LIMIT
+    elif type(memory["user_char_limit"]) is not int or memory["user_char_limit"] <= 0:
+        raise RuntimeError("Hermes USER.md 容量配置无效，未修改配置")
+    elif memory["user_char_limit"] in (1375, 1875):
+        # Migrate previous defaults to the fixed target; repeated updates are idempotent.
+        memory["user_char_limit"] = NORA_USER_CHAR_LIMIT
     servers = value.setdefault("mcp_servers", {})
     current = servers.get("nora") if isinstance(servers.get("nora"), dict) else {}
     env = current.get("env") if isinstance(current.get("env"), dict) else {}

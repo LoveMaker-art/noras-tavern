@@ -1,5 +1,5 @@
 // actor.js — 故事档案 reader。取 /api/actor_card 聚合数据 → 渲染主理人的生涯/亲密度/口味/年表。
-// 展示 surface，无渐进披露、无原生手势（liveware-frontend §1）。词汇：戏路≠搭档，口味≠年表。
+// 只读展示；年表默认最近三个故事，其余按用户选择展开。口味与故事回顾分别呈现。
 // 文案走 i18n.js(locale contract);亲密度级名/blurb 是 server 下发的 UI 标签,
 // 由 /api/actor_card?lang= 按语言给(server 端 INTIMACY_*_EN)。
 'use strict';
@@ -28,12 +28,65 @@ function stat(v, unit, label) {
   return `<div class="acStat"><div class="acStatV">${esc(v)}${unit ? `<span class="acStatU">${esc(unit)}</span>` : ''}</div><div class="acStatL">${esc(label)}</div></div>`;
 }
 
+// Read the existing ledger directly. Presentation must work for old records,
+// without generated display prose, data migration, or a second model request.
+function storyProgressEntry(item, repeatedWorld) {
+  const world = String(item.world_name || t('storyProgressUnknownWorld'));
+  const name = String(item.session_name || '').trim();
+  const machineName = !name || name === item.session_id || /^(?:session[:_-]|[a-f0-9]{8}-[a-f0-9-]{27,}$)/i.test(name);
+  const branch = repeatedWorld && !machineName ? name : '';
+  const seen = new Set();
+  const unique = values => (Array.isArray(values) ? values : []).filter(value => {
+    if (typeof value !== 'string' || !value.trim()) return false;
+    const key = value.trim().replace(/\s+/g, ' ');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(value => value.trim());
+  const scene = item.scene;
+  const player = scene?.participants?.find(person => person.character_id === '__user__');
+  const place = unique([scene?.time, scene?.place]).join(' · ');
+  const activity = unique([player?.activity, player?.condition]).join(' · ');
+  const events = unique(item.timeline);
+  const threads = unique(item.open_threads);
+  const list = (heading, values) => values.length ? `<div class="acRecapLabel">${esc(heading)}</div><ul class="acKnows">${values.map(value => `<li class="acKnow">${esc(value)}</li>`).join('')}</ul>` : '';
+  const earlier = events.slice(0, -3), remaining = threads.slice(2);
+  const more = earlier.length || remaining.length ? `<details class="acStoryDetails"><summary>${esc(t('storyRecapMore'))}</summary>
+    ${list(t('storyRecapEarlier'), earlier)}${list(t('storyRecapRemaining'), remaining)}</details>` : '';
+  return `<article class="acEntry acStoryRecap" data-story-world="${esc(item.world_id || '')}" data-story-session="${esc(item.session_id || '')}">
+    <div class="acRecapTitle">${esc(world)}</div>
+    ${branch ? `<div class="acEntryMeta">${esc(branch)}</div>` : ''}
+    ${place ? `<div class="acEntryMeta">${esc(place)}</div>` : ''}
+    ${activity ? `<div class="acEntryText">${esc(activity)}</div>` : ''}
+    ${!place && !activity && !events.length && !threads.length ? `<div class="acEmpty2">${esc(t('storyRecapLegacyEmpty'))}</div>` : ''}
+    ${list(t('storyRecapMilestones'), events.slice(-3))}${list(t('storyRecapThreads'), threads.slice(0, 2))}${more}
+  </article>`;
+}
+
+function storyProgressBlock(data) {
+  const source = Array.isArray(data.story_progress) ? data.story_progress : null;
+  const progress = source ? source.filter(item => item
+    && item.status === 'ready' && ['active', 'prepared'].includes(item.summary_status)
+    && Number.isSafeInteger(item.covered_turns) && item.covered_turns > 0)
+    .sort((a, b) => (Number(b.last_played_at) || 0) - (Number(a.last_played_at) || 0)) : null;
+  const unresolved = source?.some(item => item && ['error', 'unavailable', 'stale'].includes(item.status));
+  const counts = new Map();
+  for (const item of progress || []) counts.set(item.world_id, (counts.get(item.world_id) || 0) + 1);
+  const renderEntry = item => storyProgressEntry(item, counts.get(item.world_id) > 1);
+  return `<div class="acSec">
+    <div class="acSecHead"><span class="pHead">${esc(t('acTimelineHead'))}</span></div>
+    <div class="acEntryMeta">${esc(t('storyRecapIntro'))}</div>
+    ${progress?.length ? `<div class="acTimeline">${progress.slice(0, 3).map(renderEntry).join('')}</div>
+      ${progress.length > 3 ? `<details class="acOtherStories"><summary>${esc(t('storyRecapOther'))}</summary><div class="acTimeline">${progress.slice(3).map(renderEntry).join('')}</div></details>` : ''}`
+      : `<div class="acEmpty2">${esc(t(progress && !unresolved ? 'storyProgressEmpty' : 'storyProgressUnavailable'))}</div>`}
+  </div>`;
+}
+
 function render(d) {
   const c = d.career || {}, it = d.intimacy || {};
   const knows = (d.knows || []).filter(Boolean);
-  const tl = d.timeline || [];
 
-  // 亲密度不进数值格（它有自己的整张卡，紧挨其下，连显两遍是冗余）；第 6 格给年表笔数。
+  // 累计学习记录与剧情进度分别展示；旧记录数量及亲密度计算沿用原值。
   const stats = [
     stat(c.debut_days, t('statDebutUnit'), t('statDebut')),
     stat(c.turns, t('statPlayedUnit'), t('statPlayed')),
@@ -64,17 +117,7 @@ function render(d) {
         : `<div class="acEmpty2">${esc(t('acKnowsEmpty'))}</div>`}
     </div>`;
 
-  const timelineBlock = `
-    <div class="acSec">
-      <div class="acSecHead"><span class="pHead">${esc(t('acTimelineHead'))}</span>${tl.length ? `<span class="acCount">${esc(t('acEntriesCount', { n: tl.length }))}</span>` : ''}</div>
-      ${tl.length
-        ? `<div class="acTimeline">${tl.map((e) => `
-            <div class="acEntry">
-              <div class="acEntryMeta">${esc([e.date, e.reason].filter(Boolean).join(' · '))}</div>
-              <div class="acEntryText">${esc(e.change)}</div>
-            </div>`).join('')}</div>`
-        : `<div class="acEmpty2">${esc(t('acTimelineEmpty'))}</div>`}
-    </div>`;
+  const timelineBlock = storyProgressBlock(d);
 
   document.getElementById('acRoot').innerHTML = `
     <div class="acHero">
@@ -169,7 +212,9 @@ async function load() {
   try {
     // lang 透传给 server:亲密度级名/blurb 是 server 下发的 UI 标签,按语言给
     const r = await fetch('/api/actor_card?lang=' + encodeURIComponent(I18N.lang));
-    render(await r.json());
+    const value = await r.json();
+    if (!r.ok) throw new Error(value.error || r.status);
+    render(value);
   } catch (e) {
     document.getElementById('acRoot').innerHTML =
       `<div class="acEmpty">${esc(t('acLoadFailed', { err: e.message || e }))}</div>`;

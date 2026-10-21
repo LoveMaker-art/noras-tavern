@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { KeyedLock } from '../nora-world-core/locks.js';
 import { BATCH_TURNS, containsLedger, countTurns, coveredMessageCount, prefixText, renderLedger, scopeKey } from '../../public/scripts/nora-story-ledger/history.js';
-import { batchSegments, normalizeLedger } from './schema.js';
+import { batchSegments } from './schema.js';
 import { ledgerConfig } from './config.js';
 
 export class LedgerConflict extends Error {
@@ -20,7 +20,7 @@ export const matchesLedgerHistory = (record, messages) => record && record.cover
 const valid = matchesLedgerHistory;
 
 /** Stateful headless plugin. Model I/O never holds the chat write lock. */
-export function createStoryLedger({ readChat, readState, writeState, merge, prepareMerge = async () => ({ merge, isCurrent: () => true }), canRun = () => true, now = Date.now, report = () => {} }) {
+export function createStoryLedger({ readChat, readState, readStateForInspection = readState, writeState, merge, prepareMerge = async () => ({ merge, isCurrent: () => true }), canRun = () => true, now = Date.now, report = () => {} }) {
     const locks = new KeyedLock();
     const jobs = new Map();
     const controllers = new Map();
@@ -61,22 +61,40 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
     });
 
     // Agent reads must neither schedule model work nor repair persisted state.
-    const inspect = (scope, { offset = 0, limit = 0 } = {}) => run(scope, () => {
+    const inspect = (scope, { offset = 0, limit = 0, allowStaleLedgerRead = false } = {}) => run(scope, () => {
         if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 0 || limit > 100) throw new TypeError('Invalid history window.');
         const chat = readChat(scope);
-        const state = load(scope, chat);
-        if (state.active && !valid(state.active, chat.messages)) throw new LedgerConflict('Active ledger no longer matches history.', 'NORA_LEDGER_STORAGE_CONFLICT');
+        let state, stateError = null, restoreChanged = false;
+        if (allowStaleLedgerRead) {
+            try {
+                const persisted = readStateForInspection(scope, chat);
+                if (persisted != null && (typeof persisted !== 'object' || Array.isArray(persisted))) throw new TypeError('Invalid ledger state.');
+                state = { ...initial(), ...persisted };
+                ledgerConfig(state.config);
+                const receipt = chat.metadata?.nora_restore;
+                restoreChanged = Boolean(receipt?.id && receipt.id !== state.restoreId);
+                if (restoreChanged) state = { ...initial(), enabled: receipt.ledgerEnabled !== false, restoreId: receipt.id,
+                    config: state.config, configRevision: state.configRevision || 0 };
+            } catch {
+                // This opt-in route is only a current-chat read. An unreadable
+                // derived file cannot authorize repair or loosen edit locks.
+                state = { ...initial(), enabled: null };
+                stateError = { code: 'NORA_LEDGER_STATE_UNREADABLE' };
+            }
+        } else state = load(scope, chat);
+        const staleActive = Boolean(state.active && !valid(state.active, chat.messages));
+        if (staleActive && !allowStaleLedgerRead) throw new LedgerConflict('Active ledger no longer matches history.', 'NORA_LEDGER_STORAGE_CONFLICT');
         const held = [...(reservations.get(scopeKey(scope))?.values() || [])];
         const lockedCount = Math.max(0, ...[state.active, ...held].filter(Boolean).map(record => record.messageCount));
         const pendingValid = !state.pending || valid(state.pending, chat.messages);
-        return { ...projection(scope, { ...state, pending: pendingValid ? state.pending : null }, chat),
-            stalePending: !pendingValid, expectedSignature: signature(chat.messages, chat.messages.length),
+        return { ...projection(scope, { ...state, active: staleActive ? null : state.active, pending: pendingValid ? state.pending : null }, chat),
+            stalePending: !pendingValid, staleActive, restoreChanged, stateError, expectedSignature: signature(chat.messages, chat.messages.length),
             messageCount: chat.messages.length, offset,
             nextOffset: limit > 0 && offset + limit < chat.messages.length ? offset + limit : null,
             messages: chat.messages.slice(offset, offset + limit).map((message, index) => ({
                 messageId: offset + index, name: String(message.name || ''), isUser: message.is_user === true,
                 isSystem: message.is_system === true, text: String(message.mes || ''),
-                editable: offset + index >= lockedCount && !message.is_system,
+                editable: !staleActive && !restoreChanged && !stateError && offset + index >= lockedCount && !message.is_system,
             })) };
     });
 
@@ -111,8 +129,8 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
             for (const segment of input.segments) {
                 signal.throwIfAborted();
                 assertModel();
-                ledger = normalizeLedger(await model.merge({ scope, taskId, previous: ledger, segment, entities: input.entities, signal, config: input.config,
-                    playerName: input.playerName, entityBindings: input.entityBindings, language: input.language }), ledger, input.entities);
+                ledger = await model.merge({ scope, taskId, previous: ledger, segment, entities: input.entities, signal, config: input.config,
+                    playerName: input.playerName, entityBindings: input.entityBindings, language: input.language });
             }
             signal.throwIfAborted();
             const published = await run(scope, () => {
@@ -353,7 +371,8 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
             state.config = config;
             state.configRevision = (state.configRevision || 0) + 1;
             if (enabled !== undefined) state.enabled = enabled;
-            if (!state.enabled) state.pending = null;
+            // Turning off future paid work does not discard a completed,
+            // source-verified summary or pretend that it was used in a reply.
             if (Object.keys(configuration).length) state.lastError = null;
             writeState(scope, state);
         });

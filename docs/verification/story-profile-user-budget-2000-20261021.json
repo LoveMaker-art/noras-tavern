@@ -1,0 +1,69 @@
+{
+  "schema": "nora-story-profile-user-budget/2",
+  "date": "2026-10-21",
+  "branch": "codex/story-profile-reliability-20261021",
+  "product_design": "1.24",
+  "authorization": "User: 那就把user.md上限改为2000",
+  "accepted_outcome": "Nora USER.md default/configured isolated-preview limit=2000; preserve unrelated config and all existing memory files",
+  "source_sha256": {
+    "deployment/update/update.py": "427214343bfdabfedd7c74cf7f89c1ad60942f813024e4fd2acf450fbfd9dba6",
+    "story-profile/core/story_profile.py": "776bc2c9fd22fa155f71719b2cf9e5350a450405401007deb2879cb1de55dda1",
+    "tests/deployment/test_launcher_shared_logic.py": "842fd7766512a1d52d449a91e7fa911bfd89eb1ada008bd96f1003599fcf00c7",
+    "story-profile/tests/test_projections.py": "6d0e4dbd86d76e9611d83930f72d3c9e90feab53f1eaf4795eeeb63a89dcb4d0"
+  },
+  "migration": {
+    "missing_1375_or1875": 2000,
+    "already2000": "unchanged",
+    "other_positive_custom_limits": "preserved",
+    "partial_repair": "preserves existing config"
+  },
+  "verification": {
+    "projection_tests": {
+      "passed": 9,
+      "failed": 0
+    },
+    "focused_install_update_config_tests": {
+      "passed": 3,
+      "failed": 0
+    },
+    "native_mac_hermes": {
+      "configured_limit": 2000,
+      "initial_chars": 1897,
+      "new_memory_chars": 100,
+      "delimiter_chars": 3,
+      "final_chars": 2000,
+      "at_limit_accepted": true,
+      "over_limit_rejected_without_change": true,
+      "model_calls": 0
+    },
+    "isolated_preview": {
+      "configured_user_char_limit": 2000,
+      "sync_whole_file_ceiling": 1897,
+      "reserve_chars": 103,
+      "current_USER_chars": 1011,
+      "other_config_values_preserved": true,
+      "memory_files_changed": false,
+      "production_config_changed": false,
+      "http": {
+        "18880": 200,
+        "8799": 200
+      }
+    },
+    "source_prerequisites": "PASS",
+    "source_runtime_parity": "PASS",
+    "diff_check": "PASS"
+  },
+  "scope_limits": [
+    "No four-category/1400-character summary implementation in this change",
+    "No Windows boundary run or new model call for this change"
+  ],
+  "delivery": {
+    "preview_config_updated": true,
+    "production_modified": false,
+    "committed_or_pushed": false,
+    "installer_built": false,
+    "published": false
+  },
+  "previous_evidence": "story-profile-user-budget-20261021.json",
+  "private_evidence": "local-state/story-profile-preview-20261021/user-budget-2000"
+}

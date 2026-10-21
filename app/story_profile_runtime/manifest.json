@@ -1,37 +1,37 @@
 {
   "schema": "nora-story-profile-runtime/v1",
   "source": "repository-project",
-  "sourceRevision": "sha256:82a269bf1a04f31a74ed99520f989c903891f25d94a8a5fa3b3737edfaa5cc67",
+  "sourceRevision": "sha256:118e60aa559d484551a7d8c9b9147ba0c735ece44028e4e0bf337bddfb45baf2",
   "files": {
     "story_profile_runtime/core/story_profile.py": {
       "source": "story-profile/core/story_profile.py",
-      "sourceSha256": "5314ab86d76f737a9abcef96e3fe7730d69ca63cad599b6aae8060f6cdc45cfb",
-      "sha256": "5314ab86d76f737a9abcef96e3fe7730d69ca63cad599b6aae8060f6cdc45cfb"
+      "sourceSha256": "6b25d3e2badf64f127ae34487953a4f7e9bbe9071c3e6f563e28279eab5926e0",
+      "sha256": "6b25d3e2badf64f127ae34487953a4f7e9bbe9071c3e6f563e28279eab5926e0"
     },
     "story_profile_runtime/core/reflection.py": {
       "source": "story-profile/core/reflection.py",
-      "sourceSha256": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0",
-      "sha256": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0"
+      "sourceSha256": "86870c90b009eba9385178844dfc36ae799fa305bf6332656e01990ec2e8f9a9",
+      "sha256": "86870c90b009eba9385178844dfc36ae799fa305bf6332656e01990ec2e8f9a9"
     },
     "story_profile_runtime/adapters/nora/cli.py": {
       "source": "story-profile/adapters/nora/cli.py",
-      "sourceSha256": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16",
-      "sha256": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16"
+      "sourceSha256": "4e13e7c79a3c0d14feea7f9dbf03cdb8cc4fe9e081590db6ef8d7ebb26ceaabc",
+      "sha256": "4e13e7c79a3c0d14feea7f9dbf03cdb8cc4fe9e081590db6ef8d7ebb26ceaabc"
     },
     "story_profile_runtime/adapters/nora/model-config.js": {
       "source": "story-profile/adapters/nora/model-config.js",
-      "sourceSha256": "b1c89d0bcfb964c678869480b5bc41018b7f4feae4b21c90db8cfc9e7bc1ff09",
-      "sha256": "b1c89d0bcfb964c678869480b5bc41018b7f4feae4b21c90db8cfc9e7bc1ff09"
+      "sourceSha256": "d438173310e23f53692bbd3cff40f4a1727541dce6aa0d0028776dd2036ee73e",
+      "sha256": "d438173310e23f53692bbd3cff40f4a1727541dce6aa0d0028776dd2036ee73e"
     },
     "story_profile_runtime/adapters/nora/preference-checkpoint.js": {
       "source": "story-profile/adapters/nora/preference-checkpoint.js",
-      "sourceSha256": "ae261e1d4210b5c25ceb48b646d88e123e4064b693d7a9b3961a4628b8a689d8",
-      "sha256": "ae261e1d4210b5c25ceb48b646d88e123e4064b693d7a9b3961a4628b8a689d8"
+      "sourceSha256": "88b027efb659e92d70fe02a0b9ea9947897c31533e370f38a4bac56be15f9bdf",
+      "sha256": "88b027efb659e92d70fe02a0b9ea9947897c31533e370f38a4bac56be15f9bdf"
     },
     "engine/sillytavern/public/actor.html": {
       "source": "story-profile/public/actor.html",
       "sourceSha256": "98216e81b8e289e1cadb8aaffd7fb2438c5f60a745f0af4c4a9f7e33136ea36f",
-      "sha256": "20476fa1d0fec4805fa6f858d29aaf52226580c92f8a9a3016ab2ec8712f392c"
+      "sha256": "5b3bb16a4df9b5b38e6d91e5d4a9f4d9ecebe3e7a6c3a4845684d927bd79146b"
     },
     "engine/sillytavern/public/story-profile-book.svg": {
       "source": "story-profile/public/story-profile-book.svg",
@@ -45,18 +45,18 @@
     },
     "engine/sillytavern/public/actor.js": {
       "source": "story-profile/public/actor.js",
-      "sourceSha256": "6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359",
-      "sha256": "9d958e7ce861493e84aa42f0c8c70223730ab62d259ff83098e66d9053156d8e"
+      "sourceSha256": "cdae9b67491259faf31542b2d81ff6fb40ce8f94a5bbd7cea4bcba4e58ce209c",
+      "sha256": "37fe48983ca9f2acd1a99c7d6d048cbb48db3af98566fbac614579a85b6306ec"
     },
     "engine/sillytavern/public/console.css": {
       "source": "story-profile/public/console.css",
-      "sourceSha256": "e317f2f19b46f4305bb3ed5b8af2495a1d5b651b6d18efd4c895e6a556a6dd32",
-      "sha256": "e317f2f19b46f4305bb3ed5b8af2495a1d5b651b6d18efd4c895e6a556a6dd32"
+      "sourceSha256": "bbac10f1fde7f8b4872c01db0d6074e2093e6da55d3a82df9164b8bb10fdb2a8",
+      "sha256": "bbac10f1fde7f8b4872c01db0d6074e2093e6da55d3a82df9164b8bb10fdb2a8"
     },
     "engine/sillytavern/public/i18n.js": {
       "source": "story-profile/public/i18n.js",
-      "sourceSha256": "65d7c23a132a69a1af5395ff0b7c543447ac089bc696c32596069aa30d13a9c0",
-      "sha256": "65d7c23a132a69a1af5395ff0b7c543447ac089bc696c32596069aa30d13a9c0"
+      "sourceSha256": "ac406bfc6f6092de7d899478a4a45474c38ee6ddaafd1674fa406d92d158ea7c",
+      "sha256": "ac406bfc6f6092de7d899478a4a45474c38ee6ddaafd1674fa406d92d158ea7c"
     },
     "engine/sillytavern/public/security.js": {
       "source": "story-profile/public/security.js",

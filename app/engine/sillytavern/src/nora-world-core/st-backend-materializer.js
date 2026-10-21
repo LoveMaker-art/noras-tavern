@@ -740,7 +740,13 @@ export function createStBackendMaterializer({
             const sessions = world.sessions.items;
             const idle = index => index === sessions.length ? operation()
                 : plugin.withIdleSession({ worldId: world.world_id, sessionId: sessions[index].session_id }, () => idle(index + 1));
-            return chatSessionOperations(directories).removeWorld(world, () => idle(0));
+            try {
+                return await chatSessionOperations(directories).removeWorld(world, () => idle(0));
+            } finally {
+                // Progress metadata exists even for Sessions with no ledger file.
+                // Re-read after the canonical deletion attempt has settled.
+                void requestStoryProjection(directories);
+            }
         },
         async prepareDeletion(world, plan) {
             const files = [];

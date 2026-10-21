@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createStoryStatistics, summarizeStoryChat } from '../src/nora-story-statistics.js';
 import { buildStoryProfileCard, loadStoryProfileCard, loadStoryProfileProgress, loadStoryProfileReflectionContext } from '../src/nora-story-profile.js';
-import { createPreferenceCheckpointCoordinator } from '../../../story_profile_runtime/adapters/nora/preference-checkpoint.js';
+import { createPreferenceCheckpointCoordinator, writePreferenceSettings, PREFERENCE_CONSENT_VERSION } from '../../../story_profile_runtime/adapters/nora/preference-checkpoint.js';
 
 const story = count => [{ chat_metadata: {} }, { is_user: false, mes: 'opening' }, ...Array.from({ length: count }, () => [
     { is_user: true, mes: '继续' }, { is_user: false, mes: '你好🌏' },
@@ -167,16 +167,20 @@ test('archive fields equal original projection and live metadata changes do not 
     await f.add('one', story(2));
     await f.add('two', story(4));
     const characters = f.worlds.map(world => ({ avatar: `${world.name}.png`, name: world.name, tags: ['奇幻'] }));
-    const state = { profile: { revision: 2, preferences: [{ status: 'confirmed', text: 'slow' }], recent_timeline: [{ change: 'old' }] },
+    const state = { profile: { schema_version: 1, revision: 2, preferences: [{ status: 'confirmed', text: 'slow' }], recent_timeline: [{ change: 'old' }] },
         identity: { persona_name: 'test' }, eras: [] };
     await fs.writeFile(path.join(f.root, 'story_profile.json'), JSON.stringify(state.profile));
     await fs.writeFile(path.join(f.root, 'app_identity.json'), JSON.stringify(state.identity));
     const now = () => new Date('2026-02-01T00:00:00Z');
     const options = { directories: f.directories, stateDirectory: f.root, now,
         listWorldsFn: async () => f.worlds, getCharacterFn: async (_directories, avatar) => characters.find(c => c.avatar === avatar),
-        statistics: f.reader };
-    const expected = buildStoryProfileCard({ worlds: f.worlds, characters, now, ...state,
-        chatsByWorld: { one: story(2), two: story(4) } });
+        statistics: f.reader, collectProgressFn: async () => [] };
+    const expected = { ...buildStoryProfileCard({ worlds: f.worlds, characters, now, ...state,
+        chatsByWorld: { one: story(2), two: story(4) } }), profile_storage_state: 'ready', taste_profile_stale: false,
+    story_progress: [], story_progress_state: 'ready',
+    reflection_worlds: [{ world_id: 'one', world_name: 'one', session_id: 'session:one', user_turns: 2 },
+        { world_id: 'two', world_name: 'two', session_id: 'session:two', user_turns: 4 }] };
+
     assert.deepEqual(await loadStoryProfileCard(options), expected);
     assert.deepEqual(await loadStoryProfileCard(options), expected);
     assert.equal(f.reads.length, 2);
@@ -212,10 +216,16 @@ test('real chat files drive 14/15/16/30 checkpoint eligibility without a ledger 
     let fullReads = 0;
     let modelCalls = 0;
     const options = { directories: f.directories, getWorldFn: async () => a.world, getCharacterFn: async () => ({ name: 'actor' }) };
+    writePreferenceSettings(f.root, { auto_enabled: true, consent_version: PREFERENCE_CONSENT_VERSION });
     const coordinator = createPreferenceCheckpointCoordinator({ stateDirectory: f.root,
         loadProgress: worldId => loadStoryProfileProgress({ ...options, worldId }),
         loadContext: worldId => { fullReads += 1; return loadStoryProfileReflectionContext({ ...options, worldId }); },
-        runReflection: async () => { modelCalls += 1; },
+        runReflection: async context => {
+            modelCalls += 1;
+            return { ok: true, status: 'completed', extraction_complete: true, summary_status: 'current',
+                processed: { world_id: context.world_id, session_id: context.session_id, revision: context.revision,
+                    from_user_turn: 1, to_user_turn: context.story.filter(message => message.role === 'user').length } };
+        },
     });
     for (const turns of [14, 15, 16, 30]) {
         await f.write(a.file, story(turns));

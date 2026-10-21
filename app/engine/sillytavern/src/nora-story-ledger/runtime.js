@@ -31,8 +31,9 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
     const root = path.join(key, 'nora-story-ledger');
     const activity = chatSessionOperations(directories);
     const statePath = scope => ledgerStatePath(key, scope);
+    const readRawState = scope => fs.existsSync(statePath(scope)) ? JSON.parse(fs.readFileSync(statePath(scope), 'utf8')) : null;
     const readState = (scope, chat) => {
-        const state = fs.existsSync(statePath(scope)) ? JSON.parse(fs.readFileSync(statePath(scope), 'utf8')) : null;
+        const state = readRawState(scope);
         const binding = bindings.get(scopeKey(scope));
         return ledgerAfterRestore(state, chat?.metadata ?? (binding ? jsonl(binding.filePath)[0]?.chat_metadata : null));
     };
@@ -49,6 +50,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
                 playerName: binding.playerName, language: binding.language };
         },
         readState,
+        readStateForInspection: readRawState,
         writeState: (scope, state) => {
             // A completed/cancelled World deletion must not be resurrected by
             // a background compression finishing or failing afterwards.
@@ -57,8 +59,9 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             const previous = fs.existsSync(statePath(scope)) ? JSON.parse(fs.readFileSync(statePath(scope), 'utf8')) : null;
             fs.mkdirSync(root, { recursive: true });
             writeFileAtomicSync(statePath(scope), JSON.stringify(state), 'utf8');
-            if ((state.active?.id && previous?.active?.id !== state.active.id)
-                || (previous?.imported?.id && !state.imported)) void requestStoryProjection(directories);
+            // Prepared summaries and coverage/configuration metadata use the
+            // same projection as activation, without activating an edit lock.
+            if (JSON.stringify(previous) !== JSON.stringify(state)) void requestStoryProjection(directories);
         },
         prepareMerge: async scope => {
             const { snapshotActiveLedgerModel } = await import('./model.js');
@@ -73,10 +76,11 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
         if (activity.hasGeneration()) plugin.cancelAll({ defer: true });
         else void plugin.resumeDeferred().catch(() => {});
     });
-    async function resolve(scope, expectedPath = null) {
+    async function resolve(scope, expectedPath = null, { readOnly = false } = {}) {
         const identity = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value);
         if (!scope || !identity(scope.worldId) || !identity(scope.sessionId)) throw new TypeError('World and Story Session are required.');
-        const world = await resolveNoraWorldCore(directories).getWorld(scope.worldId);
+        const core = resolveNoraWorldCore(directories);
+        const world = readOnly ? (await core.inspectWorlds()).find(item => item.world_id === scope.worldId) : await core.getWorld(scope.worldId);
         const session = world?.sessions?.items?.find(item => item.session_id === scope.sessionId);
         if (world?.lifecycle?.status !== 'READY' || !session) throw new LedgerConflict('Story Session is unavailable.', 'NORA_LEDGER_SESSION_UNAVAILABLE');
         const avatar = String(world.runtime_card.binding.avatar);
@@ -107,6 +111,8 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             return writer();
         }));
         void plugin.schedule(scope);
+        // An append can change total coverage without producing a new batch.
+        void requestStoryProjection(directories);
         return result;
     }
     async function guardDestructive(filePath) {
@@ -189,7 +195,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
     function recover() {
         if (projectionRecovered) return;
         projectionRecovered = true;
-        if (fs.existsSync(root)) void requestStoryProjection(directories);
+        if (fs.existsSync(root) || fs.existsSync(path.join(key, 'nora-world-core'))) void requestStoryProjection(directories);
     }
     const runtime = Object.freeze({ plugin, resolve, writeChat, edit, checkpoint, restore, reset, configure, guardDestructive, recoverProjection: recover });
     runtimes.set(key, runtime);

@@ -1,0 +1,255 @@
+{
+  "schema": "nora-story-profile-preview-live-acceptance/1",
+  "date": "2026-10-21",
+  "branch": "codex/story-profile-reliability-20261021",
+  "scope": "Live current-model reflection on the real copied story, known fault simulation, preserve production data, no packaging or release",
+  "source_sha256": "fc16cb12b390d5662217aba315a917055d30e6c9278e30abdd6c88db6d102763",
+  "runtime_manifest_revision": "sha256:85da8e6765a9d702867f8f487b19df1d8753065382c54a3f7da629d22d137698",
+  "preview_url": "http://127.0.0.1:18880/actor.html",
+  "live_model_result": {
+    "model": "deepseek-v4.1-flash",
+    "output_limit": 4000,
+    "world_name": "人才市场 · 新篇",
+    "story_is_original_preview_copy": true,
+    "processed": {
+      "world_id": "world:ff78ba61-ef4e-4507-868d-393a86bc4901",
+      "session_id": "session:5451898b-4fe3-49e0-b711-77dd0d3132d8",
+      "revision": "e1b0cc1c0c0b34039efd2428337bc65e227fb445bd75cedcf73d46c61a35d511",
+      "from_user_turn": 43,
+      "to_user_turn": 48,
+      "skipped_before": 42,
+      "input_bytes": 21751,
+      "input_budget_bytes": 24000,
+      "budget_method": "conservative_utf8_bytes",
+      "total_user_turns": 57
+    },
+    "extracted_preferences": 3,
+    "save_result": {
+      "event_count_before": 1,
+      "event_count_after": 2,
+      "preference_count_before": 3,
+      "preference_count_after": 6,
+      "new_preference_ids": [
+        "pref_5621bca2fa90cb",
+        "pref_dbea77d1149f60",
+        "pref_e8daa5323ac07f"
+      ],
+      "old_preference_ids_preserved": true,
+      "old_events_preserved": true,
+      "review_required": false,
+      "candidate_ids": []
+    },
+    "taste_summary_field_items": {
+      "character_styles": 4,
+      "relationship_dynamics": 4,
+      "story_themes": 4,
+      "pacing": 4,
+      "narrative_style": 4,
+      "interaction_preferences": 4,
+      "response_adaptations": 4,
+      "boundaries": 4
+    },
+    "taste_summary_current": true,
+    "nora_memory_projection_verified": true,
+    "task_finished": true,
+    "remaining_later_user_turns": 9,
+    "earlier_turns_not_backfilled": 42,
+    "source_at_live_model_execution": "dc7e0357da3406dfaa742c87b9c092a1f6adf85804472acb78836f5231150dd3",
+    "final_source_replay": {
+      "source_sha256": "fc16cb12b390d5662217aba315a917055d30e6c9278e30abdd6c88db6d102763",
+      "status": "completed",
+      "model_requests": 0,
+      "event_count_after": 2
+    },
+    "private_exact_output": "local-state/story-profile-preview-20261021/live-demonstration/actual-result.json"
+  },
+  "findings_and_corrections": [
+    {
+      "id": "overlap-role-budget",
+      "observed": "First actual UI submission failed before model execution. Prior role response 25211 UTF8 bytes was not excerpted; the current user message was only105 bytes. Error incorrectly blamed user-message size.",
+      "correction": "Same auxiliary bound for prior overlap and current role responses, preserving user text. Retrying the same real story succeeded.",
+      "red_evidence": "new-regressions-before.txt"
+    },
+    {
+      "id": "summary-projection-false-completion",
+      "observed": "A saved summary with failed Nora memory projection could be reported complete without repairing the projection.",
+      "correction": "Local recovery must succeed before completion. Repeated failures remain partial; successful recovery writes the actual USER.md without model calls.",
+      "red_evidence": "new-regressions-before.txt"
+    },
+    {
+      "id": "summary-projection-concurrent-source",
+      "observed": "Concurrent learning between the first read and recovery lock could leave stale canonical summary while returning current/completed.",
+      "correction": "Recheck recovered current snapshot and source revision. Return partial/SUMMARY_STALE on change; no implicit model call.",
+      "red_evidence": "concurrent-regression-before.txt"
+    }
+  ],
+  "fault_matrix": {
+    "storage_model_transport": {
+      "pass": 50,
+      "fail": 0
+    },
+    "dispatch_api_ui": {
+      "pass": 15,
+      "fail": 0
+    },
+    "total_entries_passed": 65,
+    "limits": [
+      "HTTP/provider results are injected at urllib OpenerDirector.open, not observations of a live model or real provider quota.",
+      "SystemExit simulates process interruption in durable-state tests; this matrix does not claim a real power-loss guarantee.",
+      "Native child locking in this run is macOS. Windows native results must be reported separately with matching source identity.",
+      "Prepared canonical commits recover by validated roll-forward; external conflicting edits stop recovery without overwriting, rather than claiming automatic rollback.",
+      "HTTP429 currently classifies as STORY_PROFILE_PROVIDER_ERROR with HTTP429 in its error text, not a distinct quota-specific application code.",
+      "This is business-module failure simulation; preview UI interactions and current-model actual extraction/save/summary belong to the parent acceptance.",
+      "API tests invoke actual Express route handlers with injected canonical-world readers, not full HTTP auth/CSRF/middleware.",
+      "UI checks execute current actor handlers in fake DOM, not browser layout/render acceptance.",
+      "311-round request window metadata is simulated; actual input budget/window preparation belongs to the Python matrix.",
+      "Real child deadline is tested with shortened clock; production360s deadline duration was not waited out.",
+      "No real model requests, billing, actual user stories or production recovery were exercised by this runner."
+    ],
+    "evidence": [
+      "local-state/story-profile-preview-20261021/fault-storage-matrix.json",
+      "local-state/story-profile-preview-20261021/fault-dispatch-matrix.json"
+    ]
+  },
+  "regressions": {
+    "mac_python": {
+      "pass": 48,
+      "fail": 0,
+      "skipped": 0
+    },
+    "windows_python": {
+      "schema": "nora-story-profile-preview-native-regression/1",
+      "platform": "Windows-10-10.0.26300-SP0",
+      "python": "3.11.17 (main, Oct 14 2026, 01:04:22) [MSC v.1944 64 bit (AMD64)]",
+      "executable": "C:\\Users\\admin\\AppData\\Local\\NoraTavern\\hermes\\python\\python.exe",
+      "command": [
+        "C:\\Users\\admin\\AppData\\Local\\NoraTavern\\hermes\\python\\python.exe",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "story-profile/tests",
+        "-v"
+      ],
+      "started_at": "2026-10-21T04:58:46.680773+00:00",
+      "duration_seconds": 2.649982,
+      "exit_code": 0,
+      "tests_run": 48,
+      "passed": true,
+      "source_directory": "C:\\NoraProfileFlow-20261021\\source-preview-fc16cb12b390",
+      "source_hashes": {
+        "app/actor_self.md": "edc522988b6f9341f1569ff8a8962b5bd36ead5361c1382948c8a58850b41993",
+        "app/engine/sillytavern/package.json": "5450497d8bf957f2c092ec69329780f6f8de343ca50f1a1c0e77c41c6f67abeb",
+        "app/engine/sillytavern/public/scripts/nora-compat/mvu-compatibility.js": "ece63a807316336d8854e47252bf146b3e60f615530005db519b84893bc77f75",
+        "app/engine/sillytavern/public/scripts/nora-compat/mvu-protocol.js": "6918852d69c77348a13ac47c40b4394d910bcf01ba2694cd1657ea4f186d2043",
+        "app/engine/sillytavern/public/scripts/nora-compat/prompt-template-compatibility.js": "93135ef3051dfdd5c63176c9141bf701dd61d21a6e625f540f666c79968c447d",
+        "app/engine/sillytavern/public/scripts/nora-story-ledger/history.js": "ec552474fdeffa004b365a5e13425aa12711bd7bd060b7f5138810802ae2abd0",
+        "app/engine/sillytavern/public/scripts/nora-worlds/character-references.js": "5732054de2c55c36791d85796ac0a3df56ac7848b3e3f277eb77186764ad4b9b",
+        "app/engine/sillytavern/public/scripts/nora-worlds/preset-file.js": "aacd31488967e320286a457a1c42832a0a003690b797fb48a120abe78fbfb318",
+        "app/engine/sillytavern/public/scripts/nora-worlds/story-context.js": "afdf48a811b06a8c6e088a26a563247c9a5dc4635581905555e16bc860cb8ed9",
+        "app/engine/sillytavern/public/scripts/nora-worlds/world-preset.js": "4ff3233a6859a8417447d0aa76692dc243ffc31a786ad69682f414d5836756b4",
+        "app/engine/sillytavern/public/scripts/nora-worlds/world-theme.js": "786c18c57c6508d91069a6be80a51488725a79fa4b0e6b3284ceb3eae8ff5a3c",
+        "app/engine/sillytavern/src/chat-backup-store.js": "ee29cb471cf8fbe663cc8e03455a8a58aae720404fc3579f8f9016564a3e360e",
+        "app/engine/sillytavern/src/chat-file-write.js": "37886c685e754f4f7ec2693db1803df4ef580063708a79dbf8fa7a98a877e2f3",
+        "app/engine/sillytavern/src/chat-revision.js": "8450d91a2f58c669d1d6804a9615bb1a647edec26b46283d177a00f4892f865c",
+        "app/engine/sillytavern/src/chat-session-operations.js": "b95316fb7585eb6dfa13131fa40aaa4e1db96b440c481a9ffdf46728be130e8a",
+        "app/engine/sillytavern/src/constants.js": "42df9e8d0a39908593c2b39821e4b3d6e217ec6d74eec01a5d4e991cd5944a4b",
+        "app/engine/sillytavern/src/nora-story-ledger/config.js": "a0b98a91ce8a91bf8f5d8b09f13fb29facf2bfbbf53a6ead1d62deab579cb21d",
+        "app/engine/sillytavern/src/nora-story-ledger/core.js": "29d8e0cefc7239546366a404c4f6b97bbb8e25c24b698d90a000713e694368ac",
+        "app/engine/sillytavern/src/nora-story-ledger/profile-projection.js": "4ada90bcf68b93b27ca0aba4e8fb20a6e0bb6cb9de9432853c5b611b51d25a50",
+        "app/engine/sillytavern/src/nora-story-ledger/schema.js": "2d260bda2339f00b135dfc274a735b3dd91ffe65eb057b7650c94370edd99a33",
+        "app/engine/sillytavern/src/nora-story-ledger/state-file.js": "6433e60394651b030ed32ae0fafeb26430ef3431de0fc70f52153614f7629742",
+        "app/engine/sillytavern/src/nora-story-profile-adapter.js": "ce0153a86be0dd112677d6e39f364d83335b076412e5e016823f5ee611d464ef",
+        "app/engine/sillytavern/src/nora-story-profile.js": "37d6f840377294c74cff24e6a45bf9b3fd6ede53eb718f9413e9d15f973952d2",
+        "app/engine/sillytavern/src/nora-story-statistics.js": "182e3122b6f5bb78f4f2bff40dd0fecad21ff8f31803f93a13f74ff179ed350a",
+        "app/engine/sillytavern/src/nora-world-core/activation-plan.js": "cf0a4658f628392bb59132119496814419b21d13afd351abb9024c0ceab5d4f3",
+        "app/engine/sillytavern/src/nora-world-core/atomic-json.js": "f131a79e934576b4680e92eacbabbbeca30a84bdfde3d5df6ebb3d405cf39d39",
+        "app/engine/sillytavern/src/nora-world-core/domain.js": "b50f8360c4ea931b6fdd0feaeb3d0907a76ae88f134b2573502b108e31cd8649",
+        "app/engine/sillytavern/src/nora-world-core/errors.js": "4bdd870adb719e626c209eb14b337d45af3963048a9f5d63e3bb85181ac5f9a9",
+        "app/engine/sillytavern/src/nora-world-core/file-removal.js": "91176774de65a728cb58be28ab69dd82d2f6db6de6aa1e19dc6c2c72722d3ea4",
+        "app/engine/sillytavern/src/nora-world-core/index.js": "8b3fc727e8b0b007a4bf7379d43cf363b64907b2e1033f369fd28aa2bb69ea14",
+        "app/engine/sillytavern/src/nora-world-core/library-cards.js": "3af85d0c65c9125f022742a0574d6ca22305a9053b011d17b2f62eb8d453bdad",
+        "app/engine/sillytavern/src/nora-world-core/library-profiles.js": "d4e877d30b8466be00be93fa80f1f9ba7d8110a7efb48049c0e1621a3fcc68fd",
+        "app/engine/sillytavern/src/nora-world-core/library-worldbooks.js": "7d32d175d4c80e80535fce51ec2643b5a2461fb5d9ef92b03bbb4c94167c7bc0",
+        "app/engine/sillytavern/src/nora-world-core/locks.js": "35d7b1d7ea8e0a25e8c5f428f28a309e57e2b548767f5c293456f194295be723",
+        "app/engine/sillytavern/src/nora-world-core/mutation-journal.js": "3e26a157b39599318bfe3e667ce01508c2dd481c02ad40c1b6c08ac1cbb31df0",
+        "app/engine/sillytavern/src/nora-world-core/operation-journal.js": "358e4dc0fb1a106282ccf36c9866faebb9ff3c1cbcf928f157ce090f5da4a95a",
+        "app/engine/sillytavern/src/nora-world-core/resource-catalog.js": "dc3283069f3d207e75de20d0a59c5b7a3e416e074c1d8b4b0cc2c12e83440c46",
+        "app/engine/sillytavern/src/nora-world-core/runtime.js": "a5bf94aab8463e7699234078243fd75c16ceec4e12520c2659d4e621d545de97",
+        "app/engine/sillytavern/src/nora-world-core/service.js": "e8d3b0aa2d77c6fb798861d7627bd384d67538fe79bbf76ea8841252569ee57b",
+        "app/engine/sillytavern/src/nora-world-core/st-backend-materializer.js": "edb0897e22402287513ac151a13531ce3a2706b03b9a65aa62f2e6e542883dde",
+        "app/engine/sillytavern/src/nora-world-core/st-card-codec.js": "aee288179480f8ef28a5cfa058beb99f85ab0c4f228e3244e17768f202a9aa28",
+        "app/engine/sillytavern/src/nora-world-core/st-import-staging.js": "0ee23dc235293901bc4191be0badcb924d4c06ba54312608a1cab9b51b73efad",
+        "app/engine/sillytavern/src/nora-world-core/storage-read-batch.js": "3955d0b2916a0f139cab290dad300425ec7cae137e8ed43c9e5637c2fef745f7",
+        "app/engine/sillytavern/src/nora-world-core/store.js": "1f1468f0f833e598a82bf80ee5e12ae39f6c1ecfd60ab4291f56ffb3aaba8c35",
+        "app/engine/sillytavern/src/nora-world-core/world-restart.js": "60bd0aad574fcd2425392d9cb3a40f8a36f4606bbb9870276c60aa90827bb942",
+        "app/engine/sillytavern/src/nora-world-core/worldbook-entry-edit.js": "c03cba01640fed41e911951b5ebeb431c0bdb4deea0cc82b0a9782d883869731",
+        "app/engine/sillytavern/src/nora-world-core/worldbook-references.js": "2999c96c95545277ddbdf87a7bcfe87f687c6f3ebf0c583c32ac203008f674c3",
+        "app/engine/sillytavern/src/validator/TavernCardValidator.js": "a0eba17805b004f5ab6927393e1f16fc1b4b6cd128d905046ece72f66673e1d4",
+        "app/engine/sillytavern/src/worldbook-lock.js": "c0b0bba385e359cca2a21978a8940f97c44cd9281fdd4fc582a07f066862f509",
+        "app/engine/sillytavern/tests/nora-story-profile-checkpoint.test.mjs": "e7dd2b65dc053409c882d7ba4ef7b097930987c690fee580e0f783687fb323b4",
+        "app/engine/sillytavern/tests/nora-story-profile-reliability.test.mjs": "31e881c211971700ef39084aca63a1953eb39a730cf15e94d8963a5ad52085f6",
+        "app/engine/sillytavern/tests/nora-story-profile-ui.test.mjs": "cdf8dcc9914813d0100da5906cdfd7e8f596a3960767b186a9dee7625eccf2cd",
+        "app/personality_service.py": "cb2415636d1fbea1decc1f2730781243658e06a69178c8f9a8544bebf9d204c9",
+        "story-profile/adapters/nora/cli.py": "e629a1e6ebdbb4484406329b8f1a9a5b7ed9ed39a9d8f8fdc40956e2fad0d653",
+        "story-profile/adapters/nora/model-config.js": "fead92798385bedb040c494839d4112bea4128a7bc27da4a521d40231b8e534c",
+        "story-profile/adapters/nora/preference-checkpoint.js": "c4275166a5ea1a01b299fbf9f2d9ce4bdb86763aa6a4429a4974cdc100d37d94",
+        "story-profile/core/reflection.py": "fc16cb12b390d5662217aba315a917055d30e6c9278e30abdd6c88db6d102763",
+        "story-profile/core/story_profile.py": "ad596e7e43f2cc85ada5a8df1011472cae4db47aef672d75b34a452bc11c5403",
+        "story-profile/package.json": "de0f21d01aab959ca055a35b55d925eae3f6f6f7e972b3e7811b9273c1b16edd",
+        "story-profile/public/actor.html": "3e2904b7dbd3ef8b98a3da5867b01e59bc08307e5ed874b2b715c521853ae187",
+        "story-profile/public/actor.js": "4a1af4365b4d93f7a0f8d7d0e83a6a485251472948fe4fa0610ac6b0e54c3aa9",
+        "story-profile/public/console.css": "f740df63246ad8d80b41410e4f0e0b75c2925626e7a446e8e3eaf02b3d2c8fba",
+        "story-profile/public/i18n.js": "f165aa926837c61ed681081fc6fc545bc7953bdaba628dc5ddd9fc6d63c290c1",
+        "story-profile/public/security.js": "90f0cc4dc6e2b94b6f70a53e1f8e7704999c885bd9a88577e5aa587148a47965",
+        "story-profile/tests/test_projections.py": "5a12413ed323cb8813b35b8bd5fa4006dd4a113169c8f057fb3f18d7a76b3c77",
+        "story-profile/tests/test_reflection_budget.py": "bf5c6ebf3603ea9c1cf3882c63b8f796ab3a702a586fe52b397a82059b759d08",
+        "story-profile/tests/test_reflection_reliability.py": "c7c1d57b8c6a71efc5a31ead3063547afc25b9c000dc241d63e04b680fb23cc7",
+        "story-profile/tests/test_storage_reliability.py": "42b31c4d77d781e31c99891d266ed107f3838902bff66bb1b85e634fe498196d"
+      },
+      "changed_source_files": [
+        "story-profile/core/reflection.py",
+        "story-profile/tests/test_reflection_reliability.py"
+      ],
+      "original_frozen_source_unchanged": true,
+      "installed_runtime_unchanged": true,
+      "installed_runtime_hashes": {
+        "C:\\Users\\admin\\AppData\\Local\\NoraTavern\\tavern\\apps\\tavern-runtime\\story_profile_runtime\\core\\story_profile.py": "5314ab86d76f737a9abcef96e3fe7730d69ca63cad599b6aae8060f6cdc45cfb",
+        "C:\\Users\\admin\\AppData\\Local\\NoraTavern\\tavern\\apps\\tavern-runtime\\story_profile_runtime\\core\\reflection.py": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0",
+        "C:\\Users\\admin\\AppData\\Local\\NoraTavern\\tavern\\apps\\tavern-runtime\\story_profile_runtime\\adapters\\nora\\cli.py": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16",
+        "C:\\Users\\admin\\AppData\\Local\\NoraTavern\\tavern\\apps\\tavern-runtime\\engine\\sillytavern\\src\\nora-story-profile.js": "8604e003573e7b74f48f7f27491513114da2e92dcb239199e6493841d0b87997"
+      },
+      "source_hash_mismatches_after_test": [],
+      "real_model_calls": 0,
+      "credential_transferred": false,
+      "production_service_stopped": false,
+      "system_or_proxy_changed": false,
+      "packaged_or_published": false,
+      "stdout": "",
+      "stderr": "test_both_budget_caps_hold_with_long_distinct_fields (test_projections.Projections.test_both_budget_caps_hold_with_long_distinct_fields) ... ok\r\ntest_cross_process_writer_waits_for_profile_transaction_and_keeps_both_updates (test_projections.Projections.test_cross_process_writer_waits_for_profile_transaction_and_keeps_both_updates) ... ok\r\ntest_limits_and_selection_preserve_original_rules (test_projections.Projections.test_limits_and_selection_preserve_original_rules) ... ok\r\ntest_literal_backslashes_and_unmanaged_content_survive_repeated_writes (test_projections.Projections.test_literal_backslashes_and_unmanaged_content_survive_repeated_writes) ... ok\r\ntest_projection_invalidates_only_active_clawchat_prompt_cache (test_projections.Projections.test_projection_invalidates_only_active_clawchat_prompt_cache) ... ok\r\ntest_retry_repairs_partial_write_without_new_revision_or_preference_loss (test_projections.Projections.test_retry_repairs_partial_write_without_new_revision_or_preference_loss) ... ok\r\ntest_explicit_http_proxy_and_provider_exclusions_are_preserved (test_reflection_budget.ReflectionBudget.test_explicit_http_proxy_and_provider_exclusions_are_preserved) ... ok\r\ntest_extraction_and_taste_summary_follow_budget_and_preserve_old_preferences (test_reflection_budget.ReflectionBudget.test_extraction_and_taste_summary_follow_budget_and_preserve_old_preferences) ... ok\r\ntest_retry_of_saved_preferences_refreshes_taste_without_duplicate_event (test_reflection_budget.ReflectionBudget.test_retry_of_saved_preferences_refreshes_taste_without_duplicate_event) ... ok\r\ntest_saved_output_budget_is_not_silently_capped (test_reflection_budget.ReflectionBudget.test_saved_output_budget_is_not_silently_capped) ... ok\r\ntest_selected_proxy_cannot_be_bypassed_by_windows_registry_rules (test_reflection_budget.ReflectionBudget.test_selected_proxy_cannot_be_bypassed_by_windows_registry_rules) ... ok\r\ntest_tavern_direct_route_never_reads_ambient_system_proxy (test_reflection_budget.ReflectionBudget.test_tavern_direct_route_never_reads_ambient_system_proxy) ... ok\r\ntest_unsupported_proxy_is_explicit_and_cannot_silently_bypass (test_reflection_budget.ReflectionBudget.test_unsupported_proxy_is_explicit_and_cannot_silently_bypass) ... ok\r\ntest_explicit_none_is_a_success_but_arbitrary_text_is_not (test_reflection_reliability.ReflectionReliability.test_explicit_none_is_a_success_but_arbitrary_text_is_not) ... ok\r\ntest_failed_extract_is_not_replayed_by_page_reconnect (test_reflection_reliability.ReflectionReliability.test_failed_extract_is_not_replayed_by_page_reconnect) ... ok\r\ntest_historical_archive_never_enters_reflection_prompt (test_reflection_reliability.ReflectionReliability.test_historical_archive_never_enters_reflection_prompt) ... ok\r\ntest_independent_summary_recovery_confirms_an_interrupted_job_without_model_replay (test_reflection_reliability.ReflectionReliability.test_independent_summary_recovery_confirms_an_interrupted_job_without_model_replay) ... ok\r\ntest_long_context_only_role_reply_is_excerpted_without_rejecting_short_user_text (test_reflection_reliability.ReflectionReliability.test_long_context_only_role_reply_is_excerpted_without_rejecting_short_user_text) ... ok\r\ntest_new_preference_during_local_recovery_cannot_confirm_an_old_summary (test_reflection_reliability.ReflectionReliability.test_new_preference_during_local_recovery_cannot_confirm_an_old_summary) ... ok\r\ntest_only_user_evidence_can_create_preference (test_reflection_reliability.ReflectionReliability.test_only_user_evidence_can_create_preference) ... ok\r\ntest_partial_summary_resumes_without_extracting_or_learning_twice (test_reflection_reliability.ReflectionReliability.test_partial_summary_resumes_without_extracting_or_learning_twice) ... ok\r\ntest_recent_initial_window_reports_unprocessed_old_history (test_reflection_reliability.ReflectionReliability.test_recent_initial_window_reports_unprocessed_old_history) ... ok\r\ntest_saved_summary_cannot_finish_until_nora_memory_projection_recovers (test_reflection_reliability.ReflectionReliability.test_saved_summary_cannot_finish_until_nora_memory_projection_recovers) ... ok\r\ntest_truncated_or_empty_model_answer_is_not_none (test_reflection_reliability.ReflectionReliability.test_truncated_or_empty_model_answer_is_not_none) ... ok\r\ntest_actual_reflection_persists_only_the_matching_user_evidence (test_storage_reliability.StorageReliability.test_actual_reflection_persists_only_the_matching_user_evidence) ... ok\r\ntest_committed_projection_failure_is_partial_and_resume_never_extracts_twice (test_storage_reliability.StorageReliability.test_committed_projection_failure_is_partial_and_resume_never_extracts_twice) ... ok\r\ntest_corrupt_events_abort_without_replacing_any_history (test_storage_reliability.StorageReliability.test_corrupt_events_abort_without_replacing_any_history) ... ok\r\ntest_corrupt_profile_is_not_remigrated_from_markdown (test_storage_reliability.StorageReliability.test_corrupt_profile_is_not_remigrated_from_markdown) ... ok\r\ntest_cross_process_writers_preserve_both_updates (test_storage_reliability.StorageReliability.test_cross_process_writers_preserve_both_updates) ... ok\r\ntest_existing_empty_job_is_corruption_not_permission_to_repeat_model_call (test_storage_reliability.StorageReliability.test_existing_empty_job_is_corruption_not_permission_to_repeat_model_call) ... ok\r\ntest_failed_extraction_can_retry_with_its_validated_original_context (test_storage_reliability.StorageReliability.test_failed_extraction_can_retry_with_its_validated_original_context) ... ok\r\ntest_interrupted_canonical_commit_recovers_without_losing_old_or_new_events (test_storage_reliability.StorageReliability.test_interrupted_canonical_commit_recovers_without_losing_old_or_new_events) ... ok\r\ntest_legacy_markdown_archive_survives_initial_migration_and_new_learning (test_storage_reliability.StorageReliability.test_legacy_markdown_archive_survives_initial_migration_and_new_learning) ... ok\r\ntest_malformed_job_document_cannot_write_unevidenced_preferences (test_storage_reliability.StorageReliability.test_malformed_job_document_cannot_write_unevidenced_preferences) ... ok\r\ntest_missing_event_archive_is_not_treated_as_new_install (test_storage_reliability.StorageReliability.test_missing_event_archive_is_not_treated_as_new_install) ... ok\r\ntest_opposite_or_similar_text_cannot_overwrite_locked_preference (test_storage_reliability.StorageReliability.test_opposite_or_similar_text_cannot_overwrite_locked_preference) ... ok\r\ntest_plot_only_change_does_not_invalidate_preference_snapshot (test_storage_reliability.StorageReliability.test_plot_only_change_does_not_invalidate_preference_snapshot) ... ok\r\ntest_process_exit_during_extraction_does_not_auto_replay (test_storage_reliability.StorageReliability.test_process_exit_during_extraction_does_not_auto_replay) ... ok\r\ntest_process_exit_during_summary_preserves_learning_and_requires_explicit_retry (test_storage_reliability.StorageReliability.test_process_exit_during_summary_preserves_learning_and_requires_explicit_retry) ... ok\r\ntest_projection_failure_is_a_committed_result_and_replay_repairs_it (test_storage_reliability.StorageReliability.test_projection_failure_is_a_committed_result_and_replay_repairs_it) ... ok\r\ntest_prompt_cache_connection_is_closed_after_transaction (test_storage_reliability.StorageReliability.test_prompt_cache_connection_is_closed_after_transaction) ... ok\r\ntest_public_recovery_completes_pending_journal_and_projection_without_model (test_storage_reliability.StorageReliability.test_public_recovery_completes_pending_journal_and_projection_without_model) ... ok\r\ntest_retry_of_failed_extraction_does_not_reuse_old_job_for_changed_chat (test_storage_reliability.StorageReliability.test_retry_of_failed_extraction_does_not_reuse_old_job_for_changed_chat) ... ok\r\ntest_source_replay_keeps_original_event_and_does_not_learn_again (test_storage_reliability.StorageReliability.test_source_replay_keeps_original_event_and_does_not_learn_again) ... ok\r\ntest_summary_rejects_outdated_preference_snapshot (test_storage_reliability.StorageReliability.test_summary_rejects_outdated_preference_snapshot) ... ok\r\ntest_summary_resume_after_chat_changed_uses_saved_preferences_only (test_storage_reliability.StorageReliability.test_summary_resume_after_chat_changed_uses_saved_preferences_only) ... ok\r\ntest_summary_with_concurrent_learning_stays_partial_then_resumes_latest_source (test_storage_reliability.StorageReliability.test_summary_with_concurrent_learning_stays_partial_then_resumes_latest_source) ... ok\r\ntest_unrelated_edit_after_interruption_is_not_overwritten_by_recovery (test_storage_reliability.StorageReliability.test_unrelated_edit_after_interruption_is_not_overwritten_by_recovery) ... ok\r\n\r\n----------------------------------------------------------------------\r\nRan 48 tests in 2.429s\r\n\r\nOK\r\n"
+    },
+    "targeted_node": {
+      "pass": 45,
+      "fail": 0,
+      "skipped": 0,
+      "product_node_source_unchanged": true
+    }
+  },
+  "preservation": {
+    "checked_original_files": 592,
+    "changed_original_files": [],
+    "original_tavern_http": 200,
+    "preview_http": 200
+  },
+  "remaining_task_blockers": [],
+  "boundaries": [
+    "Actual one-batch coverage is43-48. Turns49-57 and earlier1-42 were not processed by this action.",
+    "Live model execution used dc7e source. Only local concurrent-recovery guard changed afterward; final source reused the completed result without a model call and passed Mac/Windows48 tests plus50 storage fault cases.",
+    "Provider errors are controlled response-boundary simulations; this does not prove all external network or provider conditions.",
+    "Most API/UI fault cases use actual handlers with injected adapters or DOM. Actual browser exercised first budget failure and corrected success.",
+    "No guarantee of every possible fault or power-loss recovery.",
+    "No installer build, merge, push, release or production runtime replacement."
+  ],
+  "evidence_directory": "local-state/story-profile-preview-20261021/live-demonstration"
+}

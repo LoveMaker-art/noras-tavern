@@ -11,6 +11,7 @@ import { createNoraWorldCore } from '../src/nora-world-core/index.js';
 import { createStBackendMaterializer } from '../src/nora-world-core/st-backend-materializer.js';
 import { ledgerStatePath } from '../src/nora-story-ledger/state-file.js';
 import { requestStoryProjection } from '../src/nora-story-ledger/profile-projection.js';
+import { snapshotActiveLedgerModel } from '../src/nora-story-ledger/model.js';
 import { prefixText, renderLedger } from '../public/scripts/nora-story-ledger/history.js';
 import { setConfigFilePath } from '../src/util.js';
 import { chatSessionOperations } from '../src/chat-session-operations.js';
@@ -82,6 +83,15 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     fs.writeFileSync(path.join(root, 'settings.json'), JSON.stringify({ main_api: 'openai', oai_settings: {
         chat_completion_source: 'custom', custom_url: providerUrl, custom_model: 'fixture-only', openai_max_tokens: 1000, openai_max_context: 8192,
     } }));
+    const snapshot = await snapshotActiveLedgerModel(directories);
+    assert.equal(snapshot.isCurrent(), true);
+    const settingsPath = path.join(root, 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    settings.oai_settings.openai_max_tokens = 1500;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+    assert.equal(snapshot.isCurrent(), false, 'changing only output budget invalidates queued model snapshots');
+    settings.oai_settings.openai_max_tokens = 1000;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
     const core = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer: {
         materialize: async () => ({ runtimeCard: { engine: 'sillytavern', binding: { avatar: 'fixture.png' }, ownership: 'owned' },
             defaultSession: { engine: 'sillytavern', binding: { chat_id: 'fixture-chat' }, openingState: 'empty' },
@@ -107,7 +117,8 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(inspectedResponse.status, 200);
     const inspected = await inspectedResponse.json();
     assert.equal(inspected.totalTurns, 16);
-    assert.deepEqual(inspected.model, { name: 'fixture-only', contextLimit: 8192 });
+    assert.deepEqual(inspected.model, { name: 'fixture-only', contextLimit: 8192, outputTokenLimit: 1000 });
+    assert.deepEqual(inspected.outputBudget, { source: 'model', limit: 1000 });
     assert.equal(JSON.stringify(inspected).includes(providerUrl), false);
     assert.equal(inspected.messages.length, 2);
     assert.equal(inspected.nextOffset, 2);
@@ -133,10 +144,17 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     await runtime.plugin.schedule(scope);
     const status = await (await post('/ledger/status', scope)).json();
     assert.equal(status.pending.coveredTurns, 15);
+    assert.equal(Object.hasOwn(status.pending, 'recap'), false, 'display must not introduce another generated output');
+    assert.equal(Object.keys(status.pending.ledger).length, 7);
     assert.equal(status.active, null);
-    assert.equal(readProfile(), null, 'a candidate does not start memory projection');
+    await until(() => readProfile()?.shared_story_memory?.[0]?.status === 'prepared');
+    await until(() => {
+        try { return fs.readFileSync(path.join(root, 'memories/MEMORY.md'), 'utf8').includes('player found the map'); }
+        catch { return false; }
+    });
+    assert.equal(status.active, null, 'viewing/syncing a saved prepared summary must not activate its history lock');
     assert.equal(providerRequests.length, 1, 'background adapter called the fixture model once');
-    assert.equal(providerRequests[0].max_tokens, 2048);
+    assert.equal(providerRequests[0].max_tokens, 1000);
     assert.equal(JSON.parse(providerRequests[0].messages[1].content).entity_bindings.__user__.name, 'Tester');
     assert.match(providerRequests[0].messages[0].content, /Do not substitute __user__ for unregistered characters/);
     assert.match(providerRequests[0].messages[1].content, /message 29/);
@@ -228,6 +246,15 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.match(await streamed.text(), /Streamed reply/);
     assert.equal((await runtime.plugin.status(scope)).active.coveredTurns, 30);
     await until(() => readProfile()?.shared_story_memory?.[0]?.covered_turns === 30);
+    const callsBeforeMetadata = providerRequests.length;
+    const activeId = (await runtime.plugin.inspect(scope)).active.id;
+    const metadataAppend = [...continued, { name: 'User', is_user: true, mes: 'A new uncovered action', send_date: 63 },
+        { name: 'Story', is_user: false, mes: 'A new uncovered reply', send_date: 64 }];
+    const metadataSave = await post('/chats/save', { avatar_url: 'fixture.png', file_name: 'fixture-chat', chat: [header, ...metadataAppend], skip_backup: true });
+    assert.equal(metadataSave.status, 200);
+    await until(() => readProfile()?.shared_story_memory?.[0]?.total_turns === 32);
+    assert.equal((await runtime.plugin.inspect(scope)).active.id, activeId);
+    assert.equal(providerRequests.length, callsBeforeMetadata, 'coverage-only projection must not require another paid batch or change the summary');
     const originalText = JSON.parse(fs.readFileSync(chatFile, 'utf8').split('\n')[1]).mes;
     const beforeReset = await (await post('/ledger/inspect', scope)).json();
     const reset = await post('/ledger/reset', { ...scope, confirm: true, expectedRevision: beforeReset.configRevision, expectedSignature: beforeReset.expectedSignature });
@@ -241,6 +268,32 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     const resetAgain = await post('/ledger/reset', { ...scope, confirm: true, expectedRevision: beforeReset.configRevision, expectedSignature: beforeReset.expectedSignature });
     assert.equal(resetAgain.status, 409, 'repeating a reset cannot bypass the revision precondition');
     assert.equal(fs.existsSync(ledgerStatePath(root, scope)), true);
+    const stateFile = ledgerStatePath(root, scope);
+    const resetState = fs.readFileSync(stateFile, 'utf8');
+    for (const kind of ['stale', 'restore', 'corrupt']) {
+        const invalidState = JSON.parse(resetState);
+        invalidState.active = { ...next.pending, activatedAt: Date.now(), signature: 'invalid-source' };
+        if (kind === 'restore') invalidState.restoreId = 'older-restore';
+        const bytes = kind === 'corrupt' ? '{broken JSON' : JSON.stringify(invalidState);
+        fs.writeFileSync(stateFile, bytes);
+        const fallbackResponse = await post('/ledger/inspect', { ...scope, allowStaleLedgerRead: true, offset: 59, limit: 3 });
+        assert.equal(fallbackResponse.status, 200);
+        const fallback = await fallbackResponse.json();
+        assert.equal(fallback.active, null); assert.equal(fallback.messages.length, 3);
+        assert.ok(fallback.messages.every(item => item.editable === false));
+        if (kind === 'stale') assert.equal(fallback.staleActive, true);
+        else if (kind === 'restore') assert.equal(fallback.restoreChanged, true);
+        else assert.equal(fallback.stateError.code, 'NORA_LEDGER_STATE_UNREADABLE');
+        assert.equal(fs.readFileSync(stateFile, 'utf8'), bytes, 'read-only fallback never repairs or drops the stored evidence');
+    }
+    fs.writeFileSync(stateFile, resetState);
+    // A World can have readable chat metadata before any ledger file exists.
+    // Its deletion must still remove the per-Session projection; a removed
+    // ledger-file notification alone cannot provide that guarantee.
+    fs.unlinkSync(stateFile);
+    await requestStoryProjection(directories);
+    assert.equal(readProfile()?.shared_story_memory?.[0]?.status, 'missing');
+    assert.equal(fs.existsSync(stateFile), false);
     const deleter = createStBackendMaterializer({ directories, stagingRoot: path.join(root, 'staging') });
     const deletionCore = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer: deleter });
     await deletionCore.deleteWorld(world.world_id, { idempotencyKey: 'ledger-test-delete' });

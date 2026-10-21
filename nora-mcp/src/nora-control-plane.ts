@@ -167,7 +167,7 @@ export class NoraControlPlane {
           domain: "story_ledger",
           storage: "default-user/nora-story-ledger",
           location: path.join(this.config.userDataRoot, "nora-story-ledger"),
-          readTools: ["nora.ledger.status", "nora.session.read"],
+          readTools: ["nora.story.progress", "nora.ledger.status", "nora.session.read"],
           writeTools: ["nora.ledger.configure", "nora.ledger.compress", "nora.ledger.reset", "nora.session.edit"],
         },
         {
@@ -320,13 +320,41 @@ export class NoraControlPlane {
     return this.http.get("/api/nora-story-profile/card");
   }
 
+  async storyProgress(request: {
+    worldId?: string; worldName?: string; sessionId?: string; sessionName?: string;
+    view?: "overview" | "facts" | "objects" | "threads"; query?: string;
+    includeRecent?: boolean; recentLimit?: number; maxChars?: number; cursor?: string;
+  }): Promise<JsonRecord> {
+    const result = asRecord(await this.http.post("/api/nora-story-profile/read", request));
+    const limit = request.maxChars ?? 3000;
+    const statuses = new Set(["ready", "unorganized", "disabled", "stale", "unavailable",
+      "choose-world", "choose-session", "not-found", "budget-exceeded"]);
+    if (result.schema !== "nora-story-read/1" || result.read_only !== true || result.model_called !== false
+        || !statuses.has(String(result.status)) || [...JSON.stringify(result)].length > limit
+        || !Array.isArray(result.recent_history)
+        || (request.includeRecent !== true && !request.cursor && result.recent_history.length > 0)
+        || (request.includeRecent === false && result.recent_history.length > 0)) {
+      throw new NoraRequestError("Story read did not confirm its read-only, bounded result.", "NORA_STORY_RESULT_INVALID");
+    }
+    const scope = asRecord(result.scope);
+    if ((request.worldId && scope.worldId && scope.worldId !== request.worldId)
+        || (request.sessionId && scope.sessionId && scope.sessionId !== request.sessionId)
+        || (result.status === "ready" && ((request.worldId && scope.worldId !== request.worldId)
+          || (request.sessionId && scope.sessionId !== request.sessionId)))) {
+      throw new NoraRequestError("Story read returned a different World or Session.", "NORA_STORY_SCOPE_UNCONFIRMED");
+    }
+    return result;
+  }
+
   async storyCheckpointStatus(worldId: string): Promise<unknown> {
     return this.http.get(`/api/nora-story-profile/checkpoint/${encodeURIComponent(worldId)}`);
   }
 
-  async storyCheckpoint(worldId: string, confirm?: boolean): Promise<unknown> {
+  async storyCheckpoint(worldId: string, confirm?: boolean, retry = false): Promise<unknown> {
     if (!confirm) throw new NoraConfirmationRequiredError("Nora story checkpoint");
-    return this.http.post("/api/nora-story-profile/checkpoint", { world_id: worldId });
+    // This tool is an explicit one-off request, independent of the automatic opt-in.
+    return this.http.post("/api/nora-story-profile/reflect", { world_id: worldId, ...(retry ? { retry: true } : {}) },
+      { timeoutMs: this.config.modelTimeoutMs });
   }
 
   async storyReflectPreview(worldId: string): Promise<unknown> {
@@ -593,7 +621,7 @@ export class NoraControlPlane {
     }
   }
 
-  ledgerInspect(request: { worldId: string; sessionId: string; offset?: number; limit?: number }): Promise<unknown> {
+  ledgerInspect(request: { worldId: string; sessionId: string; offset?: number; limit?: number; allowStaleLedgerRead?: boolean }): Promise<unknown> {
     return this.http.post("/api/nora-story-ledger/inspect", request);
   }
   controlCatalog(): Promise<unknown> { return this.http.get("/api/nora-controls/catalog"); }
