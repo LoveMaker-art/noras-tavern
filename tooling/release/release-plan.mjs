@@ -14,6 +14,17 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const sorted = values => [...new Set(values)].sort();
 const configPaths = ['tooling/source-layout.json', 'launcher/desktop/package.json', '.github/workflows/build-integrated-launcher.yml',
     '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml', 'launcher/desktop/package-lock.json'];
+// Full normalized step bodies audited against 65a2a7a and 78f122e on 2026-10-21.
+// Only these component-job verification bodies are exempt, never their titles.
+// The historical inventory receipt is classified as verification, not accepted
+// as native evidence: publication still requires the current schema-2 consumer.
+// Any command/argument/env change needs another review. See release-process.md.
+const reviewedComponentVerificationSteps = new Set([
+    '238142be0d95ec58ef44b95d8f4259f441e5491c47f45a4dbe9d035b7d90f7c5', // prior contract tests
+    '44562722440abb8c134a3649ba092ac04d54a1570c865fdfc9193029e46506a9', // tests include native evidence contracts
+    'f9f4bb8bcec453dcbed827fe9a65ba4b93083c43e676b7ecf98889f26b9e0f07', // prior verifier/inventory receipt
+    '5b7e5a671693d8bd6c6dde6063d63d61e725140a6920f6227d06c5f524708c91', // verifier; native receipt is sealed later
+]);
 const fullTools = new Set(['tooling/layout.mjs', 'tooling/source-layout.json', 'tooling/release/release-source.mjs',
     'tooling/release/build-commands.mjs', 'tooling/release/package-release.mjs', 'tooling/release/package-release.sh',
     'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs', 'tooling/release/app-only-release.mjs']);
@@ -45,7 +56,7 @@ export function workflowInputs(text = '', job = 'build') {
     const start = lines.findIndex(line => line.trimEnd() === `  ${job}:`);
     if (start < 0) return { environment: [], packaging: [], unknown: [], unrecognized: Boolean(text) };
     let end = start + 1;
-    while (end < lines.length && !/^  [\w-]+:\s*$/.test(lines[end])) end++;
+    while (end < lines.length && !/^ {2}[\w-]+:\s*$/.test(lines[end])) end++;
     const body = lines.slice(start + 1, end);
     const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line) && !/^\s*-\s+name\s*:/.test(line))
         .map(line => line.trim().replace(/\s+#.*$/, '')).join('\n');
@@ -55,12 +66,14 @@ export function workflowInputs(text = '', job = 'build') {
     let block = [];
     const flush = () => {
         const value = normalize(block);
+        const reviewedVerification = (job === 'build-components' || job === 'publish')
+            && reviewedComponentVerificationSteps.has(hash(value));
         if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|prepare-hermes-bootstrap|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
         else if (/package-release\.(?:mjs|sh)|package-launcher-update|package-component-update|npm run pack:|npm (?:ci|install|prune)(?:\s|$)|electron-builder/.test(value)) packaging.push(value);
         // Step labels do not establish what a command does. Only a literal
         // test-only command or the existing artifact actions are recognized;
         // other changed execution content remains a review requirement.
-        else if (/^[- ]*(?:run|uses):/m.test(value)
+        else if (!reviewedVerification && /^[- ]*(?:run|uses):/m.test(value)
             && !(/^(?:- )?run: node --test(?: tests\/[A-Za-z0-9_./*-]+)+$/.test(value)
                 && value.split(/\s+/).filter(token => token.startsWith('tests/'))
                     .every(file => file.split('/').every(part => part && part !== '.' && part !== '..')))
@@ -68,7 +81,7 @@ export function workflowInputs(text = '', job = 'build') {
         block = [];
     };
     for (const line of body) {
-        if (/^      - /.test(line)) flush();
+        if (/^ {6}- /.test(line)) flush();
         block.push(line);
     }
     flush();
@@ -89,7 +102,7 @@ function configuration(contents) {
     }
     const component = contents[configPaths[3]] || '';
     return { layout: layout?.rules || null, launcher: parse(configPaths[1]), launcherLock: parse(configPaths[5]), workflow: workflowInputs(contents[configPaths[2]]),
-        componentWorkflow: workflowInputs(component, /^  build-components:\s*$/m.test(component) ? 'build-components' : 'publish'),
+        componentWorkflow: workflowInputs(component, /^ {2}build-components:\s*$/m.test(component) ? 'build-components' : 'publish'),
         publicationWorkflowHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update)|\bnpm\s+(?:ci|install|run\s+(?:build|pack:))|\belectron-builder\b)/.test(contents[configPaths[4]] || '') };
 }
 

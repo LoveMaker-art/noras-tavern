@@ -74,6 +74,66 @@ test('pure step-title changes do not alter actual packaging inputs', () => {
     assert.equal(createReleasePlan(inputs).mode, 'verification-only'); noEnvironment(createReleasePlan(inputs));
 });
 
+const actualComponentWorkflow = fs.readFileSync(path.join(root, '.github/workflows/publish-component-update.yml'), 'utf8');
+const legacyComponentInventory = "node -e 'const fs=require(\"node:fs\"),crypto=require(\"node:crypto\"),path=require(\"node:path\");const inventory={};for(const name of fs.readdirSync(\"artifacts\",{recursive:true})){const p=path.join(\"artifacts\",name);if(fs.statSync(p).isFile())inventory[name]={size:fs.statSync(p).size,sha256:crypto.createHash(\"sha256\").update(fs.readFileSync(p)).digest(\"hex\")};}fs.writeFileSync(path.join(process.env.RUNNER_TEMP,\"component-acceptance.json\"),JSON.stringify({schema:\"nora-component-acceptance/1\",commit:process.env.GITHUB_SHA,tag:process.env.GITHUB_REF_NAME,outcome:\"passed\",files:inventory},null,2)+\"\\n\")'";
+function componentStep(source, title) {
+    const start = source.indexOf('      - name: ' + title + '\n');
+    assert.ok(start >= 0, 'Missing real workflow step: ' + title);
+    const end = source.indexOf('\n      - ', start + 1);
+    return source.slice(start, end < 0 ? source.length : end);
+}
+const contractStep = componentStep(actualComponentWorkflow, 'Verify release contracts and update preservation');
+const frozenStep = componentStep(actualComponentWorkflow, 'Verify the frozen component delivery before native acceptance');
+const historicalComponentWorkflow = actualComponentWorkflow
+    .replace(contractStep, contractStep.replace(' tests/component-native-acceptance.test.mjs', ''))
+    .replace(frozenStep, frozenStep + '\n          ' + legacyComponentInventory);
+function componentWorkflowChange(before, after) {
+    const inputs = change('.github/workflows/publish-component-update.yml');
+    inputs.baseline.configuration.componentWorkflow = workflowInputs(before, 'build-components');
+    inputs.current.configuration.componentWorkflow = workflowInputs(after, 'build-components');
+    return inputs;
+}
+
+test('audited real component verification transition does not reconstruct unchanged products or environments', () => {
+    const inputs = componentWorkflowChange(historicalComponentWorkflow, actualComponentWorkflow);
+    for (const key of ['unknown', 'environment', 'packaging']) {
+        assert.deepEqual(inputs.baseline.configuration.componentWorkflow[key], inputs.current.configuration.componentWorkflow[key], key);
+    }
+    const plan = createReleasePlan(inputs);
+    assert.equal(plan.mode, 'verification-only'); assert.equal(plan.requiresReview, false);
+    assert.deepEqual(plan.build.modules, []); assert.deepEqual(plan.build.launcher, []); noEnvironment(plan);
+});
+
+test('audited component step content cannot hide changed commands, parameters, environment or escaped paths', () => {
+    const mutations = [
+        value => value.replace(contractStep, contractStep + '\n          bash tooling/release/unknown-builder.sh'),
+        value => value.replace('tests/component-native-acceptance.test.mjs', 'tests/../tooling/release/unknown-builder.mjs'),
+        value => value.replace('tests/component-native-acceptance.test.mjs', 'tests/new-unreviewed.test.mjs'),
+        value => value.replace(' artifacts "$GITHUB_REF_NAME" "$GITHUB_SHA" components', ' artifacts "$GITHUB_REF_NAME" "$GITHUB_SHA" --unchecked'),
+        value => value.replace(contractStep, contractStep.replace('        run: |', '        env:\n          NODE_OPTIONS: --import=./unknown-builder.mjs\n        run: |')),
+        value => value.replace(frozenStep, frozenStep + '\n          node -e "process.exit(0)"'),
+        value => value.replace(frozenStep, frozenStep.replace('shell: bash', 'shell: pwsh')),
+    ];
+    for (const mutate of mutations) {
+        const plan = createReleasePlan(componentWorkflowChange(actualComponentWorkflow, mutate(actualComponentWorkflow)));
+        assert.equal(plan.mode, 'review-required'); assert.equal(plan.requiresReview, true);
+        assert.match(plan.review.join('\n'), /Unclassified changed build step/);
+    }
+    const alteredLegacy = historicalComponentWorkflow.replace('schema:"nora-component-acceptance/1"', 'schema:"nora-component-acceptance/changed"');
+    assert.equal(createReleasePlan(componentWorkflowChange(historicalComponentWorkflow, alteredLegacy)).requiresReview, true);
+});
+
+test('reviewed component bodies are not a general exemption for another job or a changed build environment', () => {
+    const renamedTitles = actualComponentWorkflow.replace('Verify release contracts and update preservation', 'A different title')
+        .replace('Verify the frozen component delivery before native acceptance', 'Another title');
+    assert.equal(createReleasePlan(componentWorkflowChange(actualComponentWorkflow, renamedTitles)).mode, 'verification-only');
+    const otherJob = actualComponentWorkflow.replace('  build-components:', '  build:');
+    assert.ok(workflowInputs(otherJob).unknown.some(value => value.includes('component-native-acceptance')));
+    const alteredNode = actualComponentWorkflow.replace('node-version: 24', 'node-version: 26');
+    const plan = createReleasePlan(componentWorkflowChange(actualComponentWorkflow, alteredNode));
+    assert.equal(plan.mode, 'full'); assert.deepEqual(plan.build.environment.hermesRuntime, [...PLATFORMS].sort());
+});
+
 test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{
     const plan=createReleasePlan(change('tooling/release/compatibility/v2.5.4.json'));
     assert.equal(plan.requiresReview,false);assert.equal(plan.mode,'components');assert.equal(plan.build.metadata,true);
