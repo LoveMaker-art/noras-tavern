@@ -234,7 +234,8 @@
     "protected_data_files": 606,
     "verified_before_final_merge": true,
     "original_checkout_modified": false,
-    "formal_data_or_services_modified": false
+    "formal_data_or_services_modified": false,
+    "verified_after_merge": true
   },
   "remaining_direct_blockers": [],
   "limitations": [
@@ -242,5 +243,6 @@
     "No new paid provider/ClawChat end-to-end execution in the merge phase; prior real Nora acceptance remains under its recorded scope.",
     "Permanent file ACL denial is still a real error after bounded retry; no permission changes or data deletion."
   ],
-  "local_main_state": "validated; local main reference will be advanced only after merge commit; exact result recorded in integration report"
+  "local_main_state": "merged locally; both sealed branch and fixed main ancestors verified; source identical to final tested freeze",
+  "merge_commit": "89c5b0324a3c54618978fcaf7fb4285713fcd5b3"
 }
