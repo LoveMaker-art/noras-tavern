@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createMvuUpdateObserver } from '../public/scripts/nora-compat/mvu-update-observer.js';
 import * as protocol from '../public/scripts/nora-compat/mvu-protocol.js';
+import { mvuSettingsForExecution } from '../public/scripts/nora-compat/mvu-settings.js';
 import { isMvuUpdateInstructionEntry } from '../public/scripts/nora-compat/mvu-compatibility.js';
 import { cardForgeRoot, requireCardForge } from './nora-cardforge-fixture.mjs';
 
@@ -15,7 +16,7 @@ import { cardForgeRoot, requireCardForge } from './nora-cardforge-fixture.mjs';
 // are real source. Only model transport, storage and browser events are fakes.
 const source = process.env.NORA_MVU_SOURCE_DIR;
 const helper = fileURLToPath(new URL('../../../native-extensions/nora-mvu/mvu-zod.js', import.meta.url));
-function fixture({ inline = false, response = '', zod = false, nora = false, schemaExpected = false, realRequest = false, toolSupport = true, message = 'A quiet walk through the town.', initial = { score: 50 } } = {}) {
+function fixture({ consent = { noticeVersion: 1, enabled: true }, inline = false, response = '', zod = false, nora = false, schemaExpected = false, realRequest = false, toolSupport = true, message = 'A quiet walk through the town.', initial = { score: 50 } } = {}) {
     const require = createRequire(path.join(source, 'package.json'));
     const ts = require('typescript');
     const lodash = require('lodash');
@@ -33,11 +34,14 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
     const snapshot = { stat_data: structuredClone(initial), initialized_lorebooks: {} };
     const chat = [snapshot, {}, { message, name: 'guide', role: 'assistant' }];
     const entries = nora ? [{ comment: '[nora_mvu/1]', enabled: true }] : [];
-    const bridge = { protocol, schemaExpected: () => schemaExpected, isUpdateEntry: isMvuUpdateInstructionEntry };
+    let modelChoice = consent;
+    const bridge = { protocol, schemaExpected: () => schemaExpected, isUpdateEntry: isMvuUpdateInstructionEntry,
+        settingsForExecution: value => mvuSettingsForExecution(value, modelChoice) };
     const settings = { 更新方式: inline ? '随AI输出' : '额外模型解析',
         兼容性: { sendas不视为user消息: true, 更新到聊天变量: false },
         额外模型解析配置: { 应答格式: '工具调用', 启用自动请求: true, 模型来源: '与插头相同', 破限方案: '使用当前预设', 世界书条目白名单正则: '', 世界书条目黑名单正则: '' }, 通知: { 变量更新出错: false } };
     const store = { settings, effective_settings: settings, character_settings: { is_valid: false }, runtimes: { debug: {} }, versions: { tavernhelper: '4.8.13' } };
+    Object.defineProperty(store, 'effective_settings', { get: () => bridge.settingsForExecution(settings) });
     let failSave = false, transportError = null;
     const context = vm.createContext({
         _: lodash, z, YAML: require('yaml'), console: { log() {}, info() {}, warn: (...args) => warnings.push(args) },
@@ -125,6 +129,7 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
     const runtime = load(path.join(source, 'src/function/update/on_message_received.ts'));
     if (zod) load(helper).registerMvuSchema(typeof zod === 'function' ? zod(z) : z.object({ score: z.number() }));
     return { updater, observer, requests, writes, reports, emitted, chat, warnings, settings, entries, transportPrompts, bridge,
+        setConsent: choice => { modelChoice = choice; },
         registerSchema: () => load(helper).registerMvuSchema(z.object({ score: z.number() })),
         readinessListeners: () => (events.get('nora_mvu_schema_ready') || []).length,
         run: options => runtime.onMessageReceived(2, options),
@@ -142,6 +147,21 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
 }
 
 test('pinned MVU execution / persistence / observation result contract', { skip: !source && 'Set NORA_MVU_SOURCE_DIR to a pinned patched checkout' }, async t => {
+    await t.test('unselected and declined extra-model use preserves inline execution without a provider request', async () => {
+        for (const consent of [null, { noticeVersion: 1, enabled: false }]) {
+            const f = fixture({ consent, message: 'A quiet walk. <UpdateVariable>_.set("score",51);</UpdateVariable>' });
+            await f.run();
+            assert.equal(f.requests.length, 0);
+            assert.equal(f.settings.更新方式, '额外模型解析', 'saved selection stays intact');
+            assert.equal(f.chat[2].stat_data.score, 51, 'base inline variables still work');
+        }
+    });
+    await t.test('turning extra-model use off after the first invalid result prevents a second request', async () => {
+        let f;
+        f = fixture({ response: () => { f.setConsent({ noticeVersion: 1, enabled: false }); return 'invalid variable response'; } });
+        await f.run();
+        assert.equal(f.requests.length, 1);
+    });
     for (const direct of [false, true]) {
         await t.test(`host ownership rejects before model/parser/storage: direct=${direct}`, async () => {
             const f = fixture({ response: '<UpdateVariable>_.set("score",51);</UpdateVariable>' });
@@ -210,7 +230,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
     for (const zod of [false, true]) {
         for (const inline of [false, true]) {
             await t.test(`accepted same-value set: zod=${zod} inline=${inline}`, async () => {
-                const command = "_.set('score', 50);";
+                const command = '_.set(\'score\', 50);';
                 const f = fixture({ zod, inline, response: command, ...(inline ? { message: command } : {}) });
                 await f.run();
                 assert.equal(f.requests.length, inline ? 0 : 1, 'same-value assignment must not trigger a repair request');
@@ -224,7 +244,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
                 assert.equal(f.reports.length, 0);
             });
             await t.test(`accepted changed set: zod=${zod} inline=${inline}`, async () => {
-                const command = "_.set('score', 55);";
+                const command = '_.set(\'score\', 55);';
                 const f = fixture({ zod, inline, response: command, ...(inline ? { message: command } : {}) });
                 await f.run();
                 assert.equal(f.terminal().outcome, 'updated');
@@ -247,7 +267,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         assert.equal(f.observer.status().updateOperational, null);
         assert.equal(f.reports.length, 0);
     });
-    for (const response of ['nothing to update', '<JSONPatch>broken</JSONPatch>', '<JSONPatch>[]</JSONPatch><JSONPatch>broken</JSONPatch>', "_.set('missing', 4);"]) {
+    for (const response of ['nothing to update', '<JSONPatch>broken</JSONPatch>', '<JSONPatch>[]</JSONPatch><JSONPatch>broken</JSONPatch>', '_.set(\'missing\', 4);']) {
         await t.test(`invalid extra result must not become no-change: ${response}`, async () => {
             const f = fixture({ response }); await f.run();
             assert.equal(f.terminal().outcome, 'rejected');
@@ -257,7 +277,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         });
     }
     await t.test('Zod rejection feeds the second attempt without notifications', async () => {
-        const f = fixture({ zod: true, response: n => n === 1 ? "_.set('score', 'wrong');" : "_.set('score', 52);" });
+        const f = fixture({ zod: true, response: n => n === 1 ? '_.set(\'score\', \'wrong\');' : '_.set(\'score\', 52);' });
         await f.run();
         assert.equal(f.terminal().outcome, 'updated');
         assert.match(f.requests[1].repair_feedback, /number/i);
@@ -265,7 +285,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
     });
     for (const inline of [false, true]) {
         await t.test(`save rejection cannot report success or retry delta: inline=${inline}`, async () => {
-            const command = "_.add('score', 1);";
+            const command = '_.add(\'score\', 1);';
             const f = fixture({ inline, response: command, ...(inline ? { message: command } : {}) });
             f.failSave(true); await f.run();
             assert.equal(f.terminal().outcome, 'persistence-unknown');
@@ -274,7 +294,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
             assert.equal(f.observer.status().stateChanged, null);
         });
         await t.test(`world changed inside pre-save hook: inline=${inline}`, async () => {
-            const command = "_.set('score', 55);";
+            const command = '_.set(\'score\', 55);';
             const f = fixture({ inline, response: command, ...(inline ? { message: command } : {}) });
             f.on(f.events.BEFORE_MESSAGE_UPDATE, f.switchWorld);
             await f.run();
@@ -298,7 +318,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
     });
     for (const failure of ['ack', 'backend']) {
         await t.test(`queued browser writes are insufficient: ${failure}`, async () => {
-            const f = fixture({ response: "_.add('score', 1);" });
+            const f = fixture({ response: '_.add(\'score\', 1);' });
             f.failSave(failure); await f.run();
             assert.equal(f.terminal().outcome, 'persistence-unknown');
             assert.equal(f.requests.length, 1);
@@ -306,7 +326,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         });
     }
     for (const inline of [false, true]) await t.test(`legacy external consumer persists without inventing acceptance: inline=${inline}`, async () => {
-        const command = "_.set('score', 51);";
+        const command = '_.set(\'score\', 51);';
         const f = fixture({ inline, response: command, ...(inline ? { message: command } : {}) });
         f.on(f.events.COMMAND_PARSED + '_for_zod', (variables, commands) => { variables.stat_data.score = 51; commands.length = 0; });
         await f.run();
@@ -320,7 +340,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         assert.equal(f.reports.at(-1).kind, 'mvu-update-unverified');
     });
     await t.test('direct inline entry also reports its resolved legacy protocol', async () => {
-        const f = fixture({ inline: true, message: "_.set('score',51);" });
+        const f = fixture({ inline: true, message: '_.set(\'score\',51);' });
         f.on(f.events.COMMAND_PARSED + '_for_zod', (variables, commands) => { variables.stat_data.score = 51; commands.length = 0; });
         await f.runInlineDirect();
         assert.equal(f.terminal().protocol, 'legacy');
@@ -339,7 +359,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         assert.equal(f.requests.length, 1);
     });
     await t.test('state equality is measured after final card hooks', async () => {
-        const f = fixture({ response: "_.set('score', 55);" });
+        const f = fixture({ response: '_.set(\'score\', 55);' });
         f.on(f.events.VARIABLE_UPDATE_ENDED + '_for_zod', variables => { variables.stat_data.score = 50; });
         await f.run();
         assert.equal(f.terminal().outcome, 'unchanged');
@@ -348,7 +368,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
     });
     for (const inline of [false, true]) {
         await t.test(`legacy partial update commits once without repeating accepted deltas: inline=${inline}`, async () => {
-            const command = "_.add('score', 5); _.set('missing', 5);";
+            const command = '_.add(\'score\', 5); _.set(\'missing\', 5);';
             const f = fixture({ inline, response: command, ...(inline ? { message: command } : {}) });
             await f.run();
             assert.equal(f.terminal().outcome, 'partial');
@@ -362,7 +382,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
             assert.equal(f.emitted.filter(([name]) => name === f.events.TRANSACTION_FAILED).length, 0);
         });
         await t.test(`message edited during execution is not overwritten: inline=${inline}`, async () => {
-            const command = "_.set('score', 55);";
+            const command = '_.set(\'score\', 55);';
             const f = fixture({ inline, response: command, ...(inline ? { message: command } : {}) });
             f.on(f.events.VARIABLE_UPDATE_ENDED, () => { f.chat[2].message = 'Edited by user'; });
             await f.run();
@@ -378,7 +398,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         assert.deepEqual(f.chat[2].stat_data.items, [2, 3]);
     });
     await t.test('legacy value-with-description stays unchanged without losing its description', async () => {
-        const f = fixture({ initial: { score: [50, 'Current score'] }, response: "_.set('score', 50);" });
+        const f = fixture({ initial: { score: [50, 'Current score'] }, response: '_.set(\'score\', 50);' });
         await f.run();
         assert.equal(f.terminal().outcome, 'unchanged');
         assert.deepEqual(f.chat[2].stat_data.score, [50, 'Current score']);
@@ -392,7 +412,7 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
     await t.test('Nora lore filter preserves mixed settings and unmarked secondary books', async () => {
         const f = fixture({ nora: true });
         for (const extra of [false, true]) {
-            const mixed = { comment: 'Character setting', content: "Kind guide; _.set('score', 1);", world: 'primary' };
+            const mixed = { comment: 'Character setting', content: 'Kind guide; _.set(\'score\', 1);', world: 'primary' };
             const lores = { characterLore: [mixed, { comment: '[mvu_update]', content: 'rules' }], globalLore: [{ comment: 'Global', content: 'town' }], personaLore: [], chatLore: [] };
             await f.filter(lores, extra);
             assert.ok(lores.characterLore.includes(mixed));
@@ -422,8 +442,8 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         assert.doesNotMatch(messages[1].content, /<UpdateVariable>/);
     });
     await t.test('extra-model parses only its own payload while hooks retain full narrative', async () => {
-        const story = "The guide rests. <UpdateVariable>_.add('score',1);</UpdateVariable>";
-        const f = fixture({ message: story, response: "_.add('score',1);" });
+        const story = 'The guide rests. <UpdateVariable>_.add(\'score\',1);</UpdateVariable>';
+        const f = fixture({ message: story, response: '_.add(\'score\',1);' });
         let hookText;
         f.on(f.events.COMMAND_PARSED, (_variables, _commands, text) => { hookText = text; });
         await f.run();
@@ -495,7 +515,7 @@ test('built-in extra-model requests resolve the must task reference for both pro
         await t.test(`nora=${nora} retry=${retry}`, async () => {
             const accepted = nora
                 ? protocol.encodeNoraEnvelope({ protocol: 'nora-mvu/1', operations: [{ op: 'increment', path: ['score'], amount: 2 }] })
-                : "<UpdateVariable>_.set('score', 52);</UpdateVariable>";
+                : '<UpdateVariable>_.set(\'score\', 52);</UpdateVariable>';
             const f = fixture({ nora, realRequest: true, response: attempt => retry && attempt === 1 ? 'A quiet walk continues.' : accepted });
             f.settings.额外模型解析配置.应答格式 = '聊天消息';
             f.settings.额外模型解析配置.破限方案 = '使用内置破限';
@@ -603,7 +623,7 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
     }
     for (const inline of [false, true]) for (const zod of [false, z => z.object({ score: z.number(), items: z.array(z.string()), people: z.record(z.string(), z.string()) })]) {
         await t.test(`six operations and literal values: inline=${inline} Zod=${Boolean(zod)}`, async () => {
-            const literal = "_.set('score',999); <JSONPatch>[]</JSONPatch> {{user}}";
+            const literal = '_.set(\'score\',999); <JSONPatch>[]</JSONPatch> {{user}}';
             const response = envelope([
                 { op: 'set', path: ['people', 'a.b/[x]'], value: literal },
                 { op: 'increment', path: ['score'], amount: 2 },
@@ -632,7 +652,7 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
             assert.equal(f.requests.length, inline ? 0 : 2);
         });
         await t.test(`Nora old commands are not a fallback: inline=${inline}`, async () => {
-            const response = "_.set('score',999);";
+            const response = '_.set(\'score\',999);';
             const f = fixture({ nora: true, inline, response, ...(inline ? { message: response } : {}) }); await f.run();
             assert.equal(f.terminal().persisted, false);
             assert.ok(!f.chat[2].stat_data || f.chat[2].stat_data.score === 50);
@@ -644,7 +664,7 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
             assert.equal(f.observer.status().updatePhase, 'failed');
         });
         await t.test(`legacy does not require Nora schema registration: inline=${inline}`, async () => {
-            const command = "_.set('score', 51);";
+            const command = '_.set(\'score\', 51);';
             const f = fixture({ inline, schemaExpected: true, response: command, ...(inline ? { message: command } : {}) });
             await f.run();
             assert.equal(f.terminal().persisted, true);
@@ -659,7 +679,7 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
         await f.run(); assert.equal(f.requests.length, 2); assert.equal(f.chat[2].stat_data.score, 55);
     });
     await t.test('same update event is coalesced and later duplicates are ignored', async () => {
-        const f = fixture({ response: "_.add('score', 1);" });
+        const f = fixture({ response: '_.add(\'score\', 1);' });
         await Promise.all([f.run(), f.run()]); await f.run();
         assert.equal(f.requests.length, 1); assert.equal(f.chat[2].stat_data.score, 51);
     });
@@ -679,7 +699,7 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
             await t.test(`successful manual retry replaces from the previous turn, without accumulating twice: ${label}`, async () => {
                 const f = fixture({ nora, zod, message, response: () => {
                     assert.equal(f.chat[2].stat_data.score, 51, 'keep the current result while waiting for its replacement');
-                    return nora ? envelope([{ op: 'increment', path: ['score'], amount: 2 }]) : "_.add('score',2);";
+                    return nora ? envelope([{ op: 'increment', path: ['score'], amount: 2 }]) : '_.add(\'score\',2);';
                 } });
                 Object.assign(f.chat[2], { stat_data: { score: 51 }, schema: {}, initialized_lorebooks: {} });
                 await f.run({ force: true });
@@ -707,9 +727,34 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
     await t.test('unsupported tool mode rejects Nora but reports native inline fallback', async () => {
         const nora = fixture({ nora: true, toolSupport: false }); await nora.run();
         assert.equal(nora.terminal().code, 'MVU_TOOL_UNSUPPORTED'); assert.equal(nora.requests.length, 0);
-        const legacy = fixture({ toolSupport: false, message: "_.set('score',51);" }); await legacy.run();
+        const legacy = fixture({ toolSupport: false, message: '_.set(\'score\',51);' }); await legacy.run();
         assert.equal(legacy.requests.length, 0);
         assert.equal(legacy.observer.status().updateMode, 'inline');
         assert.match(legacy.observer.status().fallbackReason, /Extra-model support unavailable/);
     });
+});
+
+
+test('actual pinned MVU effective-settings getter gates after card overrides without changing saved settings', { skip: !source }, () => {
+    const require = createRequire(path.join(source, 'package.json'));
+    const ts = require('typescript');
+    const file = ts.createSourceFile('store.ts', fs.readFileSync(path.join(source, 'src/store.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+    let expression;
+    function visit(node) {
+        if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'effective_settings') expression = node.initializer.arguments[0].getText(file);
+        ts.forEachChild(node, visit);
+    }
+    visit(file); assert.ok(expression);
+    const raw = { 更新方式: '额外模型解析', 额外模型解析配置: { 启用自动请求: true, 模型名称: 'saved-model' }, 兼容性: {} };
+    let choice;
+    const context = vm.createContext({ _: require('lodash'), klona: structuredClone, settings: { value: raw },
+        character_settings: { value: { is_valid: true, draft: { 更新方式: '额外模型解析', 额外模型解析配置: { 启用自动请求: true } } } },
+        window: { parent: { NoraMvu: { settingsForExecution: value => mvuSettingsForExecution(value, choice) } } } });
+    vm.runInContext(ts.transpileModule(`globalThis.readEffective = ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+    assert.equal(context.readEffective().更新方式, '随AI输出');
+    assert.equal(raw.更新方式, '额外模型解析');
+    choice = { noticeVersion: 1, enabled: true };
+    assert.equal(context.readEffective().更新方式, '额外模型解析');
+    choice.enabled = false;
+    assert.equal(context.readEffective().额外模型解析配置.启用自动请求, false);
 });

@@ -96,6 +96,19 @@ def _stable_id(prefix: str, *parts: object) -> str:
     return f"{prefix}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:14]}"
 
 
+def _replace_atomic_file(source: Path, destination: Path) -> None:
+    """Allow short Windows reader sharing conflicts without deleting the target."""
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            if getattr(error, "winerror", None) not in {5, 32, 33} or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.025)
+
+
 def _atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp.{os.getpid()}.{threading.get_ident()}")
@@ -104,7 +117,7 @@ def _atomic_text(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        _replace_atomic_file(tmp, path)
     finally:
         try:
             tmp.unlink()
@@ -869,7 +882,7 @@ def _atomic_bytes(path: Path, content: bytes) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _replace_atomic_file(temporary, path)
     finally:
         if created:
             try:

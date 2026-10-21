@@ -550,7 +550,7 @@ test('embedded settings guard still rejects writes before its runtime exists', (
 test('MVU variable model suppresses update instructions only from the story model prompt', () => {
     const updateRule = { comment: '[mvu_update] variable rules', content: 'return <UpdateVariable>...</UpdateVariable>' };
     const variableReference = { comment: '变量列表', content: '<status_current_variables>' };
-    const extensionSettings = {
+    const extensionSettings = { nora_mvu: { modelUseConsent: { noticeVersion: 1, enabled: true } },
         mvu_settings: createHeadlessMvuSettings({
             '更新方式': '额外模型解析',
             '额外模型解析配置': { '启用自动请求': true },
@@ -559,7 +559,7 @@ test('MVU variable model suppresses update instructions only from the story mode
 
     assert.equal(isNoraMvuUpdateInstructionEntry(updateRule), true);
     assert.equal(isNoraMvuUpdateInstructionEntry(variableReference), false);
-    const mixed = { comment: 'Guide', content: "A guide repairs machines. _.set('score', 5);" };
+    const mixed = { comment: 'Guide', content: 'A guide repairs machines. _.set(\'score\', 5);' };
     assert.equal(isNoraMvuUpdateInstructionEntry(mixed), false);
     assert.equal(isNoraMvuUpdateInstructionEntry({ ...mixed, comment: '[mvu_update] Guide', extensions: { nora_mvu_compatibility: { source: 'legacy-update-content' } } }), false);
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, {
@@ -589,7 +589,7 @@ test('legacy MVU update rules stay in the story prompt when upstream split mode 
         content: '<status_current_variables>\nReturn <UpdateVariable> commands.',
         disable: false,
     };
-    const extensionSettings = {
+    const extensionSettings = { nora_mvu: { modelUseConsent: { noticeVersion: 1, enabled: true } },
         mvu_settings: createHeadlessMvuSettings({
             '更新方式': '额外模型解析',
             '额外模型解析配置': { '启用自动请求': true },
@@ -615,7 +615,7 @@ test('MVU prompt routing follows the primary lorebook exactly like the pinned up
         comment: '[mvu_update] helper',
         content: '<UpdateVariable>',
     };
-    const extensionSettings = { mvu_settings: createHeadlessMvuSettings({}) };
+    const extensionSettings = { nora_mvu: { modelUseConsent: { noticeVersion: 1, enabled: true } }, mvu_settings: createHeadlessMvuSettings({}) };
 
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(legacyRule, {
         extensionSettings,
@@ -631,16 +631,16 @@ test('MVU prompt routing follows the primary lorebook exactly like the pinned up
 
 test('model UI is hidden for ordinary cards and labels MVU state precisely', () => {
     assert.equal(renderMvuModelSection({ supported: false }, escapeHtml), '');
-    assert.match(renderMvuModelSection({ supported: true, runtimeReady: true, initialized: false, variableModel: '与插头相同' }, escapeHtml), /运行时已加载[\s\S]*跟随文本模型[\s\S]*data-mvu-config/);
-    assert.match(renderMvuModelSection({ supported: true, initialized: true, variableModel: '自定义', variableModelName: '<fast>' }, escapeHtml), /已初始化[\s\S]*&lt;fast&gt;/);
-    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateOperational: true, variableModel: '与插头相同' }, escapeHtml), /更新正常/);
-    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateOperational: false, variableModel: '与插头相同' }, escapeHtml), /更新未生效/);
-    const partial = renderMvuModelSection({ supported: true, initialized: true, updateOperational: false,
+    assert.match(renderMvuModelSection({ supported: true, enabled: true, runtimeReady: true, initialized: false, variableModel: '与插头相同' }, escapeHtml), /运行时已加载[\s\S]*跟随文本模型[\s\S]*data-mvu-config/);
+    assert.match(renderMvuModelSection({ supported: true, enabled: true, initialized: true, variableModel: '自定义', variableModelName: '<fast>' }, escapeHtml), /已初始化[\s\S]*&lt;fast&gt;/);
+    assert.match(renderMvuModelSection({ supported: true, enabled: true, initialized: true, updateOperational: true, variableModel: '与插头相同' }, escapeHtml), /更新正常/);
+    assert.match(renderMvuModelSection({ supported: true, enabled: true, initialized: true, updateOperational: false, variableModel: '与插头相同' }, escapeHtml), /更新未生效/);
+    const partial = renderMvuModelSection({ supported: true, enabled: true, initialized: true, updateOperational: false,
         updatePhase: 'partial', lastUpdatePersisted: true, variableModel: '与插头相同' }, escapeHtml);
     assert.match(partial, /已初始化/);
     assert.doesNotMatch(partial, /部分更新|更新正常|更新未生效|is-error/);
-    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateProtocol: 'legacy-adaptable', variableModel: '与插头相同' }, escapeHtml), /兼容模式/);
-    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateProtocol: 'initialization-only', variableModel: '与插头相同' }, escapeHtml), /仅初始化/);
+    assert.match(renderMvuModelSection({ supported: true, enabled: true, initialized: true, updateProtocol: 'legacy-adaptable', variableModel: '与插头相同' }, escapeHtml), /兼容模式/);
+    assert.match(renderMvuModelSection({ supported: true, enabled: true, initialized: true, updateProtocol: 'initialization-only', variableModel: '与插头相同' }, escapeHtml), /仅初始化/);
     const inline = renderMvuModelSection({ supported: true, enabled: false, variableModel: '自定义' }, escapeHtml, { model: 'mvu-fast' });
     assert.match(inline, /正文解析/);
     assert.doesNotMatch(inline, /data-mvu-source|data-mvu-config|已关闭/);
@@ -704,17 +704,21 @@ test('MVU enabled state is controlled only by extra analysis and automatic reque
     assert.equal(isMvuVariableModelEnabled(createHeadlessMvuSettings({ '更新方式': '随AI输出' })), false);
 });
 
-test('headless settings migration enables the bounded variable-model transaction once', () => {
+test('headless first adoption preserves existing model settings and does not create consent', () => {
     let saves = 0;
     const context = {
         extensionSettings: {
-            mvu_settings: { '更新方式': '随AI输出' },
+            mvu_settings: { '更新方式': '随AI输出', '额外模型解析配置': { '模型来源': '自定义', '模型名称': 'saved-model', '请求次数': 5 } },
         },
         saveSettingsDebounced: () => { saves += 1; },
     };
 
     const first = initializeHeadlessMvuSettings(context);
-    assert.equal(first['更新方式'], '额外模型解析');
+    assert.equal(first['更新方式'], '随AI输出');
+    assert.equal(first['额外模型解析配置']['模型来源'], '自定义');
+    assert.equal(first['额外模型解析配置']['模型名称'], 'saved-model');
+    assert.equal(first['额外模型解析配置']['请求次数'], 5);
+    assert.equal(context.extensionSettings.nora_mvu.modelUseConsent, undefined);
     assert.equal(first['额外模型解析配置']['最大上下文token数'], 30000);
     assert.equal(first['额外模型解析配置']['最大回复token数'], 4000);
     assert.equal(context.extensionSettings.nora_mvu.settingsVersion, 5);

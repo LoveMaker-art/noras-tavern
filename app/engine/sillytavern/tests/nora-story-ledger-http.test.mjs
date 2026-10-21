@@ -141,6 +141,8 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(blockedConfig.status, 409);
     assert.equal((await blockedConfig.json()).code, 'NORA_CHAT_OPERATION_BUSY');
     activity.end(scope, generating.token);
+    const optedIn = await post('/ledger/configure', { ...scope, enabled: true });
+    assert.equal(optedIn.status, 200);
     await runtime.plugin.schedule(scope);
     const status = await (await post('/ledger/status', scope)).json();
     assert.equal(status.pending.coveredTurns, 15);
@@ -148,10 +150,9 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(Object.keys(status.pending.ledger).length, 7);
     assert.equal(status.active, null);
     await until(() => readProfile()?.shared_story_memory?.[0]?.status === 'prepared');
-    await until(() => {
-        try { return fs.readFileSync(path.join(root, 'memories/MEMORY.md'), 'utf8').includes('player found the map'); }
-        catch { return false; }
-    });
+    await requestStoryProjection(directories);
+    assert.deepEqual(readProfile().shared_story_memory[0].events, ledger.timeline);
+    assert.equal(fs.existsSync(path.join(root, 'memories/MEMORY.md')), false, '1.31 retains the saved plot source without resident MEMORY injection');
     assert.equal(status.active, null, 'viewing/syncing a saved prepared summary must not activate its history lock');
     assert.equal(providerRequests.length, 1, 'background adapter called the fixture model once');
     assert.equal(providerRequests[0].max_tokens, 1000);
@@ -174,22 +175,22 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(providerRequests[1].messages[0].content, renderLedger(status.pending));
     assert.equal('nora_story_ledger' in providerRequests[1], false, 'internal proof never sent to provider');
     await until(() => readProfile()?.shared_story_memory?.[0]?.covered_turns === 15);
-    // Profile persistence precedes the asynchronous Hermes projection. Wait
-    // for the observable memory result, not merely the earlier JSON commit.
-    await until(() => {
-        try { return fs.readFileSync(path.join(root, 'memories/MEMORY.md'), 'utf8').includes('player found the map'); }
-        catch { return false; }
-    });
-    assert.match(fs.readFileSync(path.join(root, 'memories/MEMORY.md'), 'utf8'), /player found the map/);
+    // Wait for the observable derived USER result separately from the earlier
+    // canonical JSON commit; plot remains available from the archived source.
     await requestStoryProjection(directories);
+    assert.deepEqual(readProfile().shared_story_memory[0].events, ledger.timeline);
+    assert.equal(fs.existsSync(path.join(root, 'memories/MEMORY.md')), false);
     const profileBeforeRestart = readProfile();
-    fs.unlinkSync(path.join(root, 'memories/MEMORY.md'));
+    const userPath = path.join(root, 'memories/USER.md'), userBeforeRestart = fs.readFileSync(userPath);
+    fs.unlinkSync(userPath);
     const recovered = spawnSync(process.execPath, ['--input-type=module', '-e',
         `import { resolveStoryLedger } from ${JSON.stringify(new URL('../src/nora-story-ledger/runtime.js', import.meta.url).href)};
          resolveStoryLedger(${JSON.stringify(directories)});`], { env: process.env, encoding: 'utf8', timeout: 5000 });
     assert.equal(recovered.status, 0, recovered.stderr);
-    assert.match(fs.readFileSync(path.join(root, 'memories/MEMORY.md'), 'utf8'), /player found the map/);
-    assert.deepEqual(readProfile(), profileBeforeRestart, 'first use after a restart repairs memory without a new revision or model call');
+    assert.deepEqual(fs.readFileSync(userPath), userBeforeRestart);
+    assert.equal(fs.existsSync(path.join(root, 'memories/MEMORY.md')), false);
+    assert.deepEqual(readProfile(), profileBeforeRestart, 'first use after a restart repairs USER without a new revision or model call');
+    assert.equal(providerRequests.length, 2, 'repairing derived files does not call the fixture model');
 
     const before = fs.readFileSync(chatFile, 'utf8');
     const forged = structuredClone(messages); forged[0].mes = 'overwrite covered history';
@@ -301,5 +302,5 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(fs.existsSync(ledgerStatePath(root, scope)), false, 'World deletion also removes its private ledger');
     await until(() => readProfile()?.shared_story_memory?.length === 0);
     await requestStoryProjection(directories);
-    assert.doesNotMatch(fs.readFileSync(path.join(root, 'memories/MEMORY.md'), 'utf8'), /player found the map/);
+    assert.equal(fs.existsSync(path.join(root, 'memories/MEMORY.md')), false);
 });

@@ -12,7 +12,7 @@ const memory = () => ({ timeline: ['Borrowed a book'], facts: [], open_threads: 
 const input = { previous: {}, segment: { startTurn: 1, endTurn: 1, text: '[Turn 1 · User]\nBorrow a book.\n[Turn 1 · Story]\nDone.' }, entities: ['__user__'], language: 'en' };
 const model = { custom_url: 'http://127.0.0.1:1/v1', custom_model: 'test', openai_max_context: 8192, openai_max_tokens: 1000 };
 function fixture(merge, extra = {}) {
-    let state;
+    let state = { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } };
     const messages = Array.from({ length: 16 }, (_, i) => [{ is_user: true, mes: `Action ${i}` }, { is_user: false, mes: `Reply ${i}` }]).flat();
     const plugin = createStoryLedger({ readChat: () => ({ messages, entities: ['__user__'] }), readState: () => structuredClone(state),
         writeState: (_, next) => { state = structuredClone(next); }, merge, ...extra });
@@ -271,7 +271,7 @@ test('length and oversized complete outputs preserve the preceding valid batch a
     for (const kind of ['length', 'storage-budget']) {
         const messages = Array.from({ length: 62 }, (_, i) => ({ is_user: i % 2 === 0, mes: `original ${i}` }));
         const original = structuredClone(messages);
-        let state, calls = 0;
+        let state = { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } }, calls = 0;
         const oversized = memory();
         oversized.facts = Array.from({ length: 24 }, (_, i) => ({ id: `f${i}`, content: 'x'.repeat(220), known_by: [] }));
         oversized.secrets = Array.from({ length: 16 }, (_, i) => ({ id: `s${i}`, content: 'y'.repeat(220), known_by: [] }));

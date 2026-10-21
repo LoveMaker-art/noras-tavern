@@ -4,6 +4,7 @@ import {
 } from '../nora-compat/mvu-compatibility.js';
 import { inspectPromptTemplateCompatibility } from '../nora-compat/prompt-template-compatibility.js';
 import { worldHelperIdentity } from '../nora-worlds/world-helper-identity.js';
+import { translate } from '../nora-i18n/core.js';
 
 const HELPER_EXTENSION = 'third-party/JS-Slash-Runner';
 const MVU_EXTENSION = 'third-party/nora-mvu';
@@ -434,28 +435,42 @@ export function createStCardAdapter(runtime, { saveUiSettings, helperIdentity = 
             description: String(description || '').trim(), personality: String(personality || '').trim() } });
     }
 
-    async function deleteCharacterCards({ avatars, deleteChats = true }) {
+    async function deleteCharacterCards({ avatars, revisions = {} }) {
         const current = runtime();
         if (typeof current.getRequestHeaders !== 'function' || typeof current.getCharacters !== 'function') {
             throw new Error('故事运行核心缺少角色卡删除能力。');
         }
         const normalized = [...new Set((avatars || []).map((avatar) => String(avatar || '').trim()).filter(Boolean))];
         if (!normalized.length) throw new Error('At least one character avatar is required for deletion.');
-        for (const avatar of normalized) {
-            const response = await fetch('/api/characters/delete', {
-                method: 'POST',
-                headers: current.getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar, delete_chats: Boolean(deleteChats) }),
-                cache: 'no-cache',
-            });
-            if (!response.ok) throw new Error((await response.text()) || `Character deletion failed (${response.status}).`);
+        if (normalized.some(avatar => typeof revisions[avatar] !== 'string' || !revisions[avatar])) {
+            throw new Error(translate("角色卡删除失败"));
         }
-        await current.getCharacters();
+        const result = { removed: [], retained: [] };
+        try {
+            for (const avatar of normalized) {
+                const response = await fetch('/api/nora-worlds-v2/library/cards/manage', {
+                    method: 'POST',
+                    headers: current.getRequestHeaders(),
+                    body: JSON.stringify({ action: 'delete', avatar, revision: revisions[avatar] }),
+                    cache: 'no-cache',
+                });
+                const outcome = await response.json();
+                if (!response.ok) throw Object.assign(new Error(outcome.detail || outcome.error?.message || `Character deletion failed (${response.status}).`), { code: outcome.error?.code });
+                if (!Array.isArray(outcome.removed) || !Array.isArray(outcome.retained)) throw new Error(translate("角色卡删除失败"));
+                result.removed.push(...outcome.removed);
+                result.retained.push(...outcome.retained);
+            }
+            await current.getCharacters();
+            return result;
+        } catch (error) {
+            error.deletionResult = result;
+            throw error;
+        }
     }
 
     async function importLibraryCard(file) {
         const format = file?.name?.split('.').pop()?.toLowerCase();
-        if (!['png', 'json', 'charx', 'yaml', 'yml'].includes(format)) throw new Error('请选择 PNG、JSON、CHARX 或 YAML 角色卡。');
+        if (!['png', 'json', 'charx', 'yaml', 'yml', 'byaf'].includes(format)) throw new Error('请选择 PNG、JSON、CHARX 或 YAML 角色卡。');
         if (!file.size || file.size > 32 * 1024 * 1024) throw new Error('请选择不超过 32 MB 的角色卡。');
         const headers = new Headers(runtime().getRequestHeaders());
         headers.delete('Content-Type');

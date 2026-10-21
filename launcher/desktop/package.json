@@ -1,6 +1,6 @@
 {
   "name": "nora-tavern-launcher",
-  "version": "2.2.4",
+  "version": "2.2.5",
   "private": true,
   "author": "Nora Tavern",
   "description": "Desktop shell for the Nora Tavern local launcher.",
@@ -79,6 +79,7 @@
       "operation-history.js",
       "managed-python.js",
       "runtime-transaction.js",
+      "runtime-retained-data.js",
       "tree-integrity.js",
       "operation-cli.js",
       "launcher-capability.js"

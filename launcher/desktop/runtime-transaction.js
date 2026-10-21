@@ -1,16 +1,15 @@
 // This journal owns only the bootstrap directory effects. Operation owns intent
 // and references it; the Python system journal owns Tavern deployment effects.
-const fs=require('node:fs');
+const fs=process.versions.electron?require('original-fs'):require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {isDeepStrictEqual}=require('node:util');
 const {treeSeal,sameSeal}=require('./tree-integrity');
+const {copyUserData}=require('./runtime-retained-data');
 const SCHEMA='nora-runtime-bootstrap/1';
 const ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 const equal=(a,b)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
-const PROGRAMS=['hermes-agent','python','node','bin','.local/bin','plugins/clawchat','clawchat/liveware',
-  'nora-components.json','nora-clawchat-check.py','gateway.pid','gateway.lock','gateway_state.json'];
 
 function paths({noraHome,hermesHome,operationId}){
   if(!ID.test(operationId||'')||!path.isAbsolute(noraHome||'')||!path.isAbsolute(hermesHome||'')
@@ -184,15 +183,6 @@ function verifyPrevious(location,target,operationId){
   if(retained?.state==='complete'&&equal(path.resolve(location.noraHome,retained.hermes||''),location.hermesHome))return;
   throw fail('RUNTIME_PARTIAL_UNCONFIRMED','上次 Nora 核心安装记录不完整。现有数据已保留，请先恢复上次操作或查看日志；重复安装不会覆盖这些文件。');
 }
-function copyUserData(previous,stage){
-  for(const entry of fs.readdirSync(previous)){
-    const source=path.join(previous,entry),target=path.join(stage,entry);
-    fs.cpSync(source,target,{recursive:true,dereference:false,filter:(file)=>{
-      const relative=path.relative(previous,file);
-      return !PROGRAMS.some(value=>relative===value.split('/').join(path.sep)||relative.startsWith(value.split('/').join(path.sep)+path.sep));
-    }});
-  }
-}
 async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allowCommitted=false,onEvent=()=>{},tools,
   verifyOffline,originalPartialCandidate,partialPort}){
   requireDelegate(delegate,operationId,ownerEpoch);
@@ -310,7 +300,10 @@ async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,d
     phase='runtime_initialize_home';
     runtime.initializeHome(location.stage,bundle.manifest);
     phase='runtime_restore_retained';
-    if(journal.identities.previous)copyUserData(hermesHome,location.stage);
+    if(journal.identities.previous){
+      const retainedCopy=copyUserData(hermesHome,location.stage);
+      update(journal,location,delegate,ownerEpoch,{retainedCopy});
+    }
     runtime.validateRuntimeLinks(location.stage);
     let originalPartial;
     if(partialRepair){

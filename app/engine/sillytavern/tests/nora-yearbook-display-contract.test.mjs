@@ -10,7 +10,7 @@ const ledger = () => ({ timeline: ['The missing book was recovered.'], facts: []
 test('normal compression keeps its original seven-field output without a yearbook generation protocol', async () => {
     const scope = { worldId: 'w', sessionId: 's' };
     const messages = Array.from({ length: 32 }, (_, i) => ({ mes: `Message ${i}`, is_user: i % 2 === 0 }));
-    let state = null, calls = 0;
+    let state = { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } }, calls = 0;
     const plugin = createStoryLedger({ readChat: () => ({ messages, entities: ['__user__'] }), readState: () => state,
         writeState: (_scope, next) => { state = structuredClone(next); }, merge: async input => {
             calls++; assert.equal(Object.hasOwn(input, 'includeRecap'), false); return ledger();

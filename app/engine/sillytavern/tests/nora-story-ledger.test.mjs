@@ -118,7 +118,7 @@ test('opt-in canonical-chat fallback survives restore-invalidated and corrupt st
 });
 function fixture(turns = 16, model = async input => memory(`Through ${input.segment.endTurn}`)) {
     let messages = chat(turns);
-    let state = null;
+    let state = { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } };
     const calls = [];
     const options = { readChat: () => ({ messages: copy(messages), entities: ['__user__'] }),
         readState: () => copy(state), writeState: (_, value) => { state = copy(value); },
@@ -243,7 +243,7 @@ test('agent inspect is pure even with stale candidates, and reports active/reser
     const f = fixture();
     const empty = await f.plugin.inspect(scope, { limit: 2 });
     assert.equal(f.calls.length, 0);
-    assert.equal(f.state, null);
+    assert.deepEqual(f.state, { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } });
     assert.equal(empty.messageCount, 33);
     assert.equal(empty.expectedSignature, fingerprint(f.messages));
     await f.plugin.schedule(scope);
@@ -387,6 +387,20 @@ test('restart and disabling new compression never remove the active lock', async
     assert.equal((await restarted.status(scope)).active.coveredTurns, 15);
     const messages = f.messages; messages[1].mes = 'overwrite';
     await assert.rejects(restarted.writeChat(scope, messages, () => assert.fail('write forbidden')), { code: 'NORA_LEDGER_HISTORY_LOCKED' });
+});
+
+test('disabling new ledger requests records the choice and preserves the saved prepared summary', async () => {
+    const f = fixture(); await f.plugin.schedule(scope);
+    const before = f.state.pending, messages = f.messages, calls = f.calls.length;
+    await f.plugin.configure(scope, { enabled: false });
+    await f.plugin.schedule(scope, { retry: true });
+    const inspected = await f.plugin.inspect(scope);
+    assert.equal(inspected.enabled, false);
+    assert.deepEqual(f.state.modelUseConsent, { noticeVersion: 1, enabled: false });
+    assert.deepEqual(inspected.pending, before);
+    assert.equal(inspected.active, null, 'reading the prepared summary does not activate it');
+    assert.deepEqual(f.messages, messages);
+    assert.equal(f.calls.length, calls);
 });
 
 test('edit revision rejects stale clients before any destructive write', async () => {

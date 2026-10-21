@@ -217,8 +217,8 @@ test('Nora World UI carries only worldId and has one open/capability owner', () 
     assert.match(worldController, /worldRuntime\.remove\(worldId, \{ expectedPlan: preview\.token \}\)/);
     assert.match(worldController, /confirmAction\(\{/);
     assert.doesNotMatch(startupController, /loadWorldCapabilities|promptCharacterCapabilities|primeActiveWorldbook/);
-    assert.match(creationController, /const completed = await runWorldOperation/);
-    assert.match(creationController, /if \(completed && importedWorldId\)[\s\S]*openWorldById\(importedWorldId/);
+    assert.match(creationController, /async function openCreatedWorld[\s\S]*await openWorldById\(worldId/);
+    assert.match(creationController, /await openCreatedWorld\(importedWorldId/);
     assert.doesNotMatch(creationController, /capabilities\.load\(world\)/);
     assert.match(worldbookController, /data-add-world-setting/);
     assert.match(worldbookController, /worldRuntime\.addSetting/);

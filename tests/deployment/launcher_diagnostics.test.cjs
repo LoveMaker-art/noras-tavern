@@ -248,6 +248,185 @@ function mainCallback(context,name) {
   return vm.runInContext(`(${source.slice(callback.start,callback.end)})`,context);
 }
 
+async function modelRetryFixture(t) {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-retry-diagnostic-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const state={status:503,requests:0,saves:0,now:Date.now(),body:null};
+  const key='fixture-model-private+/credential';
+  const server=require('node:http').createServer((request,response)=>{
+    state.requests++;
+    assert.equal(request.headers.authorization,`Bearer ${key}`);
+    request.resume();
+    request.on('end',async()=>{
+      state.arrived?.();
+      if(state.gate)await state.gate;
+      response.writeHead(state.status,{'content-type':'application/json'});
+      response.end(state.body??JSON.stringify(state.status===200
+        ?{choices:[{message:{content:'fixture response'}}]}
+        :{error:{message:`fixture provider rejected ${key} ${encodeURIComponent(key)}`}}));
+    });
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const payload={provider:'custom',key,model:'fixture-model',baseUrl:`http://127.0.0.1:${server.address().port}/v1`};
+  for(const file of ['chats/original.jsonl','characters/original.png','worlds/original.json','config/original.json']){
+    const target=path.join(root,'protected',file);fs.mkdirSync(path.dirname(target),{recursive:true});
+    fs.writeFileSync(target,`preserved ${file}`);
+  }
+  function reopen(){
+    const context=mainContext(root,state.transportError?{'./model-config':{
+      ...require('../installer/desktop/model-config'),testCustomModel:async()=>{throw state.transportError;}
+    }}:{});
+    context.modelFixture=state;
+    // Use the production task controller, native writer lock, HTTP client and
+    // diagnostics. Only the unrelated Python configuration writer is isolated.
+    vm.runInContext(`operationController=createOperationController({directory:installerDirectory,
+      lock:operationLock,evidence:operationEvidence,now:()=>new Date(modelFixture.now).toISOString(),
+      projectResult:result=>result.value});
+      runModelConfigHelper=async value=>{
+        if(value.action==='save')modelFixture.saves++;
+        return {ok:true,provider:'custom:fixture',model:value.model};
+      };
+      finishModelSetup=async()=>({ok:true});
+      const readModelFixtureState=readInstallerState;
+      readInstallerState=()=>({...readModelFixtureState(),setupCompleted:true});`,context);
+    return {context,submit:()=>mainCallback(context,'nora:model-save-test')({},payload),
+      snapshot:()=>vm.runInContext('operations().snapshot()',context),
+      recheck:id=>{context.fixtureOperationId=id;return vm.runInContext('operations().recheck(fixtureOperationId)',context);}};
+  }
+  return {root,state,key,payload,reopen,assertProtected(){
+    for(const file of ['chats/original.jsonl','characters/original.png','worlds/original.json','config/original.json'])
+      assert.equal(fs.readFileSync(path.join(root,'protected',file),'utf8'),`preserved ${file}`);
+  }};
+}
+
+test('explicit model retry after two HTTP failures works with identical input and after reopening',async t=>{
+  for(const status of [401,503])for(const restart of [false,true])await t.test(`${status}: ${restart?'reopened':'same process'}`,async t=>{
+    const f=await modelRetryFixture(t);f.state.status=status;let app=f.reopen();
+    for(let i=0;i<2;i++)await assert.rejects(app.submit(),error=>{
+      assert.equal(f.state.requests,i+1,fs.readFileSync(path.join(f.root,'installer/install.log'),'utf8'));
+      return true;
+    });
+    assert.equal(f.state.requests,2);assert.equal(f.state.saves,0);
+    const failed=await app.snapshot();
+    await app.recheck(failed.operationId);
+    assert.equal(f.state.requests,2,'status inspection must not call the model');
+    f.state.now+=31000;f.state.status=200;
+    if(restart)app=f.reopen();
+    assert.equal((await app.submit()).ok,true);
+    assert.equal(f.state.requests,3);assert.equal(f.state.saves,1);
+    assert.equal((await app.snapshot()).state,'succeeded');f.assertProtected();
+  });
+});
+
+test('explicit model retry survives actual Node process exit and restart with retained records', {timeout:15000},async t=>{
+  const f=await modelRetryFixture(t);
+  const script=`(function(){
+    const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+    const {createRequire}=require('node:module');
+    const __dirname=process.env.NORA_MODEL_FIXTURE_DIRECTORY;
+    const {parse}=require(path.join(__dirname,'../installer/desktop/node_modules/acorn'));
+    const mainContext=${mainContext.toString()};
+    const mainCallback=${mainCallback.toString()};
+    process.once('message',async input=>{
+      const {root,payload}=input,state={now:input.now,saves:0};
+      const reopen=${f.reopen.toString()};
+      try{
+        const app=reopen(),outcomes=[];
+        for(let i=0;i<input.count;i++){
+          try{await app.submit();outcomes.push('succeeded');}
+          catch(error){outcomes.push(error.operation?.state||'unexpected');}
+        }
+        const snapshot=await app.snapshot();
+        process.send({outcomes,saves:state.saves,state:snapshot.state},()=>process.disconnect());
+      }catch{process.exitCode=1;process.disconnect();}
+    });
+  })();`;
+  async function run(count){
+    const child=require('node:child_process').spawn(process.execPath,['-e',script],{
+      env:{...process.env,NORA_MODEL_FIXTURE_DIRECTORY:__dirname},stdio:['ignore','pipe','pipe','ipc']});
+    const tracked=captureChild(child),messages=[];t.after(()=>stopChild(child));
+    child.on('message',message=>messages.push(message));
+    child.send({root:f.root,payload:f.payload,now:f.state.now,count});
+    assert.equal((await tracked.closed).code,0,tracked.stderr);
+    assert.equal(messages.length,1);return messages[0];
+  }
+  const before=await run(2);assert.deepEqual(before.outcomes,['failed','failed']);
+  assert.equal(before.saves,0);assert.equal(f.state.requests,2);
+  f.state.now+=31000;f.state.status=200;
+  const after=await run(1);assert.deepEqual(after.outcomes,['succeeded']);
+  assert.equal(after.state,'succeeded');assert.equal(after.saves,1);assert.equal(f.state.requests,3);
+  f.assertProtected();
+});
+
+test('concurrent model submissions issue only one HTTP request and release busy state after failure',async t=>{
+  const f=await modelRetryFixture(t),app=f.reopen();let release,arrived,timer;
+  f.state.gate=new Promise(resolve=>{release=resolve;});
+  const requestArrived=new Promise(resolve=>{f.state.arrived=resolve;});
+  const first=app.submit().catch(error=>error);
+  try{
+    await Promise.race([requestArrived,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('fixture request missing')),5000);})]);
+    await assert.rejects(app.submit(),/正在处理其他任务/);assert.equal(f.state.requests,1);
+  }finally{clearTimeout(timer);release();await first;}
+  assert.equal(vm.runInContext('modelBusy',app.context),false);
+  assert.equal((await app.snapshot()).busy,false);assert.equal(f.state.saves,0);f.assertProtected();
+});
+
+test('model failure main log retains HTTP cause and keeps credentials out of diagnostics and fault packets',async t=>{
+  for(const status of [401,403,503])await t.test(String(status),async t=>{
+    const f=await modelRetryFixture(t);f.state.status=status;
+    const app=f.reopen();let failure;
+    await assert.rejects(app.submit(),error=>{failure=error;return true;});
+    const {failureResult}=require('../installer/desktop/operation-result');
+    assert.equal(failureResult(failure,{action:'model',operation:failure.operation}).error.technical.http_status,status);
+    const logs=fs.readFileSync(path.join(f.root,'installer/install.log'),'utf8');
+    const event=logs.trim().split('\n').map(JSON.parse).find(item=>item.event==='model.failed');
+    assert.equal(event.error.cause?.status,status);
+    assert.match(event.error.cause.message,/fixture provider rejected/);
+    assert.equal(event.error.cause.source,'model_service');assert.equal(event.error.cause.site,'model.test');
+    assert.equal(logs.includes(f.key),false);assert.equal(logs.includes(encodeURIComponent(f.key)),false);
+    const records=JSON.stringify(await app.snapshot());assert.equal(records.includes(f.key),false);
+    const packets=require('../installer/desktop/fault-packet').createFaultPackets();
+    const wire=JSON.stringify(packets.packet(failure,{id:failure.operation.operationId,history:[]}));
+    assert.equal(wire.includes(f.key),false);assert.equal(wire.includes('fixture provider rejected'),false);
+    const evidence=require('../installer/desktop/evidence-store').createEvidenceStore({directory:path.join(f.root,'installer')})
+      .read(failure.operation.operationId);
+    assert.ok(evidence.primary);assert.equal(evidence.primary.message,'Model request failed; see technical status.');
+    const frozen=JSON.stringify(packets.packet(failure,{id:failure.operation.operationId,action:'model'},
+      {operation:failure.operation,evidence}));
+    assert.equal(require('../installer/desktop/fault-packet').validFaultPacket(JSON.parse(frozen)),true);
+    assert.equal(frozen.includes(f.key),false);assert.equal(frozen.includes(encodeURIComponent(f.key)),false);
+    assert.equal(frozen.includes('fixture provider rejected'),false);
+    assert.equal(f.state.saves,0);f.assertProtected();
+  });
+});
+
+test('model log preserves parse, connection, timeout and cancellation causes without leaking credentials',async t=>{
+  for(const mode of ['invalid-json','connection-refused','timeout','cancelled'])await t.test(mode,async t=>{
+    const f=await modelRetryFixture(t);
+    let expected;
+    if(mode==='invalid-json'){f.state.status=200;f.state.body='{broken';expected='INVALID_RESPONSE';}
+    else if(mode==='connection-refused'){
+      f.payload.baseUrl='http://127.0.0.1:1/v1';expected='ECONNREFUSED';
+    }else{
+      // The transport timeout/cancel boundary is injected; HTTP status and JSON
+      // scenarios above exercise real sockets. No 120-second sleep is needed.
+      expected=mode==='timeout'?'TIMEOUT':'ABORT_ERR';
+      f.state.transportError=Object.assign(new Error(`fixture ${mode} ${f.key}`),
+        {code:expected,source:'model_service',site:'model.test',name:mode==='cancelled'?'AbortError':'Error'});
+    }
+    const app=f.reopen();
+    let failure;await assert.rejects(app.submit(),error=>{failure=error;return true;});
+    const logs=fs.readFileSync(path.join(f.root,'installer/install.log'),'utf8');
+    const event=logs.trim().split('\n').map(JSON.parse).find(item=>item.event==='model.failed');
+    assert.equal(event.error.cause?.code,expected);
+    const {failureResult}=require('../installer/desktop/operation-result');
+    const technical=failureResult(failure,{operation:failure.operation}).error.technical;
+    assert.equal(technical.error_code,mode==='invalid-json'?'invalid_response':mode==='connection-refused'?'connection_refused':mode);
+    assert.equal(logs.includes(f.key),false);assert.equal(f.state.saves,0);f.assertProtected();
+  });
+});
+
 test('model helper keeps complete execution output through restart and failure-log delivery without storing its configuration protocol', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-full-output-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -413,7 +592,7 @@ test('launcher recovery remains offered after failed status inspection, but hand
   assert.equal(finished.some(event=>event.status==='succeeded'),false,'preparation cannot claim completed restoration');
 });
 
-test('comparing an already current application version cannot commit launcher backup', async t => {
+for(const verified of [false,true])test(`checking the current APP without an owned handoff cannot commit launcher backup (${verified?'core verified':'core verification rejected'})`, async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-version-comparison-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const calls=[];
@@ -430,12 +609,19 @@ test('comparing an already current application version cannot commit launcher ba
     finalize:async options=>calls.push(options),
   }},[`--nora-self-update=${path.join(root,'job')}`]);
   context.AbortController=AbortController;
-  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async()=>({version:"2.4.2",systemReady:true});',context);
-  const result=await mainCallback(context,'runAction')({sender:null},{action:'update',runId:'comparison-fixture'});
-  assert.equal(result.version,'2.4.2');
+  context.coreVerified=verified;context.bridgeRequests=[];
+  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>{bridgeRequests.push(command);return {version:"2.4.2",systemReady:true,updateVerified:command==="verify-current-update"&&coreVerified};};',context);
+  // This is an APP-only comparison. A startup marker no longer selects a
+  // legacy core executor; the request must state its actual update scope.
+  const pending=mainCallback(context,'runAction')({sender:null},{action:'update',runId:'comparison-fixture',launcherOnly:true,expectedCoreVersion:'2.4.2'});
+  let operation;
+  if(verified){
+    const result=await pending;operation=result.operation;assert.equal(result.version,'2.4.2');
+  }else await assert.rejects(pending,error=>{operation=error.operation;return error.code==='VERIFICATION_FAILED';});
+  assert.equal(context.bridgeRequests.filter(command=>command==='verify-current-update').length,1);
   assert.equal(calls.length,0);
-  assert.equal(result.operation.effectState,'untouched');
-  assert.equal(result.operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));
+  assert.equal(operation.effectState,'untouched');
+  assert.equal(operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));
 });
 
 test('model progress cache failure releases its task lock and preserves the provider failure', async t => {

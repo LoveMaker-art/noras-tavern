@@ -16,6 +16,7 @@ function fixture() {
         loadDependencies: () => { dependencyChecks++; return { directory: os.tmpdir() }; },
         run: (command, args, settings) => {
             calls.push({ command, args, settings });
+            if(command==='npm'||args.some(value=>value.endsWith('npm-cli.js')))return {status:0,stdout:'11.6.2\n'};
             if(command==='openssl')return {status:0,stdout:'OpenSSL 3.0.0 fixture'};
             return { status: 0, stdout: JSON.stringify(args[0] === '-p' ? node : python) };
         } };
@@ -32,7 +33,7 @@ test('a compatibility shim, old Node or mismatched platform fails before running
 
 test('an explicit unavailable interpreter cannot fall back or become a skipped success', () => {
     const f = fixture(); f.options.environment.NORA_TEST_PYTHON = path.join(os.tmpdir(), 'missing-python-fixture');
-    f.options.run = (command, args) => command === 'openssl' ? {status:0,stdout:'OpenSSL 3.0.0 fixture'} : command === 'powershell.exe' ? { status: 0, stdout: '5.1' }
+    f.options.run = (command, args) => command==='npm'||args.some(value=>value.endsWith('npm-cli.js')) ? {status:0,stdout:'11.6.2'} : command === 'openssl' ? {status:0,stdout:'OpenSSL 3.0.0 fixture'} : command === 'powershell.exe' ? { status: 0, stdout: '5.1' }
         : args[0] === '-p' ? { status: 0, stdout: JSON.stringify(f.node) }
         : { status: null, error: Object.assign(new Error('missing fixture'), { code: 'ENOENT' }) };
     assert.throws(() => checkLauncherTestEnvironment(f.options), error => error.category === 'test_environment' && error.check === 'python' && /ENOENT/.test(error.message));
@@ -40,7 +41,7 @@ test('an explicit unavailable interpreter cannot fall back or become a skipped s
 
 test('missing Python packages and wrong native bindings are prerequisite failures', () => {
     const python = fixture();
-    python.options.run = (command, args) => command === 'openssl' ? {status:0,stdout:'OpenSSL 3.0.0 fixture'} : command === 'powershell.exe' ? { status: 0, stdout: '5.1' }
+    python.options.run = (command, args) => command==='npm'||args.some(value=>value.endsWith('npm-cli.js')) ? {status:0,stdout:'11.6.2'} : command === 'openssl' ? {status:0,stdout:'OpenSSL 3.0.0 fixture'} : command === 'powershell.exe' ? { status: 0, stdout: '5.1' }
         : args[0] === '-p' ? { status: 0, stdout: JSON.stringify(python.node) }
         : { status: 1, stderr: "ModuleNotFoundError: No module named 'psutil'" };
     assert.throws(() => checkLauncherTestEnvironment(python.options), error => error.check === 'python' && /missing dependency: psutil/.test(error.message));
@@ -53,6 +54,19 @@ test('source TLS prerequisites reject a missing or denied OpenSSL before fixture
         const f=fixture(),run=f.options.run;let pythonCalls=0;
         f.options.run=(command,args,settings)=>{if(command==='openssl')return failure;if(args[0]==='-B')pythonCalls++;return run(command,args,settings);};
         assert.throws(()=>checkLauncherTestEnvironment(f.options),error=>error.category==='test_environment'&&error.check==='tls_tools');
+        assert.equal(pythonCalls,0);
+    }
+});
+test('missing or invalid npm fails before source fixtures and Python start',()=>{
+    for(const failure of [{status:null,error:Object.assign(new Error('missing npm'),{code:'ENOENT'})},
+        {status:1,stderr:'npm cannot start'},{status:0,stdout:'invalid version'}]){
+        const f=fixture(),run=f.options.run;let pythonCalls=0;
+        f.options.run=(command,args,settings)=>{
+            if(command==='npm'||args.some(value=>value.endsWith('npm-cli.js')))return failure;
+            if(args[0]==='-B')pythonCalls++;
+            return run(command,args,settings);
+        };
+        assert.throws(()=>checkLauncherTestEnvironment(f.options),error=>error.category==='test_environment'&&error.check==='npm');
         assert.equal(pythonCalls,0);
     }
 });

@@ -1,5 +1,5 @@
 // Read-only full-tree integrity facts, shared by component and legacy recovery.
-const fs=require('node:fs');
+const fs=process.versions.electron?require('original-fs'):require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const fail=(code,message)=>Object.assign(new Error(message),{code});

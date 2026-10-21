@@ -18,12 +18,12 @@ function boundReceipt(object,receipt) {
 
 // The transport enforces the selected sealed-file publication policy. A
 // repository-files CAS adapter owns the mutable raw channel pointer.
-export function jihulabProvider({upload,readPublic,verifyObject,channelPromotion,preflight,verifyIdentity,fetcher=fetch,log=console.log}={}) {
+export function jihulabProvider({upload,readPublic,verifyObject,channelPromotion,preflight,verifyIdentity,verifyPreparedIdentities,fetcher=fetch,log=console.log}={}) {
     for(const [name,implementation] of Object.entries({upload,readPublic,verifyObject}))
         assert.equal(typeof implementation,'function',`Missing JihuLab ${name}`);
     for(const method of ['check','promote','verify'])
         assert.equal(typeof channelPromotion?.[method],'function',`Missing JihuLab channel CAS ${method}`);
-    for(const [name,implementation] of Object.entries({preflight,verifyIdentity}))
+    for(const [name,implementation] of Object.entries({preflight,verifyIdentity,verifyPreparedIdentities}))
         if(implementation!==undefined)assert.equal(typeof implementation,'function',`Invalid JihuLab ${name}`);
     const existence=async object=>{
         immutableObject(object);
@@ -53,13 +53,19 @@ export function jihulabProvider({upload,readPublic,verifyObject,channelPromotion
                 ?{onUploadAttempt:()=>p.recordJihuUploadIntent(object)}:{})});},
         async verify(object){immutableObject(object);await verifyObject(object,{fetcher});},
         async assertReady(p){
-            for(const object of p.plan.objects.filter(item=>item.phase!=='channel')) {
+            const objects=p.plan.objects.filter(item=>item.phase!=='channel');
+            for(const object of objects) {
                 immutableObject(object);
                 boundReceipt(object,p.state.sources?.jihulab?.objects?.[object.key]);
-                assert.ok(await existence(object),`Prepared JihuLab object disappeared: ${object.key}`);
-                await verifyIdentity?.(object,{publication:p});
             }
-            const catalogue=p.plan.objects.filter(object=>object.phase==='catalogue');
+            for(const object of objects) {
+                assert.ok(await existence(object),`Prepared JihuLab object disappeared: ${object.key}`);
+            }
+            // Each invocation is a new readiness phase: share one inventory per
+            // version inside that phase, never a snapshot from preparation or CAS.
+            if(verifyPreparedIdentities)await verifyPreparedIdentities(p);
+            else for(const object of objects)await verifyIdentity?.(object,{publication:p});
+            const catalogue=objects.filter(object=>object.phase==='catalogue');
             assert.equal(catalogue.length,1,'JihuLab requires one sealed catalogue');
             await verifyObject(catalogue[0],{fetcher});
         },

@@ -148,6 +148,7 @@ export async function readStoryOnDemand({ directories, worlds, payload = {}, rea
         coveredMessageCount: snapshot.covered_message_count, uncoveredTurns: snapshot.uncovered?.count ?? null,
         restoreId: snapshot.restore_id,
         autoEnabled: snapshot.enabled,
+        configuredEnabled: snapshot.configuredEnabled, consentRequired: snapshot.consentRequired,
     }, ...(snapshot.code ? { code: snapshot.code } : {}) };
     if (status === 'stale' && (!scopeCurrent || !sourceCurrent || cursor || snapshot.code === 'NORA_LEDGER_SOURCE_CHANGED')) return boundedReply({ ...reply, code: 'STORY_READ_SOURCE_CHANGED' }, options.maxChars);
     const items = ledgerItems(snapshot, options);

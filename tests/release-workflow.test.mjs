@@ -12,6 +12,44 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+test('component delivery requires all three native platforms before the final publishable receipt', () => {
+  const native = components.jobs['native-components'], accepted = components.jobs['accept-components'];
+  assert.equal(native.needs, 'build-components'); assert.equal(native.strategy['fail-fast'], 'false');
+  assert.deepEqual(native.strategy.matrix.include, [
+    { runner: 'macos-15', platform: 'darwin-arm64' },
+    { runner: 'macos-15-intel', platform: 'darwin-x64' },
+    { runner: 'windows-latest', platform: 'win32-x64' },
+  ]);
+  assert.deepEqual(accepted.needs, ['build-components', 'native-components']);
+  assert.equal(accepted.if, undefined, 'A failed or skipped native matrix must not produce an accepted receipt');
+  const nativeSteps = native.steps, downloaded = nativeSteps.find(step => step.uses === 'actions/download-artifact@v4');
+  assert.equal(downloaded.with.name, 'nora-component-delivery');
+  const prepare = nativeSteps.findIndex(step => step.name === 'Materialize the same frozen component payload');
+  const run = nativeSteps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data');
+  assert.ok(prepare >= 0 && run > prepare);
+  assert.match(nativeSteps[prepare].run, /component-acceptance\.mjs prepare.*component-delivery.*component-payload.*GITHUB_SHA/);
+  assert.match(nativeSteps[run].run, /component-acceptance\.mjs run.*component-payload.*component-baseline.*GITHUB_SHA.*BASELINE_TAG.*baseline_commit/);
+  assert.equal(nativeSteps[run]['continue-on-error'], undefined);
+  assert.equal(nativeSteps.find(step => step.name === 'Pin the native verification tool interpreter').with['python-version'], '3.11');
+  const baseline = nativeSteps.find(step => step.name === 'Authenticate the published baseline for actual native upgrades');
+  assert.match(baseline.run, /acceptance-baseline\.mjs.*--expected-commit/);
+  assert.match(nativeSteps.find(step => step.name === 'Restore the verified frozen runtime for native harness prerequisites').run, /restore-launcher-runtime\.cjs.*component-payload/);
+  const archive = nativeSteps.find(step => step.uses === 'actions/upload-artifact@v4');
+  assert.equal(archive.if, 'always()'); assert.equal(archive.with.name, 'nora-component-native-${{ matrix.platform }}');
+  assert.equal(archive.with['if-no-files-found'], 'error');
+  assert.ok(!components.jobs['build-components'].steps.some(step => step.with?.name === 'nora-component-acceptance'),
+    'Source-only Ubuntu checks must not publish the final native receipt');
+  const final = accepted.steps.find(step => step.name === 'Accept only complete three-platform native evidence for these bytes');
+  assert.match(final.run, /component-acceptance\.mjs seal.*component-delivery.*component-native.*release-plan\.json.*GITHUB_SHA/);
+  assert.equal(final['continue-on-error'], undefined);
+});
+test('source checks run locally in each platform job without cross-machine report handoff', () => {
+  assert.equal(full.jobs['source-checks'], undefined);
+  assert.ok(!full.on.workflow_dispatch.inputs.target.options.includes('source-checks'));
+  const gate = full.jobs.build.steps.find(step => step.name === 'Require launcher source stability before preparing runtimes');
+  assert.match(gate.run, /verify-launcher-stability\.mjs/);
+  assert.doesNotMatch(gate.run, /--report|--verify-reports|nora-source-stability/);
+});
 test('domestic publisher acceptance uses the authored tooling layout while installed consumers use the delivery projection', () => {
   const command = full.jobs.preflight.steps.find(step => step.name === 'Check release tooling before preparing runtimes').run;
   const publisherLines = command.split('\n').filter(line => line.includes('launcher_jihulab_publication.test.cjs'));
@@ -27,9 +65,7 @@ test('component publication is an explicit validated input forwarded as quoted a
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-workflow-publication-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   fs.mkdirSync(path.join(directory,'app'),{recursive:true});fs.writeFileSync(path.join(directory,'app/.tavern-release-version'),'2.5.2');
   fs.mkdirSync(path.join(directory,'launcher/desktop'),{recursive:true});fs.writeFileSync(path.join(directory,'launcher/desktop/package.json'),JSON.stringify({version:'2.2.3'}));
-  assert.equal(workflowPublicationOptions(directory).tag,'v2.5.2');
-  assert.equal(workflowPublicationOptions(directory).explicit,false);
-  assert.equal(workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.3'}).tag,'v2.5.3');
+  assert.throws(()=>workflowPublicationOptions(directory),/Missing reviewed compatibility declaration/);
   assert.throws(()=>workflowPublicationOptions(directory,{publicationTag:'v2.5.3\nEVIL=true'}));
   assert.throws(()=>workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.2'}));
   for(const compatibilityFile of ['/tmp/private.json','../private.json','local-state/private.json','tooling/release/compatibility/../../private.json'])
@@ -37,10 +73,15 @@ test('component publication is an explicit validated input forwarded as quoted a
   const compatibilityFile='tooling/release/compatibility/reviewed.json',compatibility={schema:'nora-core-launcher-compatibility/1',coreVersion:'2.5.2',
     launcherVersions:['2.2.2','2.2.3'],capabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}};
   fs.mkdirSync(path.dirname(path.join(directory,compatibilityFile)),{recursive:true});fs.writeFileSync(path.join(directory,compatibilityFile),JSON.stringify(compatibility));
+  fs.copyFileSync(path.join(directory,compatibilityFile),path.join(directory,'tooling/release/compatibility/v2.5.2.json'));
   const git=args=>execFileSync('git',args,{cwd:directory,stdio:'pipe'});
   git(['init','-q']);git(['add','.']);git(['-c','core.hooksPath=/dev/null','-c','user.name=Workflow fixture','-c','user.email=fixture@example.invalid',
     '-c','commit.gpgSign=false','commit','-qm','isolated workflow fixture']);
   const selected=workflowPublicationOptions(directory,{publicationTag:'v2.5.3',compatibilityFile});
+  assert.equal(workflowPublicationOptions(directory).tag,'v2.5.2');
+  assert.equal(workflowPublicationOptions(directory).explicit,false);
+  assert.equal(workflowPublicationOptions(directory).compatibilityFile,'tooling/release/compatibility/v2.5.2.json');
+  assert.equal(workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.3'}).tag,'v2.5.3');
   assert.equal(selected.compatibilityFile,compatibilityFile);assert.match(selected.compatibilitySha256,/^[a-f0-9]{64}$/);
   fs.appendFileSync(path.join(directory,compatibilityFile),'\n');assert.throws(()=>workflowPublicationOptions(directory,{compatibilityFile}),/fixed source commit/);
   fs.rmSync(path.join(directory,compatibilityFile));fs.symlinkSync(path.join(directory,'launcher/desktop/package.json'),path.join(directory,compatibilityFile));

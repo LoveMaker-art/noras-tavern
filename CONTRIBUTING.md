@@ -1,6 +1,6 @@
 # Development And Release
 
-Before planning or editing, read the [sole product design baseline](docs/product-baseline.md). Follow its change protocol, identify the applicable PB rules and preserved behavior, and keep implementation, acceptance, and publication status separate. Module plans describe implementation and progress; they do not independently change product rules.
+Before planning or editing, read the [product design overview](docs/product/README.md) and every affected module design listed there. Together these four documents are the project's authoritative product requirements. Follow the [change-control protocol](docs/product/README.md#change-control), record applicable PB/PR rules, intended outcomes and preserved behavior, and compare actual changes before delivery. Confirm changes to accepted product behavior before implementation; routine fixes within existing authorization do not need repeated product approval. Technical plans and historical records do not independently change product rules.
 
 Start with [repository navigation](docs/REPOSITORY.md). Change authored source, not installed runtime files or generated copies. `nora/AGENTS.md` is delivered to Hermes; it is not instructions for repository contributors.
 
@@ -123,6 +123,8 @@ The guarded product harness uses the actual native writer lease and acknowledged
 The three-platform pipeline is `.github/workflows/build-integrated-launcher.yml`. It verifies runtime, tests deployment, creates the payload, tests fresh installation, builds the desktop shell, and checks packaged icons/content. Publication requires all platform outputs to agree on version and commit.
 
 ## Release Rules
+
+Before release work, complete the [design execution cross-check](docs/product/README.md#change-control) and [delivery requirements](docs/product/README.md#delivery) in the existing task or release record. Record the plan before the relevant action and compare it with actual results before reporting completion; a statement that the process was followed is not the record.
 
 Full and component publication share the release channel lock. Select destinations in the sealed plan; the domestic-primary configuration uses GitHub and JihuLab (`github-jihulab`). Configure the project-scoped `JIHULAB_PRIVATE_TOKEN` secret for JihuLab. SourceForge credentials are required only when SourceForge is selected: repository variable `SOURCEFORGE_USERNAME` and secrets `SOURCEFORGE_SSH_PRIVATE_KEY` / `SOURCEFORGE_KNOWN_HOSTS`. Keep private credentials outside Git and public artifacts. Preparation creates immutable resources and a GitHub draft; promoting the official channel requires separate authorization. See [the release process](docs/release-process.md).
 

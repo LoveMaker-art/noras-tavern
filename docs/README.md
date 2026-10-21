@@ -1,6 +1,19 @@
 # 文档入口
 
-项目唯一的[产品设计基线](product-baseline.md)规定已确认规则、模块职责、当前实现差异和后续修改程序；本轮选择及未决项集中在[决策登记](product-baseline.md#八-已确认决策与待确认事项)。开始修复、优化或交付前先对照；下列模块文档与历史记录不另立产品基线。
+[产品设计总览](product/README.md)与启动器、诺拉、酒馆三份模块设计共同构成项目内最高产品依据。开发前阅读总览及受影响模块，按[变更控制](product/README.md#change-control)核对规则、范围和验收；已确认、已取消及待决事项集中在[决策登记](product/README.md#decisions)。技术说明、执行流程和历史证据分别维护，不另立产品规则。
+
+## 产品设计文档
+
+- [项目总览与共同约定](product/README.md) — 产品目标、三者协作、数据和更新规则、交付要求与设计变更程序。
+- [启动器设计](product/launcher.md) — 全部页面、控件、安装配置、服务控制、更新恢复、日志诊断、社区互动、窗口与卸载。
+- [诺拉设计](product/nora.md) — 人格对话、问候连接、制卡、资料库与世界管理、模型和插件协助、档案记忆、运维与自主更新。
+- [酒馆设计](product/tavern.md) — 完整页面与故事流程、卡库与世界内容、模型消息、账本备份、插件／MVU、外观及交互边界。
+- [酒馆本轮四项设计选择](product/README.md#tavern-policy-decisions) — 删除范围、完整卡导入、模型调用与自动偏好复盘的已确认规则及实施边界。
+- [需求与验收索引](product/requirements.md) — PR 编号跳转到四份设计中的唯一验收原文。
+- [旧基线兼容入口](product-baseline.md) — 保留旧章节链接，只跳转，不平行维护规则。
+- [需求变更模板](product/change-request-template.md) — 新需求或策略调整时先说明结果、范围、取舍和验收。
+- [更新与发布产品设计](product/archive/20261019-update-release-design.md) — 已确认规则，按 2026-10-19 归档；实施和未验状态分别保留。
+- [发布执行流程与验证状态](release-process.md) — 工具、命令、协议和实际验证记录；不能自行改变产品策略。
 
 ## 用户使用
 
@@ -14,7 +27,7 @@
 
 - [仓库导航与职责](REPOSITORY.md)
 - [开发、验证与发布](../CONTRIBUTING.md)
-- [核心与启动器更新：设计与验收范围](design/update-release-alignment.md) — 已完成本地实施与集成；实际证据和发行限制见[查询预算验收](reports/20261018-update-query-budget-acceptance.md)及[合并审查](reports/20261018-main-updater-merge-review.md)，尚未正式发布。
+- [核心与启动器更新：历史实施方案](design/update-release-alignment.md) — 已归档的技术方案；当前规则查基线，发行状态查对应报告，历史证据保留各自日期和验收范围。
 - [诺拉内容](../nora/README.md)
 - [启动器](../launcher/README.md)
 - [安装、更新和卸载](../deployment/README.md)

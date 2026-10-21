@@ -88,7 +88,7 @@ function checkRelease(){
 const systemUpdate = require('./system-update');
 const { createSkillUpdateReceiver, finishHandoff } = require('./skill-update');
 const launcherUpdate = require('./launcher-update');
-const SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
+let SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
 const updateSequence = require('./update-sequence');
 let continueDesktopUpdate;
 let desktopUpdateNotice;
@@ -192,11 +192,12 @@ function maintenancePolicy(){
       spawnChild:(command,args,options)=>spawnMaintenance(command,args,options)})});
 }
 
-function requireOperationResult(operation,{recover=false}={}) {
+function requireOperationResult(operation,{recover=false,cause}={}) {
   if(operation.state!=='succeeded'&&!(recover&&operation.state==='rolled-back'&&operation.verification==='confirmed')&&operation.state!=='awaiting-handoff'){
     const failure=operation.currentFailure||operation.primaryFailure;
-    throw Object.assign(new Error(failure?.guidance?.detail||'操作尚未完成，请查看当前状态。'),
-      {code:failure?.code||'OPERATION_INTERRUPTED',userCode:failure?.code,operation,logOperationId:operation.operationId});
+    throw Object.assign(new Error(failure?.guidance?.detail||'操作尚未完成，请查看当前状态。',cause?{cause}:undefined),
+      {code:failure?.code||'OPERATION_INTERRUPTED',userCode:failure?.code,operation,logOperationId:operation.operationId},
+      cause?{status:cause.status,source:cause.source,site:cause.site}:{});
   }
   return {...operation.result,operation};
 }
@@ -259,7 +260,8 @@ async function runOwnedTask(kind,request,execute,{requestId=require('node:crypto
     telemetry?.begin(kind==='shutdown'?'stop':kind,{operationId:context.operationId});
     return telemetry?telemetry.scope(()=>execute(context)):execute(context);
   },onFailure:rememberOperationFailure},requestId);
-    finishOperationTelemetry(operation);return requireOperationResult(operation);
+    const cause=kind==='model'?operationErrors.get(operation.operationId):undefined;
+    finishOperationTelemetry(operation);return requireOperationResult(operation,{cause});
   }finally{activeOperationContext=null;}
 }
 let activeRun = false;
@@ -2200,8 +2202,9 @@ if (primaryInstance) {
       || !['start', 'stop', 'restart'].includes(payload.action))) throw new Error('服务目标无效。');
     activeRun=true;cancelled=false;
     try {
-      if(payload.action==='update'&&!SELF_UPDATE_JOB&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload);
-      if(payload.action==='update'&&!SELF_UPDATE_JOB&&payload.launcherOnly!==true)return await runSharedUpdate(event,payload);
+      // Startup handoffs resume directly; a later request has its own owner.
+      if(payload.action==='update'&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload);
+      if(payload.action==='update'&&payload.launcherOnly!==true)return await runSharedUpdate(event,payload);
       const request={action:payload.action};
       for(const name of ['port','tag','service','launcherOnly'])if(payload[name]!==undefined)request[name]=payload[name];
       const operation=await operations().start(payload.action,{target:{request},
@@ -2450,7 +2453,7 @@ if (primaryInstance) {
             } catch (error) {
               activeRun = false; diagnostics.error('update.resume', error);
               if (plan?.skillId) finishHandoff(noraHome(), plan.skillId, null, diagnostics.clean(error.message));
-            }finally{activeRun=false;activeOperationContext=null;}
+            }finally{SELF_UPDATE_JOB=null;activeRun=false;activeOperationContext=null;}
           });
         }else{
           const window=BrowserWindow.getAllWindows()[0];

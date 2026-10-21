@@ -1,3 +1,5 @@
+import { translate } from '../nora-i18n/core.js';
+
 function requestHeaders(getHeaders, { multipart = false } = {}) {
     const source = getHeaders();
     if (!source || typeof source !== 'object') throw new Error('Nora World Core request headers are unavailable.');
@@ -24,6 +26,7 @@ function operationFailure(operation) {
     const error = new Error(operation?.error?.message || 'World creation failed.');
     error.code = operation?.error?.code || 'NORA_WORLD_CREATE_FAILED';
     if (typeof operation?.error?.retryable === 'boolean') error.retryable = operation.error.retryable;
+    error.operationStatus = 'FAILED';
     return error;
 }
 
@@ -310,9 +313,22 @@ export function createWorldCoreClient(getHeaders, {
         }
     }
 
-    async function submitCreation({ idempotencyKey, kind, path, headers, body }) {
+    async function submitCreation({ idempotencyKey, kind, path, headers, body, deferSettlement = false }) {
         const normalizedKey = String(idempotencyKey || '').trim();
         if (!normalizedKey) throw new Error('A World creation idempotency key is required.');
+        const pending = readPending();
+        if (pending?.idempotencyKey) {
+            if (pending.idempotencyKey !== normalizedKey) {
+                throw Object.assign(new Error(translate("世界操作失败")), { code: 'NORA_WORLD_CREATE_PENDING', retryable: true });
+            }
+            try {
+                return await resumePendingCreation({ deferSettlement });
+            } catch (error) {
+                if (error.operationStatus === 'FAILED' && error.retryable !== false) return retryPendingCreation({ deferSettlement });
+                if (error.code !== 'NORA_OPERATION_NOT_FOUND') throw error;
+                // The first request never reached the server; resubmit the SAME key.
+            }
+        }
         const startedAt = clock();
         writePending({ idempotencyKey: normalizedKey, operationId: null, startedAt, kind });
         try {
@@ -327,11 +343,11 @@ export function createWorldCoreClient(getHeaders, {
             }
             writePending({ idempotencyKey: normalizedKey, operationId: submitted.operation.operation_id, startedAt, kind });
             if (submitted.world && submitted.operation?.status === 'COMPLETED') {
-                writePending(null);
+                if (!deferSettlement) writePending(null);
                 return submitted;
             }
             const completed = await waitForOperation(submitted.operation.operation_id);
-            writePending(null);
+            if (!deferSettlement) writePending(null);
             return completed;
         } catch (error) {
             settlePendingFromError(error);
@@ -339,7 +355,7 @@ export function createWorldCoreClient(getHeaders, {
         }
     }
 
-    async function importCard(file, { idempotencyKey, persona = {}, name = '' } = {}) {
+    async function importCard(file, { idempotencyKey, persona = {}, name = '', deferSettlement = false } = {}) {
         const body = new FormData();
         body.append('avatar', file);
         body.append('idempotency_key', String(idempotencyKey || '').trim());
@@ -348,6 +364,7 @@ export function createWorldCoreClient(getHeaders, {
         if (name) body.append('name', String(name));
         return submitCreation({
             idempotencyKey,
+            deferSettlement,
             kind: 'import',
             path: '/imports',
             headers: requestHeaders(getHeaders, { multipart: true }),
@@ -355,23 +372,24 @@ export function createWorldCoreClient(getHeaders, {
         });
     }
 
-    async function createFromLibrary({ avatar, idempotencyKey } = {}) {
-        return submitCreation({ idempotencyKey, kind: 'library', path: '/library-imports',
+    async function createFromLibrary({ avatar, idempotencyKey, deferSettlement = false } = {}) {
+        return submitCreation({ idempotencyKey, deferSettlement, kind: 'library', path: '/library-imports',
             headers: requestHeaders(getHeaders),
             body: JSON.stringify({ avatar, idempotency_key: String(idempotencyKey || '').trim() }),
         });
     }
 
-    async function restartWorld({ worldId, name, expectedRevision, idempotencyKey } = {}) {
-        return submitCreation({ idempotencyKey, kind: 'restart', path: `/worlds/${encodeURIComponent(worldId)}/restarts`,
+    async function restartWorld({ worldId, name, expectedRevision, idempotencyKey, deferSettlement = false } = {}) {
+        return submitCreation({ idempotencyKey, deferSettlement, kind: 'restart', path: `/worlds/${encodeURIComponent(worldId)}/restarts`,
             headers: requestHeaders(getHeaders),
             body: JSON.stringify({ name, expected_revision: expectedRevision, idempotency_key: idempotencyKey }),
         });
     }
 
-    async function createBlank({ idempotencyKey, persona = {}, name } = {}) {
+    async function createBlank({ idempotencyKey, persona = {}, name, deferSettlement = false } = {}) {
         return submitCreation({
             idempotencyKey,
+            deferSettlement,
             kind: 'blank',
             path: '/worlds',
             headers: requestHeaders(getHeaders),
@@ -384,7 +402,7 @@ export function createWorldCoreClient(getHeaders, {
         });
     }
 
-    async function resumePendingCreation() {
+    async function resumePendingCreation({ deferSettlement = false } = {}) {
         const pending = readPending();
         if (!pending?.idempotencyKey) return null;
         const operationId = pending.operationId || await operationIdForKey(pending.idempotencyKey);
@@ -396,7 +414,7 @@ export function createWorldCoreClient(getHeaders, {
                     throw operationFailure(current.operation);
                 }
                 const result = current.operation?.status === 'COMPLETED' ? current : await waitForOperation(operationId);
-                writePending(null);
+                if (!deferSettlement) writePending(null);
                 return result;
             } catch (error) {
                 const age = clock() - Number(pending.startedAt || 0);
@@ -411,7 +429,7 @@ export function createWorldCoreClient(getHeaders, {
         }
     }
 
-    async function retryPendingCreation() {
+    async function retryPendingCreation({ deferSettlement = false } = {}) {
         const pending = readPending();
         if (!pending?.idempotencyKey) throw new Error('There is no pending World creation to retry.');
         const operationId = pending.operationId || await operationIdForKey(pending.idempotencyKey);
@@ -424,7 +442,7 @@ export function createWorldCoreClient(getHeaders, {
             const result = retried.operation?.status === 'COMPLETED'
                 ? retried
                 : await waitForOperation(operationId);
-            writePending(null);
+            if (!deferSettlement) writePending(null);
             return result;
         } catch (error) {
             settlePendingFromError(error);
@@ -521,6 +539,11 @@ export function createWorldCoreClient(getHeaders, {
         prepareSnapshot,
         waitForOperation,
         pendingCreation: () => readPending(),
+        acknowledgeCreation: operationId => {
+            // UI projection can fail after the server commits. Keep the existing
+            // record across reloads until World Runtime can display that result.
+            if (operationId && readPending()?.operationId === operationId) writePending(null);
+        },
         resumePendingCreation,
         retryPendingCreation,
         previewWorldDeletion: worldId => request(`/worlds/${encodeURIComponent(worldId)}/delete-preview`, { headers: requestHeaders(getHeaders) }),

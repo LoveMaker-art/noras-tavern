@@ -10,7 +10,8 @@ const { verifyArchive, extractScript } = require('./reuse-windows-build.cjs');
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const fullNames = ['nora-tavern-shared', ...platforms.map(p => `nora-tavern-${p}`),
   ...platforms.map(p => `nora-operation-acceptance-${p}`)];
-const componentNames = ['nora-component-delivery', 'nora-component-acceptance', 'nora-release-plan'];
+const componentNames = ['nora-component-delivery', 'nora-component-acceptance', 'nora-release-plan',
+  ...platforms.map(p => `nora-component-native-${p}`)];
 const stateNames = ['nora-publication-state-before-transfer', 'nora-publication-state'];
 const diagnostics = ['nora-windows-failed-packaging-diagnostic'];
 const digestBytes = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -282,7 +283,8 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
   return { initialRelease: false, baselines: result };
 }
 async function verifyComponentAcceptance(delivery, acceptance, planRoot, commit) {
-  const report = oneReport(acceptance, 'component-acceptance.json'); assert.equal(report.schema, 'nora-component-acceptance/1');
+  const report = oneReport(acceptance, 'component-acceptance.json');
+  assert.equal(report.schema, 'nora-component-acceptance/2', 'Component publication requires three-platform native acceptance; old source-only receipts are insufficient');
   assert.equal(report.commit, commit); assert.equal(report.outcome, 'passed'); assert.match(report.tag, /^v\d+\.\d+\.\d+$/);
   const plan = oneReport(planRoot, 'release-plan.json'); assert.equal(plan.schema, 'nora-release-plan/v1'); assert.equal(plan.source.commit, commit);
   assert.equal(plan.mode, 'components'); assert.equal(plan.requiresReview, false);
@@ -292,7 +294,16 @@ async function verifyComponentAcceptance(delivery, acceptance, planRoot, commit)
     assert.equal(fs.statSync(path.join(delivery, name)).size, entry.size); assert.equal(await digestFile(path.join(delivery, name)), entry.sha256);
   }
   assert.deepEqual([...names].sort(), fs.readdirSync(delivery).sort(), 'Component receipt must cover the exact delivery');
-  return { outcome: 'passed', files: names.size };
+  assert.match(plan.baseline.ref, /^v\d+\.\d+\.\d+$/); assert.match(plan.baseline.commit, /^[a-f0-9]{40}$/);
+  const {verifyComponentNative}=await import('./component-acceptance.mjs');
+  assert.deepEqual(Object.keys(report.native || {}).sort(), [...platforms].sort(), 'All native platforms are required for component publication');
+  const native={};
+  for(const platform of platforms){
+    native[platform]=verifyComponentNative({delivery,reports:path.join(acceptance,`nora-component-native-${platform}`),
+      platform,commit,baselineTag:plan.baseline.ref,baselineCommit:plan.baseline.commit});
+    assert.deepEqual(report.native[platform],native[platform],'Final component receipt differs from raw native evidence');
+  }
+  return { outcome: 'passed', files: names.size, native };
 }
 function identity(run, artifacts, { repository, runId }, conclusions) {
   assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
@@ -433,7 +444,7 @@ async function materialize(run, artifacts, options, root, kind) {
     const archive = path.join(root, item.name + '.zip');
     await downloadArchive(item, options.repository, archive);
     const category = kind === 'state' ? 'state' : item.name === 'nora-release-plan' ? 'plan'
-      : item.name.includes('acceptance') ? 'acceptance' : 'delivery';
+      : item.name.includes('acceptance') || item.name.startsWith('nora-component-native-') ? 'acceptance' : 'delivery';
     const destination = kind === 'state' ? path.join(root, 'state') : path.join(root, category === 'delivery' ? 'originals' : category, item.name);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     execFileSync('python3', ['-c', extractScript, archive, destination], { stdio: 'inherit' });

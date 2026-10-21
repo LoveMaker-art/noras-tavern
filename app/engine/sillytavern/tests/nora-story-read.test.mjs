@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadStoryProfileStoryRead, loadStoryProfileStoryProgress } from '../src/nora-story-profile.js';
 import { createStoryLedgerSnapshotReader } from '../src/nora-story-ledger/read-snapshot.js';
+import { createStoryLedger } from '../src/nora-story-ledger/core.js';
 import { ledgerStatePath } from '../src/nora-story-ledger/state-file.js';
 import { prefixText } from '../public/scripts/nora-story-ledger/history.js';
 
@@ -83,6 +84,46 @@ test('section reads use the verified same ledger, do not expose secrets/unknown 
     assert.equal(JSON.parse(before).active, null);
 });
 
+test('both story readers report canonical effective model consent while retaining configured values and saved progress', async t => {
+    for (const [label, choice] of [
+        ['legacy without consent', { enabled: true }],
+        ['explicit off', { enabled: false, modelUseConsent: { noticeVersion: 1, enabled: false } }],
+        ['explicit on', { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } }],
+    ]) {
+        const f = fixture(t), item = f.session();
+        Object.assign(item.state, choice); item.writeState();
+        const canonical = createStoryLedger({
+            readChat: () => ({ messages: item.messages, metadata: item.header.chat_metadata, entities: ['__user__'] }),
+            readState: () => JSON.parse(fs.readFileSync(item.statePath, 'utf8')),
+            writeState: () => assert.fail('a read must not change the ledger'),
+            merge: () => assert.fail('a read must not call a model'),
+        });
+        const inspect = await canonical.inspect(item.scope), before = fs.readFileSync(item.statePath);
+        const snapshot = await f.reader.read(f.directories, item.world, item.branch);
+        const progress = (await loadStoryProfileStoryProgress({ directories: f.directories, worlds: f.worlds }))[0];
+        const read = await f.read(item.scope);
+        for (const [name, value] of [['snapshot', snapshot], ['progress', progress]]) {
+            assert.equal(value.enabled, inspect.enabled, label + ' ' + name);
+            assert.equal(value.configuredEnabled, inspect.configuredEnabled, label + ' configured ' + name);
+            assert.equal(value.consentRequired, inspect.consentRequired, label + ' consent ' + name);
+            assert.equal(value.status, 'ready', 'saved verified progress stays readable regardless of automatic consent');
+            assert.deepEqual(value.timeline, item.record.ledger.timeline);
+        }
+        assert.equal(read.status, 'ready');
+        assert.equal(read.source.autoEnabled, inspect.enabled);
+        assert.equal(read.source.configuredEnabled, inspect.configuredEnabled);
+        assert.equal(read.source.consentRequired, inspect.consentRequired);
+        assert.equal(read.model_called, false); assert.equal(read.read_only, true);
+        assert.deepEqual(fs.readFileSync(item.statePath), before);
+
+        item.state.pending = null; item.state.active = null; item.writeState();
+        const emptyBefore = fs.readFileSync(item.statePath), empty = await f.read(item.scope);
+        assert.equal(empty.status, inspect.enabled ? 'unorganized' : 'disabled');
+        assert.equal(empty.source.autoEnabled, inspect.enabled);
+        assert.deepEqual(fs.readFileSync(item.statePath), emptyBefore);
+    }
+});
+
 test('whole JSON budget, complete-item pagination and cursors are bound to scope, view and source', async t => {
     const f = fixture(t), a = f.session(), b = f.session('world-b', 'b', { worldName: 'B' });
     a.record.ledger.facts = Array.from({ length: 16 }, (_, i) => ({ id: `f${i}`, content: `${i} ${'中'.repeat(160)}`, known_by: ['__user__'] })); a.writeState();
@@ -103,7 +144,9 @@ test('explicit recent fallback is bounded, skips no long sentence silently, and 
     fs.unlinkSync(a.statePath);
     a.messages.at(-1).mes = '超长原文'.repeat(2000); a.writeChat();
     const result = await f.read({ ...a.scope, includeRecent: true, recentLimit: 2, maxChars: 1400 });
-    assert.equal(result.status, 'unorganized'); assert.ok(JSON.stringify(result).length <= 1400);
+    assert.equal(result.status, 'disabled'); assert.ok(JSON.stringify(result).length <= 1400);
+    assert.equal(result.source.autoEnabled, false); assert.equal(result.source.configuredEnabled, true);
+    assert.equal(result.source.consentRequired, true, 'missing consent pauses automatic work without rewriting the configured default');
     assert.ok(result.omitted.recent.oversized >= 1); assert.ok(result.omitted.recent.unread > 0);
     assert.ok(result.recent_history.every(item => item.text.length < 1400));
     const seen = f.observed.filter(file => file === a.chatPath).length;

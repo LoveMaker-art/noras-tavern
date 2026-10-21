@@ -1,12 +1,12 @@
 {
   "schema": "nora-story-profile-runtime/v1",
   "source": "repository-project",
-  "sourceRevision": "sha256:118e60aa559d484551a7d8c9b9147ba0c735ece44028e4e0bf337bddfb45baf2",
+  "sourceRevision": "sha256:e42a44830bb4cfddf7b98df32ca43cffa2bc6ffafcd926d468f3ff8da65117e0",
   "files": {
     "story_profile_runtime/core/story_profile.py": {
       "source": "story-profile/core/story_profile.py",
-      "sourceSha256": "6b25d3e2badf64f127ae34487953a4f7e9bbe9071c3e6f563e28279eab5926e0",
-      "sha256": "6b25d3e2badf64f127ae34487953a4f7e9bbe9071c3e6f563e28279eab5926e0"
+      "sourceSha256": "492cc2d2b6f979d83729b4ca62d522bb49cd40be186b3d828b03d2e843bf22b5",
+      "sha256": "492cc2d2b6f979d83729b4ca62d522bb49cd40be186b3d828b03d2e843bf22b5"
     },
     "story_profile_runtime/core/reflection.py": {
       "source": "story-profile/core/reflection.py",
@@ -25,8 +25,8 @@
     },
     "story_profile_runtime/adapters/nora/preference-checkpoint.js": {
       "source": "story-profile/adapters/nora/preference-checkpoint.js",
-      "sourceSha256": "88b027efb659e92d70fe02a0b9ea9947897c31533e370f38a4bac56be15f9bdf",
-      "sha256": "88b027efb659e92d70fe02a0b9ea9947897c31533e370f38a4bac56be15f9bdf"
+      "sourceSha256": "ad7d04f31f497304fd2c38a8e417e12b55e5bfdbfb4e961cfd78b60345127a31",
+      "sha256": "ad7d04f31f497304fd2c38a8e417e12b55e5bfdbfb4e961cfd78b60345127a31"
     },
     "engine/sillytavern/public/actor.html": {
       "source": "story-profile/public/actor.html",

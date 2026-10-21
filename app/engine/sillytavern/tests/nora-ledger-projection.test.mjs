@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { collectStoryProductions, createStoryProjection, storyProjectionOutcome } from '../src/nora-story-ledger/profile-projection.js';
 import { ledgerStatePath } from '../src/nora-story-ledger/state-file.js';
@@ -132,34 +133,52 @@ test('MEMORY success is independent of USER pending; capacity waits for a change
     } } }), /I\/O retry/);
 });
 
-test('real Python adapter projects an active ledger, preserves unmanaged text, is idempotent, and removes deleted World memory', async t => {
+test('real Python adapter updates archived plot without resident injection, preserves USER and other memory bytes, and removes deleted World progress', async t => {
     const f = fixture(t);
     const entry = f.session('world-a', 'session-a', 'A key was found');
     const memories = path.join(f.root, 'memories'); fs.mkdirSync(memories);
-    fs.writeFileSync(path.join(memories, 'USER.md'), 'Existing personal notes\n');
-    fs.writeFileSync(path.join(memories, 'MEMORY.md'), 'Existing non-Tavern memory\n');
     const env = { ...process.env, TAVERN_STATE_DIR: path.join(f.root, 'profile'),
         TAVERN_APP_DIR: fileURLToPath(new URL('../../../', import.meta.url)),
         TAVERN_HERMES_MEMORIES_DIR: memories, TAVERN_HERMES_STATE_DB: path.join(f.root, 'missing.db') };
+    // An existing preference awaiting its bounded summary leaves USER pending.
+    // Plot synchronization must still update the archive while retaining both
+    // complete original memory files, including their newline/encoding bytes.
+    const initialized = spawnSync(env.TAVERN_PYTHON || 'python3', ['-B', '-c',
+        'import sys; sys.path.insert(0, sys.argv[1]); import story_profile as p; p.record_learning(sys.argv[2], sys.argv[3], "偏爱合成悬疑故事", "synthetic fixture", source_id="existing-preference")',
+        path.join(env.TAVERN_APP_DIR, 'story_profile_runtime/core'), env.TAVERN_STATE_DIR, path.join(env.TAVERN_APP_DIR, 'actor_self.md')],
+    { env, encoding: 'utf8' });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const originalUser = Buffer.from('Existing personal notes\r\n保留USER原文。\r\n\r\n');
+    const originalMemory = Buffer.from('Existing non-Tavern memory\r\n保留其他记忆。\r\n\r\n');
+    const userFile = path.join(memories, 'USER.md'), memoryFile = path.join(memories, 'MEMORY.md');
+    fs.writeFileSync(userFile, originalUser); fs.writeFileSync(memoryFile, originalMemory);
+    const preservedMemories = () => {
+        assert.deepEqual(fs.readFileSync(userFile), originalUser);
+        assert.deepEqual(fs.readFileSync(memoryFile), originalMemory);
+    };
     const run = async () => {
         const result = await runStoryProfileAdapter('sync-story-states', { productions: await f.collect() }, { env });
         assert.equal(result.code, 0, result.stderr + JSON.stringify(result.value));
         assert.equal(result.value.ok, true);
+        assert.equal(result.value.projections.user.status, 'pending');
+        assert.equal(result.value.projections.memory.status, 'complete');
+        preservedMemories();
     };
     await run();
     const profilePath = path.join(env.TAVERN_STATE_DIR, 'story_profile.json');
     const first = fs.readFileSync(profilePath, 'utf8');
-    assert.match(fs.readFileSync(path.join(memories, 'MEMORY.md'), 'utf8'), /A key was found/);
-    assert.match(fs.readFileSync(path.join(memories, 'MEMORY.md'), 'utf8'), /Existing non-Tavern memory/);
-    assert.match(fs.readFileSync(path.join(memories, 'USER.md'), 'utf8'), /Existing personal notes/);
-    assert.doesNotMatch(fs.readFileSync(path.join(memories, 'USER.md'), 'utf8'), /A key was found/);
+    const archived = JSON.parse(first);
+    assert.equal(archived.shared_story_memory[0].source_status, 'active');
+    assert.deepEqual(archived.shared_story_memory[0].events, ['A key was found']);
+    assert.doesNotMatch(fs.readFileSync(memoryFile, 'utf8') + fs.readFileSync(userFile, 'utf8'), /A key was found/);
     await run(); assert.equal(fs.readFileSync(profilePath, 'utf8'), first);
     fs.unlinkSync(entry.statePath); await run();
     const missing = JSON.parse(fs.readFileSync(profilePath)).shared_story_memory;
     assert.equal(missing.length, 1); assert.equal(missing[0].source_status, 'missing');
     assert.equal(missing[0].session_id, 'session-a'); assert.deepEqual(missing[0].events, []);
-    assert.doesNotMatch(fs.readFileSync(path.join(memories, 'MEMORY.md'), 'utf8'), /A key was found/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(profilePath)).preferences, archived.preferences);
     entry.world.lifecycle.status = 'DELETED'; await run();
     assert.deepEqual(JSON.parse(fs.readFileSync(profilePath)).shared_story_memory, []);
-    assert.match(fs.readFileSync(path.join(memories, 'MEMORY.md'), 'utf8'), /Existing non-Tavern memory/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(profilePath)).preferences, archived.preferences);
+    preservedMemories();
 });

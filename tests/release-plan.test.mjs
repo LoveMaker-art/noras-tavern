@@ -45,20 +45,59 @@ function change(...names) {
 }
 const noEnvironment = plan => assert.ok(Object.values(plan.build.environment).every(values => values.length === 0));
 
+test('step titles cannot exempt changed unknown executable commands from review', () => {
+    for (const title of ['Accept the exact component delivery without publishing', 'Verify contracts', 'Test contracts', 'Require evidence']) {
+        const before = workflow.replace('Test contracts', title);
+        const after = before.replace('node --test tests/contracts.test.mjs', 'bash tooling/release/unclassified-runtime-builder.sh');
+        const inputs = change('.github/workflows/build-integrated-launcher.yml');
+        inputs.baseline.configuration.workflow = workflowInputs(before);
+        inputs.current.configuration.workflow = workflowInputs(after);
+        const plan = createReleasePlan(inputs);
+        assert.equal(plan.mode, 'review-required', title);
+        assert.equal(plan.requiresReview, true, title);
+    }
+});
+
+test('test-looking commands with shell execution or paths outside tests still require review', () => {
+    for (const command of ['node --test tests/contracts.test.mjs; bash build-runtime.sh',
+        'node --test tests/../tooling/release/build-runtime.mjs', 'node --test tests/./contracts.test.mjs',
+        'node --test tests/$(bash build-runtime.sh).mjs', 'node --import ./build-runtime.mjs --test tests/contracts.test.mjs']) {
+        const inputs = change('.github/workflows/build-integrated-launcher.yml');
+        inputs.current.configuration.workflow = workflowInputs(workflow.replace('node --test tests/contracts.test.mjs', command));
+        assert.equal(createReleasePlan(inputs).requiresReview, true, command);
+    }
+});
+
+test('pure step-title changes do not alter actual packaging inputs', () => {
+    const inputs = change('.github/workflows/build-integrated-launcher.yml');
+    inputs.current.configuration.workflow = workflowInputs(workflow.replace('Build package', 'A clearer packaging title'));
+    assert.equal(createReleasePlan(inputs).mode, 'verification-only'); noEnvironment(createReleasePlan(inputs));
+});
+
+test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{
+    const plan=createReleasePlan(change('tooling/release/compatibility/v2.5.4.json'));
+    assert.equal(plan.requiresReview,false);assert.equal(plan.mode,'components');assert.equal(plan.build.metadata,true);
+    assert.deepEqual(plan.build.launcher,[]);noEnvironment(plan);
+});
+
 test('unshipped tests/docs and publication tooling require verification, not product construction', () => {
-    const inputs = change('README.md', 'docs/releases/v2.4.4.md', 'tests/deployment/launcher_network_policy.test.cjs',
+    const inputs = change('README.md', 'CONTRIBUTING.md', 'docs/releases/v2.4.4.md', 'tests/deployment/launcher_network_policy.test.cjs',
         'tooling/release/publish-release.mjs', 'tooling/release/publication-state.mjs',
         'tooling/release/publication-source.cjs', 'tooling/release/publication-providers.mjs', 'tooling/release/acceptance-baseline.mjs',
+        'tooling/release/final-consumer.mjs', 'tooling/release/component-acceptance.mjs', 'tooling/release/jihulab-provider.mjs', 'tooling/release/jihulab-transport.mjs',
         'tooling/checks/launcher-installed-check.ps1');
     const plan = createReleasePlan(inputs);
     assert.equal(plan.mode, 'verification-only'); assert.equal(plan.requiresReview, false);
     assert.deepEqual(plan.build.launcher, []); assert.deepEqual(plan.build.modules, []); noEnvironment(plan);
     assert.ok(plan.changed.every(item => item.roles.includes('verification-only')));
+    assert.equal(plan.buildWorkflow, null);
 });
 
 test('a README shipped in ops changes its component, without rebuilding unrelated launcher/environment bytes', () => {
     const plan = createReleasePlan(change('launcher/desktop/README.md'));
     assert.equal(plan.mode, 'components'); assert.equal(plan.requiresReview, false);
+    assert.equal(plan.buildWorkflow, '.github/workflows/publish-component-update.yml');
+    assert.ok(plan.verification.includes('native-component-install-and-upgrade'));
     assert.deepEqual(plan.build.modules, ['operations']); assert.deepEqual(plan.build.launcher, []); noEnvironment(plan);
     assert.match(plan.changed[0].reasons.join('\n'), /Delivered as operations/);
 });
@@ -67,6 +106,7 @@ test('launcher membership comes from actual build files and resources rather tha
     for (const name of ['launcher/desktop/main.js', 'launcher/ui/index.html', 'deployment/shared/nora_system.py', 'launcher/ui/assets/nora-launcher-portrait.png']) {
         const plan = createReleasePlan(change(name));
         assert.equal(plan.mode, 'launcher', name); assert.deepEqual(plan.build.launcher, [...PLATFORMS].sort(), name); noEnvironment(plan);
+        assert.equal(plan.buildWorkflow, '.github/workflows/build-integrated-launcher.yml');
     }
     const plan = createReleasePlan(change('deployment/uninstall/uninstall.nsh'));
     assert.equal(plan.mode, 'launcher'); assert.deepEqual(plan.build.launcher, ['win32-x64']); noEnvironment(plan);
@@ -103,6 +143,46 @@ test('launcher version-only changes preserve dependency environments; dependency
     assert.deepEqual(electron.build.environment.hermesRuntime, []);
     const lock = createReleasePlan(change('launcher/desktop/package-lock.json'));
     assert.deepEqual(lock.build.environment.launcherDependencies, [...PLATFORMS].sort());
+});
+
+function versionOnlyLockChange() {
+    const inputs = change('launcher/desktop/package.json', 'launcher/desktop/package-lock.json');
+    const lock = JSON.parse(fs.readFileSync(path.join(root, 'launcher/desktop/package-lock.json'), 'utf8'));
+    inputs.baseline.configuration.launcherLock = lock;
+    inputs.current.configuration.launcherLock = structuredClone(lock);
+    inputs.current.configuration.launcher.version = '9.8.7';
+    inputs.current.configuration.launcherLock.version = '9.8.7';
+    inputs.current.configuration.launcherLock.packages[''].version = '9.8.7';
+    return inputs;
+}
+
+test('synchronized package and lock version labels do not force native dependency reconstruction', () => {
+    const inputs = versionOnlyLockChange(), plan = createReleasePlan(inputs);
+    assert.equal(plan.mode, 'launcher'); noEnvironment(plan);
+    assert.deepEqual(plan.build.launcher, [...PLATFORMS].sort(), 'Changed APP metadata still needs new APP artifacts');
+    assert.match(plan.changed.find(item => item.path.endsWith('package-lock.json')).reasons.join('\n'), /exact dependency/);
+});
+
+test('dependency identity and unknown lock evidence cannot hide behind an APP version bump', () => {
+    const mutations = [
+        config => { delete config.launcherLock; },
+        config => { config.launcherLock.lockfileVersion = 2; },
+        config => { config.launcherLock.packages[''].version = '1.0.0'; },
+        config => { config.launcherLock.name = 'different-product'; },
+        config => { config.launcherLock.packages[''].name = 'different-product'; },
+        config => { config.launcherLock.packages[''].dependencies.semver = '99.0.0'; },
+        config => { config.launcherLock.packages['node_modules/semver'].integrity = 'sha512-different'; },
+        config => { config.launcherLock.packages['node_modules/semver'].resolved = 'https://example.invalid/changed.tgz'; },
+        config => { config.launcherLock.packages['node_modules/semver'].os = ['win32']; },
+        config => { config.launcherLock.packages['node_modules/semver'].hasInstallScript = true; },
+        config => { config.launcherLock.newUnknownInput = true; },
+    ];
+    for (const mutate of mutations) {
+        const inputs = versionOnlyLockChange(); mutate(inputs.current.configuration);
+        const plan = createReleasePlan(inputs);
+        assert.equal(plan.mode, 'full');
+        assert.deepEqual(plan.build.environment.launcherDependencies, [...PLATFORMS].sort());
+    }
 });
 
 test('application/MCP lock changes rebuild the dependency closure without requiring a new Hermes archive', () => {
@@ -215,6 +295,26 @@ test('Git CLI reads exact committed bytes, ignores unrelated working edits, seal
     assert.equal(spawnSync(process.execPath, [planner, ...cli]).status, 1);
     assert.equal(JSON.parse(fs.readFileSync(output)).planDigest, plan.planDigest);
     assert.match(execFileSync(process.execPath, [planner, '--help'], { encoding: 'utf8' }), /Does not build, upload, publish/);
+});
+
+test('Git snapshots carry lock evidence and distinguish a real version-only bump from dependency changes', t => {
+    const repo = repository(t), lock = JSON.parse(fs.readFileSync(path.join(root, 'launcher/desktop/package-lock.json'), 'utf8'));
+    repo.write('launcher/desktop/package-lock.json', JSON.stringify(lock));
+    repo.git('add', '.'); repo.git('commit', '--quiet', '-m', 'lock baseline');
+    const baseline = readGitSnapshot(repo.directory, repo.git('rev-parse', 'HEAD'));
+    const next = structuredClone(launcher); next.version = '9.8.7';
+    lock.version = next.version; lock.packages[''].version = next.version;
+    repo.write('launcher/desktop/package.json', JSON.stringify(next));
+    repo.write('launcher/desktop/package-lock.json', JSON.stringify(lock));
+    repo.git('add', '.'); repo.git('commit', '--quiet', '-m', 'version labels');
+    const current = readGitSnapshot(repo.directory, repo.git('rev-parse', 'HEAD'));
+    const plan = createReleasePlan({ baseline, current });
+    assert.equal(plan.mode, 'launcher'); noEnvironment(plan);
+    lock.packages['node_modules/semver'].integrity = 'sha512-changed';
+    repo.write('launcher/desktop/package-lock.json', JSON.stringify(lock));
+    repo.git('add', '.'); repo.git('commit', '--quiet', '-m', 'dependency identity');
+    const changed = createReleasePlan({ baseline: current, current: readGitSnapshot(repo.directory, repo.git('rev-parse', 'HEAD')) });
+    assert.deepEqual(changed.build.environment.launcherDependencies, [...PLATFORMS].sort());
 });
 
 test('stable manifest mode verifies configuration against its claimed Git commit', t => {

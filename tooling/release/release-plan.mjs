@@ -13,7 +13,7 @@ export const PLATFORMS = Object.freeze(['darwin-arm64', 'darwin-x64', 'win32-x64
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const sorted = values => [...new Set(values)].sort();
 const configPaths = ['tooling/source-layout.json', 'launcher/desktop/package.json', '.github/workflows/build-integrated-launcher.yml',
-    '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml'];
+    '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml', 'launcher/desktop/package-lock.json'];
 const fullTools = new Set(['tooling/layout.mjs', 'tooling/source-layout.json', 'tooling/release/release-source.mjs',
     'tooling/release/build-commands.mjs', 'tooling/release/package-release.mjs', 'tooling/release/package-release.sh',
     'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs', 'tooling/release/app-only-release.mjs']);
@@ -23,8 +23,9 @@ const automation = new Set(['tooling/run.mjs', 'tooling/release/release-plan.mjs
     'tooling/release/app-only-native-ui.ps1', 'tooling/release/app-only-native-ui.applescript',
     'tooling/release/sourceforge-credentials.mjs', 'tooling/release/verify-publish-source.cjs',
     'tooling/release/reuse-windows-build.cjs', 'tooling/release/verify-launcher-release.cjs',
-    'tooling/release/launcher-release-notes.cjs', 'tooling/release/package-local-launcher.mjs']);
-const rootDocuments = new Set(['README.md', 'AGENTS.md', 'CONTEXT.md', 'LICENSE', '.gitignore', '.gitattributes']);
+    'tooling/release/launcher-release-notes.cjs', 'tooling/release/package-local-launcher.mjs', 'tooling/release/final-consumer.mjs',
+    'tooling/release/component-acceptance.mjs', 'tooling/release/jihulab-provider.mjs', 'tooling/release/jihulab-transport.mjs']);
+const rootDocuments = new Set(['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'CONTEXT.md', 'LICENSE', '.gitignore', '.gitattributes']);
 const engine = 'app/engine/sillytavern/';
 const omitted = ['default/content/backgrounds/', 'default/content/Seraphina/', 'public/webfonts/NotoSans/',
     'public/webfonts/NotoSansMono/', 'src/tokenizers/', 'tests/'].map(name => engine + name);
@@ -46,7 +47,7 @@ export function workflowInputs(text = '', job = 'build') {
     let end = start + 1;
     while (end < lines.length && !/^  [\w-]+:\s*$/.test(lines[end])) end++;
     const body = lines.slice(start + 1, end);
-    const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line))
+    const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line) && !/^\s*-\s+name\s*:/.test(line))
         .map(line => line.trim().replace(/\s+#.*$/, '')).join('\n');
     const environment = body.filter(line => /\b(?:runs-on|runner|node-version|python-version)\s*:/.test(line)
         || /"(?:runner|platform|arch|package_script)"\s*:/.test(line));
@@ -56,9 +57,14 @@ export function workflowInputs(text = '', job = 'build') {
         const value = normalize(block);
         if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|prepare-hermes-bootstrap|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
         else if (/package-release\.(?:mjs|sh)|package-launcher-update|package-component-update|npm run pack:|npm (?:ci|install|prune)(?:\s|$)|electron-builder/.test(value)) packaging.push(value);
-        else if (/^[- ]*(?:name|uses):/m.test(value)
-            && !/^- name:\s*(?:Verify|Test|Require|Preserve|Reject|Keep build inputs|Configure actual operation actors|Record|Upload|Save|Collect|Check|Restore published runtime)/m.test(value)
-            && !/^- uses:\s*actions\/(?:checkout|upload-artifact|download-artifact)@/m.test(value)) unknown.push(value);
+        // Step labels do not establish what a command does. Only a literal
+        // test-only command or the existing artifact actions are recognized;
+        // other changed execution content remains a review requirement.
+        else if (/^[- ]*(?:run|uses):/m.test(value)
+            && !(/^(?:- )?run: node --test(?: tests\/[A-Za-z0-9_./*-]+)+$/.test(value)
+                && value.split(/\s+/).filter(token => token.startsWith('tests/'))
+                    .every(file => file.split('/').every(part => part && part !== '.' && part !== '..')))
+            && !/^(?:- )?uses:\s*actions\/(?:checkout|upload-artifact|download-artifact)@/m.test(value)) unknown.push(value);
         block = [];
     };
     for (const line of body) {
@@ -82,9 +88,25 @@ function configuration(contents) {
         }
     }
     const component = contents[configPaths[3]] || '';
-    return { layout: layout?.rules || null, launcher: parse(configPaths[1]), workflow: workflowInputs(contents[configPaths[2]]),
+    return { layout: layout?.rules || null, launcher: parse(configPaths[1]), launcherLock: parse(configPaths[5]), workflow: workflowInputs(contents[configPaths[2]]),
         componentWorkflow: workflowInputs(component, /^  build-components:\s*$/m.test(component) ? 'build-components' : 'publish'),
         publicationWorkflowHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update)|\bnpm\s+(?:ci|install|run\s+(?:build|pack:))|\belectron-builder\b)/.test(contents[configPaths[4]] || '') };
+}
+
+// Version labels do not change npm's dependency closure. Ignore only the two
+// package version labels, after proving both agree with this snapshot's package.
+// Every other lock field (integrity, resolved, platform, scripts, format...) stays
+// significant; absent/old/inconsistent lock evidence must take the full path.
+function launcherLockInputs(config) {
+    const lock = config?.launcherLock, manifest = config?.launcher;
+    if (lock?.lockfileVersion !== 3 || !manifest?.name || !manifest.version
+        || lock.name !== manifest.name || lock.version !== manifest.version
+        || lock.packages?.['']?.name !== manifest.name || lock.packages[''].version !== manifest.version) return null;
+    const normalized = structuredClone(lock);
+    delete normalized.version; delete normalized.packages[''].version;
+    const canonical = value => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    return JSON.stringify(canonical(normalized));
 }
 
 /** Read committed bytes without checking out, building, invoking npm, or using the network. */
@@ -212,6 +234,8 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
             || /^(?:app\/tests|app\/engine\/sillytavern\/tests|nora-mcp\/(?:tests|docs)|story-profile\/(?:tests|docs))\//.test(name)
             || ['tooling/README.md', 'local-state/README.md', 'story-profile/README.md'].includes(name)) {
             reason('verification-only', 'Not selected by the product delivery/build inputs');
+        } else if (/^tooling\/release\/compatibility\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(name)) {
+            reason('components','Reviewed compatibility declaration changes release metadata, not runtime construction'); metadata=true;
         } else if (fullTools.has(name)) full('Shared packaging/projection/archive input affects product and environment construction');
         else if (name.startsWith('.github/')) {
             if (name === configPaths[4] && !current.configuration?.publicationWorkflowHasBuild) reason('verification-only', 'Audited accepted-artifact publication workflow does not construct product bytes');
@@ -239,7 +263,12 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
                 .flatMap(([, values]) => values).filter(platform => selected.includes(platform)));
             if (affected.length) { reason('launcher', 'Selected by actual launcher build.files/extraResources/icon/NSIS include'); add(launcher, affected); item.platforms = affected; metadata = true; }
             if (name === 'launcher/desktop/runtime.js') { reason('environment', 'Runtime packer imports this link normalization helper'); add(hermesRuntime); }
-            if (name === 'launcher/desktop/package-lock.json') { reason('launcher-dependencies', 'Electron/native launcher dependency lock changed'); add(launcherDependencies); }
+            if (name === 'launcher/desktop/package-lock.json') {
+                const before = launcherLockInputs(baseline?.configuration), after = launcherLockInputs(current.configuration);
+                if (before === null || after === null || before !== after) {
+                    reason('launcher-dependencies', 'Electron/native launcher dependency lock changed or equivalence is unproven'); add(launcherDependencies);
+                } else reason('launcher', 'Lockfile package-version metadata changed; exact dependency and toolchain lock inputs are unchanged');
+            }
             if (name === 'launcher/desktop/package.json') {
                 const dependencyInput = config => JSON.stringify([config?.launcher?.dependencies, config?.launcher?.devDependencies, config?.launcher?.engines]);
                 if (dependencyInput(baseline?.configuration) !== dependencyInput(current.configuration)) {
@@ -289,7 +318,10 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
         platforms: selected, mode, requiresReview: review.length > 0, review: sorted(review), changed,
         build: { modules: sorted(modules), launcher: sorted(launcher), environment: env, metadata },
         verification: sorted(['source-and-plan', ...(modules.size ? ['component-contracts'] : []),
+            ...(mode === 'components' ? ['native-component-install-and-upgrade'] : []),
             ...(launcher.size || environmentBuild ? ['native-package-and-upgrade'] : []), 'sealed-artifact-provenance-before-publication']),
+        buildWorkflow: mode === 'verification-only' ? null : mode === 'components'
+            ? '.github/workflows/publish-component-update.yml' : '.github/workflows/build-integrated-launcher.yml',
         reuse: { sourceComparisonOnly: true, acceptedArtifactRequired: true,
             environmentEvidenceRequired: ['platform', 'architecture', 'Node/Python versions and ABI', 'external revisions', 'archive SHA256', 'build provenance'],
             limitations: ['Unpinned external downloads are not established by Git source equality',
@@ -330,6 +362,7 @@ function main(args = process.argv.slice(2)) {
         `mode=${plan.mode}`, `requires_review=${plan.requiresReview}`, `product_build=${plan.mode !== 'verification-only'}`,
         `launcher_build=${plan.build.launcher.length > 0}`, `environment_build=${Object.values(plan.build.environment).some(values => values.length)}`,
         `platforms=${JSON.stringify(plan.build.launcher)}`, `plan_digest=${plan.planDigest}`,
+        `build_workflow=${plan.buildWorkflow || ''}`,
     ].join('\n') + '\n');
 }
 

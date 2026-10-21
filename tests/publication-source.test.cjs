@@ -40,7 +40,7 @@ test('accepted product bytes are bound to their tag commit while a newer publish
   assert.equal(verifyDelivery(f.run, f.artifacts, f.options).length, 8);
 });
 test('component delivery requires its successful source workflow, acceptance and persisted plan', () => {
-  const f = fixture('components'); assert.equal(verifyDelivery(f.run, f.artifacts, f.options).length, 3);
+  const f = fixture('components'); assert.equal(verifyDelivery(f.run, f.artifacts, f.options).length, 6);
   f.artifacts.artifacts.pop(); f.artifacts.total_count--; assert.throws(() => verifyDelivery(f.run, f.artifacts, f.options));
 });
 test('old failed native diagnostics remain preserved but cannot enter a later accepted delivery', () => {
@@ -168,14 +168,16 @@ test('flattening keeps old nested ZIP layouts compatible and refuses duplicate n
   assert.throws(() => flattenDelivery(source, output), /Duplicate delivery basename/);
   assert.equal(fs.readFileSync(path.join(output, 'release-manifest.json'), 'utf8'), 'original');
 });
-test('actual source CLI hashes artifact ZIP bytes before extracting them', t => {
+test('actual source CLI hashes artifact ZIP bytes before extracting complete native component evidence', async t => {
   const f = fixture('components'), root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-download-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const payloads = [ ['owned.json', 'sealed fixture'], ['component-acceptance.json', JSON.stringify({schema:'nora-component-acceptance/1',commit:f.options.commit,tag:'v2.4.4',outcome:'passed',files:{'owned.json':{size:14,sha256:hash('sealed fixture')}}})],
-    ['release-plan.json', JSON.stringify({schema:'nora-release-plan/v1',source:{commit:f.options.commit},mode:'components',requiresReview:false})] ];
-  for (const [index, payload] of payloads.entries()) {
+  const {componentAcceptanceFixture}=await import('./helpers/component-acceptance-fixture.mjs');
+  const evidence=componentAcceptanceFixture(path.join(root,'inputs'),f.options.commit);
+  const payloads = [evidence.delivery,evidence.reports,evidence.planRoot,
+    ...['darwin-arm64','darwin-x64','win32-x64'].map(platform=>path.join(evidence.reports,`nora-component-native-${platform}`))];
+  for (const [index, directory] of payloads.entries()) {
     const zip = path.join(root, `${index + 1}.zip`);
-    execFileSync('python3', ['-c', 'import zipfile,sys\nwith zipfile.ZipFile(sys.argv[1],"w") as z: z.writestr(sys.argv[2],sys.argv[3])', zip, ...payload]);
+    execFileSync('python3', ['-c', 'import pathlib,zipfile,sys\nroot=pathlib.Path(sys.argv[2])\nwith zipfile.ZipFile(sys.argv[1],"w") as z:\n for p in root.rglob("*"):\n  if p.is_file() and (sys.argv[3]!="receipt" or p.name=="component-acceptance.json"):z.write(p,p.relative_to(root))', zip, directory,index===1?'receipt':'all']);
     const bytes = fs.readFileSync(zip); f.artifacts.artifacts[index].size_in_bytes = bytes.length; f.artifacts.artifacts[index].digest = 'sha256:' + hash(bytes);
   }
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
@@ -186,7 +188,7 @@ test('actual source CLI hashes artifact ZIP bytes before extracting them', t => 
   { env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FIXTURE_ZIP_ROOT: root }, encoding: 'utf8' });
   fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts)); const accepted = path.join(root, 'accepted');
   const good = execute(accepted); assert.equal(good.status, 0, good.stderr);
-  assert.equal(fs.readFileSync(path.join(accepted, 'delivery/owned.json'), 'utf8'), 'sealed fixture');
+  assert.deepEqual(fs.readFileSync(path.join(accepted, 'delivery/release-manifest.json')),fs.readFileSync(path.join(evidence.delivery,'release-manifest.json')));
   f.artifacts.artifacts[0].digest = 'sha256:' + hash('wrong bytes'); fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts));
   const bad = path.join(root, 'rejected'), failure = execute(bad); assert.notEqual(failure.status, 0); assert.match(failure.stderr, /digest differs/);
   assert.equal(fs.existsSync(path.join(bad, 'delivery')), false, 'Unverified ZIP bytes must not be extracted');

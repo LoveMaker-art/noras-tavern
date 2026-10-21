@@ -51,6 +51,7 @@ export function assertLauncherReuse(current, baseline,{appOnly=false}={}) {
     // Shared build/projection tools can change compiled payloads without changing
     // app source. Only reviewed launcher-specific tools may bypass compilation.
     const allowed = name => allowedFiles.has(name)||(appOnly&&appOnlyFiles.has(name))
+        || /^tooling\/release\/compatibility\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(name)
         || ['launcher/', 'deployment/install/', 'deployment/uninstall/', 'tests/', 'docs/'].some(prefix => name.startsWith(prefix));
     const changed = [...new Set([...Object.keys(current.sourceFiles), ...Object.keys(baseline.sourceFiles)])]
         .filter(name => current.sourceFiles[name] !== baseline.sourceFiles[name]);

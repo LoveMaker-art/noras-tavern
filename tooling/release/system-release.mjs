@@ -145,34 +145,43 @@ export function configurePublication(identity,{publicationTag,updateCompatibilit
     return result;
 }
 
+export function readPublicationCompatibility(root,identity,{compatibilityFile='',candidate=false}={}) {
+    // The filename is selected automatically, but compatibility itself is never
+    // inferred. A new version must bring its explicitly reviewed declaration.
+    if(!compatibilityFile)compatibilityFile=`tooling/release/compatibility/v${identity.versions?.tavern}.json`;
+    if(typeof compatibilityFile!=='string'||!/^tooling\/release\/compatibility\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(compatibilityFile))
+        throw new Error('Compatibility input must be a reviewed repository JSON under tooling/release/compatibility/');
+    let current=path.resolve(root);
+    for(const part of compatibilityFile.split('/')){
+        current=path.join(current,part);
+        if(!fs.existsSync(current))throw new Error(`Missing reviewed compatibility declaration: ${compatibilityFile}`);
+        const stat=fs.lstatSync(current);
+        if(stat.isSymbolicLink()||(!stat.isDirectory()&&!stat.isFile()))throw new Error('Compatibility input cannot traverse links');
+    }
+    const stat=fs.lstatSync(current);
+    if(!stat.isFile()||stat.size<1||stat.size>64*1024)throw new Error('Compatibility JSON must be a bounded regular file');
+    const bytes=fs.readFileSync(current);
+    if(!candidate){
+        const git=args=>execFileSync('git',args,{cwd:root,maxBuffer:128*1024,stdio:['ignore','pipe','pipe']});
+        const commit=git(['rev-parse','--verify','HEAD^{commit}']).toString().trim();
+        const tree=git(['ls-tree',commit,'--',compatibilityFile]).toString();
+        if(!tree.startsWith('100644 blob '))throw new Error('Compatibility input must be a committed regular JSON');
+        const committed=git(['show',`${commit}:${compatibilityFile}`]);
+        if(!bytes.equals(committed))throw new Error('Compatibility input differs from the fixed source commit');
+    }
+    const {updateCompatibility}=configurePublication(identity,{updateCompatibility:JSON.parse(bytes)});
+    return {compatibilityFile,updateCompatibility,compatibilitySha256:crypto.createHash('sha256').update(bytes).digest('hex')};
+}
+
 export function workflowPublicationOptions(root,{publicationTag='',compatibilityFile='',refType,refName}={}) {
     const coreVersion=fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim();
     const launcherVersion=JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'),'utf8')).version;
     const identity={versions:{tavern:coreVersion},launcherVersion};
     const tag=releasePublicationTag(configurePublication(identity,{...(publicationTag?{publicationTag}:{})}));
     if(refType==='tag'&&refName!==tag)throw new Error('Requested publication differs from the immutable Git tag');
-    let compatibilitySha256;
-    if(compatibilityFile){
-        if(typeof compatibilityFile!=='string'||!/^tooling\/release\/compatibility\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(compatibilityFile))
-            throw new Error('Compatibility input must be a reviewed repository JSON under tooling/release/compatibility/');
-        let current=path.resolve(root);
-        for(const part of compatibilityFile.split('/')){
-            current=path.join(current,part);const stat=fs.lstatSync(current);
-            if(stat.isSymbolicLink()||(!stat.isDirectory()&&!stat.isFile()))throw new Error('Compatibility input cannot traverse links');
-        }
-        const stat=fs.lstatSync(current);
-        if(!stat.isFile()||stat.size<1||stat.size>64*1024)throw new Error('Compatibility JSON must be a bounded regular file');
-        const git=args=>execFileSync('git',args,{cwd:root,maxBuffer:128*1024});
-        const commit=git(['rev-parse','--verify','HEAD^{commit}']).toString().trim();
-        const tree=git(['ls-tree',commit,'--',compatibilityFile]).toString();
-        if(!tree.startsWith('100644 blob '))throw new Error('Compatibility input must be a committed regular JSON');
-        const bytes=fs.readFileSync(current),committed=git(['show',`${commit}:${compatibilityFile}`]);
-        if(!bytes.equals(committed))throw new Error('Compatibility input differs from the fixed source commit');
-        configurePublication(identity,{publicationTag:publicationTag||undefined,updateCompatibility:JSON.parse(bytes)});
-        compatibilitySha256=crypto.createHash('sha256').update(bytes).digest('hex');
-    }
-    return {tag,coreVersion,explicit:Boolean(publicationTag),compatibilityFile,
-        ...(compatibilitySha256?{compatibilitySha256}:{})};
+    const selected=readPublicationCompatibility(root,identity,{compatibilityFile});
+    return {tag,coreVersion,explicit:Boolean(publicationTag),compatibilityFile:selected.compatibilityFile,
+        compatibilitySha256:selected.compatibilitySha256};
 }
 
 // Released launchers through 2.0.2 predate the registered executor protocol.

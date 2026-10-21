@@ -2,7 +2,7 @@ import {
     inspectMvuCompatibility,
     isMvuUpdateInstructionEntry,
 } from './mvu-compatibility.js';
-import { isMvuVariableModelEnabled } from './mvu-settings.js';
+import { isMvuVariableModelEnabled, mvuSettingsForExecution } from './mvu-settings.js';
 export { isMvuVariableModelEnabled as isNoraMvuVariableModelEnabled } from './mvu-settings.js';
 
 export function isNoraMvuUpdateInstructionEntry(entry = {}) {
@@ -37,7 +37,7 @@ export function shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
         ? candidates.filter(candidate => String(candidate?.world || '') === primary)
         : candidates;
     const plan = inspectMvuCompatibility({ books: [protocolEntries] });
-    return isMvuVariableModelEnabled(settings)
+    return isMvuVariableModelEnabled(mvuSettingsForExecution(settings, extensionSettings.nora_mvu?.modelUseConsent))
         && !isNoraMvuExtraAnalysisRunning(mvuRuntime)
         && plan.splitModelSupported
         && isNoraMvuUpdateInstructionEntry(entry);

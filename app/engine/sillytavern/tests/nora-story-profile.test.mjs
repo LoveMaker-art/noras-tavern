@@ -26,6 +26,7 @@ const storyProfileCoreRoot = path.join(storyProfileRuntimeRoot, 'core');
 const panelSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/panel-controller.js'), 'utf8');
 const endpointSource = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/src/endpoints/nora-story-profile.js'), 'utf8');
 const noraUiSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/index.js'), 'utf8');
+const preferenceSettingsSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/story-profile-controller.js'), 'utf8');
 // This contract runs in the authored checkout and tooling/run.mjs's delivery
 // export. These are the two paths mapped by tooling/source-layout.json.
 const profileMemoryPath = ['deployment/runtime/profile_memory.py', 'ops/scripts/profile_memory.py']
@@ -152,6 +153,11 @@ test('story profile restores the original actor surface through Nora adapters', 
     assert.match(script, /timeline/);
     assert.match(script, /intimacy/);
     assert.match(script, /knows/);
+    // Baseline 1.31 keeps the preference choice in the curator settings, outside
+    // the archive reader. The setting remains covered by its behavioral tests.
+    assert.doesNotMatch(script, /automaticReflection|automatic-preferences/);
+    assert.match(preferenceSettingsSource, /createStoryPreferenceSettings/);
+    assert.match(preferenceSettingsSource, /\/api\/nora-story-profile\/settings/);
     assert.doesNotMatch(html + script, /ON STAGE|roles-section|specialties-list|retry-button/);
 });
 

@@ -6,6 +6,7 @@ import sanitize from 'sanitize-filename';
 import { matchesLedgerHistory } from './core.js';
 import { ledgerStatePath } from './state-file.js';
 import { normalizeLedger } from './schema.js';
+import { ledgerReadModelUseState } from './read-snapshot.js';
 import { storyEntityBindings } from '../../public/scripts/nora-worlds/story-context.js';
 import { countTurns, prefixText, scopeKey, scopeOf } from '../../public/scripts/nora-story-ledger/history.js';
 import { runStoryProfileAdapter } from '../nora-story-profile-adapter.js';
@@ -26,7 +27,7 @@ export async function collectStoryProgress(directories, listWorlds, notify = rep
             const base = { world_id: world.world_id, world_name: world.name || '', session_id: session?.session_id || null,
                 session_name: session?.name || '', total_turns: null, covered_turns: null, message_count: null,
                 covered_message_count: null, history_signature: null, summary_id: null,
-                status: 'unavailable', summary_status: 'none', enabled: null, timeline: [], open_threads: [], scene: null,
+                status: 'unavailable', summary_status: 'none', enabled: null, configuredEnabled: null, consentRequired: null, timeline: [], open_threads: [], scene: null,
                 uncovered: null, updated_at: null, last_played_at: 0 };
             const scope = { worldId: world.world_id, sessionId: session?.session_id };
             const fail = (status, code) => {
@@ -68,13 +69,14 @@ export async function collectStoryProgress(directories, listWorlds, notify = rep
                 let state;
                 try { state = JSON.parse(await fs.readFile(ledgerStatePath(directories.root, scope), 'utf8')); } catch (error) {
                     if (error.code !== 'ENOENT') { result.push(fail('error', 'NORA_LEDGER_STATE_UNREADABLE')); continue; }
+                    Object.assign(base, ledgerReadModelUseState());
                     result.push({ ...base, status: 'unorganized', covered_turns: 0, covered_message_count: 0,
                         uncovered: uncoveredRange(0, base.total_turns) }); continue;
                 }
                 if (!state || typeof state !== 'object' || Array.isArray(state)) {
                     result.push(fail('error', 'NORA_LEDGER_STATE_INVALID')); continue;
                 }
-                base.enabled = state.enabled !== false;
+                Object.assign(base, ledgerReadModelUseState(state));
                 if ((data[0]?.chat_metadata?.nora_restore?.id || null) !== (state.restoreId || null)) {
                     result.push(fail('stale', 'NORA_LEDGER_RESTORE_CHANGED')); continue;
                 }

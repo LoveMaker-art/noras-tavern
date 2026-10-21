@@ -7,11 +7,21 @@ import { isDeepStrictEqual } from 'node:util';
 import sanitize from 'sanitize-filename';
 import { ledgerStatePath } from './state-file.js';
 import { normalizeLedger } from './schema.js';
+import { LEDGER_MODEL_USE_NOTICE_VERSION } from './core.js';
 import { storyEntityBindings } from '../../public/scripts/nora-worlds/story-context.js';
 import { BATCH_TURNS, narrative, scopeKey, scopeOf } from '../../public/scripts/nora-story-ledger/history.js';
 
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const revisionOf = stat => stat ? [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':') : 'missing';
+
+/** Read the same configured/effective choice as canonical ledger inspection. */
+export function ledgerReadModelUseState(state = {}) {
+    const configuredEnabled = Object.hasOwn(state || {}, 'enabled') ? state.enabled : true;
+    return { configuredEnabled,
+        enabled: configuredEnabled === true && state?.modelUseConsent?.noticeVersion === LEDGER_MODEL_USE_NOTICE_VERSION
+            && state.modelUseConsent.enabled === true,
+        consentRequired: state?.modelUseConsent?.noticeVersion !== LEDGER_MODEL_USE_NOTICE_VERSION };
+}
 async function fileRevision(file) {
     try { const stat = await fsp.stat(file, { bigint: true }); return stat.isFile() ? revisionOf(stat) : 'not-file'; } catch (error) {
         if (error.code === 'ENOENT') return 'missing'; throw error;
@@ -27,7 +37,7 @@ export function createStoryLedgerSnapshotReader({ onOpen = () => {}, cacheLimit 
         const base = { world_id: scope.worldId, world_name: world.name || '', session_id: scope.sessionId,
             session_name: session.name || '', total_turns: null, covered_turns: null, message_count: null,
             covered_message_count: null, history_signature: null, summary_id: null, status: 'unavailable',
-            summary_status: 'none', enabled: null, timeline: [], open_threads: [], scene: null,
+            summary_status: 'none', enabled: null, configuredEnabled: null, consentRequired: null, timeline: [], open_threads: [], scene: null,
             uncovered: null, updated_at: null, ledger: null, recent: [], revision: null, restore_id: null };
         const failed = (status, code) => ({ ...base, status, code, ledger: null, recent: [] });
         if (world.lifecycle?.status !== 'READY') return failed('unavailable', 'NORA_LEDGER_SESSION_UNAVAILABLE');
@@ -112,7 +122,7 @@ export function createStoryLedgerSnapshotReader({ onOpen = () => {}, cacheLimit 
         base.total_turns = totalTurns; base.message_count = messageCount; base.covered_turns = 0; base.covered_message_count = 0;
         base.history_signature = signature.update(']').digest('hex'); base.restore_id = header.chat_metadata?.nora_restore?.id || null;
         base.uncovered = { from_user_turn: totalTurns ? 1 : null, to_user_turn: totalTurns || null, count: totalTurns };
-        base.enabled = stateCode ? null : state?.enabled !== false;
+        if (!stateCode) Object.assign(base, ledgerReadModelUseState(state));
         base.revision = digest(JSON.stringify([stamp, base.history_signature, digest(stateText), base.restore_id]));
         base.recent = recent;
         let snapshot;

@@ -11,6 +11,9 @@ const tree=parse(source,{ecmaVersion:'latest'}),nodes=[];
 function walk(node){if(!node||typeof node!=='object')return;if(node.type)nodes.push(node);for(const value of Object.values(node))if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);}
 walk(tree);
 function definition(name){const node=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id.name===name||node.type==='VariableDeclarator'&&node.id.name===name);assert.ok(node,name);return node.type==='VariableDeclarator'?`const ${source.slice(node.start,node.end)};`:source.slice(node.start,node.end);}
+function handoffCallback(){const node=nodes.find(node=>node.type==='ArrowFunctionExpression'
+  &&node.body?.body?.[0]?.declarations?.[0]?.id?.name==='plan'
+  &&source.slice(node.start,node.end).includes('plan = launcherUpdate.resume('));assert.ok(node);return source.slice(node.start,node.end);}
 function retryFixture(t,{fixed=true}={}){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-shared-route-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   const operationId=randomUUID(),job=path.join(home,'installer/update-jobs',randomUUID());fs.mkdirSync(job,{recursive:true});
@@ -78,6 +81,116 @@ test('one desktop request for both components enters the sequence instead of end
   vm.runInContext(definition('runAction'),context);
   const result=await vm.runInContext('runAction',context)({sender:null},{action:'update',tag:'v2.5.3',runId:'one-click',includeLauncher:true});
   assert.deepEqual(calls,['both']);assert.equal(result.updateComplete,true);
+});
+for(const marker of [null,'/owned/installer/launcher-update/completed-job'])
+  for(const includeLauncher of [false,true])test(`new update uses its normal owner after startup (${marker?'self-update reopen':'normal'}, ${includeLauncher?'both':'core'})`,async()=>{
+    const calls=[],context=vm.createContext({activeRun:false,modelBusy:false,cancelled:false,activeOperationContext:null,SELF_UPDATE_JOB:marker,
+      launcherError:(message,details)=>Object.assign(new Error(message),details),
+      runSharedUpdate:async()=>{calls.push('core');return {version:'2.5.4'};},
+      runDesktopUpdate:async()=>{calls.push('both');return {version:'2.5.4',updateComplete:true};},
+      operations:()=>assert.fail('a startup argument must not divert a new request into the legacy executor')});
+    vm.runInContext(definition('runAction'),context);
+    await vm.runInContext('runAction',context)({sender:null},{action:'update',tag:'v2.5.4',runId:'after-reopen',includeLauncher});
+    assert.deepEqual(calls,[includeLauncher?'both':'core']);
+    context.activeRun=true;
+    await assert.rejects(vm.runInContext('runAction',context)({sender:null},{action:'update',runId:'still-busy',includeLauncher}),/正在处理任务/);
+    assert.equal(calls.length,1,'an unfinished handoff still prevents concurrent execution');
+  });
+for(const outcome of ['succeeded','rolled-back','unconfirmed','missing-plan'])test(`startup handoff consumes its marker once (${outcome})`,async()=>{
+  const calls=[],job='/owned/installer/launcher-update/job',operation={state:outcome,operationId:randomUUID()};
+  const plan={operationId:operation.operationId,target:'v2.5.4',planDigest:'a'.repeat(64),skillId:'skill'};
+  const context=vm.createContext({SELF_UPDATE_JOB:job,activeRun:true,activeOperationContext:{operationId:operation.operationId},
+    noraHome:()=>'/owned',process:{execPath:'/test/app'},app:{getVersion:()=> '2.2.4'},window:{webContents:{}},
+    launcherRecoveryOptions:()=>({}),launcherUpdate:{resume:actual=>{assert.equal(actual,job);return outcome==='missing-plan'?null:plan;},
+      waitHandoff:async options=>{assert.equal(options.job,job);calls.push('wait');}},
+    readInstallerState:()=>({}),writeInstallerState(){},
+    operations:()=>({snapshot:async()=>({snapshotSequence:5,requestId:'original-request'}),resume:async(_id,options)=>{
+      assert.equal(options.handoff.job,job);calls.push('resume');return operation;}}),
+    rememberOperationFailure(){},finishOperationTelemetry(){},registerCapabilities:async()=>calls.push('register'),
+    requireOperationResult:actual=>{if(actual.state!=='succeeded')throw Object.assign(new Error('preserve original recovery'),{operation:actual});return {};},
+    finishHandoff:(_home,_skill,result)=>calls.push(result?'success':'failure'),
+    continueDesktopUpdate:async()=>calls.push('continue'),diagnostics:{clean:value=>value,error:()=>calls.push('logged')}});
+  await vm.runInContext(`(${handoffCallback()})`,context)();
+  assert.equal(context.SELF_UPDATE_JOB,null);assert.equal(context.activeRun,false);assert.equal(context.activeOperationContext,null);
+  assert.equal(calls.filter(call=>call==='resume').length,outcome==='missing-plan'?0:1);
+  assert.equal(calls.includes('continue'),outcome==='succeeded','a failed or unknown recovery is never continued as successful');
+  assert.equal(operation.state,outcome,'the marker is transient, not an operation or recovery record');
+});
+for(const reopened of [false,true])for(const failCore of [false,true])
+test(`actual main dispatch and automatic continuation complete one fixed sequence (${reopened?'previous self-update reopen':'normal startup'}, ${failCore?'restored failure then retry':'success'})`,async t=>{
+  // Real main/preload dispatch, release selection, compatibility admission,
+  // sequence persistence and continuation. Component actors are controlled
+  // boundaries; native replacement/transaction tests prove their own recovery.
+  const crypto=require('node:crypto'),releases=require('../installer/desktop/releases'),sequence=require('../installer/desktop/update-sequence');
+  const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-dual-route-')));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const root=path.join(home,'tavern'),manifestFile=path.join(root,'tavern-updates/installed-manifest.json'),program=path.join(root,'apps/tavern-runtime/program');
+  const write=(file,value)=>{fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,value);};
+  const sha=value=>crypto.createHash('sha256').update(value).digest('hex'),capabilities=releases.LAUNCHER_CAPABILITIES;
+  const before={schema:'tavern-release/v2',versions:{tavern:'2.5.3'},commit:'b'.repeat(40)},beforeBytes=JSON.stringify(before,null,2)+'\n';
+  write(manifestFile,beforeBytes);write(program,'original core');write(path.join(root,'apps/tavern-ops/updater/task.py'),'existing updater');
+  const data=['tavern/tavern-state/native/default-user/chats/story.jsonl','tavern/tavern-state/native/default-user/characters/card.json',
+    'tavern/tavern-state/native/worlds/world.json','hermes/config.yaml','hermes/.env','installer/model.json'];
+  data.forEach((name,index)=>write(path.join(home,name),'isolated user content '+index));
+  const inventory=()=>Object.fromEntries(data.map(name=>[name,sha(fs.readFileSync(path.join(home,name)))])),protectedBefore=inventory();
+  const target={schema:'tavern-release/v2',commit:'a'.repeat(40),versions:{tavern:'2.5.4'},launcherVersion:'2.2.4',launcherCapabilities:capabilities,
+    bootstrap:{managedComponents:1,minimumLauncherVersion:'2.2.4',sha256:sha('bootstrap')},
+    updateCompatibility:{schema:'nora-core-launcher-compatibility/1',coreVersion:'2.5.4',launcherVersions:['2.2.4'],previousCoreVersions:['2.5.3'],capabilities}};
+  const local=path.join(home,'release');fs.mkdirSync(local);const archive='Nora-Tavern-Launcher-2.2.4-'+process.platform+'-'+process.arch+'-update.zip';
+  const files={'release-manifest.json':JSON.stringify(target),'tavern-updater-bootstrap.py':'bootstrap',[archive]:'controlled APP actor input',
+    ['nora-launcher-'+process.platform+'-'+process.arch+'.json']:JSON.stringify({schema:'nora-launcher/v1',candidate:false,commit:target.commit,
+      platform:process.platform,arch:process.arch,version:'2.2.4',asset:archive,sha256:sha('controlled APP actor input'),size:Buffer.byteLength('controlled APP actor input')})};
+  files.SHA256SUMS=Object.entries(files).map(([name,bytes])=>sha(bytes)+'  '+name).join('\n');
+  for(const [name,bytes]of Object.entries(files))write(path.join(local,name),bytes);
+  const fetcher=require('../installer/desktop/local-release').createLocalRelease(local);
+  const fixed=await releases.selectPlan({fetcher,tag:'v2.5.4',launcherVersion:'2.2.3'});
+  let launcherVersion='2.2.3',state={version:before.versions.tavern,commit:before.commit,systemReady:true},inject=failCore,appOperation;
+  const calls=[],records=new Map(),job=path.join(home,'installer/launcher-update/job'),event={sender:{}};
+  const record=(requestId,state,effectState)=>{const previous=[...records.values()].find(value=>value.requestId===requestId);
+    const value={operationId:previous?.operationId||randomUUID(),requestId,kind:'update',state,effectState,busy:false,
+    verification:'confirmed',snapshotSequence:1,recoveryOutcome:state==='rolled-back'?'restored-and-verified':'not-required',
+    target:{releasePlan:{tag:fixed.tag,commit:fixed.commit,manifestSha256:sha(fixed.releaseManifestText)}}};
+    write(path.join(home,'installer/operations',value.operationId,'operation.json'),JSON.stringify(value));records.set(value.operationId,value);return value;};
+  const context=vm.createContext({path,fs,process,activeRun:false,modelBusy:false,cancelled:false,activeOperationContext:null,
+    SELF_UPDATE_JOB:reopened?'/previous/completed-job':null,CHANNEL:'stable',desktopUpdateNotice:null,continueDesktopUpdate:null,
+    noraHome:()=>home,hermesHome:()=>path.join(home,'hermes'),installRoot:()=>root,installerDirectory:()=>path.join(home,'installer'),
+    app:{getVersion:()=>launcherVersion,quit:()=>calls.push('restart')},setImmediate:callback=>callback(),quitReady:false,
+    window:{webContents:{}},updateFetch:fetcher,releaseMetadataCache:()=>undefined,releases,updateSequence:sequence,
+    desktopSequenceOptions:()=>({capabilities,validatePlan:plan=>releases.validatePlan(plan,{launcherVersion})}),
+    require:name=>name==='node:crypto'?crypto:name==='./launcher-capability'?{validate:async()=>{}}:name==='./updater-task'?{
+      query:async(_home,request)=>({operation:sequence.operation(home,request),settled:true})}:assert.fail('Unexpected dependency '+name),
+    launcherError:(message,details)=>Object.assign(new Error(message),details),registerCapabilities:async()=>{},finishOperationTelemetry(){},
+    rememberOperationFailure(){},readInstallerState:()=>({}),writeInstallerState(){},finishHandoff(){},
+    diagnostics:{clean:value=>value,error:(_event,error)=>calls.push(error.code||'resume-error')},
+    launcherRecoveryOptions:()=>({}),launcherUpdate:{launchHandoff:async()=>{},waitHandoff:async()=>{},resume:current=>{
+      assert.equal(current,job);return {operationId:appOperation.operationId,planDigest:'c'.repeat(64),target:fixed.tag};}},
+    runBridge:async(command,expected)=>command==='status'?state:{...state,updateVerified:expected.version===state.version
+      &&expected.commit===state.commit&&expected.manifestSha256===sha(fs.readFileSync(manifestFile))},
+    executeAction(){},operations:()=>({start:async(_kind,_options,request)=>{
+      calls.push('APP');appOperation=record(request,'awaiting-handoff','changed');appOperation.handoffRef=job;return appOperation;},
+      snapshot:async id=>records.get(id),resume:async id=>{assert.equal(id,appOperation.operationId);launcherVersion='2.2.4';
+        appOperation.state='succeeded';write(path.join(home,'installer/operations',id,'operation.json'),JSON.stringify(appOperation));return appOperation;}}),
+    runSharedUpdate:async(_event,payload)=>{calls.push('core');write(program,'new core');
+      if(inject){inject=false;write(program,'original core');write(manifestFile,beforeBytes);record(payload.operationRequestId,'rolled-back','restored');
+        throw new Error('controlled core failure after restoration');}
+      state={...state,version:target.versions.tavern,commit:target.commit};write(manifestFile,JSON.stringify(target,null,2)+'\n');
+      record(payload.operationRequestId,'succeeded','changed');return state;}});
+  for(const name of ['requireOperationResult','runDesktopUpdate','runAction'])vm.runInContext(definition(name),context);
+  const continuation=nodes.find(node=>node.type==='AssignmentExpression'&&node.left.name==='continueDesktopUpdate');assert.ok(continuation);
+  vm.runInContext(source.slice(continuation.start,continuation.end),context);
+  const result=await vm.runInContext('runAction',context)(event,{action:'update',tag:'v2.5.4',runId:'single-click',includeLauncher:true});
+  assert.equal(result.restarting,true);assert.deepEqual(calls,['APP','restart']);
+  context.SELF_UPDATE_JOB=job;context.activeRun=true;
+  await vm.runInContext(`(${handoffCallback()})`,context)();
+  assert.equal(context.SELF_UPDATE_JOB,null);assert.equal(context.activeRun,false);assert.deepEqual(inventory(),protectedBefore);
+  if(failCore){
+    assert.equal(context.desktopUpdateNotice.status,'partial');assert.equal(state.version,'2.5.3');assert.equal(fs.readFileSync(program,'utf8'),'original core');
+    assert.ok(sequence.load(home,context.desktopSequenceOptions()));
+    const retry=await vm.runInContext('runDesktopUpdate',context)(event,{}, {retry:true});assert.equal(retry.updateComplete,true);
+  }
+  assert.equal(state.version,'2.5.4');assert.equal(launcherVersion,'2.2.4');assert.deepEqual(inventory(),protectedBefore);
+  assert.equal(calls.filter(call=>call==='APP').length,1,'compatible APP success is not repeated on retry');
+  assert.equal(calls.filter(call=>call==='core').length,failCore?2:1);
+  assert.equal(sequence.load(home,context.desktopSequenceOptions()),null,'only a fully verified sequence releases its pointer');
 });
 test('the actual renderer preload carries the two-component request to the main sequence',async()=>{
   const calls=[];

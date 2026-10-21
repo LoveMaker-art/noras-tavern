@@ -465,7 +465,7 @@ test('updateEmbeddedWorldbook updates only the embedded character book', async (
     }
 });
 
-test('deleteCharacterCards removes requested cards with explicit chat policy', async () => {
+test('deleteCharacterCards uses managed revision checks and reports retained references', async () => {
     const runtime = createRuntime(() => {});
     let refreshed = false;
     const requests = [];
@@ -473,21 +473,68 @@ test('deleteCharacterCards removes requested cards with explicit chat policy', a
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async (url, options) => {
         requests.push({ url, options });
-        return { ok: true, status: 200, text: async () => '' };
+        const { avatar } = JSON.parse(options.body);
+        return { ok: true, status: 200, json: async () => avatar === 'card.png'
+            ? { removed: [avatar], retained: [] }
+            : { removed: [], retained: [{ avatar, reason: 'referenced' }] } };
     };
 
     try {
         const adapter = createStRuntimeAdapter(() => runtime);
-        await adapter.deleteCharacterCards({ avatars: ['card.png', 'card-copy.png'], deleteChats: false });
-        assert.deepEqual(requests.map(({ url }) => url), ['/api/characters/delete', '/api/characters/delete']);
+        const result = await adapter.deleteCharacterCards({ avatars: ['card.png', 'card-copy.png'],
+            revisions: { 'card.png': 'viewed-revision', 'card-copy.png': 'copy-revision' } });
+        assert.deepEqual(requests.map(({ url }) => url), ['/api/nora-worlds-v2/library/cards/manage', '/api/nora-worlds-v2/library/cards/manage']);
         assert.deepEqual(requests.map(({ options }) => JSON.parse(options.body)), [
-            { avatar_url: 'card.png', delete_chats: false },
-            { avatar_url: 'card-copy.png', delete_chats: false },
+            { action: 'delete', avatar: 'card.png', revision: 'viewed-revision' },
+            { action: 'delete', avatar: 'card-copy.png', revision: 'copy-revision' },
         ]);
+        assert.deepEqual(result, { removed: ['card.png'], retained: [{ avatar: 'card-copy.png', reason: 'referenced' }] });
         assert.equal(refreshed, true);
     } finally {
         globalThis.fetch = previousFetch;
     }
+});
+
+test('managed card deletion stops on conflict and keeps its partial result', async () => {
+    const runtime = createRuntime(() => {});
+    runtime.getCharacters = async () => {};
+    const previousFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+        const { avatar } = JSON.parse(options.body);
+        requests.push(avatar);
+        return avatar === 'first.png'
+            ? { ok: true, json: async () => ({ removed: [avatar], retained: [] }) }
+            : { ok: false, status: 409, json: async () => ({ detail: 'Changed after inspection', error: { code: 'NORA_ST_RESOURCE_CONFLICT' } }) };
+    };
+    try {
+        const adapter = createStRuntimeAdapter(() => runtime);
+        await assert.rejects(adapter.deleteCharacterCards({ avatars: ['first.png'] }), Error);
+        assert.deepEqual(requests, [], 'Missing viewed revisions cannot trigger a request');
+        await assert.rejects(adapter.deleteCharacterCards({ avatars: ['first.png', 'changed.png', 'unstarted.png'],
+            revisions: { 'first.png': 'a', 'changed.png': 'b', 'unstarted.png': 'c' } }), error => {
+            assert.equal(error.code, 'NORA_ST_RESOURCE_CONFLICT');
+            assert.deepEqual(error.deletionResult, { removed: ['first.png'], retained: [] });
+            return true;
+        });
+        assert.deepEqual(requests, ['first.png', 'changed.png']);
+    } finally { globalThis.fetch = previousFetch; }
+});
+
+test('managed deletion keeps confirmed effects when character refresh fails', async () => {
+    const runtime = createRuntime(() => {});
+    runtime.getCharacters = async () => { throw new Error('Refresh failed'); };
+    const previousFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = async () => { requests++; return { ok: true, json: async () => ({ removed: ['card.png'], retained: [] }) }; };
+    try {
+        const adapter = createStRuntimeAdapter(() => runtime);
+        await assert.rejects(adapter.deleteCharacterCards({ avatars: ['card.png'], revisions: { 'card.png': 'viewed' } }), error => {
+            assert.deepEqual(error.deletionResult, { removed: ['card.png'], retained: [] });
+            return true;
+        });
+        assert.equal(requests, 1, 'A display failure must not repeat deletion');
+    } finally { globalThis.fetch = previousFetch; }
 });
 
 test('isSystemCharacter hides only the ST-owned default assistant card', () => {

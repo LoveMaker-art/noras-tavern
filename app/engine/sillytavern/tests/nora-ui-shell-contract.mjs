@@ -351,7 +351,7 @@ for (const signal of ['loadWorlds({ force: true })', 'refresh()', '页面刷新�
 }
 
 const characterImport = getNamedFunction(worldCreationController, 'handleCharacterImport');
-for (const signal of ['worldRuntime.importCard', 'idempotencyKey', 'refreshWorldsAfterCommit(tr("角色卡已导入"))', 'openWorldById(importedWorldId']) {
+for (const signal of ['worldRuntime.importCard', 'idempotencyKey', 'refreshWorldsAfterCommit(tr("角色卡已导入"))', 'openCreatedWorld(importedWorldId']) {
     if (!characterImport.includes(signal)) throw new Error(`Character import must use the one World Core v2 transaction: ${signal}`);
 }
 if (worldCreationController.includes('rememberLastWorld(world.id)')) {

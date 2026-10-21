@@ -232,6 +232,25 @@ function durableJob(root, context, stage, extra = {}) {
     return { jobId, file, value };
 }
 
+test('durable intermediate job preserves the child storage error through reads and restart', async t => {
+    let root;
+    const f = fixture(t, { runReflection: async context => {
+        const saved = durableJob(root, context, 'extracted', { texts: ['慢热'] });
+        return { ok: false, status: 'failed', stage: 'save', extraction_complete: false, job_id: saved.jobId,
+            code: 'STORY_PROFILE_STORAGE_FAILED', error: '[WinError 5] fixture record replacement denied' };
+    } });
+    root = f.root;
+    await f.coordinator.reflect('world');
+    for (const coordinator of [f.coordinator, createPreferenceCheckpointCoordinator(f.options)]) {
+        const status = coordinator.status('world');
+        assert.equal(status.last_code, 'STORY_PROFILE_STORAGE_FAILED');
+        assert.match(status.last_error, /WinError 5/);
+        assert.equal(status.resume_available, true);
+        assert.equal(status.reflected_at_turns, 0);
+        assert.equal(status.extraction_complete, false);
+    }
+});
+
 test('Node and Python use the same compact Unicode source identity', () => {
     const id = reflectionJobId({ world_id: '雾都', session_id: 's', revision: 'r', story: [{ id: 'm1', role: 'user', text: '偏好🌙' }] });
     assert.equal(id, 'reflect_89606ea865355e60cf16d724f1097df0');

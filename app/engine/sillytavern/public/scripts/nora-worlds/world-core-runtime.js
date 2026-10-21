@@ -122,9 +122,10 @@ export function createWorldCoreRuntime(runtime, {
         setOperation({ status: 'RUNNING', kind: 'CREATE_RECOVERY', operationId: pending.operationId || null, error: null });
         recoveryTask = (async () => {
             try {
-                const resumed = await client.resumePendingCreation();
+                const resumed = await client.resumePendingCreation({ deferSettlement: true });
                 if (resumed?.world) await refreshCharacters();
                 manifests = await client.list();
+                client.acknowledgeCreation?.(resumed?.operation?.operation_id);
                 setOperation({ status: 'COMPLETED', operationId: resumed?.operation?.operation_id || pending.operationId || null, error: null });
                 emit();
                 return resumed;
@@ -178,18 +179,24 @@ export function createWorldCoreRuntime(runtime, {
         const activeId = runtime.read().metadata?.nora_world?.id;
         const inheritedPreset = kind === 'RESTART' ? null : manifests.find(item => item.world_id === activeId)?.preset || runtime.captureWorldPreset?.();
         setOperation({ status: 'RUNNING', kind, operationId: null, error: null });
+        let result;
         try {
-            const result = await create();
+            result = await create();
             setOperation({ status: 'RUNNING', operationId: result.operation?.operation_id || null });
             await refreshCharacters();
             manifests = await client.list();
             if (result.world && inheritedPreset) await ensurePreset(manifestById(result.world.world_id), inheritedPreset);
             const created = list().find(world => world.id === result.world?.world_id);
             if (!created) throw new Error('The created World was committed but is absent from the authoritative list.');
+            client.acknowledgeCreation?.(result.operation?.operation_id);
             setOperation({ status: 'COMPLETED', operationId: result.operation?.operation_id || null, error: null });
             emit();
             return created;
         } catch (error) {
+            if (result?.world?.world_id) {
+                error.createdWorldId = result.world.world_id;
+                error.saved = true;
+            }
             const pending = client.pendingCreation?.();
             setOperation({
                 status: 'FAILED',
@@ -201,15 +208,15 @@ export function createWorldCoreRuntime(runtime, {
     }
 
     function importCard(file, options) {
-        return runCreation('IMPORT', () => client.importCard(file, options));
+        return runCreation('IMPORT', () => client.importCard(file, { ...options, deferSettlement: true }));
     }
 
     function createFromLibrary(options) {
-        return runCreation('IMPORT', () => client.createFromLibrary(options));
+        return runCreation('IMPORT', () => client.createFromLibrary({ ...options, deferSettlement: true }));
     }
 
     function createBlank(options) {
-        return runCreation('BLANK', () => client.createBlank(options));
+        return runCreation('BLANK', () => client.createBlank({ ...options, deferSettlement: true }));
     }
 
     function acceptCapabilityWorld(world) {
@@ -304,9 +311,10 @@ export function createWorldCoreRuntime(runtime, {
         if (typeof client.retryPendingCreation !== 'function') throw new Error('Pending World creation retry is unavailable.');
         setOperation({ status: 'RUNNING', kind: 'CREATE_RECOVERY', error: null });
         try {
-            const result = await client.retryPendingCreation();
+            const result = await client.retryPendingCreation({ deferSettlement: true });
             await refreshCharacters();
             manifests = await client.list();
+            client.acknowledgeCreation?.(result.operation?.operation_id);
             setOperation({ status: 'COMPLETED', operationId: result.operation?.operation_id || operationState.operationId, error: null });
             emit();
             return result;
@@ -431,7 +439,7 @@ export function createWorldCoreRuntime(runtime, {
         importLibraryItem,
         importCard,
         createBlank,
-        restartWorld: options => runCreation('RESTART', () => client.restartWorld(options)),
+        restartWorld: options => runCreation('RESTART', () => client.restartWorld({ ...options, deferSettlement: true })),
         createFromLibrary,
         addSetting,
         updateActive,

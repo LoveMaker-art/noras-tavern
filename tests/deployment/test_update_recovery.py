@@ -21,6 +21,13 @@ from ops.installer import launcher_bridge as bridge
 from ops.tests import test_nora_system as system_fixture
 from ops.updater import bundle
 
+PRESERVED_USER_FILES = {
+    'tavern/tavern-state/native/default-user/characters/retained.json': b'{"name":"retained character"}',
+    'tavern/tavern-state/native/worlds/retained.json': b'{"name":"retained world"}',
+    'hermes/.env': b'USER_SETTING=retained\n',
+    'installer/model.json': b'{"provider":"custom","model":"retained"}',
+}
+
 
 def load_updater():
     path=Path(__file__).resolve().parents[2]/'ops/updater/update.py'
@@ -37,6 +44,8 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
     (root/'apps/tavern-runtime/native-runtime.json').write_text('{}')
     (root/'tavern-state/native/default-user/chats').mkdir(parents=True)
     (root/'tavern-state/native/default-user/chats/story.jsonl').write_text('old story')
+    for relative, content in PRESERVED_USER_FILES.items():
+        file=base/relative;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(content)
     (root/'tavern-updates').mkdir()
     (root/'tavern-updates/installed.json').write_text('{"version":"2.3.17"}')
     (root/'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
@@ -171,6 +180,12 @@ def interrupted_install_fixture():
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def assert_preserved_user_files(self,base):
+        for relative, content in PRESERVED_USER_FILES.items():
+            self.assertEqual((base/relative).read_bytes(),content,relative)
+        self.assertEqual((base/'tavern/tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
+        self.assertEqual((base/'hermes/config.yaml').read_text(),'old config')
+
     def test_real_install_allows_offline_cron_bookkeeping_and_commits_verified_version(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-cron-') as temporary:
             base=Path(temporary).resolve()
@@ -221,6 +236,7 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual(recovery.assess(home,root),
                              {'canRecover':False,'reason':'更新已提交，无需恢复'})
             self.assertEqual({path:path.read_bytes() for path in previous},previous)
+            self.assert_preserved_user_files(base)
 
     def test_real_install_automatic_recovery_restores_before_reporting_failure(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-recovery-') as temporary:
@@ -234,6 +250,7 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual((root/'tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
             self.assertEqual((base/'hermes/SOUL.md').read_text(),'old soul')
             self.assertEqual(json.loads((root/'tavern-updates/installed.json').read_text())['version'],'2.3.17')
+            self.assert_preserved_user_files(base)
 
     def test_real_install_process_death_after_new_rename_can_restore_from_journal(self):
         with interrupted_install_fixture() as (base, process):
@@ -251,6 +268,7 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual((root/'apps/tavern-runtime/program.txt').read_text(),'old program')
             self.assertEqual((root/'tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
             self.assertEqual((home/'SOUL.md').read_text(),'old soul')
+            self.assert_preserved_user_files(base)
 
     def test_unconfirmed_update_worker_preserves_root_and_primary_failure(self):
         calls = []

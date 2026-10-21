@@ -32,11 +32,11 @@ export function createLedgerSettingsController({ dialogs, select, escapeHtml: es
                 <dl class="nora-ledger-metrics"><div><dt>${tr('运行状态')}</dt><dd data-ledger-status role="status"></dd></div><div><dt>${tr('记忆覆盖')}</dt><dd data-ledger-metric></dd></div><div><dt>${tr('当前模型')}</dt><dd data-ledger-model></dd></div><div><dt>${tr('模型配置容量')}</dt><dd data-ledger-capacity></dd></div></dl>
                 <p data-ledger-error role="alert" hidden></p>
                 <button class="nora-secondary" data-ledger-compress type="button" hidden>${tr('重新整理')}</button>
-                <form class="nora-ledger-form" data-ledger-form><details class="nora-ledger-options"><summary>${tr('高级设置')}</summary>
+                <form class="nora-ledger-form" data-ledger-form><details class="nora-ledger-options"><summary>${tr('高级设置')}</summary><div class="nora-ledger-fields">
                 <label for="nora-ledger-context">${tr('上下文上限（tokens）')}</label><input id="nora-ledger-context" name="context" data-ledger-context type="number" min="512" max="2000000">
                 <label for="nora-ledger-output">${tr('整理输出上限（tokens）')}</label><input id="nora-ledger-output" name="output" data-ledger-output type="number" min="128" max="16384"><small data-ledger-output-source></small>
                 <label for="nora-ledger-timeout">${tr('总超时（秒）')}</label><input id="nora-ledger-timeout" name="timeout" data-ledger-timeout type="number" required min="60" max="1800">
-                <footer class="nora-ledger-save"><span data-ledger-draft role="status"></span><button class="nora-primary" data-ledger-save type="button">${tr('保存设置')}</button></footer></details></form>
+                <footer class="nora-ledger-save"><span data-ledger-draft role="status"></span><button class="nora-primary" data-ledger-save type="button">${tr('保存设置')}</button></footer></div></details></form>
                 <section class="nora-ledger-reset"><button class="nora-secondary" data-ledger-reset type="button"><i class="fa-solid fa-arrow-rotate-left" aria-hidden="true"></i> ${tr('重置剧情记忆')}</button></section>
                 </section>`;
             const form = select('[data-ledger-form]', modal);

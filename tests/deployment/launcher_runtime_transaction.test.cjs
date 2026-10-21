@@ -71,6 +71,37 @@ async function run(value,epoch,mode='install',killAt='',extraEnv={}){
   }finally{await lease.release();}
 }
 const inspect=value=>transaction.inspect({noraHome:value.home,hermesHome:value.hermes,operationId:value.operationId});
+
+test('retained content survives real runtime commit and whole-operation rollback, including cache-link evidence',
+ {timeout:25000},async t=>{
+  const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));
+  const original=new Map(['config.yaml','sessions/chat.jsonl','memories/USER.md',
+    'state/old-launcher/app.asar','AppData/Local/private-notes.txt'].map(name=>[name,Buffer.from('retained '+name)]));
+  if(process.platform==='win32')original.set('AppData/Local/Microsoft/Windows/INetCache/IE/cache.txt',Buffer.from('ordinary cache content'));
+  for(const [name,bytes] of original){const file=path.join(f.hermes,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);}
+  const cacheLink='AppData/Local/Microsoft/Windows/INetCache/Content.IE5';
+  if(process.platform==='win32')fs.symlinkSync(path.join(f.hermes,path.dirname(cacheLink),'IE'),path.join(f.hermes,cacheLink),'junction');
+  const result=await run(f,1);assert.equal(result.code,0,result.text+result.errors);
+  const location=transaction.paths({noraHome:f.home,hermesHome:f.hermes,operationId:f.operationId});
+  const journal=JSON.parse(fs.readFileSync(location.journalReference,'utf8'));
+  assert.equal(journal.status,'committed');assert.ok(journal.retainedCopy.files>=original.size);
+  for(const [name,bytes] of original){
+    assert.deepEqual(fs.readFileSync(path.join(f.hermes,name)),bytes,name);
+    assert.deepEqual(fs.readFileSync(path.join(location.backup,name)),bytes,'backup '+name);
+  }
+  assert.equal(fs.readFileSync(path.join(f.hermes,'hermes-agent/program.txt'),'utf8'),'new-program');
+  if(process.platform==='win32'){
+    assert.equal(journal.retainedCopy.retainedCacheLinks.length,1);
+    assert.equal(fs.existsSync(path.join(f.hermes,cacheLink)),false);
+    assert.ok(fs.lstatSync(path.join(location.backup,cacheLink)).isSymbolicLink());
+  }
+  const recovered=await run(f,2,'recover');assert.equal(recovered.code,0,recovered.text+recovered.errors);
+  assert.equal(JSON.parse(fs.readFileSync(location.journalReference,'utf8')).recoveryVerification,'confirmed');
+  assert.equal(inspect(f).effectState,'restored');assert.equal(inspect(f).canRecover,false);
+  assert.equal(fs.readFileSync(path.join(f.hermes,'hermes-agent/program.txt'),'utf8'),'old-program');
+  for(const [name,bytes] of original)assert.deepEqual(fs.readFileSync(path.join(f.hermes,name)),bytes,'restored '+name);
+  if(process.platform==='win32')assert.ok(fs.lstatSync(path.join(f.hermes,cacheLink)).isSymbolicLink());
+});
 // Mutating one fixture field must not silently round unrelated Python NTFS
 // identities and make the rejection pass for a different reason.
 const mutableJson=bytes=>JSON.parse(bytes.toString('utf8'),(_key,value,context)=>

@@ -52,6 +52,47 @@ class StorageReliability(unittest.TestCase):
     def learn(self, text, **kwargs):
         return profile.record_learning(self.state, self.seed, text, 'test source', **kwargs)
 
+    def test_atomic_writers_survive_transient_windows_reader_sharing(self):
+        for writer, old, new in [(profile._atomic_text, '原内容', '新内容'),
+                                 (profile._atomic_bytes, b'original\r\n', b'replacement\r\n')]:
+            with self.subTest(writer=writer.__name__):
+                target = self.root / 'shared-record'
+                target.write_bytes(old.encode() if isinstance(old, str) else old)
+                replace = os.replace
+                busy = PermissionError('temporary reader share conflict')
+                busy.winerror = 32
+                calls = []
+                def replace_after_reader_closes(source, destination):
+                    calls.append((source, destination))
+                    if len(calls) == 1:
+                        raise busy
+                    return replace(source, destination)
+                with patch.object(profile.os, 'replace', side_effect=replace_after_reader_closes), \
+                        patch.object(profile.time, 'sleep') as wait:
+                    writer(target, new)
+                self.assertEqual(target.read_bytes(), new.encode() if isinstance(new, str) else new)
+                self.assertEqual(len(calls), 2)
+                wait.assert_called_once()
+                self.assertEqual(list(self.root.glob('shared-record.tmp.*')), [])
+
+    def test_atomic_writer_bounds_windows_retry_and_preserves_original_on_denial(self):
+        target = self.root / 'protected-record'
+        target.write_bytes(b'original')
+        for winerror in [None, 5, 32, 33]:
+            with self.subTest(winerror=winerror):
+                denied = PermissionError('access denied')
+                if winerror is not None:
+                    denied.winerror = winerror
+                with patch.object(profile.os, 'replace', side_effect=denied) as replace, \
+                        patch.object(profile.time, 'sleep') as wait, \
+                        patch.object(profile.time, 'monotonic', side_effect=[0, 0, 2]):
+                    with self.assertRaises(PermissionError):
+                        profile._atomic_text(target, 'replacement')
+                self.assertEqual(target.read_bytes(), b'original')
+                self.assertEqual(list(self.root.glob('protected-record.tmp.*')), [])
+                self.assertEqual(replace.call_count, 1 if winerror is None else 2)
+                self.assertEqual(wait.call_count, 0 if winerror is None else 1)
+
     def context(self, **extra):
         return {'world_id': 'w', 'session_id': 's', 'revision': 'r1', 'world_name': '临时世界',
                 'story': [{'id': 'a', 'role': 'user', 'text': '我喜欢侦探题材。'},

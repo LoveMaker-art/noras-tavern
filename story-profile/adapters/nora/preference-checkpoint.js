@@ -13,7 +13,7 @@ function positiveInteger(value, fallback) {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
-function safeError(value) { return String(value || '').replace(/\bsk-[a-z0-9_-]{8,}/gi, '<redacted>').replace(/Bearer\s+[^\s\"']+/gi, 'Bearer <redacted>').replace(/([?&](?:token|api_key|key)=)[^&\s]+/gi, '$1<redacted>').slice(0, 1000); }
+function safeError(value) { return String(value || '').replace(/\bsk-[a-z0-9_-]{8,}/gi, '<redacted>').replace(/Bearer\s+[^\s"']+/gi, 'Bearer <redacted>').replace(/([?&](?:token|api_key|key)=)[^&\s]+/gi, '$1<redacted>').slice(0, 1000); }
 function failure(code, message, cause) { return Object.assign(new Error(message, { cause }), { code }); }
 function readDocument(filePath, fallback, code) {
     try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
@@ -142,25 +142,25 @@ function reconcileJob(stateDirectory, worldId, current) {
     if (saved) {
         return { ...next, status: 'partial', stage: job.stage === 'projection_pending' ? 'projection' : 'summary',
             summary_status: job.stage === 'summary_failed' ? 'failed' : 'pending', retryable: false,
-            last_code: job.result?.code || 'STORY_PROFILE_SUMMARY_PENDING',
-            last_error: safeError(job.result?.error || '偏好已保存，后续整理尚未完成；请继续原任务。') };
+            last_code: job.result?.code || current.last_code || 'STORY_PROFILE_SUMMARY_PENDING',
+            last_error: safeError(job.result?.error || current.last_error || '偏好已保存，后续整理尚未完成；请继续原任务。') };
     }
     if (hasTexts) {
         return { ...next, status: 'failed', stage: 'save', summary_status: 'not_started', retryable: false,
-            last_code: job.result?.code || 'STORY_PROFILE_SAVE_PENDING',
-            last_error: safeError(job.result?.error || '模型提取结果已保留，尚未确认偏好保存；请继续原任务，无需再次提取。') };
+            last_code: job.result?.code || current.last_code || 'STORY_PROFILE_SAVE_PENDING',
+            last_error: safeError(job.result?.error || current.last_error || '模型提取结果已保留，尚未确认偏好保存；请继续原任务，无需再次提取。') };
     }
     if (['requesting_extract', 'unknown'].includes(job.stage)) {
         return { ...next, status: 'unknown', stage: 'extract', summary_status: 'not_started', retryable: false,
-            last_code: job.result?.code || 'STORY_PROFILE_OUTCOME_UNKNOWN',
-            last_error: safeError(job.result?.error || '上次提取请求结果尚未确认；请检查状态后明确选择是否再次调用模型。') };
+            last_code: job.result?.code || current.last_code || 'STORY_PROFILE_OUTCOME_UNKNOWN',
+            last_error: safeError(job.result?.error || current.last_error || '上次提取请求结果尚未确认；请检查状态后明确选择是否再次调用模型。') };
     }
     return next;
 }
 function userTurnCount(story) { return Array.isArray(story) ? story.filter(message => message?.role === 'user' && String(message?.text || '').trim()).length : 0; }
 
 /** One foreground-independent queue and session-bound cursor for all profile writers. */
-export function createPreferenceCheckpointCoordinator({ stateDirectory, preferenceFile, loadProgress, loadContext, runReflection,
+export function createPreferenceCheckpointCoordinator({ stateDirectory, preferenceFile = path.join(stateDirectory || '', 'story_profile_preferences.json'), loadProgress, loadContext, runReflection,
     loadSettings = () => readPreferenceSettings(stateDirectory, { preferenceFile }), minimumTurns = process.env.TAVERN_STORY_PROFILE_REFLECT_MIN || 15,
     everyTurns = process.env.TAVERN_STORY_PROFILE_REFLECT_EVERY || 15, now = () => new Date().toISOString() } = {}) {
     if (!stateDirectory) throw new TypeError('Preference checkpoint state directory is required.');
@@ -174,6 +174,13 @@ export function createPreferenceCheckpointCoordinator({ stateDirectory, preferen
     }
     let queue = Promise.resolve();
     let active = false;
+    // Main-branch consumers retain their interface; both aliases use the same
+    // current choice and preserve the old preference file rather than editing it.
+    function automaticSettings() { return { enabled: loadSettings().auto_enabled, consentRequired: false }; }
+    function configureAutomatic(enabled) {
+        writePreferenceSettings(stateDirectory, { auto_enabled: enabled, consent_version: PREFERENCE_CONSENT_VERSION }, { preferenceFile });
+        return automaticSettings();
+    }
     function save() { writeFileAtomicSync(stateFile, JSON.stringify(state, null, 2) + '\n'); }
     function currentFor(key, progress) {
         const session = String(progress?.session_id || '');
@@ -335,5 +342,5 @@ export function createPreferenceCheckpointCoordinator({ stateDirectory, preferen
     }
     async function runAction(kind, runner) { return serialized(kind, '', runner); }
     async function waitForIdle(worldId) { const job = jobs.get(String(worldId || '').trim()); if (job) await job; return status(worldId); }
-    return Object.freeze({ checkpoint, reflect, runAction, status, statuses, summaryRecovered, waitForIdle });
+    return Object.freeze({ checkpoint, reflect, runAction, status, statuses, summaryRecovered, waitForIdle, automaticSettings, configureAutomatic });
 }
