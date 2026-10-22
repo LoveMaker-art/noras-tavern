@@ -89,15 +89,23 @@ test('lazy backup and deletion dictionaries translate indexed templates at runti
         const { t, translate } = await import('./public/scripts/nora-i18n/core.js');
         const { createBackupController } = await import('../../native-extensions/nora-ui/backup-controller.js');
         createBackupController({});
+        const { createLedgerSettingsController } = await import('../../native-extensions/nora-ui/ledger-settings-controller.js');
+        createLedgerSettingsController({});
+        const { createStoryPreferenceSettings } = await import('../../native-extensions/nora-ui/story-profile-controller.js');
+        createStoryPreferenceSettings({});
         const { createWorldController } = await import('../../native-extensions/nora-ui/world-controller.js');
         let notice;
         const worlds = createWorldController({ store: { read: () => ({ worldModels: [{ id: 'fixture' }] }) },
             worldRuntime: { previewWorldDeletion: async () => { throw new Error('fixture'); } },
             normalizeError: e => e.message, showToast: text => { notice = text; } });
         await worlds.deleteWorld('fixture');
-        console.log(JSON.stringify([translate('时间未知'), t(['删除所选（', '）'], 2), notice]));
+        console.log(JSON.stringify([translate('时间未知'), t(['删除所选（', '）'], 2), notice,
+            translate('已整理，待续写采用'), translate('已用于续写'), translate('记忆覆盖'),
+            translate('已关闭自动整理，已有档案保留。')]));
     `);
-    assert.deepEqual(result, ['Unknown time', 'Delete selected (2)', 'Unable to inspect deletion scope: fixture']);
+    assert.deepEqual(result, ['Unknown time', 'Delete selected (2)', 'Unable to inspect deletion scope: fixture',
+        'Prepared; awaiting continuation', 'Used for continuation', 'Memory coverage',
+        'Automatic reviews are off. Existing archives are preserved.']);
 });
 
 test('early shell and module use the same language, no unresolved bootstrap token', () => {

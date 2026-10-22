@@ -154,7 +154,8 @@ for (const file of ['model-controller.js', 'character-controller.js', 'worldbook
     }
 }
 
-const lineCount = index.split('\n').length;
+// A terminating newline ends the last authored line; it does not add a line.
+const lineCount = index.split('\n').length - Number(index.endsWith('\n'));
 if (lineCount > 500) throw new Error(`Nora UI entry is still too broad: ${lineCount} lines.`);
 
 for (const file of fs.readdirSync(uiRoot).filter(name => name.endsWith('.js') && name !== 'st-message-view-adapter.js')) {

@@ -72,6 +72,12 @@ node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run test:nora
 node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run lint:owned
 ```
 
+`test:nora` compiles the canonical public library from current source before
+checking its artifact contract. The projected runner keeps this test output in
+its disposable tree; a clean checkout does not need a previous installer build.
+The release backup gate is a source-facing entry: invoke
+`node tooling/checks/verify-backup-safety.mjs` directly from this checkout.
+
 Choose focused tests before repository-wide suites. Tests establish only the workflows they exercise, not visual or real-device acceptance.
 
 ## Launcher Development

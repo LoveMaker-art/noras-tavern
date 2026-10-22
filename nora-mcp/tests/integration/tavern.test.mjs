@@ -33,7 +33,7 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const directories = { root };
     await fs.writeFile(path.join(root, 'settings.json'), JSON.stringify({ extension_settings: { nora_ui: {} } }));
-    for (const name of ['characters', 'chats', 'worlds', 'backgrounds', 'uploads']) {
+    for (const name of ['characters', 'chats', 'worlds', 'backgrounds', 'uploads', 'backups']) {
         directories[name] = path.join(root, name); await fs.mkdir(directories[name]);
     }
     // This fixture substitutes card materialization, not World Core or ledger logic.

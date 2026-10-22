@@ -14,11 +14,17 @@ const showdown = require(showdownPath);
 addShowdownPatch(showdown);
 
 test('production dependency names resolve to the reviewed implementations', async () => {
-    assert.equal(require('showdown'), showdown);
-    assert.equal(require('image-size'), require(imagePath));
+    // The source runner links the locked node_modules into a disposable export.
+    // file: dependencies then resolve to the authored vendor copy, while direct
+    // imports use the exported copy. Compare exact reviewed bytes, not caches.
+    for (const [name, reviewed] of [['showdown', showdownPath], ['image-size', imagePath]]) {
+        assert.deepEqual(fs.readFileSync(require.resolve(name)), fs.readFileSync(reviewed),
+            `${name} must resolve to the exact reviewed implementation`);
+    }
+    const productionImage = require('image-size');
     const imageModule = await import('image-size');
-    assert.equal(imageModule.default, require(imagePath).imageSize);
-    assert.equal(imageModule.imageSize, require(imagePath).imageSize);
+    assert.equal(imageModule.default, productionImage.imageSize);
+    assert.equal(imageModule.imageSize, productionImage.imageSize);
 });
 
 function isolated(source) {

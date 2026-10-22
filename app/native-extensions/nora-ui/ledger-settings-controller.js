@@ -1,4 +1,4 @@
-import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { addLocaleData, translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { ledgerPhase } from '../../engine/sillytavern/public/scripts/nora-controls/plugin-catalog.js';
 
 const errors = {
@@ -13,7 +13,24 @@ const errors = {
     NORA_LEDGER_MODEL_OPTIONS_INVALID: '模型的自定义连接参数格式无效',
 };
 
+// Settings-only copy stays with this interaction instead of the startup catalog.
+const ledgerMessages = {
+    '当前会话自动整理': 'Automatic compression for this session',
+    '记忆覆盖': 'Memory coverage', '模型配置容量': 'Configured model capacity',
+    '已整理，待续写采用': 'Prepared; awaiting continuation', '已用于续写': 'Used for continuation',
+    '上下文上限（tokens）': 'Context limit (tokens)', '整理输出上限（tokens）': 'Compression output limit (tokens)',
+    '总超时（秒）': 'Total timeout (seconds)', '重置剧情记忆': 'Reset story memory',
+    '记忆已重置，请刷新页面': 'Memory reset. Reload the page.',
+    '整理超时': 'Compression timed out', '上下文容量不足': 'Insufficient context capacity',
+    '缺少模型上下文配置': 'Model context capacity is missing', '整理结果超过输出上限': 'Compression output limit exceeded',
+    '模型未返回有效的剧情记忆': 'Model did not return valid story memory', '整理失败': 'Compression failed',
+    '设置已发生变化，请保留修改后重新打开': 'Settings changed. Preserve your draft and reopen.',
+    '请先打开目标世界': 'Open the target world first',
+    '整理期间模型发生变化，请确认配置后重试': 'Model changed during compression. Review configuration and retry.',
+};
+
 export function createLedgerSettingsController({ dialogs, select, escapeHtml: esc, request, isGenerating = () => false }) {
+    addLocaleData('en', ledgerMessages);
     return { async open(scope, { name, isCurrent, back }) {
         let busy = false, state, formRevision, baseline, draft;
         const modal = dialogs.open(tr('剧情账本'), `<div class="nora-extension-manager"><p class="nora-extension-world">${esc(name || '')} · ${tr('当前会话')}</p><div data-ledger-content>${tr('加载中')}</div></div>`, 'nora-detail-modal nora-plain-sheet nora-extensions-modal', {

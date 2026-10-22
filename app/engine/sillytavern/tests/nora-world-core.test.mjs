@@ -478,7 +478,7 @@ test('persists capability attempts, evidence, timings and stale-attempt protecti
     assert.equal(ready.capabilities.items.regex.attempts, 1);
 });
 
-test('submits a durable operation before background materialization completes', async (t) => {
+test('submits a durable operation before background materialization completes', { timeout: 5000 }, async (t) => {
     const root = await temporaryRoot(t);
     let release;
     const gate = new Promise(resolve => { release = resolve; });
@@ -492,12 +492,10 @@ test('submits a durable operation before background materialization completes', 
     assert.equal((await core.getOperation(submitted.operation.operation_id)).operation_id, submitted.operation.operation_id);
 
     release();
-    let completed;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-        completed = await core.getOperation(submitted.operation.operation_id);
-        if (completed.status === 'COMPLETED') break;
-        await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    // Join the actual scheduled task with the same operation key. A fixed
+    // 200 ms polling loop measures concurrent disk load, not submit semantics.
+    await core.createWorld(command(), { idempotencyKey: 'import:submitted' });
+    const completed = await core.getOperation(submitted.operation.operation_id);
     assert.equal(completed.status, 'COMPLETED');
     assert.equal((await core.listWorlds()).length, 1);
 

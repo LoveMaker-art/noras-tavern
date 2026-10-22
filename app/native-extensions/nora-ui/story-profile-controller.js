@@ -1,4 +1,13 @@
-import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { addLocaleData, translate as tr } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+
+const preferenceMessages = {
+    '偏好设置未能确认，请重新读取。': 'Preference settings could not be confirmed. Read them again.',
+    '正在读取偏好设置…': 'Reading preference settings…',
+    '适用于所有世界。开启后，按故事进度在后台整理偏好，使用当前酒馆文本模型，发送必要故事片段，可能产生调用费用。关闭后保留已有聊天、偏好和历史档案。': 'Applies to all worlds. When enabled, story progress can trigger background preference reviews using the current Tavern text model. Necessary story excerpts are sent to that service and calls may incur charges. Turning this off preserves chats, preferences and archives.',
+    '已开启自动整理故事偏好。': 'Automatic story preference reviews are enabled.',
+    '已关闭自动整理，已有档案保留。': 'Automatic reviews are off. Existing archives are preserved.',
+    '保存结果未能确认，请重新读取设置后再操作。': 'The save result is unconfirmed. Read settings again before making another change.',
+};
 
 function clean(value) {
     return String(value ?? '').trim();
@@ -48,6 +57,7 @@ export function createStoryProfileCheckpoint({ activeWorldModel, requestHeaders,
 
 /** Global curator preference consent, separate from the read-only archive. */
 export function createStoryPreferenceSettings({ dialogs, select, escapeHtml: esc, requestHeaders, fetchImpl = (...args) => fetch(...args) }) {
+    addLocaleData('en', preferenceMessages);
     let busy = false;
     async function request(value) {
         const response = await fetchImpl('/api/nora-story-profile/settings', {

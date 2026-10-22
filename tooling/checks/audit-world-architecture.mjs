@@ -14,7 +14,7 @@ const checks = [
         evidence: [
             ['app/engine/sillytavern/src/nora-world-core/service.js', /operationIdForKey\(key\)/],
             ['app/engine/sillytavern/src/nora-world-core/service.js', /worldId:\s*this\.#createId\('world'\)/],
-            ['app/native-extensions/nora-ui/world-creation-controller.js', /worldRuntime\.importCard\(file/],
+            ['app/native-extensions/nora-ui/world-creation-controller.js', /createIntent\(intent,\s*\(\) => worldRuntime\.importCard\(intent\.file,\s*\{\s*idempotencyKey:\s*intent\.key/],
         ],
         absence: [
             ['app/engine/sillytavern/public/scripts/nora-worlds/world-runtime.js', /createId|provisional|\.claim\(/],

@@ -470,9 +470,10 @@ class UpdateTargetTests(unittest.TestCase):
         modules = SimpleNamespace(RETIRED=[], ManagedService=SimpleNamespace(discover=lambda *_: None),
                                   prepare=lambda *_: ([], {"status": "not-installed"}),
                                   prepare_greeting=lambda *_: ([], {"status": "managed"}))
+        recovery = UPDATER.recovery_module()
         replacements = {
             "python_layout": None, "changed_roots": {"app"}, "roots_with_unmanaged_files": set(),
-            "prepare_dependencies": {}, "prepare_skills": {}, "module_at": modules,
+            "prepare_dependencies": {}, "prepare_skills": {},
             "prepare_host_hook_swap": None, "dependency_marker": {}, "stop_unmanaged": [],
             "refresh_liveware": {"status": "unchanged"},
         }
@@ -482,6 +483,8 @@ class UpdateTargetTests(unittest.TestCase):
             stack.enter_context(patch.object(BUNDLE, "extract_bundle", side_effect=extract))
             for name, result in replacements.items():
                 stack.enter_context(patch.object(UPDATER, name, return_value=result))
+            stack.enter_context(patch.object(UPDATER, "module_at", side_effect=lambda name, _path:
+                                            recovery if name == 'tavern_update_recovery' else modules))
             stack.enter_context(patch.object(UPDATER, "install_runtime", side_effect=start))
             stack.enter_context(patch.object(UPDATER, "verify_worlds", side_effect=read_worlds))
             stack.enter_context(patch.object(UPDATER, "json_write", side_effect=write_receipt))
@@ -500,6 +503,8 @@ class UpdateTargetTests(unittest.TestCase):
                 UPDATER.install(args)
                 result = json.loads(output.getvalue())
                 self.assertEqual(result["worldVerification"], {"status": "verified", "worlds": 1, "files": 2})
+                self.assertEqual(result["backupRetention"]["status"], "pruned")
+                self.assertNotIn("warnings", result["backupRetention"])
                 self.assertEqual((Path(result["backup"]) / "state/native/default-user/chats/fixture/session.jsonl").read_text(), '{"message":"keep"}\n')
             self.assertEqual(story.read_text(), '{"fixture":true}')
             self.assertEqual(chat.read_text(), '{"message":"keep"}\n')

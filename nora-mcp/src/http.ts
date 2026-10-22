@@ -76,8 +76,8 @@ export class NoraHttpClient {
       }
       if (!response.ok || (isRecord(value) && (value.ok === false || Boolean(value.error)))) {
         const error = isRecord(value) && isRecord(value.error) ? value.error : value;
-        const candidate = isRecord(error) ? typeof error.error === "string" ? error.error : error.code : undefined;
-        const code = typeof candidate === "string" && /^[A-Z0-9_]{3,100}$/.test(candidate) ? candidate : "NORA_HTTP_FAILED";
+        const candidates = isRecord(error) ? [error.code, error.error] : [];
+        const code = candidates.find((candidate): candidate is string => typeof candidate === "string" && /^[A-Z0-9_]{3,100}$/.test(candidate)) ?? "NORA_HTTP_FAILED";
         const details = isRecord(error) ? { operationId: error.operation_id, worldId: error.world_id } : {};
         throw new NoraRequestError(`${method} ${route} failed (HTTP ${response.status})`, code, response.status,
           writes && response.status >= 500 ? "unknown" : "rejected", details);

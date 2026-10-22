@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
+import { verifyBackupSafety } from '../tooling/checks/verify-backup-safety.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || 'python3', ['-c',
@@ -12,6 +13,61 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+
+function pythonTestReferences(references) {
+  // Inspect syntax only: native test imports can start fixtures or require an
+  // installed runtime. A renamed class/method must fail before reaching them.
+  const program = `import ast,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);missing=[]
+for reference in json.load(sys.stdin):
+ parts=reference.split('.');path=root.joinpath(*parts[:3]).with_suffix('.py')
+ try: node=ast.parse(path.read_text(encoding='utf-8'))
+ except (OSError,SyntaxError) as error:
+  missing.append({'reference':reference,'reason':type(error).__name__});continue
+ for member in parts[3:]:
+  found=next((value for value in node.body if isinstance(value,(ast.ClassDef,ast.FunctionDef,ast.AsyncFunctionDef)) and value.name==member),None)
+  if found is None:
+   missing.append({'reference':reference,'reason':'missing member '+member});break
+  node=found
+print(json.dumps(missing))
+`;
+  return JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || process.env.NORA_TEST_PYTHON || 'python3',
+    ['-B', '-c', program, root], { input: JSON.stringify([...references]), encoding: 'utf8' }));
+}
+
+test('release workflows and source gates reference existing authored test files and Python members', () => {
+  const paths = new Set(), references = new Set();
+  for (const workflow of [full, components, publisher]) {
+    const source = scripts(workflow).replaceAll('$PWD/', '');
+    for (const match of source.matchAll(/(?<![\w./])(?:app\/engine\/sillytavern\/tests|nora-mcp\/tests|story-profile\/tests|tests)\/[\w./-]+\.(?:mjs|cjs|js|py)/g)) paths.add(match[0]);
+    for (const match of source.matchAll(/\btests\.deployment\.[A-Za-z_][\w.]*/g)) references.add(match[0]);
+  }
+  verifyLauncherStability({ root, checkEnvironment: () => ({ environment: process.env }), run: (_command, args) => {
+    for (const argument of args) {
+      if (argument.endsWith('.test.cjs')) paths.add(path.relative(root, argument));
+      if (argument.startsWith('tests.deployment.')) references.add(argument);
+    }
+    return { status: 0 };
+  } });
+  verifyBackupSafety({ root, run: (_command, args, options) => {
+    for (const argument of args.filter(value => value.startsWith('tests/'))) paths.add(path.relative(root, path.resolve(options.cwd, argument)));
+    return { status: 0 };
+  } });
+  assert.ok(paths.size > 0 && references.size > 0, 'An empty audit cannot confirm release entry points');
+  const missing = [...paths].filter(file => !fs.statSync(path.join(root, file), { throwIfNoEntry: false })?.isFile());
+  assert.deepEqual(missing, [], 'Release test files were moved or deleted; update their real callers');
+  assert.deepEqual(pythonTestReferences(references), [], 'Release Python modules/classes/methods were renamed or removed');
+});
+
+test('the release reference audit detects a missing Python module or named native test without importing it', () => {
+  const existing = scripts(full).match(/tests\.deployment\.[A-Za-z_][\w.]*\.test_[A-Za-z_\w]*/)?.[0];
+  assert.ok(existing, 'The actual Windows/native named entry must be included');
+  assert.deepEqual(pythonTestReferences([existing]), []);
+  const missing = pythonTestReferences(['tests.deployment.test_missing_release_reference_fixture', existing + '.removed_fixture_member']);
+  assert.equal(missing.length, 2);
+  assert.equal(missing[0].reason, 'FileNotFoundError');
+  assert.match(missing[1].reason, /removed_fixture_member/);
+});
 test('component delivery requires all three native platforms before the final publishable receipt', () => {
   const native = components.jobs['native-components'], accepted = components.jobs['accept-components'];
   assert.equal(native.needs, 'build-components'); assert.equal(native.strategy['fail-fast'], 'false');

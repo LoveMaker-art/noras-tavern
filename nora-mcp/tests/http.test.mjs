@@ -88,6 +88,14 @@ test('backup binary allowance is route-specific; native string error codes survi
         await assert.rejects(client.post('/remove'), { code: 'NORA_BACKUP_PROTECTED', outcome: 'rejected' });
         globalThis.fetch = async () => new Response('{"error":{"code":"NORA_BACKUP_CHANGED"}}', { status: 409 });
         await assert.rejects(client.post('/remove'), { code: 'NORA_BACKUP_CHANGED' });
+        for (const payload of [
+            { code: 'NORA_LEDGER_EDIT_STALE', error: 'Private human-readable diagnostic' },
+            { error: { code: 'NORA_LEDGER_EDIT_STALE', error: 'Private human-readable diagnostic' } },
+        ]) {
+            globalThis.fetch = async () => new Response(JSON.stringify(payload), { status: 409 });
+            await assert.rejects(client.post('/edit'), error => error.code === 'NORA_LEDGER_EDIT_STALE'
+                && error.outcome === 'rejected' && !error.message.includes('Private'));
+        }
         globalThis.fetch = async () => new Response('login', { headers: { 'content-type': 'text/html' } });
         await assert.rejects(client.download('/api/backups/chat/snapshot', {}, 'chat-backup'), { code: 'NORA_INVALID_RESPONSE' });
     } finally { globalThis.fetch = original; }
