@@ -228,7 +228,10 @@ def desktop_transport(home, action, confirm=False):
         except (ValueError, TypeError):
             continue
         reply = subprocess.run([str(node), str(entry)], input=json.dumps({'scope': 'desktop', 'action': action,
-            'confirm': confirm, 'noraHome': str(root)}), text=True, encoding='utf-8', capture_output=True, timeout=45, check=False)
+            'confirm': confirm, 'noraHome': str(root)}), text=True, encoding='utf-8', capture_output=True,
+            # Version discovery retains the reader's 100-second network budget;
+            # its synchronous caller must not kill it at the submission timeout.
+            timeout=120 if action == 'check' else 45, check=False)
         try:
             result = json.loads(reply.stdout)
         except (ValueError, TypeError):
@@ -246,7 +249,7 @@ def desktop_transport(home, action, confirm=False):
         if result.get('scope') != 'desktop':
             continue
         return result
-    raise RuntimeError('当前旧更新器尚不支持诺拉整套更新，请先在启动器完成一次更新；未改动原数据。')
+    raise RuntimeError('当前旧更新器尚不支持诺拉整套更新。原更新入口可用时先升级启动器；入口失效时使用已验证的保留数据安装或修复方式，勿删除原数据。')
 
 
 def standalone_entry(home):

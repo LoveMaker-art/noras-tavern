@@ -135,6 +135,58 @@ test('closed verified APP is launched once and a read-only status never launches
   assert.equal(launches,1);assert.equal(result.status,'queued');
   const status=await desktopRequest({noraHome:f.home,action:'status'});assert.equal(status.status,'queued');assert.equal(launches,1);
 });
+test('checking versions with a closed APP never launches it or creates an update request',async t=>{
+  const f=await desktopFixture(t,()=>assert.fail('a version check cannot execute an update'));
+  const endpoint=path.join(f.home,'installer/skill-update/endpoint.json');fs.rmSync(endpoint);
+  let checks=0;
+  const result=await desktopRequest({noraHome:f.home,action:'check'},{
+    launch:()=>assert.fail('a version check cannot open the APP'),
+    checkRelease:async options=>{
+      checks++;
+      assert.equal(options.installRoot,path.join(f.home,'tavern'));
+      assert.equal(options.launcherVersion,'2.2.6');assert.equal(options.launcherDiscovery,true);
+      assert.equal(options.client,'updater');assert.equal(options.channel,'stable');
+      return {current:'2.5.6',latest:'v2.5.7',state:'available',releaseAvailable:true,
+        launcherLatest:'2.2.7',launcherUpdateAvailable:true};
+    },
+  });
+  assert.equal(checks,1);assert.equal(result.action,'check');assert.equal(result.status,'succeeded');assert.equal(result.settled,true);
+  assert.equal(result.result.releaseAvailable,true);assert.equal(result.result.launcherUpdateAvailable,true);
+  assert.equal(result.result.launcherVersion,'2.2.6');assert.equal(result.result.updateComplete,undefined);
+  assert.equal(fs.existsSync(endpoint),false);
+  assert.equal(fs.existsSync(path.join(f.home,'installer/skill-update/request.json')),false);
+});
+test('checking versions leaves an existing update request and receiver endpoint unchanged',async t=>{
+  const f=await desktopFixture(t,()=>assert.fail('read-only check must not enter the receiver'));
+  f.submit({scope:'desktop',status:'running'});
+  const directory=path.join(f.home,'installer/skill-update');
+  const request=fs.readFileSync(path.join(directory,'request.json')),endpoint=fs.readFileSync(path.join(directory,'endpoint.json'));
+  const result=await desktopRequest({noraHome:f.home,action:'check'},{
+    launch:()=>assert.fail('read-only check cannot launch'),
+    checkRelease:async()=>({current:'2.5.6',latest:'v2.5.6',state:'current',releaseAvailable:false,launcherUpdateAvailable:false}),
+  });
+  assert.equal(result.status,'succeeded');assert.equal(result.result.state,'current');
+  assert.deepEqual(fs.readFileSync(path.join(directory,'request.json')),request);
+  assert.deepEqual(fs.readFileSync(path.join(directory,'endpoint.json')),endpoint);
+});
+for(const failed of [{state:'unavailable',error:'core lookup failed'},{state:'available',launcherError:'APP lookup failed'},
+  {state:'blocked',compatibilityError:'incompatible target'}])
+test(`read-only desktop check preserves an unconfirmed version result (${failed.state})`,async t=>{
+  const f=await desktopFixture(t,()=>assert.fail('failed check must not update'));
+  fs.rmSync(path.join(f.home,'installer/skill-update/endpoint.json'));
+  await assert.rejects(desktopRequest({noraHome:f.home,action:'check'},{
+    launch:()=>assert.fail('failed check must not open APP'),checkRelease:async()=>failed,
+  }),error=>error.code==='DESKTOP_UPDATE_CHECK_FAILED'&&error.message===(failed.error||failed.launcherError||failed.compatibilityError));
+  assert.equal(fs.existsSync(path.join(f.home,'installer/skill-update/request.json')),false);
+});
+test('read-only checking still rejects a changed APP and updating still requires confirmation before launch',async t=>{
+  const f=await desktopFixture(t,()=>assert.fail('must not execute'));
+  const never={launch:()=>assert.fail('unconfirmed or changed APP cannot launch'),checkRelease:()=>assert.fail('changed APP cannot be trusted')};
+  fs.rmSync(path.join(f.home,'installer/skill-update/endpoint.json'));
+  await assert.rejects(desktopRequest({noraHome:f.home,action:'update'},never),/explicit authorization/);
+  fs.appendFileSync(path.join(f.resourcesRoot,'app.asar'),'changed');
+  await assert.rejects(desktopRequest({noraHome:f.home,action:'check'},never),{code:'OPERATION_CAPABILITY_INVALID'});
+});
 test('a legacy or different active request is never joined as a complete desktop update',async t=>{
   const f=await desktopFixture(t,()=>{});f.submit();
   await assert.rejects(desktopRequest({noraHome:f.home,action:'update',confirm:true}),{code:'OPERATION_BUSY'});

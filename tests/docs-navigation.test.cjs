@@ -11,9 +11,20 @@ const pages = [
   'README.md', 'docs/README.md', 'docs/install-nora-tavern.md', 'docs/install-tavern.md',
   'docs/update-nora-tavern.md', 'docs/update-standalone-tavern.md', 'docs/launcher-uninstall.md',
   'docs/launcher-managed-files.md', 'docs/verification/launcher-uninstall.md',
+  'docs/product/README.md', 'docs/product/launcher.md', 'docs/product/nora.md', 'docs/product/tavern.md',
+  'docs/release-process.md', 'docs/updater-ownership-contract.md',
 ];
 const source = file => fs.readFileSync(path.join(root, file), 'utf8');
 const parse = file => cheerio.load(new showdown.Converter({ tables: true, ghCompatibleHeaderId: true }).makeHtml(source(file)));
+
+test('the four current product specifications share one design version', () => {
+  const versions = ['README', 'launcher', 'nora', 'tavern'].map(name => {
+    const match = source(`docs/product/${name}.md`).match(/产品设计版本：\*\*([0-9]+\.[0-9]+)\*\*/);
+    assert.ok(match, `${name}: missing design version`);
+    return match[1];
+  });
+  assert.equal(new Set(versions).size, 1);
+});
 
 test('all local links and section anchors in user journeys resolve', () => {
   let checked = 0;

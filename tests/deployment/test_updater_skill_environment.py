@@ -22,6 +22,22 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UpdaterSkillEnvironmentTests(unittest.TestCase):
+    def test_desktop_check_returns_its_result_without_submitting_or_polling_an_update(self):
+        reply = {'scope': 'desktop', 'action': 'check', 'status': 'succeeded', 'settled': True,
+                 'result': {'current': '2.5.6', 'latest': 'v2.5.7', 'launcherLatest': '2.2.7'}}
+        with tempfile.TemporaryDirectory() as directory:
+            home, _ = self.managed(directory)
+            with patch.dict(os.environ, {'HERMES_HOME': str(home)}), patch.object(sys, 'argv', ['update.py', '--check']), \
+                    patch.object(MODULE, 'select_python', return_value=os.path.abspath(sys.executable)), \
+                    patch.object(MODULE, 'desktop_transport', return_value=reply) as desktop, \
+                    patch.object(MODULE, 'standalone_entry') as core, patch.object(MODULE, 'task_status') as status, \
+                    patch('builtins.print') as output:
+                MODULE.main()
+            desktop.assert_called_once_with(home, 'check', confirm=False)
+            core.assert_not_called()
+            status.assert_not_called()
+            self.assertEqual(json.loads(output.call_args.args[0]), reply)
+
     def test_desktop_update_submits_once_without_falling_back_to_core_only(self):
         with tempfile.TemporaryDirectory() as directory:
             home, _ = self.managed(directory)
@@ -33,6 +49,27 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             desktop.assert_called_once_with(home, 'update', confirm=True)
             core.assert_not_called()
             self.assertEqual(json.loads(output.call_args.args[0])['status'], 'queued')
+
+    def test_synchronous_desktop_check_allows_the_reader_budget_without_extending_submission_wait(self):
+        for action, limit in [('check', 120), ('update', 45)]:
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                home, _ = self.managed(directory)
+                root = Path(directory).resolve()
+                (root / 'installer/launcher-control.json').write_text('{}')
+                node = home / 'node/bin/node'
+                node.parent.mkdir(parents=True)
+                node.write_text('selection fixture')
+                entry = root / 'verified-reader.js'
+                reply = {'scope': 'desktop', 'status': 'succeeded' if action == 'check' else 'queued'}
+                replies = [subprocess.CompletedProcess([], 0, '{"desktopProtocol":"nora-desktop-update/1"}', ''),
+                           subprocess.CompletedProcess([], 0, json.dumps(reply), '')]
+                with patch.object(MODULE, 'query_entries', return_value=iter([entry])), \
+                        patch.object(MODULE.subprocess, 'run', side_effect=replies) as run:
+                    self.assertEqual(MODULE.desktop_transport(home, action, action == 'update'), reply)
+                self.assertEqual(run.call_args.kwargs['timeout'], limit)
+                if action == 'check':
+                    self.assertGreater(run.call_args.kwargs['timeout'], 100,
+                                       'the reader has a 100-second metadata budget')
 
     def test_old_reader_is_probed_before_any_desktop_update_submission(self):
         with tempfile.TemporaryDirectory() as directory:

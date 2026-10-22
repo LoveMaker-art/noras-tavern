@@ -35,27 +35,35 @@ In PowerShell, prefix a quoted executable with `&`.
 
 Use the verified interpreter to run this skill's `scripts/update.py`:
 
-- `--check`: check versions without applying updates.
+- `--check`: check versions without opening the launcher or applying updates.
 - `--apply --confirm`: update only after the owner explicitly authorizes it.
 - `--status`: read the last independent task and its canonical operation result.
 
 ## Submit and verify the applicable components
 
-For a desktop installation with a verified APP, these commands use the existing
-desktop receiver. One owner-authorized `--apply --confirm` submits all applicable
-Tavern and launcher updates. The program may open the verified launcher and
+For a desktop installation with a verified APP, `--check` reads version metadata
+in the background and returns the check result directly. It leaves existing
+update requests unchanged. Once that check is settled, report its result;
+`--status` reads the last update task, not a continuation of this version check.
+
+One owner-authorized `--apply --confirm` uses the existing desktop receiver to
+submit all applicable Tavern and launcher updates. Only then may it open the verified launcher and
 restart it during replacement. It selects a compatible order and updates only
 components with a newer applicable version. A cloud/source instance without an
 APP retains the independent core updater below.
 
-The initial response may be `queued`, `running` or `restarting`. Say the request
+An update's initial response may be `queued`, `running` or `restarting`. Say the request
 was submitted, then use `--status`; do not claim completion from submission or
 an APP restart. Desktop `succeeded` requires verified `updateComplete`, actual
 core and launcher versions and the associated canonical operations. A partial
 failure retains the successful component and the fixed sequence; an explicit
-retry continues that sequence. Old APPs without this protocol require one manual
-update through their existing button. Report that limitation and preserve data;
-never silently do core-only work and announce a complete desktop update.
+retry continues that sequence. Old APPs or readers without this protocol require
+initial migration: use the original update button if it works; otherwise use a
+verified data-preserving installer or repair path for that historical version.
+Keep chats, characters, worlds, configuration and credentials. A missing Windows
+terminal dependency requires the corresponding complete runtime; replacing only
+the APP does not add it. Report the verified support boundary, never a universal
+old-version guarantee or a core-only result as a complete desktop update.
 
 Run one literal `--status` command per terminal call. If it is still running,
 wait briefly and make another status call; stop as soon as `settled: true` is

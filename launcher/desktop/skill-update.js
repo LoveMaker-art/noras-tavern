@@ -130,6 +130,7 @@ async function desktopStatus(home){
 }
 
 async function desktopRequest({noraHome:home,action,confirm=false},{now=Date.now,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
+  checkRelease=options=>require('./releases').check(options),
   launch=receipt=>{const env={...process.env,NORA_TAVERN_HOME:home};
     for(const name of Object.keys(env))if(name==='ELECTRON_RUN_AS_NODE'||name==='NODE_OPTIONS'||name==='NODE_PATH'||name.startsWith('NORA_OPERATION_'))delete env[name];
     const child=require('node:child_process').spawn(receipt.executable.path,[],{detached:true,stdio:'ignore',
@@ -140,6 +141,18 @@ async function desktopRequest({noraHome:home,action,confirm=false},{now=Date.now
   if(action==='status')return desktopStatus(home);
   if(!fs.existsSync(file))return {applicable:false,status:'no-desktop'};
   const receipt=await cap.validateApp({receiptPath:file,noraHome:home});
+  if(action==='check'){
+    // Reuse the standalone metadata reader; a version query owns no GUI task
+    // and must not wake the APP or replace an existing update submission.
+    const checked=await checkRelease({client:'updater',updaterCapabilities:require('./releases').UPDATER_CAPABILITIES,
+      installRoot:receipt.installRoot,launcherVersion:receipt.launcherVersion,launcherDiscovery:true,
+      platform:receipt.platform,arch:receipt.arch,channel:receipt.channel});
+    if(checked.error||checked.launcherError||checked.compatibilityError||['unavailable','unknown','blocked'].includes(checked.state))
+      throw Object.assign(new Error(checked.error||checked.launcherError||checked.compatibilityError||'版本检查尚未确认，请重新检查。'),
+        {code:'DESKTOP_UPDATE_CHECK_FAILED'});
+    return {scope:'desktop',action:'check',status:'succeeded',settled:true,
+      result:publicResult({...checked,launcherVersion:receipt.launcherVersion})};
+  }
   if(action==='update'&&confirm!==true)throw new Error('Desktop update requires explicit authorization');
   const directory=path.join(home,'installer/skill-update'),endpointFile=path.join(directory,'endpoint.json');
   let endpoint,launched=false;
@@ -153,7 +166,7 @@ async function desktopRequest({noraHome:home,action,confirm=false},{now=Date.now
     await wait(250);
   }
   if(!currentEndpoint(endpoint))throw Object.assign(new Error('启动器尚未接管请求，请打开启动器后重试。'),{code:'DESKTOP_UPDATE_UNAVAILABLE'});
-  if(endpoint.desktopProtocol!==DESKTOP_PROTOCOL)throw Object.assign(new Error('当前旧启动器尚不支持诺拉整套更新，请先通过启动器按钮更新一次；原数据保留。'),{code:'DESKTOP_UPDATE_UNSUPPORTED'});
+  if(endpoint.desktopProtocol!==DESKTOP_PROTOCOL)throw Object.assign(new Error('当前旧启动器尚不支持诺拉整套更新。原更新入口可用时先升级启动器；入口失效时使用已验证的保留数据安装或修复方式，勿删除原数据。'),{code:'DESKTOP_UPDATE_UNSUPPORTED'});
   const fileRequest=path.join(directory,'request.json');
   const lock=require('./os-lock').acquire({directory,probe:false});
   try{
