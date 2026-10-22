@@ -112,7 +112,14 @@ try {
     ...(retained?.reinstallOperationId===operationId?{verifyOffline}:{}),
     ...(options.includes('--repair-managed')?{partialRepair:request,
       preflightPartial:async(root,manifest)=>{inspector={root,manifest};return preflight(root,manifest);},verifyOffline}:{} )});
-  process.stdout.write(JSON.stringify({event:'result',...(result||{})})+'\n');
+  const summary={...(result||{})};
+  if(result?.components?.files){
+    // Verification still consumes the complete on-disk inventory. Returning
+    // its thousands of hashes exceeds both native and desktop IPC readers.
+    const {files,...components}=result.components;
+    summary.components={...components,fileCount:Object.keys(files).length};
+  }
+  process.stdout.write(JSON.stringify({event:'result',...summary})+'\n');
 } catch (error) {
   try{cleanupPrivateStage();}catch(secondary){error.secondaryErrors=[...(error.secondaryErrors||[]),{operation:'cleanup-readonly-stage',error:secondary}];}
   if (error.context?.operation === 'copy-skill') {
