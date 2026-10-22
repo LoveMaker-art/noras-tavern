@@ -6,6 +6,8 @@
 
 修改哪个职责，先运行对应现有合同测试；出现通过范围外的问题，再扩展关联检查。不要因为整理文档就运行所有平台完整流程，也不要以测试数证明完成。
 
+产品发布的自动选择入口是源码侧`tooling/checks/launcher-test-impact.mjs`；选择器与工作流合同直接运行`node --test tests/launcher-test-impact.test.mjs tests/release-workflow.test.mjs`。按固定基线决定局部／完整回归、成品验收和证据复用的边界见[发布流程](../../docs/release-process.md#test-impact-selection)，不把未选用例计为本次通过。
+
 | 主题 | 入口示例 |
 | --- | --- |
 | 操作、结果与失败次数 | `launcher_operation_state.test.cjs`、`launcher_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs`、`launcher_pair_retry.test.cjs` |
@@ -48,6 +50,10 @@ node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_first_in
 ```
 
 依赖和隔离 native 输入见 [开发说明](../../CONTRIBUTING.md)。完整源码门禁的 TLS fixture 需要 PATH 中的实际 OpenSSL／Mac LibreSSL，缺少工具应先由前置检查返回 exit 2。不要直接运行不存在的源码 `ops/tests/`，不要在用户安装目录修补代码。
+
+发布工具用例 `launcher_publish.test.cjs`、`launcher_jihulab_publication.test.cjs` 从手写源码直接运行：`node --test tests/deployment/launcher_publish.test.cjs tests/deployment/launcher_jihulab_publication.test.cjs`。其余部署合同使用上面的投影入口；不能把整个目录通配交给同一种执行方式。Python 使用上例的 `tests.deployment.<模块名>`，保留包身份和相对导入；不要将目录当作独立脚本目录发现，也不要把源码仓库根目录作为投影文件参数。仍需先满足相应 native 前提，平台／制品缺输入不能记作通过。
+
+稳定性门禁按必需合同、文件存在、重复执行和失败阻断核对，不把历史用例总数或文件总数当作验收目标。同一环境的一组用例只执行一次；换用实际密封 Hermes、原生 Electron、物理 ASAR 或最终安装包后，原生相关检查仍保留，不能因文件名相同去掉。2026-10-22逐文件审查、冗余合并与实际执行范围见[本轮审查](../../docs/reports/20261022-launcher-regression-audit.md)。
 
 配对重试原生界面检查使用锁文件固定的 Electron 38.8.6、完整桌面依赖和新的隔离证据目录。顺序执行两阶段：第一阶段触发两次受控激活失败并关闭；第二阶段重开同一目录，等待真实倒计时结束后提交新输入并确认任务成功。Windows 需在已登录用户的交互会话执行。不要用正式用户安装目录作为证据目录。
 

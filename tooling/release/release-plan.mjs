@@ -25,6 +25,35 @@ const reviewedComponentVerificationSteps = new Set([
     'f9f4bb8bcec453dcbed827fe9a65ba4b93083c43e676b7ecf98889f26b9e0f07', // prior verifier/inventory receipt
     '5b7e5a671693d8bd6c6dde6063d63d61e725140a6920f6227d06c5f524708c91', // verifier; native receipt is sealed later
 ]);
+// Exact old/new test-only steps reviewed for impact selection on 2026-10-22.
+// This includes the source-only test venv/dependencies, never product/runtime
+// installation. Changed commands, arguments, conditions or env need review again.
+const reviewedNativeTestSelectionSteps = new Set([
+    '2da6a1a8de7b860607192a9ecfa59ca19e4034d4944a4155cc6b7ba8dc057ec0',
+    '97d29ed162654f5670ca0d0aa6f7c803650a44fbf477862972a852f6bf5051d4',
+    '95dd44f2f8a846a7b3ba04b68d79fc221bc2e8db32afad1843f3fe74d285c588',
+    'ccddb7416c1d7e33c6da352b3a1e84a8006cb8619b230ac09b2d58cec7f50ea5',
+    '75aaad60faf77ee4ceb4b5fcfa7c725fef6ae7a87af877836fee0ad2e763fcf4',
+    '90555be991486aeb1170bb58fc50ad299212c25eb7d4c8ba6eec2e62dc634baa',
+    'bd4a02fcf8828755a63159928d1cfa0659210fdc2f8fc4e2e421244b9811066c',
+    '9ffc4d62b7b66a3d866eb1de41406d71932a05f702df42129095470733826333',
+    'c7125a45c8bc3879779152daa96dc4628d9e3f0e24b2dae97790d797292d0f9d',
+    '38106a73d472a9903e47ea494896e2b8024fe25ab63e595a58d76547f2a1a2ce',
+    'dc72a6fec093e498fb13cd37e8caa286bbfbc9914cadc42f4eeccc3a697c8e73',
+    'df2533461418b2da689e4aff68dc70889bd51ad628d7f3e7f4b953ac6061b1a4',
+    '7b85e8bdbbc0863965c70ef8f8fc2a50e44d2312553f4455226f008a9d69317d',
+    'e22024d07d6feb836d5b76b281349a2e4a18856f72f2f0e174f642de1e737b82',
+]);
+const reviewedComponentTestSelectionSteps = new Set([
+    '38106a73d472a9903e47ea494896e2b8024fe25ab63e595a58d76547f2a1a2ce',
+    '0d1ca1161a0b88ea66935bd52b51f2a7e2f4a88ce0f3bd3088172e26b89da857',
+    'a25c1740609ec5426762862d71173a8ff86c50a9c8b023dff2cead7f2e4039ec',
+    'e1e89079723bce49871136dc774d3cff55618721f37d853d5a481f59f209251e',
+    'ed0d250bbbf04ad0613215422008eb49c464332df032a5a0d8387502762aad94',
+    '5e7fadd1bdcd9db6d9db9a0a3449c7c68e5f62d10a4f16917457a480db915810',
+    '8e309e8319ea29445eb88ab88f2b84203d2d8025fd1aab6c86cfc4cd6ed6babd',
+    'edb8c2e7d6490c109364770b3148ad785864646d9cc1857d8d9a1db0da7b8097',
+]);
 const fullTools = new Set(['tooling/layout.mjs', 'tooling/source-layout.json', 'tooling/release/release-source.mjs',
     'tooling/release/build-commands.mjs', 'tooling/release/package-release.mjs', 'tooling/release/package-release.sh',
     'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs', 'tooling/release/app-only-release.mjs']);
@@ -66,8 +95,11 @@ export function workflowInputs(text = '', job = 'build') {
     let block = [];
     const flush = () => {
         const value = normalize(block);
-        const reviewedVerification = (job === 'build-components' || job === 'publish')
-            && reviewedComponentVerificationSteps.has(hash(value));
+        const reviewedVerification = ((job === 'build-components' || job === 'publish')
+            && reviewedComponentVerificationSteps.has(hash(value)))
+            || (job==='build' && reviewedNativeTestSelectionSteps.has(hash(value)))
+            || (job==='build-components' && reviewedComponentTestSelectionSteps.has(hash(value)));
+        if (reviewedVerification) { block=[];return; }
         if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|prepare-hermes-bootstrap|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
         else if (/package-release\.(?:mjs|sh)|package-launcher-update|package-component-update|npm run pack:|npm (?:ci|install|prune)(?:\s|$)|electron-builder/.test(value)) packaging.push(value);
         // Step labels do not establish what a command does. Only a literal

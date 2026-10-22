@@ -35,12 +35,30 @@ The repository index is another source-facing command: `node tooling/checks/inde
 
 ## Tests
 
-Before launcher checks, run the matching prerequisite profile directly from the authored repository:
+For complete launcher source regression, run the matching prerequisite profile directly from the authored repository:
 
 ```sh
 node "$PWD/tooling/checks/launcher-test-environment.mjs" source
 node "$PWD/tooling/checks/verify-launcher-stability.mjs"
 ```
+
+For a release, select regression against the accepted baseline and the exact clean,
+committed checkout before executing tests:
+
+```sh
+node tooling/checks/launcher-test-impact.mjs --base <accepted-stable-tag> --head HEAD --output /absolute/path/to/new-test-impact.json
+```
+
+The selector does not build or publish. It rejects a different HEAD or tracked
+working changes. A `full=true` result requires the complete gate above;
+`full=false` permits `--run-focused` with the same baseline and commit. That
+command recomputes the selection instead of trusting an editable JSON file.
+Focused checks retain installation, update, uninstall and data-protection tests;
+the workflows add affected UI/content/frontend groups and keep final native
+product acceptance separate. `--force-full true` only broadens coverage. Pure
+verification changes need their own checks, not a product build. See the
+[selection and reuse rules](docs/release-process.md#test-impact-selection) for
+the mandatory platform checks and limits of prior evidence.
 
 Use a real Node.js 24 executable for these commands. A Bun `node` compatibility shim, an explicitly missing interpreter, wrong native binding, or unavailable file/directory symlink capability is a test-environment failure (exit 2), checked before test processes run. The runner uses absolute Node script entries, forwards the selected Node to Python fixtures, waits for actual child close, and cleans its own export after close. Failed test assertions remain failures and need evidence before being attributed to product code.
 

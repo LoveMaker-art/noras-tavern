@@ -32,22 +32,29 @@ test('the stability gate exercises both existing maintenance entry points withou
         assert.ok(!call.args.some(value => value.startsWith('--test-name-pattern') || value.startsWith('--skip')));
     }
     assert.ok(calls[0].args.includes('--test-concurrency=1'));
-    for (const name of ['launcher_process_output', 'launcher_operation_state', 'launcher_managed_partial_repair', 'launcher_uninstall',
-        'launcher_test_lifecycle', 'launcher_manual_acceptance', 'launcher_lifecycle_diagnostics', 'launcher_network_policy', 'launcher_pair_retry', 'launcher_skill_update', 'launcher_updater_policy', 'updater_task_capability', 'updater_process_identity',
-        'launcher_shared_update_routes', 'launcher_shutdown', 'launcher_guidance_flow']) {
+    for (const name of ['launcher_install_source', 'launcher_release_plan', 'launcher_process_output', 'launcher_diagnostics',
+        'launcher_lifecycle_diagnostics', 'launcher_network_policy', 'launcher_operation_state', 'launcher_operation_result',
+        'launcher_pair_retry', 'launcher_operation_cli', 'launcher_skill_update', 'launcher_windows_terminal',
+        'launcher_shared_update_routes', 'launcher_shutdown', 'launcher_guidance_flow', 'launcher_updater_policy',
+        'updater_task_capability', 'updater_process_identity', 'launcher_managed_partial_repair', 'launcher_recovery_route',
+        'launcher_retry_conditions', 'launcher_runtime_transaction', 'launcher_update_executor', 'launcher_uninstall',
+        'launcher_test_lifecycle', 'launcher_manual_acceptance']) {
         assert.ok(calls[0].args.includes(deploymentTest(name)), name);
     }
     const javascriptFiles = calls[0].args.filter(arg => arg.endsWith('.test.cjs'));
-    assert.equal(javascriptFiles.length, 25);
     assert.equal(new Set(javascriptFiles).size, javascriptFiles.length, 'Every authored file is run exactly once');
-    assert.ok(javascriptFiles.every(file => path.isAbsolute(file)),
-        'Forwarded test entries must also have unambiguous native process ownership');
+    assert.ok(javascriptFiles.every(file => path.isAbsolute(file) && fs.existsSync(file)),
+        'Forwarded test entries must exist and have unambiguous native process ownership');
     for (const name of ['test_first_install', 'test_first_install_transaction', 'test_managed_partial_repair', 'test_update_partial_repair',
         'test_update_recovery', 'test_update_dependency_materialization', 'test_standalone_update_entry', 'test_standalone_update_recovery', 'test_updater_task_backend', 'test_updater_task_entry', 'test_updater_skill_environment', 'test_nora_system', 'test_update_migration_contract',
         'test_update_space', 'test_update_space_contract', 'test_launcher_test_environment', 'test_manual_acceptance',
         'test_update_target', 'test_update_error_diagnostics']) {
         assert.ok(calls[1].args.includes(`tests.deployment.${name}`), name);
     }
+    const pythonModules = calls[1].args.filter(arg => arg.startsWith('tests.deployment.'));
+    assert.equal(new Set(pythonModules).size, pythonModules.length, 'Every Python module is run exactly once');
+    for (const module of pythonModules) assert.ok(fs.existsSync(path.join(repositoryRoot,
+        ...module.split('.')) + '.py'), module);
 });
 
 test('invalid test prerequisites stop the stability gate before any test process starts', () => {
@@ -70,8 +77,6 @@ test('Windows and Intel Mac give complete serial source groups separate bounded 
             [['--timeout-ms',String(expectedJavascript-15000)],['--timeout-ms',String(expectedPython-15000)]],
             'An internal timer leaves forced-close time before the Windows hard outer deadline');
         assert.ok(calls.every(call => call.options.killSignal === 'SIGTERM'), 'Give the bounded projection runner its child-close and export-preservation path');
-        assert.equal(calls[0].args.filter(arg => arg.endsWith('.test.cjs')).length, 25);
-        assert.equal(calls[1].args.filter(arg => arg.startsWith('tests.deployment.')).length, 19);
     }
     let completed = 0;
     fixtureGate({ platform: 'win32', run: (command, args, options) => {

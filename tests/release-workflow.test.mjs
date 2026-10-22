@@ -6,6 +6,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
 import { verifyBackupSafety } from '../tooling/checks/verify-backup-safety.mjs';
+import { runFocusedRegression } from '../tooling/checks/launcher-test-impact.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || 'python3', ['-c',
@@ -53,6 +54,14 @@ test('release workflows and source gates reference existing authored test files 
     for (const argument of args.filter(value => value.startsWith('tests/'))) paths.add(path.relative(root, path.resolve(options.cwd, argument)));
     return { status: 0 };
   } });
+  runFocusedRegression({ root, impact:{full:false,productBuild:true,ui:true,content:true},
+    checkEnvironment:()=>({environment:process.env}),run:(_command,args)=>{
+      for(const argument of args){
+        if(argument.endsWith('.test.cjs'))paths.add(path.relative(root,argument));
+        if(argument.startsWith('tests.deployment.'))references.add(argument);
+      }
+      return {status:0};
+    }});
   assert.ok(paths.size > 0 && references.size > 0, 'An empty audit cannot confirm release entry points');
   const missing = [...paths].filter(file => !fs.statSync(path.join(root, file), { throwIfNoEntry: false })?.isFile());
   assert.deepEqual(missing, [], 'Release test files were moved or deleted; update their real callers');
@@ -198,7 +207,7 @@ test('critical launcher maintenance regressions block runtime preparation on eve
   assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
   assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
 });
-test('complete source coverage runs once before runtimes and only environment-dependent files repeat natively', () => {
+test('the full profile retains complete source coverage and focused profiles leave native product acceptance mandatory', () => {
   const steps=full.jobs.build.steps;
   const runtime=steps.findIndex(step=>step.name==='Download and verify unchanged published components');
   const files=command=>[...command.matchAll(/tests\/deployment\/([\w.-]+\.test\.cjs)/g)].map(match=>match[1]);
@@ -206,6 +215,8 @@ test('complete source coverage runs once before runtimes and only environment-de
   verifyLauncherStability({checkEnvironment:()=>({environment:process.env}),run:(command,args)=>{
     sourceFiles.push(...args.filter(arg=>arg.endsWith('.test.cjs')).map(file=>path.basename(file)));return {status:0};
   }});
+  for(const file of new Set(sourceFiles))assert.equal(sourceFiles.filter(name=>name===file).length,1,
+    `${file} is already covered in this source environment; native-context repetitions remain separate`);
   const requiredSource=[
     'launcher_releases','launcher_bundle_contract','launcher_system_update','launcher_install_cleanup',
     'launcher_copy','launcher_location','launcher_model_recheck','launcher_publish',
@@ -222,7 +233,7 @@ test('complete source coverage runs once before runtimes and only environment-de
     assert.ok(index>=0&&index<runtime,`${group} contracts must precede all runtime preparation`);
     const source=steps[index];
     assert.equal(source['continue-on-error'],undefined);
-    assert.equal(source.if,undefined);
+    assert.equal(source.if,group==='presentation'?"steps.test-impact.outputs.full == 'true' || steps.test-impact.outputs.ui == 'true'":undefined);
     assert.equal(source['timeout-minutes'],'5');
     assert.match(source.run,/--test-concurrency=1/);
     assert.doesNotMatch(source.run,/--test-name-pattern|--skip|\|\|\s*true/);
@@ -236,6 +247,28 @@ test('complete source coverage runs once before runtimes and only environment-de
   assert.ok(barrier.if.includes("steps.release_contracts.outcome != 'success'"));
   assert.ok(barrier.if.includes("steps.installation_contracts.outcome != 'success'"));
   assert.ok(!barrier.if.includes('presentation_contracts'), 'Removed step IDs must not block every build');
+  for(const name of ['Test operation ownership, evidence, bounded retry and recovery contracts',
+    'Test native transaction and complete evidence contracts','Test unified update and application replacement'])
+    assert.equal(steps.find(step=>step.name===name).if,"steps.test-impact.outputs.full == 'true' || (inputs.launcher_baseline_tag == '' && inputs.runtime_source_run == '')",
+      'New environments cannot reuse source-only qualification');
+  const selection=steps.findIndex(step=>step.id==='test-impact');
+  const gate=steps.findIndex(step=>step.name==='Require launcher source stability before preparing runtimes');
+  assert.ok(selection>=0&&selection<gate);
+  assert.match(steps[selection].run,/--base "\$ACCEPTANCE_BASELINE_TAG" --head "\$GITHUB_SHA"/);
+  assert.match(steps[gate].run,/case "\$FULL_REGRESSION" in/);
+  assert.match(steps[gate].run,/false\) node .*launcher-test-impact\.mjs.*--run-focused/);
+  assert.match(steps[gate].run,/Missing verified test selection.*exit 1/);
+  for(const name of ['Require chat backup safety tests','Verify real APP production module closure and executor receipts',
+    'Verify packaged network modules in native Chromium'])assert.equal(steps.find(step=>step.name===name).if,undefined,name);
+  const component=components.jobs['build-components'].steps;
+  const componentSelection=component.findIndex(step=>step.id==='test-impact');
+  const componentGate=component.findIndex(step=>step.name==='Require the selected component source regression');
+  assert.ok(componentSelection>=0&&componentGate>componentSelection);
+  assert.match(component[componentGate].run,/verify-launcher-stability\.mjs/);
+  assert.match(component[componentGate].run,/--run-focused/);
+  assert.match(component[componentGate].run,/Missing verified test selection.*exit 1/);
+  assert.doesNotMatch(scripts(publisher),/verify-launcher-stability|--run-focused|launcher-installed-check/,
+    'Publishing accepted bytes must retain provenance checks without rerunning product installation');
 });
 test('standalone download source contracts run before runtime preparation without a native Hermes dependency',()=>{
   const steps=full.jobs.build.steps;

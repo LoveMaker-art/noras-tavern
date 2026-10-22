@@ -13,10 +13,13 @@ class GreetingTemplateTests(unittest.TestCase):
         self.assertIn("其他值或缺失时用英文", routing)
         self.assertIn("本轮不调用工具、不输出酒馆链接或卡片", routing)
         self.assertIn("保留正文中的社群链接", routing)
+        self.assertIn("卡片由后台单独发送", prompt)
+        self.assertLessEqual(len(routing.splitlines()), 9)
         self.assertLess(len(routing), 330)
         for locale in ("zh-Hant", "zh-TW", "zh-HK", "zh-MO"):
             self.assertIn(locale, routing)
-        for obsolete in ("app-link", "Python", "HERMES_HOME", "## 用户选择之后", ".apps.clawling.io"):
+        for obsolete in ("app-link", "Python", "python", "HERMES_HOME", "## 用户选择之后", ".apps.clawling.io",
+                         "消息下方", "```", "references/starter-stories.md"):
             self.assertNotIn(obsolete, prompt)
         for language in ("简体中文", "繁體中文", "English"):
             heading = "### " + language

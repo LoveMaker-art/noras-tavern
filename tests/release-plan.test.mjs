@@ -134,6 +134,25 @@ test('reviewed component bodies are not a general exemption for another job or a
     assert.equal(plan.mode, 'full'); assert.deepEqual(plan.build.environment.hermesRuntime, [...PLATFORMS].sort());
 });
 
+test('native test selection exempts reviewed execution only, never altered commands or conditions', () => {
+    const source = fs.readFileSync(path.join(root, '.github/workflows/build-integrated-launcher.yml'), 'utf8');
+    const select = source.split(/(?=^ {6}- )/m).find(block => block.includes('id: test-impact'));
+    assert.ok(select);
+    const before = workflowInputs(source);
+    assert.ok(!before.unknown.some(value => value.includes('id: test-impact')));
+    for (const mutate of [
+        value => value.replace(' --head "$GITHUB_SHA"', ' --head "$UNVERIFIED_SHA"'),
+        value => value.replace('        shell: bash', '        shell: pwsh'),
+        value => value.replace('        id: test-impact', '        id: test-impact\n        if: false'),
+        value => value.replace('        shell: bash', '        env:\n          NODE_OPTIONS: --import=./unknown-builder.mjs\n        shell: bash'),
+    ]) {
+        const inputs = change('.github/workflows/build-integrated-launcher.yml');
+        inputs.baseline.configuration.workflow = before;
+        inputs.current.configuration.workflow = workflowInputs(source.replace(select, mutate(select)));
+        assert.equal(createReleasePlan(inputs).requiresReview, true);
+    }
+});
+
 test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{
     const plan=createReleasePlan(change('tooling/release/compatibility/v2.5.4.json'));
     assert.equal(plan.requiresReview,false);assert.equal(plan.mode,'components');assert.equal(plan.build.metadata,true);

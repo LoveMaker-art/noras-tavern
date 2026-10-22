@@ -15,6 +15,10 @@ on:
         description: Reviewed committed compatibility JSON (blank selects compatibility/v<core-version>.json)
         type: string
         default: ''
+      force_full_regression:
+        description: Run complete regression for periodic qualification; cannot reduce required coverage
+        type: boolean
+        default: false
 
 # Both release paths share a lock; they must never upload to one tag concurrently.
 concurrency:
@@ -69,14 +73,37 @@ jobs:
           test "$REQUIRES_REVIEW" = false || exit 1
       - name: Install test dependencies
         run: |
-          python -m pip install PyYAML==6.0.2
+          python -m pip install PyYAML==6.0.2 psutil==7.0.0
           npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Select regression from the fixed component baseline
+        id: test-impact
+        run: node tooling/checks/launcher-test-impact.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json" --github-output "$GITHUB_OUTPUT"
       - name: Verify release contracts and update preservation
+        shell: bash
         run: |
+          set -euo pipefail
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/component-native-acceptance.test.mjs tests/launcher-release-notes.test.cjs
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/component-native-acceptance.test.mjs tests/launcher-release-notes.test.cjs tests/launcher-test-impact.test.mjs
           node "$PWD/tooling/run.mjs" node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
-          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_standalone_update_entry tests.deployment.test_standalone_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
+      - name: Require the selected component source regression
+        shell: bash
+        env:
+          FULL_REGRESSION: ${{ steps.test-impact.outputs.full }}
+        run: |
+          set -euo pipefail
+          export NORA_TEST_PYTHON="$(python -B -c 'import sys;print(sys.executable,end="")')"
+          case "$FULL_REGRESSION" in
+            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs" ;;
+            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
+            *) echo 'Missing verified test selection' >&2; exit 1 ;;
+          esac
+      - name: Check independent update and data contracts outside the full gate
+        # These retain their own entry/fixture coverage; full-gate modules are not run twice here.
+        if: steps.test-impact.outputs.full == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_launcher_update_recovery tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Require chat backup safety tests
         timeout-minutes: 10
         shell: bash
@@ -86,6 +113,10 @@ jobs:
           npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
           node --test tests/backup-safety-gate.test.mjs
           node tooling/checks/verify-backup-safety.mjs
+      - name: Check affected Tavern frontend against existing Nora contracts
+        if: steps.test-impact.outputs.tavern == 'true'
+        timeout-minutes: 15
+        run: node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run test:nora
       - name: Build only shared application and updater components
         shell: bash
         run: |
@@ -118,7 +149,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-release-plan
-          path: ${{ runner.temp }}/release-plan.json
+          path: |
+            ${{ runner.temp }}/release-plan.json
+            ${{ runner.temp }}/test-impact.json
           if-no-files-found: warn
           retention-days: 90
 
@@ -191,6 +224,17 @@ jobs:
       - name: Require real native harness prerequisites
         shell: bash
         run: node tooling/checks/launcher-test-environment.mjs native
+      - name: Qualify native maintenance changes before actual component acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/checks/launcher-test-impact.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/native-test-impact.json"
+          selection="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/native-test-impact.json")).full')"
+          case "$selection" in
+            true) node tooling/checks/verify-launcher-stability.mjs ;;
+            false) echo 'Unchanged native maintenance contracts; actual component acceptance remains mandatory' ;;
+            *) echo 'Missing verified native test selection' >&2; exit 1 ;;
+          esac
       - name: Test fresh target installation and both native upgrade states with retained user data
         timeout-minutes: 25
         shell: bash
@@ -206,7 +250,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-component-native-${{ matrix.platform }}
-          path: ${{ runner.temp }}/component-native-reports/**
+          path: |
+            ${{ runner.temp }}/component-native-reports/**
+            ${{ runner.temp }}/native-test-impact.json
           if-no-files-found: error
           retention-days: 90
 
