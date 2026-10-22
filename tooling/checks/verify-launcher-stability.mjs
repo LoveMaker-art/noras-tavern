@@ -36,6 +36,7 @@ const javascript = [
     'launcher_manual_acceptance.test.cjs',
 ];
 const python = [
+    'test_first_install',
     'test_first_install_transaction',
     'test_managed_partial_repair',
     'test_update_partial_repair',

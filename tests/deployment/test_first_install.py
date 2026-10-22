@@ -126,13 +126,21 @@ class FirstInstallSnapshotTests(unittest.TestCase):
         self.assertNotIn("TAVERN SKILLS", template)
         installer = MODULE.module_at("nora_agents_skill_inventory", ROOT / "ops/scripts/install-hermes-skills.py")
         routes = re.findall(r"^- `([^`]+)`\uff1a", template, re.MULTILINE)
-        self.assertCountEqual(routes, [Path(relative).name for relative in installer.SKILLS])
-        for relative in installer.SKILLS:
+        local_skills = installer.SKILLS + installer.LOCAL_SKILLS
+        self.assertCountEqual(routes, [Path(relative).name for relative in local_skills])
+        for relative in local_skills:
             self.assertTrue((ROOT / "ops/skills" / relative / "SKILL.md").is_file())
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = MODULE.prepare_skills(ROOT, Path(temporary))
+            self.assertCountEqual(prepared, local_skills)
+            for relative, folder in prepared.items():
+                self.assertEqual((folder / "SKILL.md").read_bytes(),
+                                 (ROOT / "ops/skills" / relative / "SKILL.md").read_bytes())
         for retired in installer.RETIRED:
             self.assertNotIn("`" + retired + "`", template)
         self.assertNotIn("`model-api-manager`", template)
         from ops.installer import nora_system
+        self.assertCountEqual(nora_system.SKILLS, local_skills)
         for name in nora_system.CLAWCHAT_SKILLS:
             self.assertIn("`" + name + "`", template)
         self.assertTrue((ROOT / "ops/skills/creative/nora-cardforge/references/starter-stories.md").is_file())
