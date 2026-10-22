@@ -199,12 +199,14 @@ for (const mode of ['success', 'failure', 'watch', 'absolute']) {
 }
 
 test('cancelling a TERM-resistant source test waits for forced child close before removing its export',
-    {timeout:20000, skip:process.platform === 'win32'}, async t => {
+    {timeout:45000, skip:process.platform === 'win32'}, async t => {
     const code=`process.on('SIGTERM',()=>{}); console.log(JSON.stringify({stage:process.cwd(),pid:process.pid})); setInterval(()=>{},1000);`;
     const child=spawn(process.execPath,['tooling/run.mjs','node','-e',code],{cwd:root,stdio:['ignore','pipe','pipe']});
     const captured=captureChild(child);
     t.after(async()=>{await stopChild(child,{graceMs:6000,timeoutMs:12000});});
-    const facts=await firstJsonLine(child);
+    // Export/startup uses the same 30 s preparation bound as the mapping tests;
+    // cancellation still has its separate unchanged 12 s close deadline.
+    const facts=await firstJsonLine(child,{timeoutMs:30000});
     assert.notEqual(facts.stage,root);assert.ok(fs.existsSync(facts.stage));
     assert.equal(child.kill('SIGTERM'),true);
     let timer;
@@ -218,11 +220,11 @@ test('cancelling a TERM-resistant source test waits for forced child close befor
 });
 
 test('a source child that accepts cancellation and exits zero cannot make an interrupted runner pass',
-    {timeout:15000,skip:process.platform==='win32'},async t=>{
+    {timeout:45000,skip:process.platform==='win32'},async t=>{
     const code=`process.on('SIGTERM',()=>process.exit(0));console.log(JSON.stringify({stage:process.cwd()}));setInterval(()=>{},1000);`;
     const child=spawn(process.execPath,['tooling/run.mjs','node','-e',code],{cwd:root,stdio:['ignore','pipe','pipe']});
     const captured=captureChild(child);t.after(()=>stopChild(child,{graceMs:6000,timeoutMs:12000}));
-    const {stage}=await firstJsonLine(child);child.kill('SIGTERM');
+    const {stage}=await firstJsonLine(child,{timeoutMs:30000});child.kill('SIGTERM');
     let timer;
     try {
         const result=await Promise.race([captured.closed,new Promise((_,reject)=>{
