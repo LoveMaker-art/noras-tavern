@@ -63,8 +63,13 @@ test('payload preparation refuses cross-platform or stale component bytes before
     assert.equal(fs.existsSync(output), false);
 });
 
-function runnerFixture(t) {
-    const f = fixture(t), platform = `${process.platform}-${process.arch}`;
+function runnerFixture(t, platform) {
+    // This contract uses a synthetic executor, not native binaries. Exercise
+    // every supported target even when preflight itself is hosted on Linux.
+    const [host, arch] = platform.split('-');
+    t.mock.property(process, 'platform', host);
+    t.mock.property(process, 'arch', arch);
+    const f = fixture(t);
     const payload = path.join(f.root, 'runner-payload');
     prepareComponentPayload({ ...f, output: payload, platform });
     const baseline = path.join(f.root, 'runner-baseline'); fs.mkdirSync(baseline);
@@ -91,15 +96,16 @@ function runnerFixture(t) {
     return { ...f, payload, baseline, platform, reports, scratch, calls, run };
 }
 
-test('native component runner records all three original results without an intermediate summary', t => {
-    const f = runnerFixture(t); runComponentNative(f);
+for (const platform of COMPONENT_PLATFORMS) {
+test(`native component runner records all three original ${platform} results without an intermediate summary`, t => {
+    const f = runnerFixture(t, platform); runComponentNative(f);
     assert.deepEqual(f.calls, ['fresh', 'running', 'stopped']);
     assert.deepEqual(fs.readdirSync(f.reports).sort(), ['baseline-source-receipt.json', 'fresh', 'running', 'stopped']);
     const accepted = verifyComponentNative(f); assert.deepEqual(Object.keys(accepted.reportSha256).sort(), ['fresh', 'running', 'stopped']);
 });
 
-test('native component runner stops at executor failure and incomplete results cannot be accepted', t => {
-    const f = runnerFixture(t); let executions = 0;
+test(`native component runner stops at ${platform} executor failure and incomplete results cannot be accepted`, t => {
+    const f = runnerFixture(t, platform); let executions = 0;
     assert.throws(() => runComponentNative({ ...f, run: (...args) => {
         if (++executions === 2) throw new Error('fixture executor failed');
         f.run(...args);
@@ -107,4 +113,13 @@ test('native component runner stops at executor failure and incomplete results c
     assert.equal(executions, 2); assert.deepEqual(f.calls, ['fresh']);
     assert.throws(() => verifyComponentNative(f));
     assert.equal(fs.existsSync(path.join(f.reports, 'stopped')), false);
+});
+}
+
+test('the real native runner still refuses an unsupported Linux host before invoking an executor', t => {
+    t.mock.property(process, 'platform', 'linux');
+    t.mock.property(process, 'arch', 'x64');
+    let executions = 0;
+    assert.throws(() => runComponentNative({ run: () => { executions++; } }), /COMPONENT_PLATFORMS/);
+    assert.equal(executions, 0);
 });
