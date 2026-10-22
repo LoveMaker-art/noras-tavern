@@ -166,6 +166,9 @@ def query_entries(home, root):
 
 
 def task_status(home):
+    desktop = desktop_transport(home, 'status')
+    if desktop is not None and desktop.get('status') != 'none':
+        return desktop
     root = managed_root(home) if (home / 'nora-instance.json').is_file() else home
     unavailable = {'status': 'inspection-required', 'settled': False, 'busy': None,
                    'error': '无法核验更新任务是否结束，请保留日志，暂勿重复更新。'}
@@ -197,6 +200,53 @@ def task_status(home):
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
             continue
     return unavailable
+
+
+def desktop_transport(home, action, confirm=False):
+    """Submit to the existing desktop receiver using an authenticated reader.
+
+    The receiver, not this wrapper, owns version selection and APP replacement.
+    Absence of a desktop receipt retains the independent core-only deployment.
+    """
+    if not (home / 'nora-instance.json').is_file():
+        return None
+    root = managed_root(home)
+    if not (root / 'installer/launcher-control.json').is_file():
+        return None
+    nodes = [Path(os.environ['TAVERN_NODE_EXECUTABLE'])] if os.environ.get('TAVERN_NODE_EXECUTABLE') else []
+    nodes.extend((home / 'node/node.exe', home / 'node/bin/node'))
+    node = next((candidate for candidate in nodes if candidate.is_absolute() and candidate.is_file()), None)
+    if node is None:
+        raise RuntimeError('未找到桌面更新查询所需的独立Node，原数据已保留。')
+    for entry in query_entries(home, root):
+        probe = subprocess.run([str(node), '-e',
+            'const m=require(process.argv[1]);console.log(JSON.stringify({desktopProtocol:m.desktopProtocol||null}))', str(entry)],
+            text=True, encoding='utf-8', capture_output=True, timeout=10, check=False)
+        try:
+            if json.loads(probe.stdout).get('desktopProtocol') != 'nora-desktop-update/1':
+                continue
+        except (ValueError, TypeError):
+            continue
+        reply = subprocess.run([str(node), str(entry)], input=json.dumps({'scope': 'desktop', 'action': action,
+            'confirm': confirm, 'noraHome': str(root)}), text=True, encoding='utf-8', capture_output=True, timeout=45, check=False)
+        try:
+            result = json.loads(reply.stdout)
+        except (ValueError, TypeError):
+            # A reader which advertised this protocol actually ran. Preserve
+            # its failure rather than misreporting it as an unsupported version.
+            for line in reversed(reply.stderr.splitlines()):
+                try:
+                    failure = json.loads(line)
+                    if failure.get('event') == 'error' and isinstance(failure.get('message'), str):
+                        return {'scope': 'desktop', 'status': 'error', 'settled': False, 'busy': None,
+                                'code': failure.get('code', 'DESKTOP_UPDATE_UNCONFIRMED'), 'error': failure['message']}
+                except (ValueError, TypeError):
+                    pass
+            raise RuntimeError('桌面更新查询未返回可核验结果，请保留原任务并查看日志。')
+        if result.get('scope') != 'desktop':
+            continue
+        return result
+    raise RuntimeError('当前旧更新器尚不支持诺拉整套更新，请先在启动器完成一次更新；未改动原数据。')
 
 
 def standalone_entry(home):
@@ -258,6 +308,12 @@ def main():
     environment['PATH'] = str(Path(python).parent) + os.pathsep + environment.get('PATH', '')
     if os.path.abspath(sys.executable) != python:
         raise SystemExit(subprocess.call([python, '-B', str(Path(__file__).absolute()), *sys.argv[1:]], env=environment))
+    desktop = desktop_transport(home, 'check' if args.check else 'update', confirm=args.confirm)
+    if desktop is not None:
+        print(json.dumps(desktop))
+        if desktop.get('status') in ('error', 'inspection-required', 'interrupted'):
+            raise SystemExit(1)
+        return
     entry, root = standalone_entry(home)
     environment['TAVERN_DATA_ROOT'] = str(root)
     command = [str(entry), '--hermes-home', str(home), '--install-root', str(root)]

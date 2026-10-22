@@ -6,10 +6,11 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { createSkillUpdateReceiver, finishHandoff } = require('../installer/desktop/skill-update');
+const { createSkillUpdateReceiver, finishHandoff,desktopRequest,desktopStatus } = require('../installer/desktop/skill-update');
+const capability=require('../installer/desktop/launcher-capability');
 
 async function fixture(t, execute, extra = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'skill update '));
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'skill update ')));
   const receiver = createSkillUpdateReceiver({ home: () => home, busy: () => false, execute, ...extra });
   t.after(() => { receiver.close(); fs.rmSync(home, { recursive: true, force: true }); });
   await receiver.tick();
@@ -76,6 +77,103 @@ test('failures remain failures and diagnostic secrets are cleaned', async t => {
   f.submit(); await f.receiver.tick();
   assert.equal(f.status().status, 'error');
   assert.equal(f.status().error, 'token [redacted]');
+});
+test('desktop requests advertise support and preserve their scope through the existing receiver',async t=>{
+  let received;
+  const f=await fixture(t,async(action,id,options)=>{received={action,id,options};return {updateComplete:true,version:'2.5.6',launcherVersion:'2.2.6',systemReady:true};});
+  const endpoint=JSON.parse(fs.readFileSync(path.join(f.home,'installer/skill-update/endpoint.json')));
+  assert.equal(endpoint.desktopProtocol,'nora-desktop-update/1');
+  const request=f.submit({scope:'desktop'});await f.receiver.tick();
+  assert.equal(received.id,request.id);assert.equal(received.options.scope,'desktop');
+  assert.equal(f.status().result.launcherVersion,'2.2.6');
+});
+test('desktop update never treats an APP restart or a component-only reply as full success',async t=>{
+  const f=await fixture(t,async()=>({version:'2.5.6',systemReady:true}));
+  f.submit({scope:'desktop'});await f.receiver.tick();
+  assert.equal(f.status().status,'error');
+  assert.equal(f.status().code,'DESKTOP_UPDATE_INCOMPLETE');
+});
+test('a restarting desktop sequence is retained across receiver sessions for canonical continuation',async t=>{
+  const f=await fixture(t,()=>assert.fail('a restart must not replay the submission'));
+  f.submit({scope:'desktop',status:'restarting',session:'previous-session',sequenceId:randomUUID()});
+  await f.receiver.tick();assert.equal(f.status().status,'restarting');
+});
+async function desktopFixture(t,execute){
+  const f=await fixture(t,execute),root=path.join(f.home,'app');
+  const executable=process.platform==='darwin'?path.join(root,'Contents/MacOS/Nora'):path.join(root,'Nora.exe');
+  const resourcesRoot=process.platform==='darwin'?path.join(root,'Contents/Resources'):path.join(root,'resources');
+  const put=file=>{fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'test APP resource',{mode:0o600});};
+  for(const file of [executable,path.join(resourcesRoot,'app.asar'),path.join(resourcesRoot,
+    `app.asar.unpacked/node_modules/fs-native-extensions/prebuilds/${process.platform}-${process.arch}/fs-native-extensions.node`),
+    ...capability.RESOURCE_NAMES.map(name=>path.join(resourcesRoot,name))])put(file);
+  await capability.register({noraHome:f.home,executable,resourcesRoot,isPackaged:true,launcherVersion:'2.2.6',port:8799});
+  return {...f,resourcesRoot};
+}
+test('verified desktop submission joins an existing request without creating duplicate work',async t=>{
+  let calls=0;const f=await desktopFixture(t,async()=>{calls++;return {updateComplete:true,version:'2.5.6',launcherVersion:'2.2.6',unchanged:true};});
+  const request=()=>desktopRequest({noraHome:f.home,action:'update',confirm:true});
+  const first=await request(),second=await request();assert.equal(first.requestId,second.requestId);assert.equal(second.joined,true);
+  await f.receiver.tick();assert.equal(calls,1);
+});
+test('desktop capability absence keeps core deployments independent and an unsupported APP is explicit',async t=>{
+  const none=await fixture(t,()=>{});assert.equal((await desktopRequest({noraHome:none.home,action:'update',confirm:true})).applicable,false);
+  const f=await desktopFixture(t,()=>assert.fail('unsupported receiver cannot execute'));
+  const endpoint=path.join(f.home,'installer/skill-update/endpoint.json'),value=JSON.parse(fs.readFileSync(endpoint));delete value.desktopProtocol;
+  fs.writeFileSync(endpoint,JSON.stringify(value));
+  await assert.rejects(desktopRequest({noraHome:f.home,action:'update',confirm:true}),{code:'DESKTOP_UPDATE_UNSUPPORTED'});
+});
+test('APP closure cannot be bypassed by the Nora submission path',async t=>{
+  const f=await desktopFixture(t,()=>assert.fail('changed APP cannot execute'));
+  fs.appendFileSync(path.join(f.resourcesRoot,'app.asar'),'changed');
+  await assert.rejects(desktopRequest({noraHome:f.home,action:'update',confirm:true}),{code:'OPERATION_CAPABILITY_INVALID'});
+});
+test('closed verified APP is launched once and a read-only status never launches it',async t=>{
+  const f=await desktopFixture(t,()=>{}),endpoint=path.join(f.home,'installer/skill-update/endpoint.json');fs.rmSync(endpoint);
+  let launches=0,clock=Date.now();
+  const result=await desktopRequest({noraHome:f.home,action:'update',confirm:true},{now:()=>clock,wait:async()=>{clock+=250;await f.receiver.tick();},
+    launch:()=>{launches++;return {once(){}};}});
+  assert.equal(launches,1);assert.equal(result.status,'queued');
+  const status=await desktopRequest({noraHome:f.home,action:'status'});assert.equal(status.status,'queued');assert.equal(launches,1);
+});
+test('a legacy or different active request is never joined as a complete desktop update',async t=>{
+  const f=await desktopFixture(t,()=>{});f.submit();
+  await assert.rejects(desktopRequest({noraHome:f.home,action:'update',confirm:true}),{code:'OPERATION_BUSY'});
+  assert.equal(f.status().scope,undefined);
+});
+test('desktop success requires matching installed versions and a canonical operation belonging to this request',async t=>{
+  const f=await desktopFixture(t,()=>{}),request=f.submit({scope:'desktop',status:'success'}),id=randomUUID();
+  const installed=path.join(f.home,'tavern/tavern-updates/installed.json');fs.mkdirSync(path.dirname(installed),{recursive:true});
+  fs.writeFileSync(installed,JSON.stringify({version:'2.5.6'}));
+  const record=path.join(f.home,'installer/operations',id,'operation.json');fs.mkdirSync(path.dirname(record),{recursive:true});
+  const operation={operationId:id,requestId:'skill-'+request.id,state:'succeeded',verification:'confirmed'};
+  fs.writeFileSync(record,JSON.stringify(operation));
+  const file=path.join(f.home,'installer/skill-update/request.json');
+  fs.writeFileSync(file,JSON.stringify({...request,result:{updateComplete:true,version:'2.5.6',launcherVersion:'2.2.6',operationIds:[id]}}));
+  assert.equal((await desktopStatus(f.home)).status,'succeeded');
+  fs.writeFileSync(record,JSON.stringify({...operation,requestId:randomUUID()}));
+  await assert.rejects(desktopStatus(f.home),/not confirmed/);
+  fs.writeFileSync(record,JSON.stringify(operation));
+  fs.writeFileSync(installed,JSON.stringify({version:'2.5.5'}));
+  await assert.rejects(desktopStatus(f.home),/cannot be verified/);
+});
+test('completion reads a full sealed release plan without enlarging the submission envelope',async t=>{
+  const f=await desktopFixture(t,()=>{}),id=randomUUID(),sequenceId=randomUUID();
+  const request=f.submit({scope:'desktop',status:'success',sequenceId});
+  const result={updateComplete:true,version:'2.5.6',launcherVersion:'2.2.6',sequenceId,operationIds:[id]};
+  const put=(relative,value)=>{const file=path.join(f.home,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify(value));};
+  put('tavern/tavern-updates/installed.json',{version:result.version});
+  const content={id:sequenceId,requests:{core:randomUUID(),launcher:randomUUID()},plan:{releaseManifestText:'sealed source inventory '.repeat(60000)}};
+  const seal=()=>({...content,digest:require('node:crypto').createHash('sha256').update(JSON.stringify(content)).digest('hex')});
+  put(`installer/update-sequences/${sequenceId}/request.json`,seal());
+  put(`installer/operations/${id}/operation.json`,{operationId:id,requestId:content.requests.launcher,state:'succeeded',verification:'confirmed',target:content.plan});
+  put('installer/skill-update/request.json',{...request,result});
+  assert.equal((await desktopStatus(f.home)).status,'succeeded');
+  const changed=seal();changed.requests.launcher=randomUUID();
+  put(`installer/update-sequences/${sequenceId}/request.json`,changed);
+  await assert.rejects(desktopStatus(f.home),/identity changed/);
+  put(`installer/update-sequences/${sequenceId}/request.json`,seal());
+  put('installer/skill-update/request.json',{...request,result,unexpected:'x'.repeat(65536)});
+  await assert.rejects(desktopStatus(f.home),/Invalid skill update request/);
 });
 test('legacy receiver enters the same action and the UI routes content update to independent task', () => {
   const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');

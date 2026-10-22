@@ -1552,6 +1552,55 @@ def managed_lifecycle(phase, home, root, version):
 
 
 @contextmanager
+def reconcile_probe_configuration(journal, home):
+    """Account for Hermes' format-only save during plugin verification.
+
+    The bundled offline probe enables the already enabled plugin via Hermes'
+    supported API, which can reserialize YAML. Never bless changed settings.
+    """
+    import yaml
+    helper = recovery_module()
+    target = helper.safe_path(home, 'config.yaml')
+
+    def capture():
+        file = Path(filesystem_path(target))
+        helper.reject_links(target)
+        before = file.stat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 2 * 1024 * 1024:
+            raise RuntimeError('插件校验配置不是有界普通文件，原配置已保留。')
+        data = file.read_bytes()
+        after = file.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, len(data), after.st_mtime_ns):
+            raise RuntimeError('插件校验配置读取期间变化，原配置已保留。')
+        return yaml.safe_load(data.decode('utf-8')), hashlib.sha256(b'F\0' + data).hexdigest()
+
+    original, _ = capture()
+    journal.mark_metadata([target])
+    primary = None
+    try:
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            current, postimage = capture()
+            if current != original:
+                error = RuntimeError('插件校验期间配置值出现未归属的变化，当前配置已保留。 [path=hermes:config.yaml; owner=user]')
+                error.code = 'CONDITIONS_CHANGED'
+                raise error
+            # Seal the bytes parsed above. A later external edit must not be
+            # adopted by a second read while updating the receipt.
+            entry = journal.plan['metadataWrites']['hermes:config.yaml']
+            entry.update(after=postimage, completed=True)
+            journal.save()
+        except BaseException as error:
+            if primary is None:
+                raise
+            primary.secondary_errors = [*getattr(primary, 'secondary_errors', []), error]
+
+
+@contextmanager
 def reconcile_setup_metadata(journal, managed, root, manifest):
     """Seal only the first-setup write made by the existing service verifier.
 
@@ -1989,9 +2038,13 @@ def install(args):
                     if journal is not None:journal.finish_metadata([hermes_home/'config.yaml'])
                 if managed:
                     log("更新诺拉技能、定时任务并核对当前实例")
-                    journal.mark_metadata([hermes_home/'clawchat-skills'])
+                    # The supported ClawChat seeder also normalizes MCP's Node
+                    # command in config.yaml. Own both writes so a later failed
+                    # startup can restore the pre-update user configuration.
+                    seed_metadata = [hermes_home/'clawchat-skills', hermes_home/'config.yaml']
+                    journal.mark_metadata(seed_metadata)
                     managed.seed_clawchat_skills(hermes_home, sys.executable, dict(os.environ))
-                    journal.finish_metadata([hermes_home/'clawchat-skills'])
+                    journal.finish_metadata(seed_metadata)
                     journal.mark_metadata([hermes_home/'cron/jobs.json']+[hermes_home/'scripts'/name for name in UPDATE_CHECK_FILES])
                     update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
                     journal.finish_metadata([hermes_home/'cron/jobs.json']+[hermes_home/'scripts'/name for name in UPDATE_CHECK_FILES])
@@ -2031,7 +2084,8 @@ def install(args):
                 liveware_needed = not managed and (app_changed or ops_changed or host_hook is not None)
                 liveware = refresh_liveware(hermes_home, install_root, install_root / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
                 if managed:
-                    proof = managed.verify_runtime(hermes_home, install_root, port, sys.executable, dict(os.environ))
+                    with reconcile_probe_configuration(journal, hermes_home):
+                        proof = managed.verify_runtime(hermes_home, install_root, port, sys.executable, dict(os.environ))
                     world_verification = verify_preserved_worlds(
                         install_root / "apps/tavern-runtime", install_root / "tavern-state",
                         story_inventory, story_worlds, exact=bool(partial))

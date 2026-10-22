@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Check Nora Tavern versions, perform owner-authorized updates, and inspect update results on Windows, macOS and Linux.
-version: 3.4.0
+version: 3.5.0
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]
@@ -39,7 +39,33 @@ Use the verified interpreter to run this skill's `scripts/update.py`:
 - `--apply --confirm`: update only after the owner explicitly authorizes it.
 - `--status`: read the last independent task and its canonical operation result.
 
-## One updater for both entry points
+## Submit and verify the applicable components
+
+For a desktop installation with a verified APP, these commands use the existing
+desktop receiver. One owner-authorized `--apply --confirm` submits all applicable
+Tavern and launcher updates. The program may open the verified launcher and
+restart it during replacement. It selects a compatible order and updates only
+components with a newer applicable version. A cloud/source instance without an
+APP retains the independent core updater below.
+
+The initial response may be `queued`, `running` or `restarting`. Say the request
+was submitted, then use `--status`; do not claim completion from submission or
+an APP restart. Desktop `succeeded` requires verified `updateComplete`, actual
+core and launcher versions and the associated canonical operations. A partial
+failure retains the successful component and the fixed sequence; an explicit
+retry continues that sequence. Old APPs without this protocol require one manual
+update through their existing button. Report that limitation and preserve data;
+never silently do core-only work and announce a complete desktop update.
+
+Run one literal `--status` command per terminal call. If it is still running,
+wait briefly and make another status call; stop as soon as `settled: true` is
+returned. Do not generate shell polling loops, inline Python/Node parsers,
+encoded commands or a fixed series of polls that continues after completion.
+The skill already returns structured state. A terminal security rejection is
+not an updater failure: report it and use the plain supported command without
+changing security settings or bypassing the guard.
+
+## Independent core updater
 
 Nora and the desktop update button submit to the same independent updater.
 An installed, open, online or recent desktop APP is not a prerequisite for a
@@ -50,7 +76,8 @@ The task snapshots the verified updater closure, acquires the same native writer
 lock and uses the existing update transaction and recovery records. A detached
 owner continues after Nora disconnects or the caller closes. It preserves chats,
 characters, worlds, model configuration and credentials. It does not upgrade the
-external Hermes runtime or silently replace the desktop APP.
+external Hermes runtime. APP replacement belongs to the desktop path above,
+using the established APP helper and recovery rules.
 
 Before submission tell the owner that Nora may briefly disconnect. Submission
 returning exit code zero means the request was handed off, not that the update

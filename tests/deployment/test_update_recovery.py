@@ -416,6 +416,32 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
                 verify=lambda: bridge.command_update_lifecycle(args, {**plan, 'phase': 'verify', 'version': '2.4.6'}))
             self.assertEqual(sentinel.read_bytes(), b'owned user data\n')
 
+    def test_plugin_probe_format_only_save_is_owned_even_when_probe_fails(self):
+        with self.fixture(gateway=False) as case:
+            target = case.journal.home / 'config.yaml'
+            original = target.read_bytes()
+            primary = RuntimeError('plugin probe failed')
+            with self.assertRaises(RuntimeError) as caught:
+                with case.updater.reconcile_probe_configuration(case.journal, case.journal.home):
+                    target.write_bytes(b'# equivalent Hermes serialization\n' + original)
+                    raise primary
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(case.journal.plan['metadataWrites']['hermes:config.yaml']['after'], recovery.digest(target))
+            case.journal.restore_metadata()
+            self.assertEqual(target.read_bytes(), original)
+
+    def test_plugin_probe_never_adopts_changed_user_settings(self):
+        with self.fixture(gateway=False) as case:
+            target = case.journal.home / 'config.yaml'
+            with self.assertRaises(RuntimeError) as caught:
+                with case.updater.reconcile_probe_configuration(case.journal, case.journal.home):
+                    target.write_text('model: {default: changed-user-model}\n', encoding='utf-8')
+            self.assertEqual(caught.exception.code, 'CONDITIONS_CHANGED')
+            changed = target.read_bytes()
+            with self.assertRaises(RuntimeError):
+                case.journal.restore_metadata()
+            self.assertEqual(target.read_bytes(), changed)
+
     def test_actual_first_setup_during_update_is_sealed_and_real_metadata_rollback_succeeds(self):
         with self.fixture() as case:
             original = case.journal.plan['metadataWrites'][case.key]['after']

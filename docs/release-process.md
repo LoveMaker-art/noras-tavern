@@ -243,6 +243,16 @@ node tooling/release/release-plan.mjs --base v2.4.3 --head HEAD --output /tmp/no
 
 ## 2. 构建与验收不发布
 
+### 2026-10-22 诺拉统一更新的本地隔离验收
+
+用户授权独立分支修复外部核心更新后的APP衔接，并让诺拉一次提交适用的核心／APP更新；要求保留数据，Windows／Mac完整流程实测，不发布、不调用子智能体。当前分支 `codex/nora-unified-update-20261022` 起点 `f06b385`，设计同步1.32，适用PB-05／PB-06／PB-07／PB-09、L-13／N-18。主线、正式安装及GitHub／极狐入口保持原状。
+
+构建前关联核对：APP绑定刷新影响`launcher_cli_capability`、`launcher_self_update`及真实交接；诺拉入口影响`launcher_skill_update`、`launcher_shared_update_routes`、`launcher_update_sequence`、`launcher_operation_cli`、`updater_task_capability`、`launcher_updater_policy`、`launcher_bundle_contract`和Python技能／CLI／任务入口／后端。新增真实交接回归在旧实现先确认失败，修订后九份JavaScript用例225项通过；Python四模块41项通过。APP修改、错误更新器摘要及清单不匹配仍拒绝；原生写锁和canonical结果检查保留。旧路由用例只补上新模块依赖，未移除执行、恢复、数据保护断言。
+
+当前仅准备本地测试资源与隔离APP，复用同锁桌面／引擎／MCP依赖及已核验固定Hermes 0.21.1环境，不升级Hermes；Windows真实诺拉验收发现旧运行时缺Git Bash，已在原构建器接入固定摘要的官方便携Git并实测其辅助模块与离线终端探针。新Windows运行时属于变化输入，后续完整安装器不得复用旧运行时，也不能把本轮组件级实测称为新整合安装包已通过。受控本地发行数据用于驱动实际下载、APP替换、重开及核心事务，不上传、不创建Release或版本标签，不覆盖已发布文件；测试版本及来源和正式发行分开标识。源码／元数据模拟、实际文件替换、GUI和真实模型结果分别留证，不把单项健康或窗口打开记为整条通过。安装在独立目录，运行前后核对聊天、角色、世界、配置和任务结束；已有正式实例不参与测试。
+
+定向ESLint发现12项既存问题；逐文件与起点使用同一配置比较，消息和对应原文均相同，无新增违规。该事实不记为ESLint全部通过，也不借本轮更新任务改动无关控制流。本轮两端实际更新、失败恢复、配对网关重连、数据核对、执行方法失败及正式安装包未验边界已在[任务记录](launcher-reliability-plan.md#2026-10-22-当前任务外部核心更新后的-app-衔接及诺拉统一更新)登记；最终源码门禁953项JS通过，Python355项执行、3项平台相关跳过。证据位于忽略目录`local-state/nora-unified-update-20261022/`。
+
 `build-integrated-launcher.yml` 负责原生构建和验收。独立 `preflight` 先生成计划、检查入口和工具合同，再准入昂贵的原生任务。计划默认为最近正式稳定标签，可显式指定基线。未知输入需要 `approve_unknown_inputs=true`，该选择不能豁免原生或数据保护验收。
 
 三平台任务使用 `fail-fast: false`。平台安装、进程归属、升级恢复、完整 APP 模块闭包、真实运行环境和用户数据保护检查仍在对应平台执行。Mac 检查不能替代 Windows 原生检查；包内容检查不能替代用户可见工作流验证。

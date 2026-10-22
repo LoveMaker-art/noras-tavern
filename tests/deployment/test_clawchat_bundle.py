@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +17,24 @@ SPEC.loader.exec_module(CHECK)
 
 
 class ClawchatBundleTests(unittest.TestCase):
+    def test_windows_terminal_must_be_sealed_before_backend_is_imported(self):
+        for metadata in ({'files': {}}, {'terminal': {'kind': 'git-bash',
+                'command': 'hermes-agent/vendor/git/bin/bash.exe'}, 'files': {}}):
+            with self.subTest(metadata=metadata), self.assertRaisesRegex(RuntimeError, 'Git Bash'):
+                CHECK.check_terminal(Path('/fixture'), metadata)
+
+    def test_windows_gateway_receives_owned_bash_without_overwriting_old_host_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / 'hermes'
+            bash = home / 'hermes-agent/vendor/git/bin/bash.exe'
+            with patch.object(launcher_bridge, 'os', types.SimpleNamespace(
+                    name='nt', pathsep=';', environ={'PATH': '', 'HERMES_GIT_BASH_PATH': 'host-bash'})):
+                self.assertEqual(launcher_bridge.env_for(root, home, root / 'tavern')['HERMES_GIT_BASH_PATH'], 'host-bash')
+                bash.parent.mkdir(parents=True)
+                bash.write_bytes(b'fixture')
+                self.assertEqual(launcher_bridge.env_for(root, home, root / 'tavern')['HERMES_GIT_BASH_PATH'], str(bash))
+
     def test_bundled_liveware_precedes_host_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

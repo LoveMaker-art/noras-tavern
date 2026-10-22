@@ -1847,7 +1847,7 @@ if (primaryInstance) {
             operation:context.snapshot,spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
             previousVersion:app.getVersion(),
             python: findPython().command, helper: path.join(installerRoot(), 'replace-launcher.py'),
-            skillId: /^skill-[a-f0-9-]{36}$/.test(payload.runId) ? payload.runId.slice(6) : null,
+            skillId: payload.skillRequestId || (/^skill-[a-f0-9-]{36}$/.test(payload.runId) ? payload.runId.slice(6) : null),
             localRelease: localReleaseDirectory, onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) });
           if (cancelled) { fs.writeFileSync(path.join(job, 'cancel'), 'cancel'); throw new Error('更新已取消。'); }
           diagnostics.write('update.handoff', { job, target: payload.tag });
@@ -2034,6 +2034,8 @@ if (primaryInstance) {
     }else if(payload.tag&&payload.tag!==sequence.plan.tag){
       throw launcherError('原来的两项更新尚未结束，请先继续原目标。',{code:'UPDATE_SEQUENCE_PENDING'});
     }
+    if(payload.skillRequestId)require('./skill-update').bindDesktopSequence(noraHome(),payload.skillRequestId,sequence.id);
+    const skillRequest=require('./skill-update').desktopSequenceRequest(noraHome(),sequence.id);
     const safe=operation=>operation&&!operation.busy&&operation.state!=='awaiting-handoff'
       &&['untouched','restored'].includes(operation.effectState)
       &&!['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome);
@@ -2111,6 +2113,7 @@ if (primaryInstance) {
         }
         const core=await observe('core');
         const request={action:'update',tag:sequence.plan.tag,launcherOnly:true,sequenceId:sequence.id,
+          ...(skillRequest?{skillRequestId:skillRequest.id}:{}),
           expectedCoreVersion:core?.succeeded?sequence.plan.releaseManifest.versions.tavern:sequence.before.core};
         const operation=current
           ?await operations().resume(current.operation.operationId,{snapshotSequence:current.operation.snapshotSequence,
@@ -2135,7 +2138,7 @@ if (primaryInstance) {
         ...(anchor?{operationId:anchor.operationId,snapshotSequence:anchor.snapshotSequence||anchor.sequence}:{})};
       throw error;
     }
-    if(result.restarting)return result;
+    if(result.restarting)return {...result,sequenceId:sequence.id};
     if(result.status==='partial'){
       const anchor=result.operation||updateSequence.operation(noraHome(),sequence.requests[result.completed.at(-1)]);
       desktopUpdateNotice={status:'partial',message:result.message,failed:result.failed,releaseTag:sequence.plan.tag,
@@ -2143,14 +2146,21 @@ if (primaryInstance) {
         operationId:anchor.operationId,snapshotSequence:anchor.snapshotSequence||anchor.sequence};
       throw Object.assign(new Error(result.message),{code:'UPDATE_PARTIALLY_COMPLETED',operation:anchor});
     }
+    const finalResult={...result.current,launcherVersion:app.getVersion(),updateComplete:true,updateSequence:null,sequenceId:sequence.id,
+      operationIds:Object.values(sequence.requests).map(id=>updateSequence.operation(noraHome(),id)?.operationId).filter(Boolean)};
     updateSequence.clear(noraHome(),sequence);desktopUpdateNotice=null;
-    return {...result.current,updateComplete:true,updateSequence:null};
+    if(skillRequest)finishHandoff(noraHome(),skillRequest.id,finalResult);
+    return finalResult;
   };
   continueDesktopUpdate=async(event)=>{
     activeRun=true;
-    try{if(!updateSequence.load(noraHome(),desktopSequenceOptions()))return;
+    let pending;
+    try{pending=updateSequence.load(noraHome(),desktopSequenceOptions());if(!pending)return;
       return await runDesktopUpdate(event,{},{});}
-    catch(error){desktopUpdateNotice||={status:'blocked',message:error.message};throw error;}
+    catch(error){desktopUpdateNotice||={status:'blocked',message:error.message};
+      const request=pending&&require('./skill-update').desktopSequenceRequest(noraHome(),pending.id);
+      if(request)finishHandoff(noraHome(),request.id,null,diagnostics.clean(error.message));
+      throw error;}
     finally{activeRun=false;activeOperationContext=null;}
   };
   const operationRequest=payload=>{
@@ -2197,16 +2207,17 @@ if (primaryInstance) {
     if (typeof payload.runId !== 'string' || !/^[\w-]{1,100}$/.test(payload.runId)) throw new Error('任务编号无效。');
     if(payload.launcherOnly!==undefined&&(typeof payload.launcherOnly!=='boolean'||payload.action!=='update'))throw new Error('启动器更新请求无效。');
     if(payload.includeLauncher!==undefined&&(typeof payload.includeLauncher!=='boolean'||payload.action!=='update'))throw new Error('两项更新请求无效。');
+    if(payload.skillRequestId!==undefined&&!/^[a-f0-9-]{36}$/.test(payload.skillRequestId))throw new Error('诺拉更新请求编号无效。');
     if (payload.tag !== undefined && !/^[a-zA-Z0-9._-]{1,100}$/.test(payload.tag)) throw new Error('版本编号无效。');
     if (payload.service !== undefined && (!['all', 'nora', 'tavern'].includes(payload.service)
       || !['start', 'stop', 'restart'].includes(payload.action))) throw new Error('服务目标无效。');
     activeRun=true;cancelled=false;
     try {
       // Startup handoffs resume directly; a later request has its own owner.
-      if(payload.action==='update'&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload);
+      if(payload.action==='update'&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload,{retry:payload.retry===true});
       if(payload.action==='update'&&payload.launcherOnly!==true)return await runSharedUpdate(event,payload);
       const request={action:payload.action};
-      for(const name of ['port','tag','service','launcherOnly'])if(payload[name]!==undefined)request[name]=payload[name];
+      for(const name of ['port','tag','service','launcherOnly','skillRequestId'])if(payload[name]!==undefined)request[name]=payload[name];
       const operation=await operations().start(payload.action,{target:{request},
         execute:context=>executeAction(context,{payload,event}),onFailure:rememberOperationFailure},payload.runId);
       if(operation.state==='awaiting-handoff'){
@@ -2229,8 +2240,26 @@ if (primaryInstance) {
     home: noraHome,
     busy: () => activeRun || modelBusy || quitting || uninstalling || selectingLocation || Boolean(statusRequest) || Boolean(MOCK_SCENARIO),
     clean: value => diagnostics.clean(value),
-    execute: async (action, id) => {
+    execute: async (action, id, options={}) => {
       if (systemUpdate.pending(noraHome())) throw new Error('上次更新尚待恢复，请先在启动器中检查状态。');
+      if(options.scope==='desktop'){
+        const pending=action==='update'&&options.retry?updateSequence.load(noraHome(),desktopSequenceOptions()):null;
+        if(pending)return runAction({sender:null},{action:'update',tag:pending.plan.tag,includeLauncher:true,retry:true,
+          runId:`skill-${id}`,skillRequestId:id});
+        const checked=await checkRelease();
+        if(checked.error||checked.launcherError||checked.compatibilityError||['unavailable','unknown','blocked'].includes(checked.state))
+          throw new Error(checked.error||checked.launcherError||checked.compatibilityError||'版本检查尚未确认，请重新检查。');
+        if(action==='check')return Object.fromEntries(['current','latest','releaseTag','checkedAt','state','available','releaseAvailable',
+          'launcherVersion','launcherLatest','launcherUpdateAvailable','compatibilityError'].filter(key=>Object.hasOwn(checked,key)).map(key=>[key,checked[key]]));
+        if(!checked.releaseAvailable&&!checked.launcherUpdateAvailable){const current=await runBridge('status');
+          if(current.systemReady!==true)throw new Error('当前安装尚未就绪，请先检查状态。');
+          return {...current,launcherVersion:app.getVersion(),updateComplete:true,unchanged:true,operationIds:[]};}
+        const result=await runAction({sender:null},{action:'update',tag:checked.releaseTag,runId:`skill-${id}`,skillRequestId:id,retry:options.retry,
+          ...(checked.launcherUpdateAvailable?checked.releaseAvailable?{includeLauncher:true}:{launcherOnly:true}:{requestId:id,operationRequestId:id})});
+        if(result.restarting)return result;
+        return {...result,launcherVersion:app.getVersion(),updateComplete:true,
+          operationIds:result.operationIds||[result.operation?.operationId].filter(Boolean)};
+      }
       if (action === 'check') {
         const result = await trackLauncher('check_update','release_check', () => releases.check({ fetcher: updateFetch, installRoot: installRoot(), client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES, channel: CHANNEL }));
         if (result.error) throw new Error(result.error);
@@ -2447,8 +2476,9 @@ if (primaryInstance) {
                 finishOperationTelemetry(operation);
                 const result=requireOperationResult(operation);
                 await registerCapabilities();
-                finishHandoff(noraHome(), plan.skillId, { version: result.version, systemReady: result.systemReady });
-                await continueDesktopUpdate?.({sender:window.webContents});
+                const continued=await continueDesktopUpdate?.({sender:window.webContents});
+                if(!continued?.restarting)finishHandoff(noraHome(), plan.skillId, continued||{version:result.version,launcherVersion:app.getVersion(),
+                  systemReady:result.systemReady,updateComplete:true,operationIds:[operation.operationId]});
               }
             } catch (error) {
               activeRun = false; diagnostics.error('update.resume', error);

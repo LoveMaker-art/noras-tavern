@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import runtimeTools from '../installer/desktop/runtime.js';
 import { buildCommand } from './build-commands.mjs';
 import { patchHermesRuntime } from '../../tooling/runtime/hermes-runtime-patches.mjs';
+import { windowsGitArchive,installWindowsGit } from '../../tooling/runtime/windows-git.mjs';
 
 const installer = fileURLToPath(new URL('../installer/', import.meta.url));
 const lockPath = path.join(installer, 'clawchat-bundle.lock.json');
@@ -141,6 +142,14 @@ try {
     if (audit.status !== 0) throw new Error(`ClawChat 安全审核未通过：${audit.stderr || audit.stdout}`);
     fs.mkdirSync(runtime, { recursive: true });
     copyTree(agent, path.join(runtime, 'hermes-agent'));
+    let terminal;
+    if(platform==='win32'){
+        // The terminal backend in pinned Hermes 0.21.1 requires Git Bash.
+        // Bundle its full official portable distribution, including notices.
+        fs.rmSync(path.join(runtime,'hermes-agent/vendor/git'),{recursive:true,force:true});
+        const archive=await windowsGitArchive(path.join(temporary,'build-inputs'),option('--windows-git-archive'));
+        terminal=installWindowsGit(archive,runtime);
+    }
     const patches = patchHermesRuntime(runtime);
     copyTree(pythonRoot, path.join(runtime, 'python'));
     fs.cpSync(nodeRoot, path.join(runtime, 'node'), {
@@ -197,7 +206,9 @@ try {
     const components = {
         schema: 1, clawchat: { revision: lock.revision, version: lock.version, review: lock.review,
             greetingPatchSha256: sha256(path.resolve(installer, '../updater/clawchat-greeting-order.patch')) },
-        liveware: { path: livewarePath, sha256: files[livewarePath] }, files,
+        liveware: { path: livewarePath, sha256: files[livewarePath] },
+        ...(terminal?{terminal:{...terminal,files:undefined}}:{}),
+        files:{...files,...terminal?.files},
     };
     fs.writeFileSync(path.join(runtime, 'nora-components.json'), JSON.stringify(components, null, 2));
     fs.copyFileSync(path.join(installer, 'clawchat-bundle-check.py'), path.join(runtime, 'nora-clawchat-check.py'));

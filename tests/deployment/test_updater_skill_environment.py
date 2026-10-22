@@ -22,6 +22,62 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UpdaterSkillEnvironmentTests(unittest.TestCase):
+    def test_desktop_update_submits_once_without_falling_back_to_core_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home, _ = self.managed(directory)
+            with patch.dict(os.environ, {'HERMES_HOME': str(home)}), patch.object(sys, 'argv', ['update.py', '--apply', '--confirm']), \
+                    patch.object(MODULE, 'select_python', return_value=os.path.abspath(sys.executable)), \
+                    patch.object(MODULE, 'desktop_transport', return_value={'scope': 'desktop', 'status': 'queued', 'requestId': 'same-request'}) as desktop, \
+                    patch.object(MODULE, 'standalone_entry') as core, patch('builtins.print') as output:
+                MODULE.main()
+            desktop.assert_called_once_with(home, 'update', confirm=True)
+            core.assert_not_called()
+            self.assertEqual(json.loads(output.call_args.args[0])['status'], 'queued')
+
+    def test_old_reader_is_probed_before_any_desktop_update_submission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home, _ = self.managed(directory)
+            root = Path(directory).resolve()
+            (root / 'installer/launcher-control.json').write_text('{}')
+            node = home / 'node/bin/node'
+            node.parent.mkdir(parents=True)
+            node.write_text('selection fixture')
+            entry = root / 'verified-reader.js'
+            with patch.object(MODULE, 'query_entries', return_value=iter([entry])), \
+                    patch.object(MODULE.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '{"desktopProtocol":null}', '')) as run:
+                with self.assertRaisesRegex(RuntimeError, '旧更新器'):
+                    MODULE.desktop_transport(home, 'update', True)
+            self.assertEqual(run.call_count, 1)
+            self.assertIn('-e', run.call_args.args[0], 'an unsupported old reader must never receive action=update')
+
+    def test_desktop_status_uses_existing_result_without_hermes_probe(self):
+        reply = {'scope': 'desktop', 'status': 'succeeded', 'settled': True, 'busy': False,
+                 'result': {'version': '2.5.6', 'launcherVersion': '2.2.6', 'updateComplete': True}}
+        with patch.object(sys, 'argv', ['update.py', '--status']), \
+                patch.object(MODULE, 'desktop_transport', return_value=reply), \
+                patch.object(MODULE, 'select_python') as select, patch('builtins.print') as output:
+            MODULE.main()
+        select.assert_not_called()
+        self.assertEqual(json.loads(output.call_args.args[0]), reply)
+
+    def test_supported_desktop_reader_failure_is_not_reported_as_an_old_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home, _ = self.managed(directory)
+            root = Path(directory).resolve()
+            (root / 'installer/launcher-control.json').write_text('{}')
+            node = home / 'node/bin/node'
+            node.parent.mkdir(parents=True)
+            node.write_text('selection fixture')
+            entry = root / 'verified-reader.js'
+            replies = [subprocess.CompletedProcess([], 0, '{"desktopProtocol":"nora-desktop-update/1"}', ''),
+                       subprocess.CompletedProcess([], 1, '', json.dumps({'event': 'error', 'code': 'QUERY_FAILED', 'message': '真实查询失败'}))]
+            with patch.object(MODULE, 'query_entries', return_value=iter([entry])), \
+                    patch.object(MODULE.subprocess, 'run', side_effect=replies):
+                reply = MODULE.desktop_transport(home, 'status')
+            self.assertEqual(reply['code'], 'QUERY_FAILED')
+            self.assertEqual(reply['error'], '真实查询失败')
+            self.assertFalse(reply['settled'])
+
     def test_status_json_preserves_unicode_on_a_legacy_windows_pipe(self):
         reply = {'status': 'succeeded', 'message': '更新成功，用户数据已保留'}
         raw = io.BytesIO()

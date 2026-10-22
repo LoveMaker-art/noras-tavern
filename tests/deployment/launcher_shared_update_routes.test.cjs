@@ -82,6 +82,22 @@ test('one desktop request for both components enters the sequence instead of end
   const result=await vm.runInContext('runAction',context)({sender:null},{action:'update',tag:'v2.5.3',runId:'one-click',includeLauncher:true});
   assert.deepEqual(calls,['both']);assert.equal(result.updateComplete,true);
 });
+for(const [core,launcher] of [[true,true],[true,false],[false,true],[false,false]])
+test(`Nora receiver selects exactly the applicable desktop components (core=${core}, APP=${launcher})`,async()=>{
+  let execute;const calls=[];
+  const context=vm.createContext({createSkillUpdateReceiver:options=>{execute=options.execute;return {};},
+    noraHome:()=>'/private/home',activeRun:false,modelBusy:false,quitting:false,uninstalling:false,selectingLocation:false,statusRequest:null,MOCK_SCENARIO:null,
+    systemUpdate:{pending:()=>false},diagnostics:{clean:String},app:{getVersion:()=> '2.2.6'},
+    checkRelease:async()=>({releaseTag:'v2.5.6',state:core||launcher?'available':'current',releaseAvailable:core,launcherUpdateAvailable:launcher}),
+    runBridge:async()=>({version:'2.5.6',systemReady:true}),
+    runAction:async(_event,payload)=>{calls.push(payload);return {version:'2.5.6',systemReady:true,operation:{operationId:randomUUID()}};}});
+  vm.runInContext(definition('skillUpdates'),context);
+  const id=randomUUID(),result=await execute('update',id,{scope:'desktop'});
+  assert.equal(result.updateComplete,true);assert.equal(result.launcherVersion,'2.2.6');
+  if(!core&&!launcher){assert.equal(calls.length,0);assert.equal(result.unchanged,true);}
+  else {assert.equal(calls.length,1);assert.equal(calls[0].includeLauncher===true,core&&launcher);
+    assert.equal(calls[0].launcherOnly===true,!core&&launcher);assert.equal(calls[0].skillRequestId,id);}
+});
 for(const marker of [null,'/owned/installer/launcher-update/completed-job'])
   for(const includeLauncher of [false,true])test(`new update uses its normal owner after startup (${marker?'self-update reopen':'normal'}, ${includeLauncher?'both':'core'})`,async()=>{
     const calls=[],context=vm.createContext({activeRun:false,modelBusy:false,cancelled:false,activeOperationContext:null,SELF_UPDATE_JOB:marker,
@@ -156,7 +172,7 @@ test(`actual main dispatch and automatic continuation complete one fixed sequenc
     app:{getVersion:()=>launcherVersion,quit:()=>calls.push('restart')},setImmediate:callback=>callback(),quitReady:false,
     window:{webContents:{}},updateFetch:fetcher,releaseMetadataCache:()=>undefined,releases,updateSequence:sequence,
     desktopSequenceOptions:()=>({capabilities,validatePlan:plan=>releases.validatePlan(plan,{launcherVersion})}),
-    require:name=>name==='node:crypto'?crypto:name==='./launcher-capability'?{validate:async()=>{}}:name==='./updater-task'?{
+    require:name=>name==='node:crypto'?crypto:name==='./skill-update'?require('../installer/desktop/skill-update'):name==='./launcher-capability'?{validate:async()=>{}}:name==='./updater-task'?{
       query:async(_home,request)=>({operation:sequence.operation(home,request),settled:true})}:assert.fail('Unexpected dependency '+name),
     launcherError:(message,details)=>Object.assign(new Error(message),details),registerCapabilities:async()=>{},finishOperationTelemetry(){},
     rememberOperationFailure(){},readInstallerState:()=>({}),writeInstallerState(){},finishHandoff(){},
@@ -214,7 +230,7 @@ test('APP-first main route prepares its authenticated core bootstrap with an in-
   const sequence={order:['launcher','core'],plan:{tag:'v2.5.3'},requests:{}},calls=[],network={source:'test-source-context'};
   const context=vm.createContext({fs:{existsSync:()=>false},path,desktopSequenceOptions:()=>({}),
     noraHome:()=>'/private/test',installRoot:()=>'/private/test/tavern',updateFetch:async()=>{},sendBridgeEvent(){},
-    require:name=>{assert.equal(name,'./release-network');return {createReleaseSourceContext:()=>network};},
+    require:name=>{if(name==='./skill-update')return require('../installer/desktop/skill-update');assert.equal(name,'./release-network');return {createReleaseSourceContext:()=>network};},
     updateSequence:{load:()=>sequence,operation:()=>null,prepareBootstrap:async(home,value,options)=>{
       assert.equal(home,'/private/test');assert.equal(value,sequence);assert.equal(options.networkPolicy.sourceContext,network);calls.push('prepared');
     },run:async()=>{calls.push('run');return {restarting:true};}},desktopUpdateNotice:null});

@@ -118,6 +118,9 @@ def env_for(nora_home: Path, hermes_home: Path, install_root: Path) -> dict[str,
     # Bun shim named node. Pin Tavern to the bundled executable explicitly.
     env['TAVERN_NODE_EXECUTABLE'] = str(hermes_home / ('node/node.exe' if os.name == 'nt' else 'node/bin/node'))
     if os.name == "nt":
+        bundled_bash = hermes_home / 'hermes-agent/vendor/git/bin/bash.exe'
+        if bundled_bash.is_file():
+            env['HERMES_GIT_BASH_PATH'] = str(bundled_bash)
         env["USERPROFILE"] = str(hermes_home)
         env["APPDATA"] = str(nora_home / "appdata/roaming")
         env["LOCALAPPDATA"] = str(nora_home / "appdata/local")

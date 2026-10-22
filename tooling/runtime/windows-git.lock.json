@@ -1,0 +1,9 @@
+{
+  "schema": "nora-windows-git/1",
+  "version": "2.56.0.windows.2",
+  "asset": "PortableGit-2.56.0.2-64-bit.7z.exe",
+  "url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/PortableGit-2.56.0.2-64-bit.7z.exe",
+  "sha256": "075e158ef8e1f0ab80b347e245405d3eca735c2dc88fd8e032e137d0ca61f61b",
+  "size": 60027568,
+  "license": "GPL-2.0; bundled dependency notices retained in the complete official portable distribution"
+}

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class ManagedUpdateTests(unittest.TestCase):
     def transaction(self, *, failure=False, bundled=True, same_version=False, late_failure=False, rollback_failure=False, preflight_failure=False,
                     source_version="2.3.0", target_version="2.3.2", receipt_schema=1, storage_recovery=False,
-                    missing_receipt=False):
+                    missing_receipt=False, seeder_config=False, probe_config=False):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / "custom Nora directory"
             home, tavern = root / "hermes", root / "tavern"
@@ -141,6 +141,12 @@ class ManagedUpdateTests(unittest.TestCase):
 
             def seed(*_args):
                 write(home / "clawchat-skills/clawchat-core/SKILL.md", "new external skill")
+                if seeder_config:
+                    import yaml
+                    file = home / 'config.yaml'
+                    value = yaml.safe_load(file.read_text(encoding='utf-8'))
+                    value['mcp_servers']['nora']['command'] = 'fixture-managed-node-shim'
+                    file.write_text(yaml.safe_dump(value, allow_unicode=True, sort_keys=False), encoding='utf-8')
 
             def cron(_home):
                 write(home / "cron/jobs.json", '{"jobs":[{"id":"unrelated"},{"id":"new"}]}')
@@ -176,6 +182,11 @@ class ManagedUpdateTests(unittest.TestCase):
                 return original_module(name, file)
 
             def verify(*_args):
+                if probe_config:
+                    file = home / 'config.yaml'
+                    # The real bundled plugin check saves unchanged values
+                    # through Hermes' different YAML serializer.
+                    file.write_text('# plugin probe serialization\n' + file.read_text(encoding='utf-8'), encoding='utf-8')
                 if failure:
                     if storage_recovery:
                         damage_storage()
@@ -324,6 +335,12 @@ class ManagedUpdateTests(unittest.TestCase):
 
     def test_failed_managed_proof_restores_worlds_and_managed_configuration(self):
         self.transaction(failure=True)
+
+    def test_clawchat_seeder_configuration_is_owned_and_restored_after_startup_failure(self):
+        self.transaction(failure=True, seeder_config=True, storage_recovery=True)
+
+    def test_plugin_probe_format_save_is_restored_after_final_service_failure(self):
+        self.transaction(late_failure=True, probe_config=True, storage_recovery=True)
 
     def test_component_update_without_platform_bundle_uses_shared_dependencies(self):
         self.transaction(bundled=False)

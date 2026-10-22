@@ -82,37 +82,55 @@ async function register({noraHome,hermesHome,installRoot,executable,resourcesRoo
     executable:await descriptor(executable),asar,native,entry:path.join(asar.path,'operation-cli.js'),resources,
     sourceHash:sha(JSON.stringify([asar.sha256,native.sha256,RESOURCE_NAMES.map(name=>[name,resources[name].sha256])])),
     managed:{},registeredAt:new Date().toISOString()};
+  await bindCore(receipt);
+  checkShape(receipt,{noraHome,platform,arch});
+  saveReceipt(receipt);
+  return receipt;
+}
+async function bindCore(receipt,{strict=false}={}){
+  const {installRoot}=receipt;
+  receipt.managed={};delete receipt.installedManifest;delete receipt.installedReceipt;
   const manifestFile=path.join(installRoot,'tavern-updates/installed-manifest.json');
   if(physicalFs.existsSync(manifestFile)){
-    const manifest=JSON.parse(physicalFs.readFileSync(safePath(manifestFile,{owner:true}),'utf8'));
+    const manifestBytes=physicalFs.readFileSync(safePath(manifestFile,{owner:true}));
+    const manifest=JSON.parse(manifestBytes.toString('utf8'));
     const installedFile=path.join(installRoot,'tavern-updates/installed.json');
     const installed=JSON.parse(physicalFs.readFileSync(safePath(installedFile,{owner:true}),'utf8'));
-    if(manifest.schema!=='tavern-release/v2'||!manifest.commit||manifest.commit!==installed.commit||manifest.versions?.tavern!==installed.version)throw failure();
+    if(manifest.schema!=='tavern-release/v2'||!manifest.commit||manifest.commit!==installed.commit||manifest.versions?.tavern!==installed.version
+      ||installed.releaseManifestSha256!==undefined&&installed.releaseManifestSha256!==sha(manifestBytes))throw failure();
     receipt.installedManifest=await descriptor(manifestFile);receipt.installedReceipt=await descriptor(installedFile);
     for(const name of Object.keys(SOURCES)){
       const target=path.join(installRoot,'apps/tavern-ops',...name.split('/').slice(1));
-      if(!physicalFs.existsSync(target))continue;
+      if(!physicalFs.existsSync(target)){if(strict&&manifest.artifacts?.[name])throw failure();continue;}
       const item=await descriptor(target);
-      if(manifest.artifacts?.[name]!==item.sha256)continue; // A damaged updater never becomes a capability.
+      if(manifest.artifacts?.[name]!==item.sha256){if(strict)throw failure();continue;} // Never authorize a damaged updater.
       receipt.managed[name]=item;
     }
   }
-  checkShape(receipt,{noraHome,platform,arch});
-  const file=receiptPath(noraHome),temporary=`${file}.${randomUUID()}.tmp`;
+}
+function saveReceipt(receipt){
+  const file=receiptPath(receipt.noraHome),temporary=`${file}.${randomUUID()}.tmp`;
   safePath(file,{allowMissing:true,owner:true});
   const fd=physicalFs.openSync(temporary,'wx',0o600);
   try{physicalFs.writeFileSync(fd,JSON.stringify(receipt));physicalFs.fsyncSync(fd);}finally{physicalFs.closeSync(fd);}
   try{physicalFs.renameSync(temporary,file);}finally{physicalFs.rmSync(temporary,{force:true});}
-  return receipt;
 }
-async function validate({receiptPath:file,noraHome,platform=process.platform,arch=process.arch,currentExecutable}={}){
+async function validateApp({receiptPath:file,noraHome,platform=process.platform,arch=process.arch,currentExecutable}={}){
   try{
     if(!samePath(path.resolve(file),receiptPath(noraHome),platform))throw failure();
     safePath(noraHome,{directory:true,owner:true});safePath(path.dirname(file),{directory:true,owner:true});
     safePath(file,{owner:true});if(physicalFs.statSync(file).size>128*1024)throw failure();
     const receipt=JSON.parse(physicalFs.readFileSync(file,'utf8'));checkShape(receipt,{noraHome,platform,arch,currentExecutable});
-    for(const item of [receipt.executable,receipt.asar,receipt.native,...Object.values(receipt.resources),...Object.values(receipt.managed||{}),
-      ...(receipt.installedManifest?[receipt.installedManifest,receipt.installedReceipt]:[])]){
+    for(const item of [receipt.executable,receipt.asar,receipt.native,...Object.values(receipt.resources)]){
+      const actual=await descriptor(item.path);if(actual.size!==item.size||actual.sha256!==item.sha256)throw failure();
+    }
+    return receipt;
+  }catch(error){if(error.code==='OPERATION_CAPABILITY_INVALID')throw error;throw failure();}
+}
+async function validate(options={}){
+  try{
+    const receipt=await validateApp(options),platform=options.platform||process.platform;
+    for(const item of [...Object.values(receipt.managed||{}),...(receipt.installedManifest?[receipt.installedManifest,receipt.installedReceipt]:[])]){
       const actual=await descriptor(item.path);if(actual.size!==item.size||actual.sha256!==item.sha256)throw failure();
     }
     if(receipt.installedManifest){
@@ -129,6 +147,20 @@ async function validate({receiptPath:file,noraHome,platform=process.platform,arc
     return receipt;
   }catch(error){if(error.code==='OPERATION_CAPABILITY_INVALID')throw error;throw failure();}
 }
+// Called while the existing maintenance writer owns the APP handoff. Pin the
+// original APP bytes; only rebind independently updated, manifest-verified core
+// files. Re-registering the whole APP here would silently trust a changed ASAR.
+async function refresh(options={}){
+  try{
+    const before=physicalFs.readFileSync(options.receiptPath),receipt=await validateApp(options);
+    if(receipt.installedManifest&&!physicalFs.existsSync(receipt.installedManifest.path))throw failure();
+    const current={...receipt};await bindCore(current,{strict:true});
+    if(!physicalFs.readFileSync(options.receiptPath).equals(before))throw failure();
+    checkShape(current,{...options,platform:options.platform||process.platform,arch:options.arch||process.arch});
+    if(JSON.stringify(current)!==JSON.stringify(receipt))saveReceipt({...current,registeredAt:new Date().toISOString()});
+    return validate(options);
+  }catch(error){if(error.code==='OPERATION_CAPABILITY_INVALID')throw error;throw failure();}
+}
 function authorizeTarget(receipt,script){
   if(typeof script!=='string'||!path.isAbsolute(script))throw failure('OPERATION_ENTRY_UNSUPPORTED');
   const resolved=path.resolve(script),platform=receipt.platform;
@@ -138,4 +170,4 @@ function authorizeTarget(receipt,script){
   for(const [name,item] of Object.entries(receipt.managed||{}))if(samePath(item.path,resolved,platform))return {type:SOURCES[name],path:item.path};
   throw failure('OPERATION_ENTRY_UNSUPPORTED');
 }
-module.exports={register,validate,authorizeTarget,receiptPath,RESOURCE_NAMES,SCHEMA};
+module.exports={register,validate,validateApp,refresh,authorizeTarget,receiptPath,RESOURCE_NAMES,SCHEMA};

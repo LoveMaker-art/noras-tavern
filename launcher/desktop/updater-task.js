@@ -263,10 +263,16 @@ async function main(){
   const options=JSON.parse(data);
   options.retireSubmitter=true;
   prepareReader(options);
+  if(options.scope==='desktop'){
+    const result=await require('./skill-update').desktopRequest(options);
+    process.stdout.write(JSON.stringify({...result,scope:'desktop'})+'\n');
+    if(['error','inspection-required','interrupted'].includes(result.status))process.exitCode=1;
+    return;
+  }
   const result=options.action==='status'?await query(options.noraHome,options.requestId):options.action==='wait'?await wait(options.noraHome,options.requestId):
     options.action==='check'?await check(options):await submit(options);
   process.stdout.write(JSON.stringify({event:'result',...result})+'\n');
   if(['error','inspection-required'].includes(result.status)||terminal.has(result.status)&&result.status!=='succeeded'&&!(options.action==='recover'&&result.status==='rolled-back'))process.exitCode=1;
 }
 if(require.main===module)main().catch(error=>{process.stderr.write(JSON.stringify({event:'error',code:error.code||'UPDATER_FAILED',message:error.message,diagnostic:diagnostic(error)})+'\n');process.exitCode=1;});
-module.exports={submit,status,query,wait,worker,checkResult};
+module.exports={submit,status,query,wait,worker,checkResult,desktopProtocol:'nora-desktop-update/1'};

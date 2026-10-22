@@ -20,6 +20,7 @@ const javascript = [
     'launcher_pair_retry.test.cjs',
     'launcher_operation_cli.test.cjs',
     'launcher_skill_update.test.cjs',
+    'launcher_windows_terminal.test.cjs',
     'launcher_shared_update_routes.test.cjs',
     'launcher_shutdown.test.cjs',
     'launcher_guidance_flow.test.cjs',

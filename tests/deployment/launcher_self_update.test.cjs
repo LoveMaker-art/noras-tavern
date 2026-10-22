@@ -360,6 +360,48 @@ else:
   }
 });
 
+async function externallyUpdatedCore(f) {
+  const installRoot=path.join(f.home,'tavern'),sha=value=>crypto.createHash('sha256').update(value).digest('hex');
+  function install(version,bytes){
+    const target=path.join(installRoot,'apps/tavern-ops/updater/update.py');f.write(target,bytes);
+    const manifest={schema:'tavern-release/v2',commit:(version==='2.3.9'?'b':'a').repeat(40),versions:{tavern:version},
+      artifacts:{'ops/updater/update.py':sha(bytes)}};
+    const manifestBytes=JSON.stringify(manifest);
+    f.write(path.join(installRoot,'tavern-updates/installed-manifest.json'),manifestBytes);
+    f.write(path.join(installRoot,'tavern-updates/installed.json'),JSON.stringify({version,commit:manifest.commit,
+      releaseManifestSha256:sha(manifestBytes)}));
+  }
+  install('2.3.9','previous verified updater');
+  await capability.register({noraHome:f.home,installRoot,executable:f.executable,resourcesRoot:f.resourcesRoot,
+    isPackaged:true,launcherVersion:'1.0.0',port:8799});
+  install('2.4.0','current verified updater');
+  return installRoot;
+}
+
+test('APP-only handoff after an independent core update refreshes only the verified core binding',async t=>{
+  const f=await handoffFixture(t);await externallyUpdatedCore(f);
+  const file=capability.receiptPath(f.home),old=JSON.parse(fs.readFileSync(file));
+  await assert.rejects(capability.validate({receiptPath:file,noraHome:f.home,currentExecutable:f.executable}),{code:'OPERATION_CAPABILITY_INVALID'});
+  const job=await update.prepareHandoff(f.handoff);
+  assert.ok(fs.existsSync(path.join(job,'plan.json')));
+  const current=await capability.validate({receiptPath:file,noraHome:f.home,currentExecutable:f.executable});
+  assert.deepEqual(current.asar,old.asar);assert.deepEqual(current.executable,old.executable);
+  assert.deepEqual(current.native,old.native);assert.deepEqual(current.resources,old.resources);
+  assert.notEqual(current.installedManifest.sha256,old.installedManifest.sha256);
+  assert.notEqual(current.managed['ops/updater/update.py'].sha256,old.managed['ops/updater/update.py'].sha256);
+});
+
+for(const damaged of ['APP','updater','manifest-receipt'])test(`core rebinding never admits changed ${damaged}`,async t=>{
+  const f=await handoffFixture(t),installRoot=await externallyUpdatedCore(f),file=capability.receiptPath(f.home),before=fs.readFileSync(file);
+  if(damaged==='APP')fs.appendFileSync(path.join(f.resourcesRoot,'app.asar'),'unverified change');
+  else if(damaged==='updater')fs.appendFileSync(path.join(installRoot,'apps/tavern-ops/updater/update.py'),'unverified change');
+  else {const target=path.join(installRoot,'tavern-updates/installed.json'),value=JSON.parse(fs.readFileSync(target));
+    value.releaseManifestSha256='0'.repeat(64);fs.writeFileSync(target,JSON.stringify(value));}
+  await assert.rejects(update.prepareHandoff(f.handoff),{code:'OPERATION_CAPABILITY_INVALID'});
+  assert.deepEqual(fs.readFileSync(file),before);
+  assert.equal(fs.existsSync(path.join(f.home,'installer/launcher-update')),false);
+});
+
 test('unfinished launcher recovery blocks a second handoff before any new job is written', async t => {
   const f=await handoffFixture(t),job=path.join(f.home,'installer','launcher-update','job-pending');
   fs.mkdirSync(job, { recursive: true });

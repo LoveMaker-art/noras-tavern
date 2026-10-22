@@ -74,7 +74,7 @@ async function prepareHandoff({prepared,home,executable,python,helper,previousVe
   if(!prepared.launcher||prepared.releasePlan?.planId!==fixed.planId
     ||crypto.createHash('sha256').update(JSON.stringify(operation.target)).digest('hex')!==operation.planDigest)
     throw new Error('启动器替换与固定发布计划不一致，未修改程序。');
-  const capability=await require('./launcher-capability').validate({receiptPath:path.join(home,'installer','launcher-control.json'),
+  const capability=await require('./launcher-capability').refresh({receiptPath:path.join(home,'installer','launcher-control.json'),
     noraHome:home,currentExecutable:executable});
   const pending=await assessPending({home,executable,python,helper});
   if(pending)throw new Error(pending.reason||'尚有未完成的启动器更新，请先恢复旧启动器再重试。');

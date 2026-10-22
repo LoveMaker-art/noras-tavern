@@ -10,6 +10,22 @@ import shutil
 import sys
 
 
+def check_terminal(home, components):
+    """Exercise Hermes' actual Windows backend without installing host software."""
+    terminal = components.get("terminal", {})
+    relative = "hermes-agent/vendor/git/bin/bash.exe"
+    if terminal.get("kind") != "git-bash" or terminal.get("command") != relative:
+        raise RuntimeError("Missing bundled Git Bash; use the complete Windows runtime")
+    if relative not in components["files"]:
+        raise RuntimeError("Bundled Git Bash has no component checksum")
+    os.environ["HERMES_GIT_BASH_PATH"] = str(home / relative)
+    from tools.environments.local import LocalEnvironment
+    shell = LocalEnvironment(cwd=str(home), timeout=15)
+    result = shell.execute("printf NORA_SHELL_READY", timeout=15)
+    if result.get("returncode") != 0 or result.get("output", "").strip() != "NORA_SHELL_READY":
+        raise RuntimeError("Bundled Hermes terminal cannot execute")
+
+
 def check_files(home, components):
     for relative, expected in components["files"].items():
         file = (home / relative).resolve()
@@ -42,6 +58,8 @@ def check(home):
         runner.get_loop()
         sys.addaudithook(offline)
         sys.path.insert(0, str(home / "hermes-agent"))
+        if sys.platform == "win32":
+            check_terminal(home, components)
         from hermes_cli.plugins_cmd import cmd_enable
         cmd_enable("clawchat", allow_tool_override=False)
         from hermes_cli.plugins import get_plugin_manager
