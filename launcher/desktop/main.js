@@ -86,7 +86,7 @@ function checkRelease(){
   return releaseCheckRequest;
 }
 const systemUpdate = require('./system-update');
-const { createSkillUpdateReceiver, finishHandoff } = require('./skill-update');
+const { createSkillUpdateReceiver, finishHandoff, assertDesktopCheck } = require('./skill-update');
 const launcherUpdate = require('./launcher-update');
 let SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
 const updateSequence = require('./update-sequence');
@@ -2247,18 +2247,28 @@ if (primaryInstance) {
         if(pending)return runAction({sender:null},{action:'update',tag:pending.plan.tag,includeLauncher:true,retry:true,
           runId:`skill-${id}`,skillRequestId:id});
         const checked=await checkRelease();
-        if(checked.error||checked.launcherError||checked.compatibilityError||['unavailable','unknown','blocked'].includes(checked.state))
-          throw new Error(checked.error||checked.launcherError||checked.compatibilityError||'版本检查尚未确认，请重新检查。');
+        const coreOnlyPlan=assertDesktopCheck(checked,app.getVersion(),{channel:CHANNEL,
+          ...(localReleaseDirectory?{allowCandidate:true,explicitLocalRelease:localReleaseDirectory}:{})});
         if(action==='check')return Object.fromEntries(['current','latest','releaseTag','checkedAt','state','available','releaseAvailable',
-          'launcherVersion','launcherLatest','launcherUpdateAvailable','compatibilityError'].filter(key=>Object.hasOwn(checked,key)).map(key=>[key,checked[key]]));
+          'launcherVersion','launcherLatest','launcherUpdateAvailable','launcherError','compatibilityError'].filter(key=>Object.hasOwn(checked,key)).map(key=>[key,checked[key]]));
         if(!checked.releaseAvailable&&!checked.launcherUpdateAvailable){const current=await runBridge('status');
           if(current.systemReady!==true)throw new Error('当前安装尚未就绪，请先检查状态。');
           return {...current,launcherVersion:app.getVersion(),updateComplete:true,unchanged:true,operationIds:[]};}
-        const result=await runAction({sender:null},{action:'update',tag:checked.releaseTag,runId:`skill-${id}`,skillRequestId:id,retry:options.retry,
-          ...(checked.launcherUpdateAvailable?checked.releaseAvailable?{includeLauncher:true}:{launcherOnly:true}:{requestId:id,operationRequestId:id})});
-        if(result.restarting)return result;
-        return {...result,launcherVersion:app.getVersion(),updateComplete:true,
-          operationIds:result.operationIds||[result.operation?.operationId].filter(Boolean)};
+        try{
+          const result=await runAction({sender:null},{action:'update',tag:checked.releaseTag,runId:`skill-${id}`,skillRequestId:id,retry:options.retry,
+            ...(coreOnlyPlan?{requestId:id,operationRequestId:id,targetCommit:coreOnlyPlan.commit,
+              targetManifestSha256:require('node:crypto').createHash('sha256').update(coreOnlyPlan.releaseManifestText).digest('hex')}
+              :checked.launcherUpdateAvailable?checked.releaseAvailable?{includeLauncher:true}:{launcherOnly:true}:{requestId:id,operationRequestId:id})});
+          if(coreOnlyPlan&&(result.version!==coreOnlyPlan.releaseManifest.versions.tavern||result.systemReady!==true))
+            throw Object.assign(new Error('酒馆更新结果尚未确认，请查询原任务。'),{code:'DESKTOP_UPDATE_INCOMPLETE'});
+          if(result.restarting)return result;
+          return {...result,launcherVersion:app.getVersion(),updateComplete:!coreOnlyPlan,
+            ...(coreOnlyPlan?{coreUpdateComplete:true,launcherError:checked.launcherError}:{}),
+            operationIds:result.operationIds||[result.operation?.operationId].filter(Boolean)};
+        }catch(error){
+          if(coreOnlyPlan)error.result={launcherVersion:app.getVersion(),launcherError:checked.launcherError,coreUpdateComplete:false,updateComplete:false};
+          throw error;
+        }
       }
       if (action === 'check') {
         const result = await trackLauncher('check_update','release_check', () => releases.check({ fetcher: updateFetch, installRoot: installRoot(), client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES, channel: CHANNEL }));

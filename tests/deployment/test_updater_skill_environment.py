@@ -88,14 +88,20 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             self.assertIn('-e', run.call_args.args[0], 'an unsupported old reader must never receive action=update')
 
     def test_desktop_status_uses_existing_result_without_hermes_probe(self):
-        reply = {'scope': 'desktop', 'status': 'succeeded', 'settled': True, 'busy': False,
-                 'result': {'version': '2.5.6', 'launcherVersion': '2.2.6', 'updateComplete': True}}
-        with patch.object(sys, 'argv', ['update.py', '--status']), \
-                patch.object(MODULE, 'desktop_transport', return_value=reply), \
-                patch.object(MODULE, 'select_python') as select, patch('builtins.print') as output:
-            MODULE.main()
-        select.assert_not_called()
-        self.assertEqual(json.loads(output.call_args.args[0]), reply)
+        for status in ('succeeded', 'partial'):
+            with self.subTest(status=status):
+                reply = {'scope': 'desktop', 'status': status, 'settled': True, 'busy': False,
+                         'result': {'version': '2.5.7', 'launcherVersion': '2.2.6', 'updateComplete': status == 'succeeded'}}
+                if status == 'partial':
+                    reply['result'].update(coreUpdateComplete=True, launcherError='APP query timed out')
+                with patch.object(sys, 'argv', ['update.py', '--status']), \
+                        patch.object(MODULE, 'desktop_transport', return_value=reply), \
+                        patch.object(MODULE, 'select_python') as select, \
+                        patch.object(MODULE, 'standalone_entry') as core, patch('builtins.print') as output:
+                    MODULE.main()
+                select.assert_not_called()
+                core.assert_not_called()
+                self.assertEqual(json.loads(output.call_args.args[0]), reply)
 
     def test_supported_desktop_reader_failure_is_not_reported_as_an_old_version(self):
         with tempfile.TemporaryDirectory() as directory:

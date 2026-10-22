@@ -55,9 +55,16 @@ APP retains the independent core updater below.
 An update's initial response may be `queued`, `running` or `restarting`. Say the request
 was submitted, then use `--status`; do not claim completion from submission or
 an APP restart. Desktop `succeeded` requires verified `updateComplete`, actual
-core and launcher versions and the associated canonical operations. A partial
-failure retains the successful component and the fixed sequence; an explicit
-retry continues that sequence. Old APPs or readers without this protocol require
+core and launcher versions and the associated canonical operations. When APP
+discovery fails but a verified core target is compatible with the current APP,
+the core update can continue. `status: partial`, `coreUpdateComplete: true` and
+`updateComplete: false` mean Tavern updated while the launcher check failed;
+report the actual versions and `launcherError` separately. This is settled,
+not a pending task or full desktop success. Recheck before a new authorized
+update; a successful core is not updated again just to retry APP discovery.
+A failure inside a two-component sequence retains the successful component
+and fixed sequence; an explicit retry continues that sequence.
+Old APPs or readers without this protocol require
 initial migration: use the original update button if it works; otherwise use a
 verified data-preserving installer or repair path for that historical version.
 Keep chats, characters, worlds, configuration and credentials. A missing Windows

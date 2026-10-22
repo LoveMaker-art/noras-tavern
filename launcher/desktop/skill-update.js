@@ -5,8 +5,33 @@ const DESKTOP_PROTOCOL='nora-desktop-update/1';
 const ID=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 function publicResult(result){
   const fields=['version','launcherVersion','systemReady','running','gatewayRunning','updateComplete','unchanged','operationIds','sequenceId',
-    'current','latest','releaseTag','checkedAt','state','available','releaseAvailable','launcherLatest','launcherUpdateAvailable','compatibilityError'];
+    'current','latest','releaseTag','checkedAt','state','available','releaseAvailable','launcherLatest','launcherUpdateAvailable','launcherError','compatibilityError',
+    'coreUpdateComplete'];
   return Object.fromEntries(fields.filter(name=>Object.hasOwn(result||{},name)).map(name=>[name,result[name]]));
+}
+// Optional APP discovery may fail after the independent reader has verified a
+// core plan. Admit that plan only with proof it can retain the current APP.
+function assertDesktopCheck(checked,launcherVersion,{channel='stable',platform=process.platform,arch=process.arch,allowCandidate,explicitLocalRelease}={}){
+  const reject=message=>{throw Object.assign(new Error(message),{code:'DESKTOP_UPDATE_CHECK_FAILED'});};
+  if(checked.error||checked.compatibilityError||['unavailable','unknown','blocked'].includes(checked.state))
+    reject(checked.error||checked.compatibilityError||checked.launcherError||'版本检查尚未确认，请重新检查。');
+  if(!checked.launcherError)return null;
+  if(checked.state!=='available'||checked.releaseAvailable!==true||checked.available!==true
+    ||checked.installable!==true||checked.updateSupported!==true||!checked.releasePlan)
+    reject(checked.launcherError);
+  const releases=require('./releases');
+  const plan=releases.validatePlan(checked.releasePlan,{client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,
+    launcherVersion,channel,platform,arch,allowCandidate,explicitLocalRelease,tag:checked.releaseTag,mode:'update'});
+  const target=plan.releaseManifest.versions.tavern;
+  if(releases.compare(checked.current,target)!==-1||releases.compare(checked.latest,target)!==0
+    ||!require('./update-sequence').compatible(plan.releaseManifest,target,launcherVersion,releases.LAUNCHER_CAPABILITIES))
+    reject('启动器查询失败，且无法确认酒馆目标与当前启动器兼容。未开始更新，请重新检查。');
+  return plan;
+}
+function coreOnlyCompletion(result){
+  return result?.updateComplete===false&&result.coreUpdateComplete===true&&result.systemReady===true
+    &&typeof result.launcherError==='string'&&Boolean(result.launcherError)
+    &&Array.isArray(result.operationIds)&&result.operationIds.length>0;
 }
 
 function read(file,maximum=65536) {
@@ -45,7 +70,7 @@ function createSkillUpdateReceiver({ home, busy, execute, clean = String, now = 
     const file = path.join(directory, 'request.json');
     let request;
     try { request = read(file); } catch { return; }
-    if (['success', 'error', 'interrupted'].includes(request.status)) return;
+    if (['success', 'partial', 'error', 'interrupted'].includes(request.status)) return;
     if(request.scope==='desktop'&&request.status==='restarting'&&ID.test(request.sequenceId||''))return;
     const finish = (status, extra = {}) => {
       const current=read(file);if(current.id!==request.id)throw new Error('Update submission changed while running');
@@ -65,11 +90,13 @@ function createSkillUpdateReceiver({ home, busy, execute, clean = String, now = 
     try {
       finish('running');
       const result = await execute(request.action, request.id, {scope:request.scope,retry:request.retry===true});
-      if(request.scope==='desktop'&&request.action==='update'&&!result?.restarting&&result?.updateComplete!==true)
+      const partial=request.scope==='desktop'&&request.action==='update'&&coreOnlyCompletion(result);
+      if(request.scope==='desktop'&&request.action==='update'&&!result?.restarting&&result?.updateComplete!==true&&!partial)
         throw Object.assign(new Error('更新尚未确认全部完成，请查询原任务。'),{code:'DESKTOP_UPDATE_INCOMPLETE'});
-      finish(result?.restarting ? 'restarting' : 'success', { result:request.scope==='desktop'?publicResult(result):result });
+      finish(result?.restarting ? 'restarting' : partial?'partial':'success', { result:request.scope==='desktop'?publicResult(result):result });
     } catch (error) {
-      finish('error', { code:error.code||'DESKTOP_UPDATE_FAILED',error: clean(error.message || String(error)) });
+      finish('error', { code:error.code||'DESKTOP_UPDATE_FAILED',error: clean(error.message || String(error)),
+        ...(request.scope==='desktop'&&error.result?{result:publicResult(error.result)}:{}) });
     } finally { running = false; }
   }
   return { tick, close };
@@ -104,11 +131,12 @@ async function desktopStatus(home){
   let busy;try{busy=probe.busy;}finally{probe.release();}
   const base={requestId:request.id,scope:'desktop',busy,settled:!busy,...(request.sequenceId?{sequenceId:request.sequenceId}:{})};
   if(busy)return {...base,status:'in-progress'};
-  if(request.status==='success'&&request.action==='update'){
+  if(['success','partial'].includes(request.status)&&request.action==='update'){
     const receipt=await require('./launcher-capability').validateApp({receiptPath:require('./launcher-capability').receiptPath(home),noraHome:home});
     const installed=read(path.join(receipt.installRoot,'tavern-updates/installed.json')),result=request.result||{};
     const ids=result.operationIds||[];
-    if(result.updateComplete!==true||result.version!==installed.version||result.launcherVersion!==receipt.launcherVersion
+    const partial=request.status==='partial';
+    if((partial?!coreOnlyCompletion(result):result.updateComplete!==true)||result.version!==installed.version||result.launcherVersion!==receipt.launcherVersion
       ||!Array.isArray(ids)||!ids.length&&result.unchanged!==true)throw new Error('Desktop update completion cannot be verified');
     let requestIds=[request.id,'skill-'+request.id];
     if(request.sequenceId){
@@ -121,11 +149,14 @@ async function desktopStatus(home){
     }
     for(const id of ids){if(!ID.test(id))throw new Error('Invalid operation association');
       const operation=read(path.join(home,'installer/operations',id,'operation.json'),8*1024*1024);
-      if(operation.state!=='succeeded'||operation.verification!=='confirmed'||!requestIds.includes(operation.requestId))throw new Error('Desktop update operation is not confirmed');}
-    return {...base,status:'succeeded',result};
+      if(operation.state!=='succeeded'||operation.verification!=='confirmed'||!requestIds.includes(operation.requestId)
+        ||partial&&(operation.kind!=='update'||operation.result?.version!==result.version||operation.result?.systemReady!==true))
+        throw new Error('Desktop update operation is not confirmed');}
+    return {...base,status:partial?'partial':'succeeded',result};
   }
   if(request.status==='success')return {...base,status:'succeeded',result:request.result};
-  if(['error','interrupted'].includes(request.status))return {...base,status:request.status,code:request.code,error:request.error};
+  if(['error','interrupted'].includes(request.status))return {...base,status:request.status,code:request.code,error:request.error,
+    ...(request.result?{result:publicResult(request.result)}:{})};
   return {...base,status:request.status,settled:false,submitted:true};
 }
 
@@ -147,9 +178,7 @@ async function desktopRequest({noraHome:home,action,confirm=false},{now=Date.now
     const checked=await checkRelease({client:'updater',updaterCapabilities:require('./releases').UPDATER_CAPABILITIES,
       installRoot:receipt.installRoot,launcherVersion:receipt.launcherVersion,launcherDiscovery:true,
       platform:receipt.platform,arch:receipt.arch,channel:receipt.channel});
-    if(checked.error||checked.launcherError||checked.compatibilityError||['unavailable','unknown','blocked'].includes(checked.state))
-      throw Object.assign(new Error(checked.error||checked.launcherError||checked.compatibilityError||'版本检查尚未确认，请重新检查。'),
-        {code:'DESKTOP_UPDATE_CHECK_FAILED'});
+    assertDesktopCheck(checked,receipt.launcherVersion,{channel:receipt.channel,platform:receipt.platform,arch:receipt.arch});
     return {scope:'desktop',action:'check',status:'succeeded',settled:true,
       result:publicResult({...checked,launcherVersion:receipt.launcherVersion})};
   }
@@ -189,4 +218,4 @@ if(require.main===module)(async()=>{
   let input='';for await(const chunk of process.stdin){input+=chunk;if(input.length>65536)throw new Error('Desktop request too large');}
   const result=await desktopRequest(JSON.parse(input));process.stdout.write(JSON.stringify(result)+'\n');
 })().catch(error=>{process.stdout.write(JSON.stringify({status:'error',settled:false,code:error.code||'DESKTOP_UPDATE_UNCONFIRMED',error:error.message})+'\n');process.exitCode=1;});
-module.exports = { createSkillUpdateReceiver, finishHandoff,bindDesktopSequence,desktopSequenceRequest,desktopRequest,desktopStatus };
+module.exports = { createSkillUpdateReceiver, finishHandoff,bindDesktopSequence,desktopSequenceRequest,desktopRequest,desktopStatus,assertDesktopCheck };

@@ -86,7 +86,9 @@ for(const [core,launcher] of [[true,true],[true,false],[false,true],[false,false
 test(`Nora receiver selects exactly the applicable desktop components (core=${core}, APP=${launcher})`,async()=>{
   let execute;const calls=[];
   const context=vm.createContext({createSkillUpdateReceiver:options=>{execute=options.execute;return {};},
+    assertDesktopCheck:require('../installer/desktop/skill-update').assertDesktopCheck,
     noraHome:()=>'/private/home',activeRun:false,modelBusy:false,quitting:false,uninstalling:false,selectingLocation:false,statusRequest:null,MOCK_SCENARIO:null,
+    CHANNEL:'stable',localReleaseDirectory:null,
     systemUpdate:{pending:()=>false},diagnostics:{clean:String},app:{getVersion:()=> '2.2.6'},
     checkRelease:async()=>({releaseTag:'v2.5.6',state:core||launcher?'available':'current',releaseAvailable:core,launcherUpdateAvailable:launcher}),
     runBridge:async()=>({version:'2.5.6',systemReady:true}),
@@ -97,6 +99,150 @@ test(`Nora receiver selects exactly the applicable desktop components (core=${co
   if(!core&&!launcher){assert.equal(calls.length,0);assert.equal(result.unchanged,true);}
   else {assert.equal(calls.length,1);assert.equal(calls[0].includeLauncher===true,core&&launcher);
     assert.equal(calls[0].launcherOnly===true,!core&&launcher);assert.equal(calls[0].skillRequestId,id);}
+});
+
+async function optionalAppFixture(t,{fault='failure',compatible=true,channel='stable',candidate=false}={}){
+  const crypto=require('node:crypto'),releases=require('../installer/desktop/releases');
+  const skill=require('../installer/desktop/skill-update'),capability=require('../installer/desktop/launcher-capability');
+  const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-optional-app-')));
+  let receiver;t.after(()=>{receiver?.close();fs.rmSync(home,{recursive:true,force:true});});
+  const root=path.join(home,'tavern'),sha=value=>crypto.createHash('sha256').update(value).digest('hex');
+  const put=(name,value)=>{const file=path.join(home,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,value);};
+  const protectedFiles=['tavern/tavern-state/chats/story.jsonl','tavern/tavern-state/characters/card.json',
+    'tavern/tavern-state/worlds/world.json','hermes/config.yaml','hermes/.env','hermes/memories/USER.md','hermes/memories/MEMORY.md'];
+  protectedFiles.forEach(name=>put(name,'isolated original '+name));
+  const inventory=()=>Object.fromEntries(protectedFiles.map(name=>[name,sha(fs.readFileSync(path.join(home,name)))]));
+  const before=inventory(),installed='tavern/tavern-updates/installed.json';put(installed,JSON.stringify({version:'2.5.6'}));
+  const targetVersion=channel==='beta'?'2.5.7-beta.1':'2.5.7',tag='v'+targetVersion,launcherVersion=channel==='beta'?'2.2.7':'2.2.6';
+  const appMetadata=`nora-launcher-${process.platform}-${process.arch}.json`;
+  const manifest={schema:'tavern-release/v2',versions:{tavern:targetVersion},commit:'a'.repeat(40),launcherVersion,...(candidate?{candidate:true}:{}),
+    launcherCapabilities:releases.LAUNCHER_CAPABILITIES,
+    bootstrap:{managedComponents:1,minimumLauncherVersion:'2.2.6',sha256:sha('bootstrap')},
+    updateCompatibility:{schema:'nora-core-launcher-compatibility/1',coreVersion:targetVersion,
+      launcherVersions:compatible?['2.2.6',...(launcherVersion==='2.2.7'?['2.2.7']:[])]:['2.2.7'],capabilities:releases.LAUNCHER_CAPABILITIES}};
+  const bytes=JSON.stringify(manifest),release={tag_name:tag,draft:false,prerelease:channel==='beta',assets:[{
+    name:'release-manifest.json',state:'uploaded',size:Buffer.byteLength(bytes),digest:'sha256:'+sha(bytes),
+    browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/release-manifest.json`},
+    ...(channel==='beta'?[{name:appMetadata,state:'uploaded',size:10,digest:'sha256:'+sha('unreadable'),
+      browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/${appMetadata}`}]:[])]};
+  const localReleaseDirectory=candidate?path.join(home,'local-release'):null;
+  if(candidate)put('local-release/release-manifest.json',bytes);
+  const checkOptions={installRoot:root,launcherVersion:'2.2.6',channel,client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,launcherDiscovery:true,
+    ...(candidate?{allowCandidate:true,explicitLocalRelease:localReleaseDirectory}:{}),
+    networkPolicy:{sources:{schema:1,primary:'github',mirrors:[]},maxAttempts:1,totalBudgetMs:1000,attemptTimeoutMs:20},
+    fetcher:async(address,options)=>{
+      const url=String(address);let body;
+      if(url.endsWith('/latest')||channel==='beta'&&url.includes('?per_page='))body=JSON.stringify(channel==='beta'?[release]:release);
+      else if(url.endsWith('/release-manifest.json'))body=bytes;
+      else if(url.includes('?per_page=')||url.endsWith('/'+appMetadata)){
+        if(fault==='headers timeout')return new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+        if(fault==='body timeout')return new Response(new ReadableStream({start(){}}));
+        throw new Error('injected APP catalogue failure');
+      }else assert.fail('Unexpected metadata request '+url);
+      const response=new Response(body);Object.defineProperty(response,'url',{value:url});return response;
+    }};
+  const checked=await releases.check(checkOptions);assert.equal(checked.state,'available');assert.ok(checked.launcherError);
+  const appRoot=path.join(home,'app'),executable=process.platform==='darwin'?path.join(appRoot,'Contents/MacOS/Nora'):path.join(appRoot,'Nora.exe');
+  const resources=process.platform==='darwin'?path.join(appRoot,'Contents/Resources'):path.join(appRoot,'resources');
+  for(const file of [executable,path.join(resources,'app.asar'),path.join(resources,
+    `app.asar.unpacked/node_modules/fs-native-extensions/prebuilds/${process.platform}-${process.arch}/fs-native-extensions.node`),
+    ...capability.RESOURCE_NAMES.map(name=>path.join(resources,name))])put(path.relative(home,file),'isolated APP identity');
+  await capability.register({noraHome:home,executable,resourcesRoot:resources,isPackaged:true,launcherVersion:'2.2.6',port:8799,channel});
+  const calls=[];let coreFailure=false,pending=false;
+  const context=vm.createContext({fs,path,require,process,createSkillUpdateReceiver:options=>(receiver=skill.createSkillUpdateReceiver(options)),
+    assertDesktopCheck:skill.assertDesktopCheck,noraHome:()=>home,activeRun:false,modelBusy:false,quitting:false,uninstalling:false,
+    selectingLocation:false,statusRequest:null,MOCK_SCENARIO:null,cancelled:false,activeOperationContext:null,CHANNEL:channel,localReleaseDirectory,
+    systemUpdate:{pending:()=>pending},diagnostics:{clean:String},app:{getVersion:()=> '2.2.6'},
+    checkRelease:async()=>checked,runBridge:async()=>assert.fail('available core is not an unchanged installation'),
+    runDesktopUpdate:async()=>assert.fail('unknown APP must not enter a two-component sequence'),
+    runSharedUpdate:async(_event,payload)=>{
+      calls.push(payload);assert.equal(payload.tag,checked.releasePlan.tag);
+      assert.equal(payload.targetCommit,manifest.commit);assert.equal(payload.targetManifestSha256,sha(bytes));
+      if(coreFailure===true)throw new Error('injected core execution failure');
+      put(installed,JSON.stringify({version:targetVersion}));const operationId=randomUUID();
+      const result={version:coreFailure==='wrong-version'?'2.5.6':targetVersion,systemReady:coreFailure!=='unhealthy',running:true,gatewayRunning:true};
+      put(`installer/operations/${operationId}/operation.json`,JSON.stringify({operationId,requestId:payload.operationRequestId,
+        kind:'update',state:'succeeded',verification:'confirmed',result}));
+      return {...result,operation:{operationId}};
+    }});
+  vm.runInContext(definition('runAction'),context);vm.runInContext(definition('skillUpdates'),context);await receiver.tick();
+  return {home,checked,calls,before,inventory,receiver,
+    failCore:()=>{coreFailure=true;},unconfirmedCore:kind=>{coreFailure=kind;},pendingRecovery:()=>{pending=true;},
+    read:()=>JSON.parse(fs.readFileSync(path.join(home,'installer/skill-update/request.json'))),
+    check:metadata=>skill.desktopRequest({noraHome:home,action:'check'},{checkRelease:()=>metadata||releases.check(checkOptions),launch:()=>assert.fail('check cannot launch APP')}),
+    update:()=>skill.desktopRequest({noraHome:home,action:'update',confirm:true}),status:()=>skill.desktopStatus(home)};
+}
+for(const fault of ['failure','headers timeout','body timeout'])
+test(`Nora keeps a verified compatible core update and reports APP discovery separately (${fault})`,async t=>{
+  const f=await optionalAppFixture(t,{fault}),endpoint=fs.readFileSync(path.join(f.home,'installer/skill-update/endpoint.json'));
+  const checked=await f.check();assert.equal(checked.result.releaseAvailable,true);assert.equal(checked.result.launcherUpdateAvailable,false);
+  assert.ok(checked.result.launcherError);assert.equal(checked.result.updateComplete,undefined);
+  assert.deepEqual(fs.readFileSync(path.join(f.home,'installer/skill-update/endpoint.json')),endpoint);
+  assert.equal(fs.existsSync(path.join(f.home,'installer/skill-update/request.json')),false);
+  const request=await f.update();await f.receiver.tick();const status=await f.status();
+  assert.equal(status.status,'partial');assert.equal(status.settled,true);assert.equal(status.busy,false);
+  assert.equal(status.result.version,'2.5.7');assert.equal(status.result.launcherVersion,'2.2.6');
+  assert.equal(status.result.coreUpdateComplete,true);assert.equal(status.result.updateComplete,false);assert.ok(status.result.launcherError);
+  assert.equal(status.requestId,request.requestId);assert.equal(status.result.operationIds.length,1);assert.equal(f.calls.length,1);
+  const record=fs.readFileSync(path.join(f.home,'installer/skill-update/request.json'));
+  await assert.rejects(f.check(),{code:'DESKTOP_UPDATE_CHECK_FAILED'});await f.receiver.tick();
+  assert.equal((await f.status()).status,'partial');assert.equal(f.calls.length,1);
+  assert.deepEqual(fs.readFileSync(path.join(f.home,'installer/skill-update/request.json')),record);
+  const reopened=require('../installer/desktop/skill-update').createSkillUpdateReceiver({home:()=>f.home,busy:()=>false,
+    execute:()=>assert.fail('reopening must not replay a settled partial result')});
+  try{await reopened.tick();assert.equal((await f.status()).status,'partial');}finally{reopened.close();}
+  assert.deepEqual(f.inventory(),f.before);
+  const operation=path.join(f.home,'installer/operations',status.result.operationIds[0],'operation.json');
+  const changed=JSON.parse(fs.readFileSync(operation));changed.state='failed';fs.writeFileSync(operation,JSON.stringify(changed));
+  await assert.rejects(f.status(),/not confirmed/);
+});
+test('a verified Beta core fallback retains its actual channel through desktop query and execution',async t=>{
+  const f=await optionalAppFixture(t,{channel:'beta'});
+  const checked=await f.check();assert.equal(checked.result.latest,'v2.5.7-beta.1');assert.ok(checked.result.launcherError);
+  await f.update();await f.receiver.tick();const status=await f.status();
+  assert.equal(status.status,'partial');assert.equal(status.result.version,'2.5.7-beta.1');
+  assert.equal(status.result.updateComplete,false);assert.equal(f.calls.length,1);assert.deepEqual(f.inventory(),f.before);
+});
+test('fallback plan validation retains caller channel and explicit local candidate authority',async t=>{
+  const skill=require('../installer/desktop/skill-update');
+  const beta=await optionalAppFixture(t,{channel:'beta'});
+  assert.throws(()=>skill.assertDesktopCheck(beta.checked,'2.2.6',{channel:'stable'}),/固定发布计划/);
+  const local=await optionalAppFixture(t,{candidate:true});
+  await assert.rejects(local.check(),/候选计划/,'a plan cannot grant its own local-candidate authority');
+  await local.update();await local.receiver.tick();assert.equal((await local.status()).status,'partial');
+  assert.equal(local.calls.length,1);assert.deepEqual(local.inventory(),local.before);
+});
+test('APP discovery failure cannot bypass incompatible target or pending recovery',async t=>{
+  for(const kind of ['incompatible','recovery'])await t.test(kind,async t=>{
+    const f=await optionalAppFixture(t,{compatible:kind!=='incompatible'});if(kind==='recovery')f.pendingRecovery();
+    if(kind==='incompatible')await assert.rejects(f.check());
+    await f.update();await f.receiver.tick();assert.equal(f.read().status,'error');assert.equal(f.calls.length,0);assert.deepEqual(f.inventory(),f.before);
+  });
+});
+test('optional APP failure never turns missing or changed core evidence into update authority',async t=>{
+  for(const kind of ['core lookup','incompatible','missing plan','changed plan'])await t.test(kind,async t=>{
+    const f=await optionalAppFixture(t);
+    if(kind==='core lookup')f.checked.error='core metadata failed';
+    if(kind==='incompatible')f.checked.compatibilityError='incompatible maintenance protocol';
+    if(kind==='missing plan')delete f.checked.releasePlan;
+    if(kind==='changed plan')f.checked.releasePlan={...f.checked.releasePlan,commit:'c'.repeat(40)};
+    await assert.rejects(f.check(f.checked));await f.update();await f.receiver.tick();
+    assert.equal(f.read().status,'error');assert.equal(f.calls.length,0);assert.deepEqual(f.inventory(),f.before);
+  });
+});
+test('core execution failure remains a failure alongside the APP query failure',async t=>{
+  const f=await optionalAppFixture(t);f.failCore();await f.update();await f.receiver.tick();
+  const status=await f.status();assert.equal(status.status,'error');assert.match(status.error,/core execution failure/);
+  assert.ok(status.result.launcherError);assert.equal(status.result.updateComplete,false);assert.equal(status.result.coreUpdateComplete,false);
+  assert.equal(f.calls.length,1);assert.deepEqual(f.inventory(),f.before);
+});
+test('an unconfirmed actual core version or health cannot become partial success',async t=>{
+  for(const kind of ['wrong-version','unhealthy'])await t.test(kind,async t=>{
+    const f=await optionalAppFixture(t);f.unconfirmedCore(kind);await f.update();await f.receiver.tick();
+    const status=await f.status();assert.equal(status.status,'error');assert.equal(status.code,'DESKTOP_UPDATE_INCOMPLETE');
+    assert.equal(status.result.updateComplete,false);assert.equal(status.result.coreUpdateComplete,false);assert.ok(status.result.launcherError);
+    assert.equal(f.calls.length,1);assert.deepEqual(f.inventory(),f.before);
+  });
 });
 for(const marker of [null,'/owned/installer/launcher-update/completed-job'])
   for(const includeLauncher of [false,true])test(`new update uses its normal owner after startup (${marker?'self-update reopen':'normal'}, ${includeLauncher?'both':'core'})`,async()=>{
