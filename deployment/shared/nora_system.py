@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 SKILLS = ("creative/tavern", "creative/tavern-ops", "creative/nora-cardforge", "system/tavern-updater",
-          "system/model-provider-config")
+          "system/model-provider-config", "creative/nora-skill-library")
 MANAGED_FILES = ("hooks/tavern-liveware-register/HOOK.yaml", "hooks/tavern-liveware-register/handler.py",
                  "scripts/nora-instance.py", "scripts/nora-tavern-update-check.py", "scripts/nora-tavern-card-send.py")
 CLAWCHAT_SKILLS = ("clawchat-core", "clawchat-liveware", "clawchat-liveware-dev",
@@ -408,7 +408,7 @@ context = build_context_files_prompt(cwd=str(home), home_override=home)
 agents = home.joinpath("AGENTS.md").read_text(encoding="utf-8").strip()
 assert agents and agents in context, "Complete AGENTS not loaded"
 skills = build_skills_system_prompt(skills_dir_override=home / "skills")
-assert all(name in skills for name in ("tavern", "tavern-ops", "nora-cardforge", "tavern-updater", "model-provider-config")), "skills not loaded"
+assert all(name in skills for name in ("tavern", "tavern-ops", "nora-cardforge", "tavern-updater", "model-provider-config", "nora-skill-library")), "skills not loaded"
 external = build_skills_system_prompt(skills_dir_override=home / "clawchat-skills")
 assert all(name in external for name in ("clawchat-core", "clawchat-liveware", "clawchat-set-greeting")), "ClawChat skills not loaded"
 from unittest.mock import patch

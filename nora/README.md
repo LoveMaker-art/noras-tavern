@@ -7,7 +7,7 @@
 | [SOUL.md](SOUL.md) | 诺拉人格 |
 | [AGENTS.md](AGENTS.md) | Hermes 操作规则与技能分工，全量受管 |
 | [greeting.md](greeting.md) | ClawChat 首次问候，含简中、繁中与英文 |
-| `skills/creative/` | Tavern、Tavern Ops、Nora CardForge 及可选故事样例 |
+| `skills/creative/` | Tavern、Tavern Ops、Nora CardForge、技能库管理及可选故事样例 |
 | `skills/system/` | 更新技能，区分启动器系统与独立酒馆 |
 | `hooks/` | Liveware 注册与卡片通知 |
 

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { assertSafeReleasePath, assertSafeReleaseContent, createReleaseSource, collectRuntimeFiles, groupRuntimeModules, releaseModuleFor } from '../../../../ops/scripts/release-source.mjs';
+import { assertSafeReleasePath, assertSafeReleaseContent, assertNoraSystemArtifacts, NORA_SYSTEM_REQUIRED_FILES, createReleaseSource, collectRuntimeFiles, groupRuntimeModules, releaseModuleFor } from '../../../../ops/scripts/release-source.mjs';
 
 test('release guards reject runtime/private paths and credential contents without echoing them', () => {
     for (const file of ['app/.env', 'app/engine/sillytavern/data/default-user/secrets.json', 'app/audit-runtime.log', 'app/__pycache__/a.pyc', '../app/x', 'app/x\ny']) assert.throws(() => assertSafeReleasePath(file));
@@ -95,6 +95,8 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'ops/skills/creative/tavern-ops/SKILL.md', 'ops/skills/system/tavern-updater/references/release-compatibility.md',
         'ops/skills/system/tavern-updater/scripts/update.py', 'ops/updater/update.py',
         'ops/skills/creative/nora-cardforge/src/cli/main.js', 'ops/skills/creative/nora-cardforge/SKILL.md',
+        ...['SKILL.md', 'scripts/library.py', 'scripts/activate.py', 'references/sources.json']
+            .map(name => `ops/skills/creative/nora-skill-library/${name}`),
         'nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json', 'nora-mcp/README.md',
     ];
     const excluded = [
@@ -132,6 +134,16 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
     const delivery = collectRuntimeFiles(stage, [...retained, ...excluded]);
     assert.deepEqual(delivery, [...retained, ...generated].sort());
     for (const file of excluded) assert.ok(fs.existsSync(path.join(stage, file)), `${file} remains available to source/build tests`);
+});
+
+test('default skill library is complete in the skills update module and missing helpers fail delivery', () => {
+    for (const name of ['SKILL.md', 'scripts/library.py', 'scripts/activate.py', 'references/sources.json']) {
+        const file = `ops/skills/creative/nora-skill-library/${name}`;
+        assert.equal(releaseModuleFor(file), 'skills');
+        assert.ok(NORA_SYSTEM_REQUIRED_FILES.includes(file));
+        assert.throws(() => assertNoraSystemArtifacts(NORA_SYSTEM_REQUIRED_FILES.filter(item => item !== file)), /Incomplete Nora system artifacts/);
+    }
+    assert.doesNotThrow(() => assertNoraSystemArtifacts(NORA_SYSTEM_REQUIRED_FILES));
 });
 
 test('runtime artifacts have stable, disjoint incremental module ownership', () => {

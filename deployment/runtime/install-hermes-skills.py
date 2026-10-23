@@ -10,6 +10,7 @@ SKILLS = (
     "creative/tavern-ops",
     "system/tavern-updater",
     "creative/nora-cardforge",
+    "creative/nora-skill-library",
 )
 LOCAL_SKILLS = ("system/model-provider-config",)
 RETIRED = (

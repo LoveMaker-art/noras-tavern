@@ -146,6 +146,47 @@ class FirstInstallSnapshotTests(unittest.TestCase):
         self.assertTrue((ROOT / "ops/skills/creative/nora-cardforge/references/starter-stories.md").is_file())
 
     @unittest.skipUnless(os.environ.get("NORA_TEST_HERMES"), "requires NORA_TEST_HERMES source and NORA_TEST_PYTHON")
+    def test_default_skill_library_is_installed_indexed_and_readable_without_network(self):
+        hermes = Path(os.environ["NORA_TEST_HERMES"]).resolve()
+        python = Path(os.environ["NORA_TEST_PYTHON"])
+        with tempfile.TemporaryDirectory(prefix="nora-default-skill-") as temporary:
+            base = Path(temporary)
+            home = base / "hermes"
+            home.mkdir()
+            (home / "config.yaml").write_text("{}\n")
+            (home / "SOUL.md").write_text("Keep test persona unchanged.")
+            prepared = MODULE.prepare_skills(ROOT, base / "work")
+            installed = MODULE.install_skills(home, prepared)
+            MODULE.install_agents(home, (ROOT / "ops/skills/agents-tavern.md").read_text())
+            self.assertIn("creative/nora-skill-library", installed)
+            target = home / "skills/creative/nora-skill-library"
+            original = ROOT / "ops/skills/creative/nora-skill-library"
+            self.assertEqual({p.relative_to(target).as_posix(): p.read_bytes() for p in target.rglob("*") if p.is_file()},
+                             {p.relative_to(original).as_posix(): p.read_bytes() for p in original.rglob("*") if p.is_file()})
+            probe = '''
+import json,sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+from agent.prompt_builder import build_skills_system_prompt
+from tools.skills_tool import skill_view
+from tools.skill_manager_tool import _validate_frontmatter
+text=Path("skills/creative/nora-skill-library/SKILL.md").read_text()
+assert _validate_frontmatter(text,new_skill=True) is None
+assert "nora-skill-library" in build_skills_system_prompt(skills_dir_override=Path.cwd()/"skills")
+with patch("subprocess.run",side_effect=AssertionError("loading cannot execute commands")):
+ view=json.loads(skill_view("nora-skill-library",preprocess=False))
+ assert view["success"] and "scripts/library.py" in view["linked_files"]["scripts"]
+assert "nora-skill-library" in Path("AGENTS.md").read_text()
+'''
+            result = subprocess.run([str(python), "-B", "-c", probe, str(hermes)], cwd=home,
+                env={**os.environ, "HERMES_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((home / "config.yaml").read_text(), "{}\n")
+            self.assertEqual((home / "SOUL.md").read_text(), "Keep test persona unchanged.")
+
+    @unittest.skipUnless(os.environ.get("NORA_TEST_HERMES"), "requires NORA_TEST_HERMES source and NORA_TEST_PYTHON")
     def test_official_hermes_loader_reads_complete_agents_not_backup(self):
         hermes = Path(os.environ["NORA_TEST_HERMES"]).resolve()
         self.assertTrue((hermes / "agent/prompt_builder.py").is_file(),

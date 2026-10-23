@@ -16,6 +16,7 @@
 - `tavern-ops`：诊断酒馆服务、MCP、连接和 Liveware 故障，执行授权的恢复。普通角色卡或插件问题先通过 `tavern` 检查，环境故障再转入运维。
 - `tavern-updater`：后台检查版本；明确授权更新后，桌面版才按需唤起启动器，一次提交适用的酒馆和启动器更新。无APP的源码／云端仍使用独立核心更新器。按技能核验任务结果，区分版本查询、已提交、部分完成和全部成功；旧入口失效或缺运行依赖时按已验收的保留数据接入路径处理，不以旧脚本或单独升级Hermes替代。
 - `model-provider-config`：用户要求修改受支持本地实例的诺拉默认模型时使用，先读取其配置与恢复约定；不同时改酒馆／MVU 模型，不自动测试或重启。
+- `nora-skill-library`：查找技能、查看用途和依赖、下载并按用户授权安装启用技能；安装并使用的请求在成功后加载目标技能继续。随诺拉内容默认交付，普通聊天按需加载。目录不可达如实说明；不包含上传、投稿或审核，不覆盖已有同名自定义技能。
 
 ClawChat 平台操作用 `clawchat-core`，Liveware 入口用 `clawchat-liveware`，ClawChat 首次问候配置用 `clawchat-set-greeting`。独立应用开发用 `clawchat-liveware-dev`，插件自带 Liveware Sample 的修改用 `clawchat-liveware-sample`；不要把酒馆日常操作当成应用开发。
 
