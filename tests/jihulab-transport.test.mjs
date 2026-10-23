@@ -430,6 +430,21 @@ test('83-file readiness reads one complete inventory, all public HEADs, and the 
   assert.equal(previousCalls.filter(call=>new URL(call.url).pathname===new URL(api).pathname+'/packages'
     ||new URL(call.url).pathname.endsWith('/package_files')).length,581);
   assert.equal(previousCalls.length,665,'the per-object compatibility path provides the measured comparison');
+  // Compare complete prepare through the original per-object seam as well.
+  f.calls.length=0;
+  await perObject.begin(p);
+  for(const object of objects)assert.equal(await perObject.inspect(object,p.state.sources.jihulab.objects[object.key],p),'matching');
+  assert.deepEqual(counts(),{packages:498,files:83,heads:83,catalogueGets:0});
+  assert.equal(f.calls.length,666);
+  // Exercise the same complete resumed prepare through the batch seam.
+  f.calls.length=0;
+  await provider.begin(p);
+  for(const object of objects)assert.equal(await provider.inspect(object,p.state.sources.jihulab.objects[object.key],p),'matching');
+  assert.deepEqual(counts(),{packages:6,files:1,heads:83,catalogueGets:0});
+  assert.equal(f.calls.length,92,'83 public HEADs, one seven-request inventory and two project preflight reads');
+  assert.equal(f.calls.some(call=>!['GET','HEAD'].includes(call.method||'GET')),false,'complete resume performs no write');
+  await provider.assertReady(p);
+  assert.deepEqual(counts(),{packages:12,files:2,heads:166,catalogueGets:1},'readiness obtains another fresh inventory');
   assert.equal(f.server.writes,0);
 });
 

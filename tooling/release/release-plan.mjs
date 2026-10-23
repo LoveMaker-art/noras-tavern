@@ -43,6 +43,7 @@ const reviewedNativeTestSelectionSteps = new Set([
     'df2533461418b2da689e4aff68dc70889bd51ad628d7f3e7f4b953ac6061b1a4',
     '7b85e8bdbbc0863965c70ef8f8fc2a50e44d2312553f4455226f008a9d69317d',
     'e22024d07d6feb836d5b76b281349a2e4a18856f72f2f0e174f642de1e737b82',
+    '11f8784d00a197e20ecf7790e27320c2c66565672199ec8f475c7efed25b3ebf', // 2026-10-23: same-platform pure policy already ran before runtime preparation
 ]);
 const reviewedComponentTestSelectionSteps = new Set([
     '38106a73d472a9903e47ea494896e2b8024fe25ab63e595a58d76547f2a1a2ce',

@@ -354,6 +354,19 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   assert.ok(componentSteps.findIndex(step => step.name === 'Require an explicitly compatible component plan') < componentSteps.findIndex(step => step.run?.includes('package-release.mjs')));
 });
 
+test('pure output and publisher regressions run before native builds without repeating operation policy in the same Node context', () => {
+  const early=full.jobs.preflight.steps.find(step=>step.name==='Check release tooling before preparing runtimes').run;
+  for(const file of ['tests/publication-providers.test.mjs','tests/release-publication.test.mjs',
+    'tests/deployment/launcher_process_output.test.cjs'])assert.ok(early.includes(file),`${file} must fail before native builds`);
+  const steps=full.jobs.build.steps;
+  assert.ok(steps.find(step=>step.name==='Verify failed-install recovery and error classification before preparing runtimes')
+    .run.includes('launcher_operation_policy.test.cjs'));
+  const native=steps.find(step=>step.name==='Test operation ownership, evidence, bounded retry and recovery contracts').run;
+  assert.ok(!native.includes('launcher_operation_policy.test.cjs'),'pure policy does not acquire a different Hermes context');
+  for(const file of ['launcher_operation_lock','launcher_operation_state','launcher_uninstall','launcher_runtime_transaction',
+    'launcher_restore_runtime','launcher_update_executor'])assert.ok(native.includes(file+'.test.cjs'),`${file} native coverage stays mandatory`);
+});
+
 test('mandatory backup workflow contracts run in preflight with finite installation dependencies', () => {
   const steps = full.jobs.preflight.steps;
   const decision = steps.findIndex(step => step.name?.startsWith('Require a matching build decision'));

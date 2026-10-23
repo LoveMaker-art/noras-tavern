@@ -5,67 +5,8 @@ const os=require('node:os');
 const path=require('node:path');
 const test=require('node:test');
 const {spawnSync}=require('node:child_process');
-const vm=require('node:vm');
-const {PassThrough}=require('node:stream');
-const {once}=require('node:events');
 const {findBundledRuntime,initializeHome,relocateTextFiles,sha256File,validateRuntimeLinks}=require('../installer/desktop/runtime');
-const {consumeLines}=require('../installer/desktop/process-output');
 const componentFixture={componentProbe:'nora-clawchat-check.py',components:{clawchat:{revision:'a'.repeat(40)},liveware:{sha256:'b'.repeat(64)},files:{}}};
-
-async function workerResult(result,{recover=false}={}) {
-  const stream=new PassThrough(),messages=[],errors=[],writes=[];
-  consumeLines(stream,line=>messages.push(JSON.parse(line)),error=>errors.push(error));
-  let close;
-  const closed=new Promise(resolve=>{close=resolve;});
-  const runtime={installBundledHermes:async()=>result};
-  const local={
-    './runtime':runtime,'./diagnostics':{errorDetails:error=>({message:error.message})},
-    './operation-delegate':{connect:async()=>({context:{operationId:'fixture',ownerEpoch:1},assertActive(){},close})},
-    './retained-installation':{inspect:()=>null},'./runtime-transaction':{recover:async()=>result},
-  };
-  const file=path.resolve(__dirname,'../installer/desktop/runtime-worker.js');
-  const processFixture={argv:['node',file,'payload','home','hermes',...(recover?['--recover-runtime']:[])],
-    cwd:()=>path.dirname(file),env:{},stdout:{write(value){
-      writes.push(value);
-      const bytes=Buffer.from(value);for(let offset=0;offset<bytes.length;offset+=8191)stream.write(bytes.subarray(offset,offset+8191));
-    }},stderr:{write(){}},exitCode:0};
-  vm.runInNewContext(fs.readFileSync(file,'utf8'),{
-    require:name=>Object.hasOwn(local,name)?local[name]:require(name),process:processFixture,console,
-  },{filename:file});
-  await closed;
-  const ended=once(stream,'end');stream.end();await ended;
-  return {messages,errors,output:writes.join(''),exitCode:processFixture.exitCode};
-}
-
-test('runtime worker carries a large Windows component inventory through the actual bounded launcher reader',async()=>{
-  const files=Object.fromEntries(Array.from({length:9611},(_,index)=>[
-    `hermes-agent/vendor/git/share/runtime-file-${index}.dll`,'a'.repeat(64)]));
-  const result={schema:1,platform:'win32',arch:'x64',sha256:'b'.repeat(64),version:'Hermes Agent v0.21.1',
-    journalReference:'installer/operations/fixture/runtime-bootstrap.json',
-    components:{schema:1,clawchat:{revision:'c'.repeat(40)},terminal:{kind:'git-bash',command:'hermes-agent/vendor/git/bin/bash.exe'},files}};
-  const before=JSON.stringify(result);
-  assert.ok(Buffer.byteLength(before)>256*1024,'exercise the real production reader boundary');
-  const observed=await workerResult(result);
-  assert.equal(observed.exitCode,0);
-  assert.deepEqual(observed.errors.map(error=>error.code),[]);
-  assert.ok(Buffer.byteLength(observed.output)<128*1024,'also fit the unchanged native harness frame boundary');
-  assert.equal(observed.messages.length,1);
-  const message=observed.messages[0];
-  assert.equal(message.event,'result');assert.equal(message.sha256,result.sha256);
-  assert.equal(message.version,result.version);assert.equal(message.journalReference,result.journalReference);
-  assert.deepEqual(message.components.terminal,result.components.terminal);
-  assert.deepEqual(message.components.clawchat,result.components.clawchat);
-  assert.equal(message.components.fileCount,9611);assert.equal(Object.hasOwn(message.components,'files'),false);
-  assert.equal(JSON.stringify(result),before,'the full verification inventory must remain unchanged');
-});
-
-test('runtime worker preserves recovery facts without treating them as a runtime manifest',async()=>{
-  const result={effectState:'restored',verification:'confirmed',recoveryOutcome:'restored-and-verified',
-    journalReference:'installer/operations/fixture/runtime-bootstrap.json',canRecover:false};
-  const observed=await workerResult(result,{recover:true});
-  assert.equal(observed.exitCode,0);assert.equal(observed.errors.length,0);
-  assert.deepEqual(observed.messages,[{event:'result',...result}]);
-});
 
 test('relocated Python entrypoints execute from long Unicode paths with spaces and shell punctuation',
  {skip:process.platform==='win32'||!process.env.NORA_TEST_PYTHON},()=>{

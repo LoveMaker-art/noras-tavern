@@ -153,6 +153,26 @@ test('native test selection exempts reviewed execution only, never altered comma
     }
 });
 
+test('reviewed native policy deduplication changes verification only and cannot exempt altered commands',()=>{
+    const source=fs.readFileSync(path.join(root,'.github/workflows/build-integrated-launcher.yml'),'utf8');
+    const step=componentStep(source,'Test operation ownership, evidence, bounded retry and recovery contracts');
+    const previous=step.replace('"$PWD/tests/deployment/launcher_operation_inspection.test.cjs"',
+        '"$PWD/tests/deployment/launcher_operation_inspection.test.cjs" "$PWD/tests/deployment/launcher_operation_policy.test.cjs"');
+    const before=workflowInputs(source.replace(step,previous)),after=workflowInputs(source);
+    assert.deepEqual(after,before,'removing one already-executed pure policy file must not create a product build input');
+    const input=()=>{const value=change('.github/workflows/build-integrated-launcher.yml');
+        value.baseline.configuration.workflow=before;value.current.configuration.workflow=after;return value;};
+    assert.equal(createReleasePlan(input()).mode,'verification-only');
+    for(const replacement of [
+        step.replace('--test-concurrency=1','--test-concurrency=2'),
+        step.replace('        run: node','        env:\n          NODE_OPTIONS: --import=./unknown-builder.mjs\n        run: node'),
+        step.replace('launcher_runtime.test.cjs','../tooling/runtime/unknown-builder.mjs'),
+    ]){
+        const value=input();value.current.configuration.workflow=workflowInputs(source.replace(step,replacement));
+        assert.equal(createReleasePlan(value).requiresReview,true,'unreviewed execution still needs review');
+    }
+});
+
 test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{
     const plan=createReleasePlan(change('tooling/release/compatibility/v2.5.4.json'));
     assert.equal(plan.requiresReview,false);assert.equal(plan.mode,'components');assert.equal(plan.build.metadata,true);

@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as pause } from 'node:timers/promises';
 
 const lockFile = fileURLToPath(new URL('./hermes-bootstrap.lock.json', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -27,7 +28,7 @@ export function readBootstrapLock(file = lockFile) {
     return lock;
 }
 
-export async function prepareBootstrap({ platform, output, fetchImpl = globalThis.fetch, lock = readBootstrapLock() } = {}) {
+export async function prepareBootstrap({ platform, output, fetchImpl = globalThis.fetch, lock = readBootstrapLock(), pauseImpl = pause, log = console.warn } = {}) {
     assert.ok(filenames[platform], 'Select darwin or win32');
     assert.ok(typeof output === 'string' && output, 'Specify a new build input directory');
     output = path.resolve(output);
@@ -35,8 +36,24 @@ export async function prepareBootstrap({ platform, output, fetchImpl = globalThi
     assert.ok(!fs.lstatSync(output, { throwIfNoEntry: false }), 'Hermes bootstrap output must be a new directory');
     const input = lock.installers[platform];
     const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${lock.revision}/${input.path}`;
-    const response = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(45000) });
-    assert.equal(response.status, 200, 'Fixed Hermes installer download failed');
+    const signal=AbortSignal.timeout(45000);
+    let response;
+    for(let attempt=0;attempt<3;attempt++){
+        response=await fetchImpl(url,{redirect:'error',signal});
+        if(![429,502,503,504].includes(response.status)||attempt===2)break;
+        const header=response.headers?.get('retry-after');
+        const seconds=Number(header);
+        const retryAfter=header&&Number.isFinite(seconds)?seconds*1000:Date.parse(header)-Date.now();
+        if(Number.isFinite(retryAfter)&&retryAfter>5000){
+            log(`Fixed Hermes installer HTTP ${response.status}; server cooldown exceeds the 5s automatic retry budget`);break;
+        }
+        const delay=Number.isFinite(retryAfter)&&retryAfter>0?retryAfter:500*2**attempt;
+        await response.body?.cancel().catch(()=>{});
+        log(`Fixed Hermes installer HTTP ${response.status}; retry ${attempt+2}/3 in ${delay}ms`);
+        await pauseImpl(delay,undefined,{signal});signal.throwIfAborted();
+    }
+    if(response.status!==200)await response.body?.cancel().catch(()=>{});
+    assert.equal(response.status, 200, `Fixed Hermes installer download failed (HTTP ${response.status})`);
     assert.ok(!response.redirected && (!response.url || response.url === url), 'Hermes installer source changed');
     assert.ok(response.body, 'Empty Hermes installer response');
     const reader = response.body.getReader(), chunks = [];

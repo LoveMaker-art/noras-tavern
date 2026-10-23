@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {setTimeout as pause} from 'node:timers/promises';
@@ -31,10 +30,10 @@ function noDowngrade(oldTag, target) {
     const before=order(oldTag),after=order(target),index=before.findIndex((number,index)=>number!==after[index]);
     assert.ok(index<0||before[index]<after[index], 'Refusing to downgrade GitHub channel');
 }
-export function githubProvider({repository, execute=command, log=console.log}={}) {
+export function githubProvider({repository, execute=command, log=console.log, pauseImpl=pause}={}) {
     assert.match(repository,/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
     let current, assets=[]; const baseline=new Map();
-    const api=async endpoint=>JSON.parse(await execute('gh',['api',`repos/${repository}/${endpoint}`],{capture:true,timeout:120000,log}));
+    const api=async(endpoint,fields=[])=>JSON.parse(await execute('gh',['api',...fields,`repos/${repository}/${endpoint}`],{capture:true,timeout:120000,log}));
     const paginated=async(endpoint,kind)=>{
         const pages=JSON.parse(await execute('gh',['api','--paginate','--slurp',`repos/${repository}/${endpoint}`],{capture:true,timeout:120000,log}));
         assert.ok(Array.isArray(pages)&&pages.every(Array.isArray),`Invalid paginated GitHub ${kind} response`);
@@ -114,17 +113,23 @@ export function githubProvider({repository, execute=command, log=console.log}={}
             await checkTag(p);
             current=await release(p.plan.tag);
             if(!current){
-                const notes=path.join(p.stateDir,'authored-release-notes.md');fs.writeFileSync(notes,p.plan.body);
-                await execute('gh',['release','create',p.plan.tag,'--repo',repository,'--target',p.plan.commit,'--verify-tag','--draft',
-                    ...(p.plan.channel==='beta'?['--prerelease']:[]),'--title',`诺拉·酒馆 ${p.plan.tag}${p.plan.channel==='beta'?' 测试版':''}`,'--notes-file',notes],{log});
-                // Creation can succeed before the authorized release listing sees it.
-                // Keep the single create and bind its ID before further operations.
-                for(let attempt=0;attempt<4;attempt++) {
-                    current=await release(p.plan.tag);
-                    if(current)break;
-                    if(attempt<3)await pause(250*2**attempt);
+                // Bind the server's creation receipt; a draft need not appear in
+                // a release listing yet. Never repeat POST after an uncertain write.
+                const created=await api('releases',['--method','POST',
+                    '-f',`tag_name=${p.plan.tag}`,'-f',`target_commitish=${p.plan.commit}`,
+                    '-f',`name=诺拉·酒馆 ${p.plan.tag}${p.plan.channel==='beta'?' 测试版':''}`,
+                    '-f',`body=${p.plan.body}`,'-F','draft=true','-F',`prerelease=${p.plan.channel==='beta'}`]);
+                assert.ok(Number.isSafeInteger(created?.id)&&created.id>0,'Invalid GitHub release id');
+                validateRelease(created,p);assert.equal(created.draft,true,'Created GitHub release is not a draft');
+                assert.equal(created.target_commitish,p.plan.commit,'Different GitHub creation commit');
+                current=created;
+                for(let attempt=0;attempt<5;attempt++) {
+                    try {await refresh(p);return;}
+                    catch(error){
+                        if(attempt===4||!/\(HTTP 404\)/.test(error.diagnostics||''))throw error;
+                        await pauseImpl(250*2**attempt);
+                    }
                 }
-                assert.ok(current,'Prepared GitHub release disappeared');
             }
             await refresh(p);
         },

@@ -25,6 +25,7 @@ export function jihulabProvider({upload,readPublic,verifyObject,channelPromotion
         assert.equal(typeof channelPromotion?.[method],'function',`Missing JihuLab channel CAS ${method}`);
     for(const [name,implementation] of Object.entries({preflight,verifyIdentity,verifyPreparedIdentities}))
         if(implementation!==undefined)assert.equal(typeof implementation,'function',`Invalid JihuLab ${name}`);
+    let resumedInventory=new Map();
     const existence=async object=>{
         immutableObject(object);
         const response=await readPublic(object.key,fetcher,120000,{method:'HEAD'});
@@ -38,21 +39,35 @@ export function jihulabProvider({upload,readPublic,verifyObject,channelPromotion
         } finally {await response.body?.cancel().catch(()=>{});}
     };
     return {
-        async begin(){await preflight?.();},
+        async begin(p){
+            resumedInventory=new Map();await preflight?.();
+            const objects=p?.plan?.objects?.filter(item=>item.phase!=='channel')||[];
+            const checkpoint=p?.state?.sources?.jihulab;
+            if(verifyPreparedIdentities&&objects.length&&objects.every(object=>checkpoint?.objects?.[object.key])
+                &&!Object.keys(checkpoint?.uploadIntents||{}).length){
+                for(const object of objects){immutableObject(object);boundReceipt(object,checkpoint.objects[object.key]);}
+                await verifyPreparedIdentities(p);
+                resumedInventory=new Map(objects.map(object=>[object.key,{...checkpoint.objects[object.key]}]));
+            }
+        },
         async inspect(object,receipt,p){
             immutableObject(object);if(receipt!=null)boundReceipt(object,receipt);
+            if(p?.state?.sources?.jihulab?.uploadIntents?.[object.key])resumedInventory.clear();
+            if(resumedInventory.has(object.key))boundReceipt(object,resumedInventory.get(object.key));
             const exists=await existence(object);
-            const identity=await verifyIdentity?.(object,{allowMissing:!exists});
+            const identity=resumedInventory.has(object.key)?'matching':await verifyIdentity?.(object,{allowMissing:!exists});
             if(!exists){assert.ok(identity==null||identity==='missing','JihuLab inventory and public object identity disagree');return 'missing';}
             if(!receipt||p?.state?.sources?.jihulab?.uploadIntents?.[object.key]){
                 log(`jihulab adopting existing object with full SHA-256 verification: ${object.key}`);await verifyObject(object,{fetcher});}
             return 'matching';
         },
         async upload(object,p){immutableObject(object);assert.ok(!object.reference,'Cannot create a referenced immutable asset');
+            resumedInventory.clear();
             await upload(object,{immutable:true,...(typeof p?.recordJihuUploadIntent==='function'
                 ?{onUploadAttempt:()=>p.recordJihuUploadIntent(object)}:{})});},
         async verify(object){immutableObject(object);await verifyObject(object,{fetcher});},
         async assertReady(p){
+            resumedInventory.clear();
             const objects=p.plan.objects.filter(item=>item.phase!=='channel');
             for(const object of objects) {
                 immutableObject(object);

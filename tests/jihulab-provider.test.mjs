@@ -51,6 +51,61 @@ test('readiness batches inventory once per invocation while retaining every HEAD
   assert.deepEqual(calls.slice(3),[['head',asset.key,'HEAD'],['head',catalogue.key,'HEAD']]);
 });
 
+test('a complete resumed preparation batches inventory once while still checking every public file and later readiness afresh',async()=>{
+  const p=publication(),phases=[];
+  for(let index=0;index<81;index++)p.plan.objects.push({...asset,key:`releases/v2.4.5/asset-${index}.zip`});
+  const objects=p.plan.objects.filter(object=>object.phase!=='channel');
+  for(const object of objects)p.state.sources.jihulab.objects[object.key]=receipt(object);
+  const {provider,calls}=fixture({
+    readPublic:async key=>{calls.push(['head',key]);return new Response(null,{headers:{'content-length':String(key===catalogue.key?20:10)}});},
+    verifyIdentity:async()=>assert.fail('complete checkpoint must use one fresh batch, not one inventory per file'),
+    verifyPreparedIdentities:async actual=>{assert.equal(actual,p);phases.push('inventory');}
+  });
+  await provider.begin(p);
+  for(const object of objects)assert.equal(await provider.inspect(object,receipt(object),p),'matching');
+  assert.deepEqual(phases,['inventory']);assert.equal(calls.length,83);
+  assert.ok(calls.every(call=>call[0]==='head'));
+  await provider.assertReady(p);assert.deepEqual(phases,['inventory','inventory']);
+  assert.equal(calls.filter(call=>call[0]==='head').length,166);
+  assert.deepEqual(calls.at(-1),['verify',catalogue.key]);
+});
+
+test('partial checkpoints and unresolved upload intents retain per-object identity and full adoption checks',async()=>{
+  for(const unresolved of [false,true]){
+    const p=publication(),identities=[];
+    p.state.sources.jihulab.objects[asset.key]=receipt(asset);
+    if(unresolved){p.state.sources.jihulab.objects[catalogue.key]=receipt(catalogue);
+      p.state.sources.jihulab.uploadIntents={[asset.key]:{attemptedAt:'2026-10-13T00:00:00.000Z'}};}
+    const {provider,calls}=fixture({verifyPreparedIdentities:async()=>assert.fail('incomplete or ambiguous preparation cannot adopt a complete batch'),
+      verifyIdentity:async object=>{identities.push(object.key);return 'matching';}});
+    await provider.begin(p);await provider.inspect(asset,receipt(asset),p);
+    assert.deepEqual(identities,[asset.key]);
+    assert.equal(calls.some(call=>call[0]==='verify'),unresolved);
+  }
+});
+
+test('a complete preparation snapshot cannot hide changed bytes, disappeared files or a later upload intent',async()=>{
+  for(const scenario of ['changed','missing','intent']){
+    const p=publication();for(const object of [asset,catalogue])p.state.sources.jihulab.objects[object.key]=receipt(object);
+    let missing=false,identities=0;
+    const {provider,calls}=fixture({verifyPreparedIdentities:async()=>{},
+      verifyIdentity:async()=>{identities++;return 'matching';},readPublic:async key=>
+        new Response(null,{status:missing?404:200,headers:{'content-length':String(key===asset.key?10:20)}})});
+    await provider.begin(p);
+    if(scenario==='changed'){
+      const changed={...asset,sha256:'c'.repeat(64)};
+      await assert.rejects(provider.inspect(changed,receipt(changed),p),/receipt/);
+    }else if(scenario==='missing'){
+      missing=true;await assert.rejects(provider.inspect(asset,receipt(asset),p),/identity/);
+    }else{
+      p.state.sources.jihulab.uploadIntents={[asset.key]:{attemptedAt:'now'}};
+      await provider.inspect(asset,receipt(asset),p);assert.equal(identities,1);
+      assert.deepEqual(calls,[['verify',asset.key]]);
+    }
+    assert.equal(calls.some(call=>call[0]==='upload'),false);
+  }
+});
+
 test('readiness rejects every invalid receipt before any IO, including receipts later in the plan',async()=>{
   const {provider,calls}=fixture({verifyPreparedIdentities:async()=>assert.fail('invalid receipt reached inventory')}),p=publication();
   p.state.sources.jihulab.objects[asset.key]=receipt(asset);

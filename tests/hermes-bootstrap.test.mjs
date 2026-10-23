@@ -50,10 +50,43 @@ test('a changed installer fails before creating the input directory and has no l
     assert.equal(requests, 1); assert.equal(fs.existsSync(output), false);
 });
 
-test('failed download, redirected response and oversized script cannot produce executable inputs', async t => {
+test('temporary bootstrap download failures retry only the same immutable input within a bounded budget', async t => {
+    for (const status of [429, 502, 503, 504]) {
+        const output = path.join(temporary(t), 'inputs'), bytes = Buffer.from('verified script');
+        const lock = downloadLock('darwin', bytes), urls = [], waits = [];
+        const receipt = await prepareBootstrap({ platform: 'darwin', output, lock,
+            pauseImpl: async ms => waits.push(ms), fetchImpl: async url => {
+                urls.push(url);
+                return urls.length === 1 ? new Response('temporary failure', { status, headers: { 'retry-after': '2' } }) : new Response(bytes);
+            } });
+        assert.equal(urls.length, 2); assert.equal(new Set(urls).size, 1);
+        assert.deepEqual(waits, [2000]); assert.equal(receipt.sha256, sha(bytes));
+        assert.deepEqual(fs.readFileSync(path.join(output, 'install.sh')), bytes);
+    }
+});
+
+test('persistent throttling and permanent bootstrap failures never create build inputs or retry untrusted bytes', async t => {
+    for (const status of [429, 401, 403, 404]) {
+        let requests = 0; const waits = [], output = path.join(temporary(t), 'inputs');
+        await assert.rejects(prepareBootstrap({ platform: 'win32', output,
+            pauseImpl: async ms => waits.push(ms), fetchImpl: async () => {
+                requests++; return new Response('unavailable', { status, headers: { 'retry-after': '1' } });
+            } }), /download failed/);
+        assert.equal(requests, status === 429 ? 3 : 1);
+        assert.deepEqual(waits, status === 429 ? [1000, 1000] : []);
+        assert.equal(fs.existsSync(output), false);
+    }
+    for(const retryAfter of ['3600',new Date(Date.now()+60000).toUTCString()]){
+        let requests=0;const output=path.join(temporary(t),'inputs');
+        await assert.rejects(prepareBootstrap({platform:'darwin',output,pauseImpl:async()=>assert.fail('do not retry before a long server cooldown'),
+            fetchImpl:async()=>{requests++;return new Response('rate limited',{status:429,headers:{'retry-after':retryAfter}});}}),/HTTP 429/);
+        assert.equal(requests,1);assert.equal(fs.existsSync(output),false);
+    }
+});
+
+test('redirected responses and oversized scripts cannot produce executable inputs', async t => {
     const root = temporary(t);
     for (const [name, response, expected] of [
-        ['status', () => new Response('missing', { status: 404 }), /download failed/],
         ['redirect', () => ({ status: 200, redirected: true }), /source changed/],
         ['size', () => new Response(Buffer.alloc(1024 * 1024 + 1)), /exceeds/],
     ]) {

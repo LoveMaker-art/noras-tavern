@@ -57,7 +57,7 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
     const expectedAsset={id:2,name:'one.zip',state:'uploaded',size:3,digest:'sha256:'+object.sha256,
         url:`https://api.github.com/repos/${repository}/releases/assets/2`,browser_download_url:`https://github.com/${repository}/releases/download/${draft?draftTag:tag}/one.zip`};
     const assets=populated?[expectedAsset]:[];
-    const release={id:1,tag_name:tag,draft,prerelease:false,body:'Authored notes.',
+    const release={id:1,tag_name:tag,target_commitish:commit,draft,prerelease:false,body:'Authored notes.',
         url:`https://api.github.com/repos/${repository}/releases/1`,assets_url:`https://api.github.com/repos/${repository}/releases/1/assets`,
         html_url:`https://github.com/${repository}/releases/tag/${draft?draftTag:tag}`},calls=[],state={exists};
     const notFound=()=>Object.assign(new Error('Not Found'),{diagnostics:'gh: Not Found (HTTP 404)'});
@@ -67,6 +67,12 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
         const endpoint=args.at(-1);
         if(args[0]==='api'){
             const base=`repos/${repository}`;
+            if(endpoint===`${base}/releases`&&args.includes('POST')){
+                assert.equal(state.exists,false,'An existing draft must not be recreated');
+                for(const field of [`tag_name=${tag}`,`target_commitish=${commit}`,`body=${p.plan.body}`,'draft=true','prerelease=false'])assert.ok(args.includes(field));
+                state.exists=true;release.draft=true;
+                return JSON.stringify(state.createdRelease??release);
+            }
             if(state.historical){
                 const old=state.historical;
                 if(endpoint===`${base}/git/ref/tags/${old.release.tag_name}`)return JSON.stringify({object:{type:'commit',sha:old.commit}});
@@ -105,11 +111,7 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
         }
         assert.equal(args[0],'release');assert.equal(args[2],tag);
         assert.equal(args[args.indexOf('--repo')+1],repository);
-        if(args[1]==='create'){
-            assert.equal(state.exists,false,'An existing draft must not be recreated');
-            assert.equal(fs.readFileSync(args[args.indexOf('--notes-file')+1],'utf8'),p.plan.body);
-            state.exists=true;release.draft=true;
-        }else if(args[1]==='upload'){
+        if(args[1]==='upload'){
             assert.ok(state.exists&&release.draft);assert.equal(args[3],object.file);
             assert.ok(!args.includes('--clobber'));assets.push(expectedAsset);
         }else if(args[1]==='edit'){
@@ -124,7 +126,7 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
 test('GitHub resumes an existing draft without recreate or duplicate upload and rejects a different digest',async t=>{
     const {provider,p,assets,calls}=githubFixture(t);await provider.begin(p);
     assert.equal(await provider.inspect(p.plan.objects[0],null,p),'matching');await provider.assertReady(p);
-    assert.ok(!calls.some(args=>args[0]==='release'&&['create','upload'].includes(args[1])));
+    assert.ok(!calls.some(args=>(args[0]==='release'&&['create','upload'].includes(args[1]))||args.includes('POST')));
     assets[0].digest='sha256:'+'0'.repeat(64);
     await assert.rejects(provider.assertReady(p),/digest/);
 });
@@ -132,7 +134,7 @@ test('a fresh GitHub provider can assert a draft ready although the published ta
     const {provider,p,calls}=githubFixture(t);
     await provider.assertReady(p);
     assert.ok(calls.some(args=>args.at(-1).endsWith('/releases?per_page=100')));
-    assert.ok(!calls.some(args=>args[0]==='release'));
+    assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
 });
 test('a discovered draft keeps its ID through upload, readiness checks and promotion',async t=>{
     const {provider,p,release,calls,state}=githubFixture(t,{populated:false});
@@ -150,7 +152,7 @@ test('a discovered draft keeps its ID through upload, readiness checks and promo
     assert.equal(release.draft,false);
     assert.equal(calls.filter(args=>args[0]==='release'&&args[1]==='upload').length,1);
     assert.equal(calls.filter(args=>args[0]==='release'&&args[1]==='edit').length,1);
-    assert.ok(!calls.some(args=>args[0]==='release'&&args[1]==='create'));
+    assert.ok(!calls.some(args=>(args[0]==='release'&&args[1]==='create')||args.includes('POST')));
     assert.equal(calls.filter(args=>args.at(-1).endsWith('/releases?per_page=100')).length,1);
     assert.ok(calls.filter(args=>args.at(-1).endsWith('/releases/1')).length>=5);
 });
@@ -159,10 +161,10 @@ test('only a successful empty complete listing permits creating a draft, which i
     await provider.begin(p);
     await provider.upload(p.plan.objects[0],p);
     await provider.assertReady(p);
-    const creates=calls.filter(args=>args[0]==='release'&&args[1]==='create');
-    assert.equal(creates.length,1);assert.ok(creates[0].includes('--verify-tag')&&creates[0].includes('--draft'));
-    assert.equal(creates[0][creates[0].indexOf('--target')+1],p.plan.commit);
-    assert.equal(calls.filter(args=>args.at(-1).endsWith('/releases?per_page=100')).length,2);
+    const creates=calls.filter(args=>args[0]==='api'&&args.includes('POST'));
+    assert.equal(creates.length,1);assert.ok(creates[0].includes('draft=true'));
+    assert.ok(creates[0].includes(`target_commitish=${p.plan.commit}`));
+    assert.equal(calls.filter(args=>args.at(-1).endsWith('/releases?per_page=100')).length,1);
     assert.ok(calls.some(args=>args.at(-1).endsWith('/releases/1')));
 });
 test('published releases still use the tag endpoint and preserve the no-upload guard',async t=>{
@@ -177,7 +179,7 @@ test('same-tag releases across different pages are ambiguous and cannot be recre
         const {provider,p,release,state,calls}=githubFixture(t);
         state.releasePages=[[release],[{...release,id:42,draft:secondDraft}]];
         await assert.rejects(provider.begin(p),/Duplicate GitHub releases/);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
     }
 });
 test('a conflicting published list entry or invalid draft ID cannot be adopted after a tag 404',async t=>{
@@ -185,7 +187,7 @@ test('a conflicting published list entry or invalid draft ID cannot be adopted a
         const {provider,p,release,state,calls}=githubFixture(t);
         state.releasePages=[[{...release,...change}]];
         await assert.rejects(provider.begin(p),expected);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
     }
 });
 test('authorization, network and malformed list failures never mean a missing release',async t=>{
@@ -197,13 +199,13 @@ test('authorization, network and malformed list failures never mean a missing re
     for(const error of failures){
         const {provider,p,state,calls}=githubFixture(t);state.listError=error;
         await assert.rejects(provider.begin(p),actual=>actual===error);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
         assert.equal(fs.existsSync(path.join(p.stateDir,'authored-release-notes.md')),false);
     }
     for(const releasePages of [{},[{tag_name:'v2.4.4'}]]){
         const {provider,p,state,calls}=githubFixture(t);state.releasePages=releasePages;
         await assert.rejects(provider.begin(p),/Invalid paginated GitHub release response/);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
     }
 });
 test('non-404 errors from the tag endpoint cannot be hidden by a draft list lookup',async t=>{
@@ -224,13 +226,13 @@ test('refresh by pinned ID rejects disappearance and release identity or notes c
         const {provider,p,release,state,calls}=githubFixture(t);await provider.begin(p);
         state.idRelease={...release,...change};
         await assert.rejects(provider.assertReady(p),expected);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
     }
     const {provider,p,state,calls}=githubFixture(t);await provider.begin(p);
     const error=Object.assign(new Error('Deleted draft'),{diagnostics:'gh: Not Found (HTTP 404)'});state.idError=error;
     await assert.rejects(provider.assertReady(p),actual=>actual===error);
     assert.equal(calls.filter(args=>args.at(-1).endsWith('/releases?per_page=100')).length,1);
-    assert.ok(!calls.some(args=>args[0]==='release'));
+    assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
 });
 test('draft adoption retains asset closure, size, digest and URL validation',async t=>{
     for(const [change,expected] of [
@@ -242,7 +244,7 @@ test('draft adoption retains asset closure, size, digest and URL validation',asy
     ]){
         const {provider,p,assets,calls}=githubFixture(t);Object.assign(assets[0],change);
         await assert.rejects(provider.assertReady(p),expected);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
     }
     const {provider,p,assets}=githubFixture(t);assets.push({...assets[0],id:3});
     await assert.rejects(provider.assertReady(p),/Duplicate GitHub asset/);
@@ -269,7 +271,7 @@ test('temporary asset URLs require the exact draft binding, API object identity 
         const {provider,p,assets,release,calls}=githubFixture(t);
         Object.assign(assets[0],assetChange);Object.assign(release,releaseChange);
         await assert.rejects(provider.assertReady(p),expected);
-        assert.ok(!calls.some(args=>args[0]==='release'));
+        assert.ok(!calls.some(args=>args[0]==='release'||args.includes('POST')));
     }
     const {provider,p,assets}=githubFixture(t);
     assets[0].browser_download_url=`${base}download/v2.4.4/one.zip`;
@@ -341,25 +343,37 @@ test('SourceForge authorization errors and wrong sizes are failures rather than 
     }
 });
 
-test('new GitHub drafts tolerate delayed listing visibility without recreating or publishing',async t=>{
+test('new GitHub drafts bind the creation response ID even when the listing stays invisible',async t=>{
     const f=githubFixture(t,{exists:false});let hidden=0;
-    const execute=async(program,args,options)=>{const output=await f.execute(program,args,options);
-        if(args[0]==='api'&&args.at(-1).endsWith('/releases?per_page=100')&&f.state.exists&&hidden++<2)return '[[]]';
-        return output;};
-    const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute,log:()=>{}});
-    await provider.begin(f.p);await provider.assertReady(f.p);
-    assert.equal(f.calls.filter(args=>args[0]==='release'&&args[1]==='create').length,1);
-    assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
-    assert.equal(f.release.draft,true);assert.equal(hidden,3);
-});
-test('an invisible new GitHub draft fails after bounded reads and is never recreated',async t=>{
-    const f=githubFixture(t,{exists:false});let hidden=0;
-    const execute=async(program,args,options)=>{const output=await f.execute(program,args,options);
+    const execute=async(program,args,options)=>{
         if(args[0]==='api'&&args.at(-1).endsWith('/releases?per_page=100')&&f.state.exists){hidden++;return '[[]]';}
-        return output;};
-    const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute,log:()=>{}});
-    await assert.rejects(provider.begin(f.p),/Prepared GitHub release disappeared/);
-    assert.equal(hidden,4);assert.equal(f.calls.filter(args=>args[0]==='release'&&args[1]==='create').length,1);
+        return f.execute(program,args,options);
+    };
+    const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute,pauseImpl:async()=>{},log:()=>{}});
+    await provider.begin(f.p);await provider.assertReady(f.p);
+    assert.equal(f.calls.filter(args=>args[0]==='api'&&args.includes('POST')).length,1);
+    assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
+    assert.equal(f.release.draft,true);assert.equal(hidden,0);
+});
+test('a newly created draft retries only bounded ID reads and never repeats creation',async t=>{
+    for(const recover of [true,false]){
+        const f=githubFixture(t,{exists:false});let reads=0;const waits=[];
+        const execute=async(program,args,options)=>{
+            if(args[0]==='api'&&args.at(-1).endsWith('/releases/1')&&(!recover||reads<2)){
+                reads++;throw Object.assign(new Error('Not Found'),{diagnostics:'gh: Not Found (HTTP 404)'});
+            }
+            return f.execute(program,args,options);
+        };
+        const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute,pauseImpl:async ms=>waits.push(ms),log:()=>{}});
+        if(recover){await provider.begin(f.p);assert.equal(reads,2);assert.deepEqual(waits,[250,500]);}
+        else{await assert.rejects(provider.begin(f.p),/Not Found/);assert.equal(reads,5);assert.equal(waits.length,4);}
+        assert.equal(f.calls.filter(args=>args[0]==='api'&&args.includes('POST')).length,1);
+        assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
+    }
+});
+test('a different creation response is refused before upload or discovery of another release',async t=>{
+    const f=githubFixture(t,{exists:false});f.state.createdRelease={...f.release,tag_name:'v9.0.0'};
+    await assert.rejects(f.provider.begin(f.p),/identity/);
     assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
 });
 
