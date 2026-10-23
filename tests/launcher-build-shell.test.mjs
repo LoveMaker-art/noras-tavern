@@ -60,4 +60,3 @@ test('native packaging scripts preserve empty optional arguments under the actua
             `${runtime}/launcher-baseline`, ...(appOnly === 'true' ? ['--app-only'] : [])]);
     }
 });
-
