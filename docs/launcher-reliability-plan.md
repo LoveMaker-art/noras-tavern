@@ -1119,3 +1119,7 @@ flowchart LR
 另在检查完整交接依赖时，本地封装／恢复用例复现Windows最终setup门禁所读NSIS模板被归档过滤掉的缺口。归档现在只额外保留该固定模板及其父目录，其他builder依赖仍排除；原setup模板、静默安装及实际APP断言未删除。本地先失败后修正的证据分别为`native-shell-contract-red.log`、`native-preflight-entry-red.log`及`native-windows-template-red.log`。
 
 修正后7份关联文件236项通过、0失败／跳过，12.444秒；实际更新后的preflight整段退出0，42.655秒，其工具合同583项、部署合同168项、极狐源码合同9项通过，Python共享Hook1项通过、进程组8项中1项Windows专属在Mac跳过。actionlint与定向ESLint、差异空白检查通过，版本与产品运行代码不变。证据为`native-fix-associated.log`、`native-fix-preflight.log`及结果JSON。沿用用户已授权的流程优化合并／推送与本轮三平台实测，将最小修正单独提交，再统一冻结修正后的同一提交执行新轮次；保留原b7a58fa的失败事实，不静默将其冒充通过，不发布。
+
+修正提交`dfc6b98481285b74d928d87c381fc485396da291`的真实run39910824664又在Ubuntu preflight中失败，job120273185206用时60秒；583项中575通过、8失败。8项均是被错误前移的原生基线／真实打包用例调用只支持Windows／Mac的`readBaseline`，Linux按原产品支持范围被拒绝。本机Mac的583项通过不证明Linux资格，这次前移范围选择错误另行保留，不能归因为产品突然缺少Linux支持。
+
+据此将原Bash参数合同原文移到`tests/launcher-build-shell.test.mjs`，只把该可跨平台整文件前移到Ubuntu；原生基线与真实打包文件继续在三平台source阶段完整执行，新Bash合同也在每个原生平台运行。未添加skip或测试名称过滤，原17项原生／打包／Bash用例全部保留，移动正文逐字节相同。工作流回归明确检查前置组排除原生文件，同时原生组包含全部三文件。6份关联文件85项通过、0失败／跳过，12.875秒；修订后的实际preflight本机退出0、41.437秒，actionlint及定向ESLint通过。证据为`native-shell-case-move.json`、`native-platform-scope-associated.log`及`native-platform-scope-preflight*`。再次统一冻结修正后的单一提交运行三平台，原两轮与两次源码重跑均不覆盖、不记为成功。

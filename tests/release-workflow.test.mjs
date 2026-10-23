@@ -422,7 +422,10 @@ test('mandatory backup workflow contracts run in preflight with finite installat
   assert.equal(check.if, undefined);
   assert.equal(check['continue-on-error'], undefined);
   assert.equal([...check.run.matchAll(/tests\/backup-safety-gate\.test\.mjs/g)].length, 1);
-  for(const file of ['launcher-build-baseline','launcher-build-package'])assert.equal(check.run.split(`tests/${file}.test.mjs`).length-1,1,'Packaging argument and reuse regressions must fail in preflight, before three native builds');
+  assert.equal(check.run.split('tests/launcher-build-shell.test.mjs').length-1,1,'Portable actual Bash arguments must fail in preflight');
+  for(const file of ['launcher-build-baseline','launcher-build-package'])assert.ok(!check.run.includes(`tests/${file}.test.mjs`),'Native packager tests require one of the supported product platforms');
+  const nativePackaging=staged.jobs.source.steps.find(step=>step.name==='Verify launcher build reuse boundaries').run;
+  for(const file of ['launcher-build-baseline','launcher-build-package','launcher-build-shell'])assert.ok(nativePackaging.includes(`tests/${file}.test.mjs`),'All original native packaging and platform Bash assertions stay in each native source stage');
   assert.doesNotMatch(check.run, /--test-name-pattern|--skip|\|\|\s*true/);
   const nativeBackup = full.jobs.build.steps.find(step => step.name === 'Require chat backup safety tests');
   assert.equal(nativeBackup.if, undefined);

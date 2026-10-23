@@ -116,7 +116,7 @@ jobs:
         run: node --test tests/repository-layout.test.mjs
 
       - name: Verify launcher build reuse boundaries
-        run: node --test tests/launcher-build-baseline.test.mjs tests/launcher-build-package.test.mjs
+        run: node --test tests/launcher-build-baseline.test.mjs tests/launcher-build-package.test.mjs tests/launcher-build-shell.test.mjs
 
       - name: Verify artifact check runner before preparing runtimes
         run: node --test tests/launcher-artifact-checks.test.cjs
