@@ -87,7 +87,12 @@ if mode=='seal':
  with tarfile.open(archive,'w') as t:
   def keep(info):
    p=pathlib.PurePosixPath(info.name)
-   if re.match(r'^workspace/release/[^/]+/nora-tavern-launcher/desktop/node_modules(?:/|$)',info.name):return None
+   builder=re.match(r'^workspace/release/[^/]+/nora-tavern-launcher/desktop/node_modules(?:/(.*))?$',info.name)
+   if builder:
+    relative=builder.group(1) or '';required='app-builder-lib/templates/nsis/installSection.nsh'
+    # The final setup gate reads this exact pinned template; builder dependency
+    # trees remain excluded from the checkpoint.
+    if not ((info.isdir() and (not relative or required.startswith(relative+'/'))) or (info.isfile() and relative==required)):return None
    assert info.isfile() or info.isdir() or info.issym() or info.islnk(),'Special stage member'
    return info
   for scope,relative in spec['entries']:

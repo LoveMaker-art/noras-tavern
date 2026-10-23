@@ -12,7 +12,9 @@ import { buildCommand } from '../tooling/release/build-commands.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('native packaging scripts preserve empty optional arguments under the actual platform Bash', t => {
-    const workflow = fs.readFileSync(path.join(root, '.github/workflows/build-integrated-launcher.yml'), 'utf8');
+    const caller = fs.readFileSync(path.join(root, '.github/workflows/build-integrated-launcher.yml'), 'utf8');
+    assert.ok(caller.includes('uses: ./.github/workflows/launcher-platform-stages.yml'));
+    const workflow = fs.readFileSync(path.join(root, '.github/workflows/launcher-platform-stages.yml'), 'utf8');
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-shell-arguments-'));
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
     const capture = path.join(temporary, 'arguments.bin');
@@ -27,7 +29,7 @@ test('native packaging scripts preserve empty optional arguments under the actua
         const block = section.split('        run: |\n')[1];
         assert.ok(block, name);
         return block.trimEnd().split('\n').map(line => line.slice(10)).join('\n')
-            .replaceAll('${{ matrix.platform }}', 'darwin').replaceAll('${{ matrix.arch }}', 'arm64');
+            .replaceAll('${{ inputs.platform }}', 'darwin').replaceAll('${{ inputs.arch }}', 'arm64');
     };
     const run = (name, env = {}) => {
         fs.writeFileSync(capture, '');

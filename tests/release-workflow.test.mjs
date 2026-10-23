@@ -422,6 +422,7 @@ test('mandatory backup workflow contracts run in preflight with finite installat
   assert.equal(check.if, undefined);
   assert.equal(check['continue-on-error'], undefined);
   assert.equal([...check.run.matchAll(/tests\/backup-safety-gate\.test\.mjs/g)].length, 1);
+  for(const file of ['launcher-build-baseline','launcher-build-package'])assert.equal(check.run.split(`tests/${file}.test.mjs`).length-1,1,'Packaging argument and reuse regressions must fail in preflight, before three native builds');
   assert.doesNotMatch(check.run, /--test-name-pattern|--skip|\|\|\s*true/);
   const nativeBackup = full.jobs.build.steps.find(step => step.name === 'Require chat backup safety tests');
   assert.equal(nativeBackup.if, undefined);
