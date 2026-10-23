@@ -9,6 +9,41 @@ function sourceFixture() {
  return {run,artifacts,jobs,options:{commit,repository:'owner/tavern',runId:'123'}};
 }
 test('only a complete same-commit accepted native Windows source can be reused',()=>{const f=sourceFixture();assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);});
+function stagedSourceFixture(){
+ const tools=require('../tooling/release/build-stage.cjs'),f=sourceFixture();f.run.run_attempt=1;
+ const text=fs.readFileSync(path.join(__dirname,'../.github/workflows/launcher-platform-stages.yml'),'utf8');
+ const sections=Object.fromEntries(['source','runtime','package','build'].map(name=>[name,text.split('\n  '+name+':\n')[1]?.split(/\n {2}[\w-]+:\n/)[0]]));
+ f.jobs.jobs=[];
+ for(const [index,phase] of ['source','runtime','package','build'].entries()){
+  const names=new Set(requiredSteps.filter(name=>sections[phase].includes('- name: '+name+'\n')));
+  if(phase!=='build')for(const name of tools.required[phase])names.add(name);
+  if(phase==='build')names.add('Verify stage provenance and unchanged product before delivery');
+  f.jobs.jobs.push({id:100+index,name:tools.jobName(phase,'win32-x64'),run_id:123,run_attempt:1,head_sha:commit,status:'completed',conclusion:'success',steps:[...names].map(name=>({name,status:'completed',conclusion:'success'}))});
+  if(phase!=='build')f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:10+index,name:tools.name(phase,'win32-x64')});
+ }
+ f.jobs.total_count=f.jobs.jobs.length;f.artifacts.total_count=f.artifacts.artifacts.length;
+ return f;
+}
+test('staged Windows reuse requires its successful source, runtime, package and final gates, not just an uploaded setup',()=>{
+ const f=stagedSourceFixture();
+ assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);
+ for(const index of [0,1,2,3]){const bad=structuredClone(f);bad.jobs.jobs[index].conclusion='failure';assert.throws(()=>verifySource(bad.run,bad.artifacts,bad.jobs,bad.options));}
+ const duplicate=structuredClone(f);duplicate.jobs.jobs[0].steps.push({...duplicate.jobs.jobs[0].steps[0]});assert.throws(()=>verifySource(duplicate.run,duplicate.artifacts,duplicate.jobs,duplicate.options),/duplicate|Duplicate/);
+});
+test('an earlier failed Mac stage cannot force an already accepted Windows product to be rebuilt',()=>{
+ const tools=require('../tooling/release/build-stage.cjs');
+ for(const stage of tools.stages){
+  const f=stagedSourceFixture();f.run.conclusion='failure';
+  f.jobs.jobs.push({name:'preflight',run_id:123,head_sha:commit,status:'completed',conclusion:'success'},
+   {name:tools.jobName(stage,'darwin-x64'),run_attempt:1,run_id:123,head_sha:commit,status:'completed',conclusion:'failure'},
+   {name:tools.jobName('build','darwin-x64'),run_attempt:1,run_id:123,head_sha:commit,status:'completed',conclusion:'skipped'});
+  f.jobs.total_count=f.jobs.jobs.length;
+  assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);
+  for(const change of [x=>x.jobs.jobs.at(-2).head_sha='b'.repeat(40),x=>x.jobs.jobs.at(-2).conclusion='success',x=>x.jobs.jobs.at(-3).conclusion='failure']){
+   const bad=structuredClone(f);change(bad);assert.throws(()=>verifySource(bad.run,bad.artifacts,bad.jobs,bad.options));
+  }
+ }
+});
 test('another platform failure retains a completely accepted same-commit Windows package',()=>{
  const f=sourceFixture();f.run.conclusion='failure';
  f.jobs.jobs.push({name:'preflight',run_id:123,head_sha:commit,status:'completed',conclusion:'success'},
@@ -120,11 +155,11 @@ test('safe extraction rejects path traversal, duplicate case-folded names and sy
 const workflow=fs.readFileSync(path.join(__dirname,'../.github/workflows/build-integrated-launcher.yml'),'utf8');
 function condition(job) {return workflow.match(new RegExp(`^  ${job}:\\n(?:[^\\n]*\\n)*?    if: ([^\\n]+)`,'m'))[1];}
 function evaluate(expression,inputs,github,needs={},cancelled=false) {return Function('inputs','github','needs','always','cancelled','startsWith','return '+expression.replaceAll('needs.reuse-windows','needs["reuse-windows"]'))(inputs,github,needs,()=>true,()=>cancelled,(a,b)=>a.startsWith(b));}
-const buildWorkflow=workflow.split('\n  build:\n')[1].split(/\n  [\w-]+:\n/)[0];
+const buildWorkflow=workflow.split('\n  build:\n')[1].split(/\n {2}[\w-]+:\n/)[0];
 const matrixExpression=buildWorkflow.match(/\$\{\{ fromJSON\(([\s\S]*?)\) \}\}/)[1];
 test('actual build workflow routes package diagnostics independently, gates native work and never publishes',()=>{
- assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: \[preflight, reuse-windows\]/);
- assert.doesNotMatch(workflow,/^  (?:bootstrap-contract|replacement-contract|gui-exit-contract|publish-release):/m);
+ assert.match(condition('build'),/always\(\)/);assert.match(workflow,/ {2}build:\n {4}needs: \[preflight, reuse-windows\]/);
+ assert.doesNotMatch(workflow,/^ {2}(?:bootstrap-contract|replacement-contract|gui-exit-contract|publish-release):/m);
  const tuples={
   'darwin-arm64':{runner:'macos-15',platform:'darwin',arch:'arm64',package_script:'pack:mac:arm64'},
   'darwin-x64':{runner:'macos-15-intel',platform:'darwin',arch:'x64',package_script:'pack:mac:x64'},

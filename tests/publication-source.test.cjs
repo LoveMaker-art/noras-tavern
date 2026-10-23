@@ -193,7 +193,7 @@ test('actual source CLI hashes artifact ZIP bytes before extracting complete nat
   const bad = path.join(root, 'rejected'), failure = execute(bad); assert.notEqual(failure.status, 0); assert.match(failure.stderr, /digest differs/);
   assert.equal(fs.existsSync(path.join(bad, 'delivery')), false, 'Unverified ZIP bytes must not be extracted');
 });
-function fullCliFixture(t) {
+function fullCliFixture(t, {staged=false}={}) {
   const native = nativeFixture(t), f = fixture(), root = native.root;
   const payloadBytes = fs.readFileSync(path.join(native.delivery, 'payload.json'), 'utf8');
   const system = JSON.parse(fs.readFileSync(path.join(native.delivery, 'nora-system-darwin-arm64.json')));
@@ -223,6 +223,27 @@ function fullCliFixture(t) {
     ['nora-acceptance-baseline-selection.json', JSON.stringify(selection)],
     ['nora-acceptance-published-releases.json', JSON.stringify([[]])],
   ];
+  const stageArtifacts=[],stageJobs=[];
+  if(staged){
+    const tools=require('../tooling/release/build-stage.cjs');f.run.run_attempt=3;
+    for(const platform of tools.platforms){const inputs=[];
+      for(const [index,phase] of tools.stages.entries()){
+        const item={...f.artifacts.artifacts[0],id:100+stageArtifacts.length,name:tools.name(phase,platform)};stageArtifacts.push(item);
+        const context={repository:f.options.repository,commit:f.options.commit,runId:123,attempt:index+1,platform,baseline:'EMPTY',options:{},environment:{imageOS:'fixture',imageVersion:'1',node:'24',python:'3.11',platform}};
+        const [file,bytes]=members['nora-tavern-'+platform][0];
+        const receipt={schema:'nora-build-stage/1',stage:phase,context,inputs:inputs.map(input=>({stage:input.stage,...input.artifact})),
+          archive:{size:10,sha256:hash('fixture stage')},delivery:phase==='package'?{[file]:{size:Buffer.byteLength(bytes),sha256:hash(bytes)}}:null};
+        const id=200+stageJobs.length,gates=[...tools.required[phase],...(phase==='package'?[platform==='win32-x64'
+          ?'Test Windows installation and managed update with legacy path limits':'Test real fresh installation and managed update before desktop packaging']:[])];
+        stageJobs.push({id,run_id:123,head_sha:f.options.commit,run_attempt:index+1,name:tools.jobName(phase,platform),status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
+        inputs.push({schema:'nora-stage-input/1',stage:phase,artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt,producer:{id,attempt:index+1}});
+      }
+      members['nora-operation-acceptance-'+platform].push(['nora-build-stages.json',JSON.stringify({schema:'nora-build-stages/1',inputs})]);
+      const gates=['Verify stage provenance and unchanged product before delivery','Verify real APP production module closure and executor receipts','Verify packaged network modules in native Chromium',
+        'Verify packaged Nora images and instructions','Preserve isolated operation acceptance evidence','Upload launcher',...(platform==='win32-x64'?['Test the actual Windows setup and installed application']:[])];
+      stageJobs.push({id:200+stageJobs.length,run_id:123,head_sha:f.options.commit,run_attempt:3,name:tools.jobName('build',platform),status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
+    }
+  }
   f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], id: 8, name: 'nora-release-plan' }); f.artifacts.total_count++;
   const zipInput = path.join(root, 'zip-members.json');
   fs.writeFileSync(zipInput, JSON.stringify(f.artifacts.artifacts.map(item => members[item.name])));
@@ -230,8 +251,11 @@ function fullCliFixture(t) {
   for (const item of f.artifacts.artifacts) {
     const bytes = fs.readFileSync(path.join(root, `${item.id}.zip`)); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
   }
+  f.artifacts.artifacts.push(...stageArtifacts);f.artifacts.total_count=f.artifacts.artifacts.length;
+  const jobsFile=path.join(root,'stage-jobs.json');
+  fs.writeFileSync(jobsFile,JSON.stringify(staged?{total_count:stageJobs.length,jobs:stageJobs}:{total_count:1,jobs:[{name:'build legacy'}]}));
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-  writeGhFixture(bin, `const resource=process.argv.at(-1);if(!/^repos\\/owner\\/tavern\\/actions\\/artifacts\\/\\d+\\/zip$/.test(resource))throw Error('Unexpected remote read: '+resource);const id=resource.split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`);
+  writeGhFixture(bin, `const fs=require('node:fs'),resource=process.argv.at(-1);if(resource.includes('/actions/runs/123/jobs?')){process.stdout.write('['+fs.readFileSync(process.env.FIXTURE_ZIP_ROOT+'/stage-jobs.json','utf8')+']');process.exit(0);}if(!/^repos\\/owner\\/tavern\\/actions\\/artifacts\\/\\d+\\/zip$/.test(resource))throw Error('Unexpected remote read: '+resource);const id=resource.split('/').at(-2);process.stdout.write(fs.readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`);
   const runFile = path.join(root, 'run.json'), artifactsFile = path.join(root, 'artifacts.json'), factsFile = path.join(root, 'published-releases.json');
   fs.writeFileSync(runFile, JSON.stringify(f.run)); fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts));
   const execute = (output, pages = [[]]) => {
@@ -240,8 +264,16 @@ function fullCliFixture(t) {
       'delivery', runFile, artifactsFile, f.options.commit, f.options.repository, '123', 'full', output, 'v2.4.4', factsFile],
     { env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FIXTURE_ZIP_ROOT: root }, encoding: 'utf8', timeout: 15000 });
   };
-  return { root, execute };
+  return { root, execute, jobsFile };
 }
+test('the actual publisher CLI accepts complete staged evidence and refuses a skipped source group without rebuilding products',t=>{
+  const f=fullCliFixture(t,{staged:true}),accepted=path.join(f.root,'staged-accepted');
+  const good=f.execute(accepted);assert.equal(good.status,0,good.stderr);
+  const receipt=JSON.parse(fs.readFileSync(path.join(accepted,'source-receipt.json')));assert.equal(receipt.stageAcceptance.mode,'staged');assert.equal(receipt.artifacts.length,8,'intermediate archives are verified as provenance, not downloaded as product assets');
+  const jobs=JSON.parse(fs.readFileSync(f.jobsFile));jobs.jobs[0].steps[0].conclusion='skipped';fs.writeFileSync(f.jobsFile,JSON.stringify(jobs));
+  const rejected=path.join(f.root,'staged-rejected'),bad=f.execute(rejected);assert.notEqual(bad.status,0);assert.match(bad.stderr,/Stage gate did not pass/);
+  assert.equal(fs.existsSync(path.join(rejected,'source-receipt.json')),false);
+});
 test('actual full source CLI forwards the release tag and preserves the independent historical gate', t => {
   const f = fullCliFixture(t), accepted = path.join(f.root, 'accepted-full');
   const good = f.execute(accepted); assert.equal(good.status, 0, good.stderr);

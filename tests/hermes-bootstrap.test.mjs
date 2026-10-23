@@ -227,12 +227,18 @@ test('an unknown Hermes source is refused without modifying it', t => {
 });
 
 test('native delivery checks the restored sealed runtime through the real initializer before packaging', () => {
-    const workflow=fs.readFileSync(new URL('../.github/workflows/build-integrated-launcher.yml',import.meta.url),'utf8');
+    const caller=fs.readFileSync(new URL('../.github/workflows/build-integrated-launcher.yml',import.meta.url),'utf8');
+    assert.ok(caller.includes('uses: ./.github/workflows/launcher-platform-stages.yml'));
+    const workflow=fs.readFileSync(new URL('../.github/workflows/launcher-platform-stages.yml',import.meta.url),'utf8');
     const restore=workflow.indexOf('- name: Restore the freshly sealed runtime for native acceptance');
     const probe=workflow.indexOf('- name: Verify actual sealed Hermes cold initialization without dependency installs');
     const packaging=workflow.indexOf('- name: Build release');
     assert.ok(restore>=0 && probe>restore,'The real sealed runtime must be restored before the cold probe');
     assert.ok(workflow.slice(probe,probe+650).includes('"$NORA_TEST_PYTHON" -I -B "$PWD/tooling/runtime/hermes-cold-init-check.py" "$RUNNER_TEMP/hermes"'));
     assert.ok(packaging<0 || packaging>probe,'The initializer gate must precede packaging');
+    const packageJob=workflow.slice(workflow.indexOf('\n  package:'),workflow.indexOf('\n  build:'));
+    assert.ok(packageJob.includes('needs: [source, runtime]') && packageJob.includes("needs.runtime.result == 'success'"));
+    assert.ok(packageJob.indexOf('build-stage.cjs restore runtime') < packageJob.indexOf('- name: Build release payload'));
+    assert.ok(packageJob.includes('Materialize the exact sealed native runtime'));
     assert.ok(workflow.includes('${{ runner.temp }}/nora-hermes-cold-init-acceptance.json'),'Keep the native cold-init receipt');
 });

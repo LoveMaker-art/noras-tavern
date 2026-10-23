@@ -30,7 +30,11 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
  assert.equal(run.event,'workflow_dispatch');assert.equal(run.status,'completed');assert.ok(['success','failure'].includes(run.conclusion),'Source must have finished without cancellation');
  assert.equal(artifacts.total_count,artifacts.artifacts.length);
  assert.equal(new Set(artifacts.artifacts.map(item=>item.name)).size,artifacts.artifacts.length,'Duplicate artifact names');
- const allowedNames=new Set([...names,'nora-release-plan','nora-windows-failed-packaging-diagnostic','nora-tavern-shared',
+ const {stageArtifacts,jobName:stageJobName}=require('./build-stage.cjs');
+ const staged=stageArtifacts(artifacts).length>0;
+ const latest=items=>{const attempt=Math.max(...items.map(item=>item.run_attempt||1));return items.filter(item=>(item.run_attempt||1)===attempt);};
+ const platformJob=(platform,legacy)=>staged?stageJobName('build',platform):legacy;
+ const allowedNames=new Set([...names,...stageArtifacts(artifacts).map(item=>item.name),'nora-release-plan','nora-windows-failed-packaging-diagnostic','nora-tavern-shared',
   ...[...otherPlatforms.keys()].flatMap(platform=>['nora-tavern-'+platform,'nora-operation-acceptance-'+platform])]);
  assert.ok(artifacts.artifacts.every(item=>allowedNames.has(item.name)),'Unexpected source artifact');
  assert.deepEqual(artifacts.artifacts.filter(item=>names.includes(item.name)).map(item=>item.name).sort(),[...names].sort());
@@ -45,21 +49,33 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
  // delivery. Its own native gates, API identities and archive/package proofs
  // remain mandatory; overall failure must be attributable to another builder.
  if(run.conclusion==='failure') {
-  const preflight=jobs.jobs.filter(job=>job.name==='preflight');assert.equal(preflight.length,1,'Failed cohort requires a successful preflight');
+  const preflight=latest(jobs.jobs.filter(job=>job.name==='preflight'));assert.equal(preflight.length,1,'Failed cohort requires a successful preflight');
   assert.equal(preflight[0].run_id,run.id);assert.equal(preflight[0].head_sha,commit);assert.equal(preflight[0].status,'completed');assert.equal(preflight[0].conclusion,'success');
-  const failed=jobs.jobs.filter(job=>[...otherPlatforms.values()].includes(job.name)&&job.conclusion==='failure');
+  const failed=[...otherPlatforms].flatMap(([platform,legacy])=>(staged?['source','runtime','package','build'].map(stage=>stageJobName(stage,platform)):[legacy])
+   .flatMap(name=>latest(jobs.jobs.filter(job=>job.name===name))))
+   .filter(job=>job.conclusion==='failure');
   assert.ok(failed.length>0,'Overall failure must be explained by another native platform');
   for(const job of failed){assert.equal(job.run_id,run.id);assert.equal(job.head_sha,commit);assert.equal(job.status,'completed');}
  }
  for(const [platform,jobName] of otherPlatforms){
   if(!artifacts.artifacts.some(item=>item.name==='nora-tavern-'+platform||platform==='darwin-arm64'&&item.name==='nora-tavern-shared'))continue;
-  const completed=jobs.jobs.filter(job=>job.name===jobName);assert.equal(completed.length,1,'Unproven extra platform delivery');
+  const completed=latest(jobs.jobs.filter(job=>job.name===platformJob(platform,jobName)));assert.equal(completed.length,1,'Unproven extra platform delivery');
   assert.equal(completed[0].run_id,run.id);assert.equal(completed[0].head_sha,commit);assert.equal(completed[0].status,'completed');assert.equal(completed[0].conclusion,'success');
  }
- const native=jobs.jobs.filter(job=>job.name==='build (windows-latest, win32, x64, pack:win:x64)');assert.equal(native.length,1);
+ const native=latest(jobs.jobs.filter(job=>job.name===platformJob('win32-x64','build (windows-latest, win32, x64, pack:win:x64)')));assert.equal(native.length,1);
  const job=native[0];assert.equal(job.run_id,run.id);assert.equal(job.head_sha,commit);assert.equal(job.status,'completed');assert.equal(job.conclusion,'success');
  assert.ok(job.steps.every(step=>!['failure','cancelled','timed_out','action_required'].includes(step.conclusion)),'Failed native step');
- for(const name of requiredSteps) {const steps=job.steps.filter(step=>step.name===name);assert.equal(steps.length,1,`Missing or duplicate native gate: ${name}`);assert.equal(steps[0].status,'completed');assert.equal(steps[0].conclusion,'success',`Native gate did not pass: ${name}`);}
+ const gates=[...job.steps],gateJobs=[job];
+ if(stageArtifacts(artifacts).length){
+  const {stages,jobName,verifyJob}=require('./build-stage.cjs');
+  for(const stage of stages){const producers=latest(jobs.jobs.filter(item=>item.name===jobName(stage,'win32-x64')));assert.equal(producers.length,1);
+   verifyJob(producers[0],{runId:run.id,commit,platform:'win32-x64'},stage);gates.push(...producers[0].steps);gateJobs.push(producers[0]);}
+ }
+ for(const name of requiredSteps) {const steps=gates.filter(step=>step.name===name);assert.ok(steps.length>=1,`Missing native gate: ${name}`);
+  if(!staged)assert.equal(steps.length,1,`Duplicate native gate: ${name}`);
+  for(const producer of gateJobs)assert.ok(producer.steps.filter(step=>step.name===name).length<=1,`Duplicate native gate in a stage: ${name}`);
+  for(const step of steps){assert.equal(step.status,'completed');assert.equal(step.conclusion,'success',`Native gate did not pass: ${name}`);}}
+ if(staged)require('./build-stage.cjs').verifyFinalJob(jobs,run,'win32-x64');
  // The independently retained decision plan is not a package/acceptance archive.
  return artifacts.artifacts.filter(item=>names.includes(item.name));
 }
@@ -179,6 +195,11 @@ async function materialize(run,artifacts,jobs,options,root) {
   execFileSync('python3',['-c',extractScript,archive,output],{stdio:'inherit'});proof.artifacts.push({id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest});
  }
  proof.files=await verifyPackage(path.join(root,'delivery'),path.join(root,'acceptance'),options.commit);
+ if(require('./build-stage.cjs').stageArtifacts(artifacts).length){
+  const reports=[...files(path.join(root,'acceptance'),true)].filter(([name])=>path.basename(name)==='nora-build-stages.json');assert.equal(reports.length,1,'Missing Windows stage provenance');
+  const inventory=require('./build-stage.cjs').verifyStageEvidence(read(reports[0][1]),run,artifacts,jobs,'win32-x64');
+  for(const [name,identity] of Object.entries(inventory))assert.deepEqual(proof.files[name],identity,'Reused Windows package differs from its producer');
+ }
  const provenance=path.join(root,'acceptance','nora-verified-windows-reuse.json');assert.ok(!fs.existsSync(provenance),'Source already contains reuse provenance');
  fs.writeFileSync(provenance,JSON.stringify(proof,null,2)+'\n');console.log(`Verified unchanged native Windows package from run ${run.id} at ${options.commit}.`);
 }

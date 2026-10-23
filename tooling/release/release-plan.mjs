@@ -13,7 +13,8 @@ export const PLATFORMS = Object.freeze(['darwin-arm64', 'darwin-x64', 'win32-x64
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const sorted = values => [...new Set(values)].sort();
 const configPaths = ['tooling/source-layout.json', 'launcher/desktop/package.json', '.github/workflows/build-integrated-launcher.yml',
-    '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml', 'launcher/desktop/package-lock.json'];
+    '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml', 'launcher/desktop/package-lock.json',
+    '.github/workflows/launcher-platform-stages.yml'];
 // Full normalized step bodies audited against 65a2a7a and 78f122e on 2026-10-21.
 // Only these component-job verification bodies are exempt, never their titles.
 // The historical inventory receipt is classified as verification, not accepted
@@ -44,6 +45,15 @@ const reviewedNativeTestSelectionSteps = new Set([
     '7b85e8bdbbc0863965c70ef8f8fc2a50e44d2312553f4455226f008a9d69317d',
     'e22024d07d6feb836d5b76b281349a2e4a18856f72f2f0e174f642de1e737b82',
     '11f8784d00a197e20ecf7790e27320c2c66565672199ec8f475c7efed25b3ebf', // 2026-10-23: same-platform pure policy already ran before runtime preparation
+    '3bb06c71a5635d6da0119b00d5ad7367c17a6c3fd67146311c774da0941c6b17', // Same-run stage handoff; exact reviewed body.
+    '8b47b930f68e04f829932ad4374dc91e1d76633e4d5f38fc8224405981124308', // Same-run stage handoff; exact reviewed body.
+    '5135a1dc5c5cea76d08ca6656234be64088c7b5a5d22343be717ebe0fa4f9e8c', // Same-run stage handoff; exact reviewed body.
+    'ac0b92beb1e4708bfd9ed31ed007b30c01cdee593bcb5c5e07e2d14fad7eea0f', // Same-run stage handoff; exact reviewed body.
+    'a621b769a319aa8fbb4b6a7769ad290b8e55dbd5a13baa09399e082e0e21c26b', // Same-run stage handoff; exact reviewed body.
+    '49c0316e2c3481787228702655c78c0f8be6299ea4b7843dc16d5a6dfa50dddb', // Same-run stage handoff; exact reviewed body.
+    'c1af173a5ea25b2ca2ada03d51b8a05b64b63bf1fbc3b578e3a85fa61eb74177', // Same-run stage handoff; exact reviewed body.
+    '5df725276f6e629b907f9f61e358148707264c1570fcbfc1fd10297d44adc1a8', // Same-run stage handoff; exact reviewed body.
+    '1fbf8b7c2f28394463de7ff27e5b7e51f0cb8cb80947cd50ea7cab90344881e6', // Same-run stage handoff; exact reviewed body.
 ]);
 const reviewedComponentTestSelectionSteps = new Set([
     '38106a73d472a9903e47ea494896e2b8024fe25ab63e595a58d76547f2a1a2ce',
@@ -63,7 +73,7 @@ const automation = new Set(['tooling/run.mjs', 'tooling/release/release-plan.mjs
     'tooling/release/acceptance-baseline.mjs', 'tooling/release/app-only-acceptance.cjs',
     'tooling/release/app-only-native-ui.ps1', 'tooling/release/app-only-native-ui.applescript',
     'tooling/release/sourceforge-credentials.mjs', 'tooling/release/verify-publish-source.cjs',
-    'tooling/release/reuse-windows-build.cjs', 'tooling/release/verify-launcher-release.cjs',
+    'tooling/release/reuse-windows-build.cjs', 'tooling/release/build-stage.cjs', 'tooling/release/verify-launcher-release.cjs',
     'tooling/release/launcher-release-notes.cjs', 'tooling/release/package-local-launcher.mjs', 'tooling/release/final-consumer.mjs',
     'tooling/release/component-acceptance.mjs', 'tooling/release/jihulab-provider.mjs', 'tooling/release/jihulab-transport.mjs']);
 const rootDocuments = new Set(['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'CONTEXT.md', 'LICENSE', '.gitignore', '.gitattributes']);
@@ -98,7 +108,7 @@ export function workflowInputs(text = '', job = 'build') {
         const value = normalize(block);
         const reviewedVerification = ((job === 'build-components' || job === 'publish')
             && reviewedComponentVerificationSteps.has(hash(value)))
-            || (job==='build' && reviewedNativeTestSelectionSteps.has(hash(value)))
+            || (['build','source','runtime','package'].includes(job) && reviewedNativeTestSelectionSteps.has(hash(value)))
             || (job==='build-components' && reviewedComponentTestSelectionSteps.has(hash(value)));
         if (reviewedVerification) { block=[];return; }
         if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|prepare-hermes-bootstrap|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
@@ -118,7 +128,14 @@ export function workflowInputs(text = '', job = 'build') {
         block.push(line);
     }
     flush();
-    return { environment: sorted(environment.map(line => line.trim())), packaging: sorted(packaging), unknown: sorted(unknown), unrecognized: false };
+    const result={ environment: sorted(environment.map(line => line.trim())), packaging: sorted(packaging), unknown: sorted(unknown), unrecognized: false };
+    if(job==='build')for(const stage of ['source','runtime','package']){
+        if(!new RegExp(`^  ${stage}:\\s*$`,'m').test(text))continue;
+        const input=workflowInputs(text,stage);
+        for(const key of ['environment','packaging','unknown'])result[key]=sorted([...result[key],...input[key]]);
+        result.unrecognized ||= input.unrecognized;
+    }
+    return result;
 }
 
 function configuration(contents) {
@@ -134,7 +151,13 @@ function configuration(contents) {
         }
     }
     const component = contents[configPaths[3]] || '';
-    return { layout: layout?.rules || null, launcher: parse(configPaths[1]), launcherLock: parse(configPaths[5]), workflow: workflowInputs(contents[configPaths[2]]),
+    const workflow=workflowInputs(contents[configPaths[2]]);
+    if(contents[configPaths[6]]){
+        const native=workflowInputs(contents[configPaths[6]]);
+        for(const key of ['environment','packaging','unknown'])workflow[key]=sorted([...workflow[key],...native[key]]);
+        workflow.unrecognized ||= native.unrecognized;
+    }
+    return { layout: layout?.rules || null, launcher: parse(configPaths[1]), launcherLock: parse(configPaths[5]), workflow,
         componentWorkflow: workflowInputs(component, /^ {2}build-components:\s*$/m.test(component) ? 'build-components' : 'publish'),
         publicationWorkflowHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update)|\bnpm\s+(?:ci|install|run\s+(?:build|pack:))|\belectron-builder\b)/.test(contents[configPaths[4]] || '') };
 }
@@ -285,9 +308,9 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
         } else if (fullTools.has(name)) full('Shared packaging/projection/archive input affects product and environment construction');
         else if (name.startsWith('.github/')) {
             if (name === configPaths[4] && !current.configuration?.publicationWorkflowHasBuild) reason('verification-only', 'Audited accepted-artifact publication workflow does not construct product bytes');
-            else if (name !== configPaths[2] && name !== configPaths[3]) { review.push(`Unclassified changed CI configuration: ${name}`); full('Other workflow/build automation has not been audited for product inputs'); }
+            else if (name !== configPaths[2] && name !== configPaths[3] && name !== configPaths[6]) { review.push(`Unclassified changed CI configuration: ${name}`); full('Other workflow/build automation has not been audited for product inputs'); }
             else {
-                const key = name === configPaths[2] ? 'workflow' : 'componentWorkflow';
+                const key = name === configPaths[3] ? 'componentWorkflow' : 'workflow';
                 const before = baseline?.configuration?.[key] || workflowInputs('');
                 const after = current.configuration?.[key] || { unrecognized: true };
                 if (after.unrecognized || before.unrecognized) { review.push(`Unrecognized build workflow: ${name}`); full('Build instructions cannot be compared safely'); }

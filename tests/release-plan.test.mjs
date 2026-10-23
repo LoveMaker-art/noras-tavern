@@ -135,7 +135,7 @@ test('reviewed component bodies are not a general exemption for another job or a
 });
 
 test('native test selection exempts reviewed execution only, never altered commands or conditions', () => {
-    const source = fs.readFileSync(path.join(root, '.github/workflows/build-integrated-launcher.yml'), 'utf8');
+    const source = fs.readFileSync(path.join(root, '.github/workflows/launcher-platform-stages.yml'), 'utf8');
     const select = source.split(/(?=^ {6}- )/m).find(block => block.includes('id: test-impact'));
     assert.ok(select);
     const before = workflowInputs(source);
@@ -154,7 +154,7 @@ test('native test selection exempts reviewed execution only, never altered comma
 });
 
 test('reviewed native policy deduplication changes verification only and cannot exempt altered commands',()=>{
-    const source=fs.readFileSync(path.join(root,'.github/workflows/build-integrated-launcher.yml'),'utf8');
+    const source=fs.readFileSync(path.join(root,'.github/workflows/launcher-platform-stages.yml'),'utf8');
     const step=componentStep(source,'Test operation ownership, evidence, bounded retry and recovery contracts');
     const previous=step.replace('"$PWD/tests/deployment/launcher_operation_inspection.test.cjs"',
         '"$PWD/tests/deployment/launcher_operation_inspection.test.cjs" "$PWD/tests/deployment/launcher_operation_policy.test.cjs"');
@@ -381,6 +381,18 @@ function repository(t) {
     git('add', '.'); git('commit', '--quiet', '-m', 'baseline'); const base = git('rev-parse', 'HEAD');
     return { directory, git, write, base };
 }
+
+test('the called native workflow is a committed build input; altered interpreter or hidden command cannot escape planning',t=>{
+    const repo=repository(t),file='.github/workflows/launcher-platform-stages.yml';
+    const native=fs.readFileSync(path.join(root,file),'utf8');repo.write(file,native);repo.git('add','.');repo.git('commit','--quiet','-m','stage baseline');
+    const baseline=readGitSnapshot(repo.directory,repo.git('rev-parse','HEAD'));
+    repo.write(file,native.replace('node-version: 24','node-version: 26'));repo.git('add','.');repo.git('commit','--quiet','-m','stage interpreter');
+    const current=readGitSnapshot(repo.directory,repo.git('rev-parse','HEAD')),plan=createReleasePlan({baseline,current});
+    assert.equal(plan.mode,'full');assert.deepEqual(plan.build.environment.hermesRuntime,[...PLATFORMS].sort());
+    repo.write(file,native.replace('node --test tests/repository-layout.test.mjs','node tooling/runtime/unreviewed-builder.mjs'));
+    repo.git('add','.');repo.git('commit','--quiet','-m','stage command');
+    assert.equal(createReleasePlan({baseline,current:readGitSnapshot(repo.directory,repo.git('rev-parse','HEAD'))}).requiresReview,true);
+});
 
 test('Git CLI reads exact committed bytes, ignores unrelated working edits, seals output and refuses overwrite', t => {
     const repo = repository(t); repo.write('README.md', 'updated documentation'); repo.git('add', '.'); repo.git('commit', '--quiet', '-m', 'documentation');

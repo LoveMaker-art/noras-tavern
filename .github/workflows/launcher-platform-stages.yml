@@ -1,0 +1,1082 @@
+name: Native launcher build stages (no publication)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: "string"
+        required: true
+      platform:
+        type: "string"
+        required: true
+      arch:
+        type: "string"
+        required: true
+      package_script:
+        type: "string"
+        required: true
+      selected_baseline:
+        type: "string"
+        required: true
+      initial_release:
+        type: "string"
+        required: true
+      source_options:
+        type: "string"
+        required: true
+      runtime_source_run:
+        type: "string"
+        default: ""
+      launcher_baseline_tag:
+        type: "string"
+        default: ""
+      app_only:
+        type: "boolean"
+        default: false
+      production_mode:
+        type: "boolean"
+        default: false
+      publication_tag:
+        type: "string"
+        default: ""
+      compatibility_file:
+        type: "string"
+        default: ""
+      force_full_regression:
+        type: "boolean"
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  NORA_APP_ONLY: ${{ inputs.app_only || false }}
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  source:
+    name: source (${{ inputs.platform }}-${{ inputs.arch }})
+    # These labels are requirements, not a claim that runners are registered.
+    # APP-only acceptance deliberately blocks without a real interactive UI.
+    runs-on: ${{ inputs.app_only && fromJSON(format('["self-hosted","{0}","{1}","nora-launcher-native-ui"]', inputs.platform == 'win32' && 'Windows' || 'macOS', inputs.arch == 'arm64' && 'ARM64' || 'X64')) || inputs.runner }}
+    timeout-minutes: 90
+    env:
+      NORA_STAGE_OPTIONS: ${{ inputs.source_options }}
+      ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+
+    steps:
+      - name: Preserve repository bytes on every platform
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Reject conflicting baseline modes
+        if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          echo 'Choose a published launcher baseline OR a runtime source run, not both.' >&2
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+
+      - name: Prepare the Python interpreter for native backup lock tests
+        id: stage-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pin stage verification interpreters
+        shell: bash
+        env:
+          VERIFIER_PYTHON: ${{ steps.stage-python.outputs.python-path }}
+        run: node -e 'const fs=require("node:fs");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_STAGE_NODE="+process.execPath+"\nNORA_STAGE_PYTHON="+process.env.VERIFIER_PYTHON+"\n")'
+
+      - name: Resolve explicit component publication inputs
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
+
+      - name: Verify embedded Story Profile before preparing runtimes
+        run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
+
+      - name: Verify source ownership and compatible delivery layout
+        run: node --test tests/repository-layout.test.mjs
+
+      - name: Verify launcher build reuse boundaries
+        run: node --test tests/launcher-build-baseline.test.mjs tests/launcher-build-package.test.mjs
+
+      - name: Verify artifact check runner before preparing runtimes
+        run: node --test tests/launcher-artifact-checks.test.cjs
+
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify component release contracts before preparing runtimes
+        run: node --test tests/component-release.test.mjs
+
+      - name: Check source networking in pinned native Chromium before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          node --test tests/release-consumer.test.mjs
+          node launcher/desktop/node_modules/electron/install.js
+          node "$PWD/tooling/checks/launcher-test-environment.mjs" chromium
+          node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_electron_network.test.cjs"
+
+      - name: Verify failed-install recovery and error classification before preparing runtimes
+        timeout-minutes: 5
+        # Operation state runs completely in the mandatory source stability gate.
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_errors.test.cjs" "$PWD/tests/deployment/launcher_operation_policy.test.cjs"
+
+      - name: Verify cold-profile bootstrap identity before preparing runtimes
+        run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" "$PWD/tests/deployment/launcher_operation_lock.test.cjs"
+
+      - name: Select regression from the accepted baseline and exact source
+        id: test-impact
+        shell: bash
+        run: node tooling/checks/launcher-test-impact.mjs --base "$ACCEPTANCE_BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json" --github-output "$GITHUB_OUTPUT"
+
+      - name: Require launcher source stability before preparing runtimes
+        timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && inputs.arch == 'x64') && 20 || 10 }}
+        shell: bash
+        env:
+          FULL_REGRESSION: ${{ steps.test-impact.outputs.full }}
+        run: |
+          set -euo pipefail
+          python -B -c 'import json,os,sys; p=os.path.realpath(sys.executable); s=os.stat(p); print(json.dumps({"sourcePython":p,"mode":oct(s.st_mode & 0o777),"uid":s.st_uid}))'
+          # Later source-contract steps still use the setup-python interpreter.
+          python -m pip install psutil==7.0.0 PyYAML==6.0.2
+          python -m venv --copies "$RUNNER_TEMP/nora-source-python"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export NORA_TEST_PYTHON="$RUNNER_TEMP/nora-source-python/Scripts/python.exe"
+          else
+            export NORA_TEST_PYTHON="$RUNNER_TEMP/nora-source-python/bin/python"
+          fi
+          export NORA_PYTHON="$NORA_TEST_PYTHON"
+          export NORA_TEST_MANAGED_PYTHON_ROOT="$("$NORA_TEST_PYTHON" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          "$NORA_TEST_PYTHON" -m pip install psutil==7.0.0 PyYAML==6.0.2
+          node <<'JS'
+          const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+          const {spawnSync}=require('node:child_process'),{resolveExecution}=require('./launcher/desktop/managed-python');
+          const venvHome=path.dirname(path.dirname(process.env.NORA_TEST_PYTHON));
+          const resolved=resolveExecution(process.env.NORA_TEST_PYTHON,{managedPythonRoot:process.env.NORA_TEST_MANAGED_PYTHON_ROOT,venvHome});
+          const result=spawnSync(resolved.command,['-B','-c','import json,sys,psutil,yaml; print(json.dumps({"prefix":sys.prefix,"basePrefix":sys.base_prefix}))'],{env:resolved.env,encoding:'utf8',timeout:10000});
+          assert.equal(result.status,0,result.stderr||result.error?.message||'Source actor interpreter did not start');
+          const probe=JSON.parse(result.stdout),canonical=value=>process.platform==='win32'?fs.realpathSync(value).toLowerCase():fs.realpathSync(value);
+          assert.equal(canonical(probe.prefix),canonical(venvHome),'Source actor did not select its declared virtual environment');
+          console.log(JSON.stringify({executionIdentity:resolved.executionIdentity,...probe}));
+          JS
+          case "$FULL_REGRESSION" in
+            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs" ;;
+            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$ACCEPTANCE_BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
+            *) echo 'Missing verified test selection' >&2; exit 1 ;;
+          esac
+
+      - name: Check release source contracts before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_releases.test.cjs" "$PWD/tests/deployment/launcher_bundle_contract.test.cjs" "$PWD/tests/deployment/launcher_system_update.test.cjs" "$PWD/tests/deployment/launcher_install_cleanup.test.cjs" "$PWD/tests/deployment/launcher_copy.test.cjs" "$PWD/tests/deployment/launcher_location.test.cjs" "$PWD/tests/deployment/launcher_model_recheck.test.cjs"
+          # Publisher tooling executes from authored source, as its release CLI does.
+          node --test "$PWD/tests/deployment/launcher_publish.test.cjs"
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_standalone_release_sources tests.deployment.test_first_install_bootstrap_entry tests.deployment.test_first_install_shared_assets tests.deployment.test_update_shared_assets tests.deployment.test_update_check tests.deployment.test_clawchat_bundle tests.deployment.test_liveware_cache_release tests.deployment.test_managed_context tests.deployment.test_native_lifecycle_locking tests.deployment.test_native_ownership_recovery tests.deployment.test_nora_instance tests.deployment.test_updater_host_hook tests.deployment.test_updater_runtime_process_detection
+
+      - name: Check installation source contracts before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        # Diagnostics, process output, install source, skills and shutdown ran in the
+        # qualified source gate above. Keep every remaining file unfiltered.
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs" "$PWD/tests/deployment/launcher_console.test.cjs" "$PWD/tests/deployment/launcher_native_crash.test.cjs" "$PWD/tests/deployment/launcher_test_build.test.cjs" "$PWD/tests/deployment/launcher_windows_extract.test.cjs"
+
+      - name: Check presentation source contracts before preparing runtimes
+        if: steps.test-impact.outputs.full == 'true' || steps.test-impact.outputs.ui == 'true'
+        timeout-minutes: 5
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_telemetry.test.cjs" "$PWD/tests/deployment/launcher_error_presentation.test.cjs" "$PWD/tests/deployment/launcher_ui_feedback.test.cjs" "$PWD/tests/deployment/launcher_task_progress.test.cjs"
+
+      - name: Require chat backup safety tests
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NORA_TEST_PYTHON="$(python -B -c 'import sys; print(sys.executable, end="")')"
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+          node --test tests/backup-safety-gate.test.mjs
+          node "$PWD/tooling/checks/verify-backup-safety.mjs"
+
+      - name: Check affected Tavern frontend against existing Nora contracts
+        if: steps.test-impact.outputs.tavern == 'true'
+        timeout-minutes: 15
+        run: node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run test:nora
+
+      - name: Seal complete source stage
+        shell: bash
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs seal source "$RUNNER_TEMP/stage-artifact"'
+      - name: Preserve complete source stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-stage-source-${{ inputs.platform }}-${{ inputs.arch }}
+          path: ${{ runner.temp }}/stage-artifact/*
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  runtime:
+    needs: [source]
+    if: needs.source.result == 'success'
+    name: runtime (${{ inputs.platform }}-${{ inputs.arch }})
+    # These labels are requirements, not a claim that runners are registered.
+    # APP-only acceptance deliberately blocks without a real interactive UI.
+    runs-on: ${{ inputs.app_only && fromJSON(format('["self-hosted","{0}","{1}","nora-launcher-native-ui"]', inputs.platform == 'win32' && 'Windows' || 'macOS', inputs.arch == 'arm64' && 'ARM64' || 'X64')) || inputs.runner }}
+    timeout-minutes: 90
+    env:
+      NORA_STAGE_OPTIONS: ${{ inputs.source_options }}
+      ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+
+    steps:
+      - name: Preserve repository bytes on every platform
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Reject conflicting baseline modes
+        if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          echo 'Choose a published launcher baseline OR a runtime source run, not both.' >&2
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+
+      - name: Prepare the Python interpreter for native backup lock tests
+        id: stage-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pin stage verification interpreters
+        shell: bash
+        env:
+          VERIFIER_PYTHON: ${{ steps.stage-python.outputs.python-path }}
+        run: node -e 'const fs=require("node:fs");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_STAGE_NODE="+process.execPath+"\nNORA_STAGE_PYTHON="+process.env.VERIFIER_PYTHON+"\n")'
+
+      - name: Resolve explicit component publication inputs
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
+
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Restore verified source stage
+        id: test-impact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs restore source'
+
+      - name: Download and verify unchanged published components
+        if: inputs.launcher_baseline_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set --
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then set -- "$@" --app-only; fi
+          node "$PWD/tooling/release/launcher-build-baseline.mjs" "$BASELINE_TAG" "${{ inputs.platform }}-${{ inputs.arch }}" "$RUNNER_TEMP/launcher-baseline" "$@"
+
+      - name: Fetch official ClawChat plugin for the runtime bundle
+        uses: actions/checkout@v4
+        with:
+          repository: clawling/clawchat-plugin-hermes-agent
+          ref: 8651f7078916e60ed1da9f78ec4d1278fef49dd9
+          path: .build-clawchat-plugin
+          persist-credentials: false
+
+      - name: Keep build inputs outside the release source tree
+        shell: bash
+        run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
+
+      - name: Prepare the verified fixed Hermes bootstrap
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --prepare --platform "${{ inputs.platform }}" --output "$RUNNER_TEMP/hermes-bootstrap"
+
+      - name: Install Hermes core without browser components (macOS)
+        if: runner.os == 'macOS' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HERMES_HOME="$RUNNER_TEMP/hermes"
+          export UV_MANAGED_PYTHON=1
+          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/nora-python"
+          export UV_PYTHON_INSTALL_BIN=0
+          revision="$(node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --revision)"
+          bash "$RUNNER_TEMP/hermes-bootstrap/install.sh" \
+            --dir "$HERMES_HOME/hermes-agent" \
+            --hermes-home "$HERMES_HOME" \
+            --commit "$revision" \
+            --force-commit \
+            --skip-setup \
+            --skip-browser \
+            --skip-computer-use \
+            --non-interactive
+
+      - name: Install Hermes core without browser components (Windows)
+        if: runner.os == 'Windows' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:HERMES_HOME = Join-Path $env:RUNNER_TEMP 'hermes'
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-bootstrap/install.ps1'
+          $revision = node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --revision
+          if ($LASTEXITCODE -ne 0) { throw 'Fixed Hermes revision is unavailable' }
+          $stages = @(
+            'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv',
+            'dependencies', 'path', 'config-templates', 'platform-sdks', 'bootstrap-marker'
+          )
+          foreach ($stage in $stages) {
+            & $installer -HermesHome $env:HERMES_HOME `
+              -InstallDir (Join-Path $env:HERMES_HOME 'hermes-agent') `
+              -Commit $revision -ForceCommit `
+              -Stage $stage -NonInteractive -Json -SkipComputerUse
+            if ($LASTEXITCODE -ne 0) { throw "Hermes stage failed: $stage" }
+          }
+
+      - name: Verify fixed Hermes source and Python before runtime packaging
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --verify --hermes-home "$RUNNER_TEMP/hermes" --platform "${{ inputs.platform }}"
+
+      - name: Build integrated runtime
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: bash
+        run: |
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/package-hermes-runtime.mjs" \
+            --hermes-home "$RUNNER_TEMP/hermes" \
+            --output "$RUNNER_TEMP/hermes-runtime" \
+            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
+            --platform "${{ inputs.platform }}" \
+            --arch "${{ inputs.arch }}"
+
+      - name: Download verified runtime baseline
+        if: inputs.runtime_source_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: nora-tavern-${{ inputs.platform }}-${{ inputs.arch }}
+          path: ${{ runner.temp }}/nora-baseline-artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.runtime_source_run }}
+
+      - name: Restore the exact baseline runtime
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+
+      - name: Restore published runtime for existing installation gates
+        if: inputs.launcher_baseline_tag != ''
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
+
+      - name: Reseal baseline with current ClawChat integration
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/package-hermes-runtime.mjs" \
+            --hermes-home "$RUNNER_TEMP/hermes" \
+            --output "$RUNNER_TEMP/hermes-runtime" \
+            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
+            --platform "${{ inputs.platform }}" \
+            --arch "${{ inputs.arch }}"
+
+      - name: Restore the freshly sealed runtime for native acceptance
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/hermes-bootstrap-source"
+          test ! -e "$RUNNER_TEMP/hermes-sealed-build"
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-bootstrap-source"
+          mv "$RUNNER_TEMP/hermes-runtime" "$RUNNER_TEMP/hermes-sealed-build"
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/hermes-sealed-build" "$RUNNER_TEMP"
+
+      - name: Configure actual operation actors and native lock tests
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          test -f "$py"
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
+
+      - name: Verify native launcher test prerequisites
+        run: node "$PWD/tooling/checks/launcher-test-environment.mjs" native
+
+      - name: Verify actual sealed Hermes cold initialization without dependency installs
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          "$NORA_TEST_PYTHON" -I -B "$PWD/tooling/runtime/hermes-cold-init-check.py" "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/nora-hermes-cold-init-acceptance.json"
+
+      - name: Seal complete runtime stage
+        shell: bash
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs seal runtime "$RUNNER_TEMP/stage-artifact"'
+      - name: Preserve complete runtime stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-stage-runtime-${{ inputs.platform }}-${{ inputs.arch }}
+          path: ${{ runner.temp }}/stage-artifact/*
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  package:
+    needs: [source, runtime]
+    if: needs.source.result == 'success' && needs.runtime.result == 'success'
+    name: package (${{ inputs.platform }}-${{ inputs.arch }})
+    # These labels are requirements, not a claim that runners are registered.
+    # APP-only acceptance deliberately blocks without a real interactive UI.
+    runs-on: ${{ inputs.app_only && fromJSON(format('["self-hosted","{0}","{1}","nora-launcher-native-ui"]', inputs.platform == 'win32' && 'Windows' || 'macOS', inputs.arch == 'arm64' && 'ARM64' || 'X64')) || inputs.runner }}
+    timeout-minutes: 90
+    env:
+      NORA_STAGE_OPTIONS: ${{ inputs.source_options }}
+      ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+
+    steps:
+      - name: Preserve repository bytes on every platform
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Reject conflicting baseline modes
+        if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          echo 'Choose a published launcher baseline OR a runtime source run, not both.' >&2
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+
+      - name: Prepare the Python interpreter for native backup lock tests
+        id: stage-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pin stage verification interpreters
+        shell: bash
+        env:
+          VERIFIER_PYTHON: ${{ steps.stage-python.outputs.python-path }}
+        run: node -e 'const fs=require("node:fs");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_STAGE_NODE="+process.execPath+"\nNORA_STAGE_PYTHON="+process.env.VERIFIER_PYTHON+"\n")'
+
+      - name: Resolve explicit component publication inputs
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
+
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Restore verified source stage
+        id: test-impact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs restore source'
+
+      - name: Restore verified runtime stage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs restore runtime'
+
+      - name: Materialize the exact sealed native runtime
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/hermes-runtime" "$RUNNER_TEMP"
+
+      - name: Fetch official ClawChat plugin for the runtime bundle
+        uses: actions/checkout@v4
+        with:
+          repository: clawling/clawchat-plugin-hermes-agent
+          ref: 8651f7078916e60ed1da9f78ec4d1278fef49dd9
+          path: .build-clawchat-plugin
+          persist-credentials: false
+
+      - name: Keep build inputs outside the release source tree
+        shell: bash
+        run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
+
+      - name: Configure actual operation actors and native lock tests
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          test -f "$py"
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
+
+      - name: Verify native launcher test prerequisites
+        run: node "$PWD/tooling/checks/launcher-test-environment.mjs" native
+
+      - name: Verify committed installation journals before installation tests
+        shell: bash
+        run: |
+          node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_can_be_observed_but_never_recovered tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_tampering_still_refuses_before_stop tests.deployment.test_update_recovery.ManagedInstallRecoveryTests.test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup
+
+      - name: Test release channels and update rollback
+        id: release_contracts
+        continue-on-error: true
+        # Legacy recovery uses the qualified native actor. The other seven
+        # files exercised identical Node fixtures before runtime preparation.
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_system_update.test.cjs"
+
+      - name: Test installation diagnostics on the target platform
+        id: installation_contracts
+        continue-on-error: true
+        # Preserve the changed managed-Python, skill-Python and Electron
+        # contexts. Pure presentation fixtures ran fully before runtimes.
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_native_crash.test.cjs"
+
+      - name: Require all platform contract checks before native acceptance
+        if: ${{ !cancelled() && (steps.release_contracts.outcome != 'success' || steps.installation_contracts.outcome != 'success') }}
+        run: node -e "console.error('Platform contract checks failed; native acceptance and packaging are blocked.'); process.exit(1)"
+
+      - name: Verify Windows runtime before long acceptance tests
+        if: inputs.platform == 'win32'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+
+      - name: Verify Windows owned model and profile fixtures before long tests
+        if: inputs.platform == 'win32'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          NORA_CLAWCHAT_PLUGIN: ${{ runner.temp }}/nora-clawchat-plugin
+        run: |
+          "$NORA_TEST_PYTHON" -B -c 'import os; from pathlib import Path; assert all(Path(os.environ[key]).is_dir() for key in ["NORA_TEST_HERMES", "NORA_CLAWCHAT_PLUGIN"]), "Native fixture inputs must exist"'
+          node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest -v tests.deployment.test_nora_profile.BundledProfileIntegrationTests.test_real_bundled_client_initializes_through_cli_and_preserves_customization tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_real_hermes_custom_save_passes_bridge_recheck
+
+      - name: Test operation ownership, evidence, bounded retry and recovery contracts
+        if: steps.test-impact.outputs.full == 'true' || (inputs.launcher_baseline_tag == '' && inputs.runtime_source_run == '')
+        timeout-minutes: 10
+        # Pure operation policy ran completely before runtime preparation.
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 --test-reporter=tap "$PWD/tests/deployment/launcher_operation_lock.test.cjs" "$PWD/tests/deployment/launcher_operation_state.test.cjs" "$PWD/tests/deployment/launcher_operation_inspection.test.cjs" "$PWD/tests/deployment/launcher_operation_result.test.cjs" "$PWD/tests/deployment/launcher_operation_cli.test.cjs" "$PWD/tests/deployment/launcher_cli_capability.test.cjs" "$PWD/tests/deployment/launcher_runtime_transaction.test.cjs" "$PWD/tests/deployment/launcher_restore_runtime.test.cjs" "$PWD/tests/deployment/launcher_location_admission.test.cjs" "$PWD/tests/deployment/launcher_evidence_store.test.cjs" "$PWD/tests/deployment/launcher_fault_packet.test.cjs" "$PWD/tests/deployment/launcher_diagnostics_operation.test.cjs" "$PWD/tests/deployment/launcher_network_policy.test.cjs" "$PWD/tests/deployment/launcher_retry_conditions.test.cjs" "$PWD/tests/deployment/launcher_release_plan.test.cjs" "$PWD/tests/deployment/launcher_update_executor.test.cjs" "$PWD/tests/deployment/launcher_guidance_flow.test.cjs" "$PWD/tests/deployment/launcher_status_readonly.test.cjs" "$PWD/tests/deployment/launcher_uninstall.test.cjs" "$PWD/tests/deployment/launcher_runtime.test.cjs" "$PWD/tests/deployment/launcher_managed_partial_repair.test.cjs"
+
+      - name: Test native transaction and complete evidence contracts
+        if: steps.test-impact.outputs.full == 'true' || (inputs.launcher_baseline_tag == '' && inputs.runtime_source_run == '')
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics tests.deployment.test_managed_partial_repair tests.deployment.test_update_partial_repair tests.deployment.test_native_lifecycle_locking
+
+      - name: Verify runtime independently of original installation
+        if: inputs.platform != 'win32'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+
+      - name: Test unified update and application replacement
+        if: steps.test-impact.outputs.full == 'true' || (inputs.launcher_baseline_tag == '' && inputs.runtime_source_run == '')
+        shell: bash
+        run: |
+          node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_self_update.test.cjs" "$PWD/tests/deployment/launcher_local_release.test.cjs" "$PWD/tests/deployment/launcher_recovery_route.test.cjs" "$PWD/tests/deployment/launcher_update_package.test.cjs"
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
+
+      - name: Test Nora initialization and profile synchronization
+        if: steps.test-impact.outputs.full == 'true' || steps.test-impact.outputs.content == 'true' || (inputs.launcher_baseline_tag == '' && inputs.runtime_source_run == '')
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_native_startup_evidence tests.deployment.test_launcher_hermes_config
+          "$py" -B -m unittest tests.deployment.test_updater_skill_environment
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
+          export NORA_TEST_HERMES="$("$py" -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]) / "hermes" / "hermes-agent")')"
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_model_provider_skill
+
+      - name: Build release payload
+        shell: bash
+        env:
+          PRODUCTION_MODE: ${{ inputs.production_mode }}
+          LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
+        run: |
+          set -euo pipefail
+          mode=--candidate
+          if [[ "$NORA_APP_ONLY" == "true" && "$PRODUCTION_MODE" != "true" && "$GITHUB_REF_TYPE" != "tag" ]]; then echo 'APP-only native acceptance requires production_mode=true ordinary protocol test artifacts (does not publish).' >&2; exit 1; fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
+          if [[ "$NORA_APP_ONLY" == "true" && ( -z "$LAUNCHER_BASELINE" || -z "$NORA_COMPONENT_PUBLICATION_TAG" ) ]]; then echo 'APP-only requires explicit publication_tag and launcher_baseline_tag' >&2; exit 1; fi
+          # macOS Bash 3.2 treats an empty array as unbound under set -u.
+          set --
+          if [[ -n "$mode" ]]; then set -- "$@" "$mode"; fi
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then set -- "$@" --app-only; fi
+          if [[ -n "$NORA_COMPONENT_PUBLICATION_TAG" ]]; then set -- "$@" --publication-tag "$NORA_COMPONENT_PUBLICATION_TAG"; fi
+          if [[ -n "$NORA_UPDATE_COMPATIBILITY_FILE" ]]; then set -- "$@" --update-compatibility "$NORA_UPDATE_COMPATIBILITY_FILE"; fi
+          if [[ -n "$LAUNCHER_BASELINE" ]]; then
+            node "$PWD/tooling/release/package-release.mjs" "$@" --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
+          else
+            node "$PWD/tooling/release/package-release.mjs" "$@" \
+              --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
+          fi
+
+      - name: Download the official historical payload exclusively for upgrade acceptance
+        if: inputs.initial_release != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/release/acceptance-baseline.mjs" --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ inputs.platform }}-${{ inputs.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline"
+
+      - name: Verify official APP inputs exclusively for native APP-only transition
+        if: inputs.app_only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/release/acceptance-baseline.mjs" --launcher --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ inputs.platform }}-${{ inputs.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline-launcher"
+
+      - name: Freeze verified historical payload for version migration acceptance
+        if: inputs.initial_release != 'true' && !inputs.app_only
+        shell: bash
+        env:
+          ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+        run: |
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          export NORA_UPGRADE_PAYLOAD="$release_dir/nora-tavern-launcher/payload"
+          node <<'NODE'
+          const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+          const semver=require(path.resolve('launcher/desktop/node_modules/semver'));
+          const digest=file=>{const hash=crypto.createHash('sha256'),fd=fs.openSync(file,'r'),buffer=Buffer.alloc(1024*1024);try{let count;while((count=fs.readSync(fd,buffer,0,buffer.length,null)))hash.update(buffer.subarray(0,count));}finally{fs.closeSync(fd);}return hash.digest('hex');};
+          const safe=name=>{assert.match(name,/^[A-Za-z0-9][A-Za-z0-9._-]*$/);return name;};
+          const artifacts=path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline'),platform=`${process.platform}-${process.arch}`;
+          const systemName=`nora-system-${platform}.json`;
+          const matches=fs.readdirSync(artifacts,{recursive:true}).filter(name=>path.basename(name)===systemName);
+          assert.equal(matches.length,1,'Expected exactly one historical platform system manifest');
+          const systemFile=path.join(artifacts,matches[0]),system=JSON.parse(fs.readFileSync(systemFile,'utf8'));
+          assert.equal(system.schema,'nora-system/v1');assert.equal(`${system.platform}-${system.arch}`,platform);
+          assert.equal(system.candidate,false);assert.equal(system.channel,'stable');assert.match(system.version,/^\d+\.\d+\.\d+$/);
+          assert.match(system.commit,/^[a-f0-9]{40}$/);assert.match(process.env.ACCEPTANCE_BASELINE_TAG,/^v\d+\.\d+\.\d+$/);
+          assert.ok(system.files&&typeof system.files==='object'&&!Array.isArray(system.files));
+          const baseline=artifacts,sourceReceipt=JSON.parse(fs.readFileSync(path.join(baseline,'baseline-source-receipt.json'),'utf8'));
+          assert.equal(sourceReceipt.schema,'nora-acceptance-baseline/1');assert.equal(sourceReceipt.tag,process.env.ACCEPTANCE_BASELINE_TAG);assert.equal(sourceReceipt.commit,system.commit);assert.equal(sourceReceipt.platform,platform);
+          for(const [name,entry] of Object.entries(system.files)){
+            safe(name);safe(entry.asset);assert.equal(entry.asset,`${platform}-${name}`);
+            assert.match(entry.sha256,/^[a-f0-9]{64}$/);assert.ok(Number.isSafeInteger(entry.size)&&entry.size>=0);
+            const file=path.join(baseline,name);assert.equal(fs.lstatSync(file).isFile(),true);
+            assert.equal(fs.statSync(file).size,entry.size,`Historical component size mismatch: ${name}`);
+            assert.equal(digest(file),entry.sha256,`Historical component checksum mismatch: ${name}`);
+          }
+          assert.equal(fs.readFileSync(systemFile,'utf8'),fs.readFileSync(path.join(baseline,'nora-system.json'),'utf8'));
+          const read=name=>JSON.parse(fs.readFileSync(path.join(baseline,name),'utf8'));
+          const identity=read('release-manifest.json');assert.equal(identity.schema,'tavern-release/v2');
+          assert.equal(identity.candidate,false);assert.equal(identity.dirty,false);
+          assert.equal(identity.commit,system.commit);assert.equal(identity.versions.tavern,system.version);
+          for(const entry of Object.values(identity.archives||{}))assert.equal(entry.sha256,system.files[safe(entry.name)]?.sha256);
+          for(const [name,key] of [['nora-hermes-runtime.json','hermesRuntime'],['nora-tavern-dependencies.json','dependencies']]){
+            const item=read(name);assert.equal(item.schema,1);assert.equal(`${item.platform}-${item.arch}`,platform);
+            assert.equal(item.sha256,identity[key]?.sha256);assert.equal(item.sha256,system.files[safe(item.archive)]?.sha256);
+          }
+          const payload=path.resolve(process.env.NORA_UPGRADE_PAYLOAD),targetFile=path.join(payload,'release-manifest.json');
+          const target=JSON.parse(fs.readFileSync(targetFile,'utf8')),version=fs.readFileSync('app/.tavern-release-version','utf8').trim();
+          assert.equal(target.versions.tavern,version);assert.equal(target.commit,process.env.GITHUB_SHA);assert.ok(semver.valid(version));
+          const comparison=semver.compare(system.version,version);assert.ok(comparison<0,'Historical acceptance baseline must be strictly older than the target');
+          const proof={schema:'nora-upgrade-baseline/1',sourceTag:process.env.ACCEPTANCE_BASELINE_TAG,baselineTag:process.env.ACCEPTANCE_BASELINE_TAG,targetTag:process.env.NORA_PUBLICATION_TAG,sourceReceiptSha256:digest(path.join(baseline,'baseline-source-receipt.json')),platform,
+            baselineVersion:system.version,baselineCommit:system.commit,baselineManifestSha256:digest(path.join(baseline,'release-manifest.json')),
+            systemManifestSha256:digest(systemFile),targetVersion:version,targetCommit:target.commit,targetManifestSha256:digest(targetFile),
+            verifiedFiles:Object.keys(system.files).length,acceptance:'version-transition-required'};
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),JSON.stringify(proof,null,2)+'\n');
+          fs.appendFileSync(process.env.GITHUB_ENV,`NORA_UPGRADE_REQUIRED=${comparison<0}\nNORA_UPGRADE_BASELINE=${baseline}\nNORA_UPGRADE_PAYLOAD=${payload}\n`);
+          function migrate(){
+            const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto'),{execFileSync}=require('node:child_process');
+            const state=process.argv[2];assert.ok(['running','stopped'].includes(state));
+            const proof=JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),'utf8'));
+            assert.equal(proof.acceptance,'version-transition-required');assert.equal(proof.platform,`${process.platform}-${process.arch}`);
+            const base=path.join(process.env.RUNNER_TEMP,'nora-operation-acceptance',`upgrade-${state}`);
+            execFileSync(process.execPath,[path.resolve('tooling/run.mjs'),'node',path.resolve('tests/deployment/launcher_product_refactor_smoke.cjs'),
+              '--payload',process.env.NORA_UPGRADE_PAYLOAD,'--baseline-release',process.env.NORA_UPGRADE_BASELINE,
+              '--update-release',process.env.NORA_UPGRADE_PAYLOAD,'--start-state',state,'--scratch-base',base,'--keep'],{stdio:'inherit'});
+            const matches=fs.readdirSync(base,{recursive:true}).filter(name=>path.basename(name)==='harness-result.json');
+            assert.equal(matches.length,1,'Expected exactly one retained historical migration report');
+            const file=path.join(base,matches[0]),report=JSON.parse(fs.readFileSync(file,'utf8'));
+            assert.equal(report.outcome,'passed');assert.equal(report.platform,process.platform);assert.equal(report.arch,process.arch);
+            assert.equal(report.actorSourceBinding,'verified-selected-candidate-manifest');assert.equal(report.releaseManifestSha256,proof.targetManifestSha256);
+            assert.equal(report.releaseAcceptance,'isolated-version-transition');assert.equal(report.update,'verified-content-transition');assert.ok(report.changedSourceArtifacts>0);
+            assert.equal(report.updateInitialService,state);assert.equal(report.userData,'retained');assert.equal(report.executorHandles,'verified-closed');
+            const installed=JSON.parse(fs.readFileSync(path.join(report.root,'tavern/tavern-updates/installed.json'),'utf8'));
+            assert.equal(installed.version,proof.targetVersion);
+            const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+            assert.equal(hash(path.join(process.env.NORA_UPGRADE_BASELINE,'release-manifest.json')),proof.baselineManifestSha256);
+            assert.equal(hash(path.join(process.env.NORA_UPGRADE_PAYLOAD,'release-manifest.json')),proof.targetManifestSha256);
+            report.versionTransition={...proof,startState:state};fs.writeFileSync(file,JSON.stringify(report,null,2)+'\n');
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-migration.cjs'),`(${migrate.toString()})();\n`);
+          console.log(JSON.stringify(proof));
+          NODE
+
+      - name: Test real fresh installation and managed update before desktop packaging
+        if: runner.os != 'Windows'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          product_args=()
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then product_args+=(--product-manifest "$release_dir/release-manifest.json"); fi
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" "${product_args[@]}" --payload "$release_dir/nora-tavern-launcher/payload" \
+            --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
+            --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+
+      - name: Test historical version migration with running and stopped Tavern
+        if: runner.os != 'Windows' && env.NORA_UPGRADE_REQUIRED == 'true'
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          node "$RUNNER_TEMP/nora-upgrade-migration.cjs" running
+          node "$RUNNER_TEMP/nora-upgrade-migration.cjs" stopped
+
+      - name: Test Windows installation and managed update with legacy path limits
+        if: runner.os == 'Windows'
+        timeout-minutes: 40
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $registry = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+          $previous = Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
+          try {
+            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Type DWord -Value 0
+            if ((Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled) -ne 0) {
+              throw 'Windows long-path test precondition was not applied'
+            }
+            node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_install_cleanup.test.cjs"
+            if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
+            $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
+            node "$PWD/tooling/run.mjs" $python -B -m unittest tests.deployment.test_installer_windows_paths tests.deployment.test_update_recovery -v
+            if ($LASTEXITCODE -ne 0) { throw 'Windows filesystem regression tests failed' }
+            Move-Item (Join-Path $env:RUNNER_TEMP 'hermes') (Join-Path $env:RUNNER_TEMP 'hermes-build-source')
+            $release = Get-ChildItem release -Directory |
+              Where-Object { $_.Name -match '^(candidate|stable)-' } |
+              Sort-Object Name | Select-Object -Last 1
+            if (-not $release) { throw 'Candidate release payload is missing' }
+            $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
+            $productArgs = @()
+            if ($env:NORA_APP_ONLY -eq 'true') { $productArgs = @('--product-manifest', (Join-Path $release.FullName 'release-manifest.json')) }
+            node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" @productArgs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
+            if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
+            if ($env:NORA_UPGRADE_REQUIRED -eq 'true') {
+              foreach ($state in @('running', 'stopped')) {
+                node (Join-Path $env:RUNNER_TEMP 'nora-upgrade-migration.cjs') $state
+                if ($LASTEXITCODE -ne 0) { throw "Historical migration failed with LongPathsEnabled=0 and $state Tavern" }
+              }
+            }
+          } finally {
+            if ($null -eq $previous) {
+              Remove-ItemProperty -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
+            } else {
+              Set-ItemProperty -Path $registry -Name LongPathsEnabled -Type DWord -Value $previous
+            }
+          }
+
+      - name: Install desktop packaging dependencies
+        shell: bash
+        run: |
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm ci --no-audit --no-fund
+
+      - name: Build lightweight launcher replacement
+        shell: bash
+        run: |
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          node "$PWD/tooling/release/package-launcher-update.cjs" "$release_dir/nora-tavern-launcher/desktop" "${{ inputs.platform }}" "${{ inputs.arch }}"
+
+      - name: Verify actual lightweight update archive
+        shell: bash
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" replacement
+
+      - name: Assemble full installers from the same verified payload
+        shell: bash
+        run: |
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm run "${{ inputs.package_script }}"
+
+      - name: Seal complete package stage
+        shell: bash
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs seal package "$RUNNER_TEMP/stage-artifact"'
+      - name: Preserve complete package stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-stage-package-${{ inputs.platform }}-${{ inputs.arch }}
+          path: ${{ runner.temp }}/stage-artifact/*
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  build:
+    name: acceptance (${{ inputs.platform }}-${{ inputs.arch }})
+    needs: [source, runtime, package]
+    if: needs.source.result == 'success' && needs.runtime.result == 'success' && needs.package.result == 'success'
+    # These labels are requirements, not a claim that runners are registered.
+    # APP-only acceptance deliberately blocks without a real interactive UI.
+    runs-on: ${{ inputs.app_only && fromJSON(format('["self-hosted","{0}","{1}","nora-launcher-native-ui"]', inputs.platform == 'win32' && 'Windows' || 'macOS', inputs.arch == 'arm64' && 'ARM64' || 'X64')) || inputs.runner }}
+    timeout-minutes: 90
+    env:
+      NORA_STAGE_OPTIONS: ${{ inputs.source_options }}
+      ACCEPTANCE_BASELINE_TAG: ${{ inputs.selected_baseline }}
+
+    steps:
+      - name: Preserve repository bytes on every platform
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Reject conflicting baseline modes
+        if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          echo 'Choose a published launcher baseline OR a runtime source run, not both.' >&2
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+
+      - name: Prepare the Python interpreter for native backup lock tests
+        id: stage-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pin stage verification interpreters
+        shell: bash
+        env:
+          VERIFIER_PYTHON: ${{ steps.stage-python.outputs.python-path }}
+        run: node -e 'const fs=require("node:fs");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_STAGE_NODE="+process.execPath+"\nNORA_STAGE_PYTHON="+process.env.VERIFIER_PYTHON+"\n")'
+
+      - name: Resolve explicit component publication inputs
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
+
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Restore verified source stage
+        id: test-impact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs restore source'
+
+      - name: Restore verified runtime stage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs restore runtime'
+
+      - name: Materialize the exact sealed native runtime
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/hermes-runtime" "$RUNNER_TEMP"
+
+      - name: Restore verified package stage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs restore package'
+
+      - name: Configure actual operation actors and native lock tests
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          test -f "$py"
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
+
+      - name: Verify native launcher test prerequisites
+        run: node "$PWD/tooling/checks/launcher-test-environment.mjs" native
+
+      - name: Keep original runtime absent during final APP acceptance
+        shell: bash
+        run: mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+
+      - name: Test the actual Windows setup and installed application
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./tooling/checks/launcher-installed-check.ps1
+
+      - name: Verify real APP production module closure and executor receipts
+        timeout-minutes: 10
+        shell: bash
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" app
+
+      - name: Verify packaged network modules in native Chromium
+        timeout-minutes: 5
+        shell: bash
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" network
+
+      - name: Verify actual APP-only upgrades with running and stopped unchanged core
+        if: inputs.app_only
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          node "$PWD/tooling/release/app-only-acceptance.cjs" --phase run --baseline "$RUNNER_TEMP/nora-upgrade-baseline" \
+            --baseline-launcher "$RUNNER_TEMP/nora-upgrade-baseline-launcher" --target "$release_dir" \
+            --output "$RUNNER_TEMP/nora-operation-acceptance/app-only"
+          cp "$RUNNER_TEMP/nora-operation-acceptance/app-only/nora-upgrade-baseline-acceptance.json" "$RUNNER_TEMP/nora-upgrade-baseline-acceptance.json"
+
+      - name: Verify stage provenance and unchanged product before delivery
+        shell: bash
+        run: '"$NORA_STAGE_NODE" tooling/release/build-stage.cjs provenance'
+
+      - name: Preserve isolated operation acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-operation-acceptance-${{ inputs.platform }}-${{ inputs.arch }}
+          overwrite: true
+          path: |
+            ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
+            ${{ runner.temp }}/nora-operation-acceptance/**/baseline-preparation.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/checkpoint.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/observed.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/finished-status.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/native-*-actions.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/preparation.log
+            ${{ runner.temp }}/nora-packaged-app-acceptance.json
+            ${{ runner.temp }}/nora-hermes-cold-init-acceptance.json
+            ${{ runner.temp }}/nora-electron-network-acceptance.json
+            ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
+            ${{ runner.temp }}/nora-upgrade-baseline/baseline-source-receipt.json
+            ${{ runner.temp }}/nora-installed-*-acceptance.json
+            ${{ runner.temp }}/test-impact.json
+            ${{ runner.temp }}/nora-build-stages.json
+          if-no-files-found: warn
+          retention-days: 90
+
+
+      - name: Verify packaged Nora images and instructions
+        shell: bash
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" images
+
+      - name: Upload launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-tavern-${{ inputs.platform }}-${{ inputs.arch }}
+          overwrite: true
+          path: |
+            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
+            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
+            release/*/system-assets/*
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload shared updater assets
+        if: inputs.platform == 'darwin' && inputs.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-tavern-shared
+          overwrite: true
+          path: |
+            release/*/*.tar.gz
+            release/*/release-manifest.json
+            release/*/bootstrap-manifest.json
+            release/*/first-install-manifest.json
+            release/*/install-*.sh
+            release/*/install-*.ps1
+            release/*/*bootstrap.py
+            release/*/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Preserve built Windows packages when later acceptance fails
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-windows-failed-packaging-diagnostic
+          overwrite: true
+          path: |
+            release/*/nora-tavern-launcher.zip
+            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
+            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
+            release/*/system-assets/*
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0

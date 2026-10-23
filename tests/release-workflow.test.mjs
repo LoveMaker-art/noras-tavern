@@ -12,8 +12,43 @@ const root = path.resolve(import.meta.dirname, '..');
 const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || 'python3', ['-c',
   'import sys,json,yaml\nprint(json.dumps(yaml.load(open(sys.argv[1]),Loader=yaml.BaseLoader)))',
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
-const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
+const caller = load('build-integrated-launcher.yml'), staged=load('launcher-platform-stages.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
+// Existing gate assertions inspect the ordered native path across the real jobs.
+// The stage-specific DAG and transfer contracts are checked separately below.
+const full = structuredClone(caller);
+full.jobs.build.steps=['source','runtime','package','build'].flatMap(stage=>staged.jobs[stage]?.steps||[]);
+full.jobs.build['runs-on']=staged.jobs.build['runs-on'];
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+
+test('same-run stage retries retain successful producers and cannot skip a native acceptance stage',()=>{
+  for(const key of ['runner','platform','arch','package_script'])assert.equal(caller.jobs.build.with[key],`\${{ matrix.${key} }}`);
+  for(const key of ['app_only','production_mode','force_full_regression'])assert.equal(caller.jobs.build.with[key],`\${{ inputs.${key} || false }}`,'tag pushes have typed boolean defaults');
+  assert.equal(caller.jobs.build.with.source_options,"${{ toJSON(inputs || fromJSON('{}')) }}");
+  const sequence=['source','runtime','package','build'];
+  for(const [index,name] of sequence.entries()){
+    const job=staged.jobs[name];assert.equal(caller.jobs.build.strategy['fail-fast'],'false');
+    assert.equal(job['continue-on-error'],undefined);
+    assert.ok(!job.needs?.includes('preflight'),'callee has no cross-platform barrier');
+    for(const dependency of sequence.slice(0,index)){
+      assert.ok(job.needs.includes(dependency));assert.ok(job.if.includes(`needs.${dependency}.result == 'success'`));
+      const restored=job.steps.filter(step=>step.run?.includes(`build-stage.cjs restore ${dependency}`));
+      assert.equal(restored.length,1,`${name} must restore ${dependency} exactly once`);
+    }
+    if(name!=='build'){
+      const seal=job.steps.findIndex(step=>step.run?.includes(`build-stage.cjs seal ${name}`));
+      const upload=job.steps.findIndex(step=>step.with?.name===`nora-stage-${name}-\${{ inputs.platform }}-\${{ inputs.arch }}`);
+      assert.ok(seal>0&&upload>seal);assert.equal(job.steps[upload].if,undefined,'failed stages never produce a reusable artifact');
+      assert.equal(job.steps[upload].with['if-no-files-found'],'error');
+    }
+  }
+  const final=staged.jobs.build.steps;
+  assert.ok(!final.some(step=>/package-release|package-launcher-update|npm run/.test(step.run||'')),'acceptance retry must never rebuild the candidate');
+  assert.ok(!staged.jobs.package.steps.some(step=>step.name==='Require launcher source stability before preparing runtimes'));
+  assert.ok(final.some(step=>step.name==='Verify stage provenance and unchanged product before delivery'));
+  const retained=final.find(step=>step.name==='Preserve isolated operation acceptance evidence');assert.ok(retained.with.path.includes('nora-build-stages.json'));
+  const continuity=staged.jobs.package.steps.find(step=>step.name==='Test native transaction and complete evidence contracts');
+  assert.ok(continuity.run.includes('test_native_maintenance_contract')||continuity.run.includes('test_native_lifecycle_locking'),'continuous recovery checks stay together');
+});
 
 function pythonTestReferences(references) {
   // Inspect syntax only: native test imports can start fixtures or require an
@@ -38,7 +73,7 @@ print(json.dumps(missing))
 
 test('release workflows and source gates reference existing authored test files and Python members', () => {
   const paths = new Set(), references = new Set();
-  for (const workflow of [full, components, publisher]) {
+  for (const workflow of [full, staged, components, publisher]) {
     const source = scripts(workflow).replaceAll('$PWD/', '');
     for (const match of source.matchAll(/(?<![\w./])(?:app\/engine\/sillytavern\/tests|nora-mcp\/tests|story-profile\/tests|tests)\/[\w./-]+\.(?:mjs|cjs|js|py)/g)) paths.add(match[0]);
     for (const match of source.matchAll(/\btests\.deployment\.[A-Za-z_][\w.]*/g)) references.add(match[0]);
@@ -169,7 +204,7 @@ test('native platform selectors preserve diagnostic, concurrency and publication
   assert.equal(full.jobs.build.strategy['fail-fast'], 'false', 'One platform must not cancel the other native jobs');
   assert.deepEqual(full.permissions, { contents: 'read', actions: 'read' });
   const shared = full.jobs.build.steps.find(step => step.name === 'Upload shared updater assets');
-  assert.equal(shared.if, "matrix.platform == 'darwin' && matrix.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)");
+  assert.equal(shared.if, "inputs.platform == 'darwin' && inputs.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)");
 });
 test('the repository default Node major matches all release workflows', () => {
   const defaultNode = fs.readFileSync(path.join(root, '.nvmrc'), 'utf8').trim();
@@ -428,8 +463,8 @@ test('historical acceptance selects published history and runs independently fro
   assert.match(selection.run, /--paginate --slurp/); assert.match(selection.run, /baseline-selection/);
   const historical = full.jobs.build.steps.find(step => step.name?.startsWith('Freeze verified historical'));
   const download = full.jobs.build.steps.find(step => step.name?.startsWith('Download the official historical'));
-  assert.equal(historical.if, "needs.preflight.outputs.initial_release != 'true' && !inputs.app_only");
-  assert.equal(download.if, "needs.preflight.outputs.initial_release != 'true'"); assert.match(download.run, /acceptance-baseline\.mjs/);
+  assert.equal(historical.if, "inputs.initial_release != 'true' && !inputs.app_only");
+  assert.equal(download.if, "inputs.initial_release != 'true'"); assert.match(download.run, /acceptance-baseline\.mjs/);
   assert.equal(download.env.GH_TOKEN, '${{ github.token }}', 'Historical GitHub downloads require the read-only job token');
   assert.equal(full.permissions.contents, 'read'); assert.equal(full.permissions.actions, 'read');
   const early = full.jobs.preflight.steps.find(step => step.name === 'Verify historical download identities before native builds');
@@ -442,7 +477,7 @@ test('historical acceptance selects published history and runs independently fro
   assert.doesNotMatch(download.run, /--identity-only/, 'Native upgrade acceptance still requires the full historical payload');
   assert.ok(!full.jobs.build.env?.GH_TOKEN, 'Do not expose the GitHub token to electron-builder');
   assert.doesNotMatch(historical.run, /RUNTIME_SOURCE_RUN|nora-baseline-artifacts/);
-  const proof = full.jobs.build.steps.find(step => step.with?.name === 'nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}');
+  const proof = full.jobs.build.steps.find(step => step.with?.name === 'nora-operation-acceptance-${{ inputs.platform }}-${{ inputs.arch }}');
   assert.match(proof.with.path, /baseline-source-receipt\.json/);
 });
 test('fresh Hermes builds pin both installers and repository before native runtime packaging', () => {
@@ -459,8 +494,8 @@ test('fresh Hermes builds pin both installers and repository before native runti
   const fresh = "inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''";
   assert.equal(steps[prepareIndex].if, fresh);
   assert.equal(steps[verifyIndex].if, fresh);
-  assert.match(steps[prepareIndex].run, /"\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --prepare --platform "\$\{\{ matrix\.platform \}\}" --output "\$RUNNER_TEMP\/hermes-bootstrap"/);
-  assert.match(steps[verifyIndex].run, /"\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --verify --hermes-home "\$RUNNER_TEMP\/hermes" --platform "\$\{\{ matrix\.platform \}\}"/);
+  assert.match(steps[prepareIndex].run, /"\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --prepare --platform "\$\{\{ inputs\.platform \}\}" --output "\$RUNNER_TEMP\/hermes-bootstrap"/);
+  assert.match(steps[verifyIndex].run, /"\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --verify --hermes-home "\$RUNNER_TEMP\/hermes" --platform "\$\{\{ inputs\.platform \}\}"/);
   const mac = steps[macIndex].run, windows = steps[windowsIndex].run;
   assert.match(mac, /revision="\$\(node "\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --revision\)"/);
   assert.match(mac, /bash "\$RUNNER_TEMP\/hermes-bootstrap\/install\.sh"/);
@@ -580,7 +615,7 @@ test('actual shell entry refuses invalid promotion, shared baseline and rerun in
 });
 test('APP-only builds retain ordinary core gates and require real interactive historical APP evidence after sealing target bytes',()=>{
  assert.equal(full.on.workflow_dispatch.inputs.app_only.default,'false');
- assert.match(full.jobs.build['runs-on'],/inputs\.app_only/);assert.match(full.jobs.build['runs-on'],/nora-launcher-native-ui/);assert.match(full.jobs.build['runs-on'],/matrix\.runner/);
+ assert.match(full.jobs.build['runs-on'],/inputs\.app_only/);assert.match(full.jobs.build['runs-on'],/nora-launcher-native-ui/);assert.match(full.jobs.build['runs-on'],/inputs\.runner/);
  const steps=full.jobs.build.steps,download=steps.find(s=>s.name==='Verify official APP inputs exclusively for native APP-only transition');
  assert.equal(download.if,'inputs.app_only');assert.match(download.run,/acceptance-baseline\.mjs.*--launcher/);assert.doesNotMatch(download.run,/--identity-only/);
  const native=steps.findIndex(s=>s.name==='Verify actual APP-only upgrades with running and stopped unchanged core');
@@ -588,6 +623,6 @@ test('APP-only builds retain ordinary core gates and require real interactive hi
  assert.ok(native>steps.findIndex(s=>s.name==='Verify real APP production module closure and executor receipts'));
  assert.equal(steps[native].if,'inputs.app_only');assert.match(steps[native].run,/app-only-acceptance\.cjs.*--phase run/);
  assert.match(steps[native].run,/--baseline-launcher/);assert.doesNotMatch(steps[native].run,/\|\|\s*true|--skip|manual/);
- const proof=steps.find(s=>s.with?.name==='nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}');
+ const proof=steps.find(s=>s.with?.name==='nora-operation-acceptance-${{ inputs.platform }}-${{ inputs.arch }}');
  for(const name of ['checkpoint.json','observed.json','finished-status.json'])assert.ok(proof.with.path.includes(name));
 });

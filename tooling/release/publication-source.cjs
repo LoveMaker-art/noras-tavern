@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { verifyArchive, extractScript } = require('./reuse-windows-build.cjs');
+const {stageArtifacts,verifyPublishedStages} = require('./build-stage.cjs');
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const fullNames = ['nora-tavern-shared', ...platforms.map(p => `nora-tavern-${p}`),
   ...platforms.map(p => `nora-operation-acceptance-${p}`)];
@@ -333,11 +334,12 @@ function verifyDelivery(run, artifacts, options) {
   assert.ok(['full', 'components'].includes(options.mode));
   const full = options.mode === 'full';
   assert.equal(run.path, `.github/workflows/${full ? 'build-integrated-launcher' : 'publish-component-update'}.yml`);
-  const names = artifacts.artifacts.map(item => item.name).sort();
+  const intermediate = full ? new Set(stageArtifacts(artifacts).map(item=>item.name)) : new Set();
+  const names = artifacts.artifacts.filter(item=>!intermediate.has(item.name)).map(item => item.name).sort();
   const expected = full ? fullNames : componentNames;
   assert.deepEqual(names.filter(name => name !== 'nora-release-plan' && !(full && diagnostics.includes(name))), expected.filter(name => name !== 'nora-release-plan').sort(), 'Incomplete accepted delivery or unexpected artifact');
   if (!full) assert.ok(names.includes('nora-release-plan'), 'Component source must retain its change plan');
-  return artifacts.artifacts.filter(item => !diagnostics.includes(item.name));
+  return artifacts.artifacts.filter(item => !diagnostics.includes(item.name)&&!intermediate.has(item.name));
 }
 function verifyState(run, artifacts, options) {
   identity(run, artifacts, options, ['success', 'failure', 'cancelled']);
@@ -453,6 +455,7 @@ async function materialize(run, artifacts, options, root, kind) {
   }
   if (kind === 'state') verifyRestoredState(path.join(root, 'state'), run, {...options,stateArtifact:accepted[0]});
   else if (options.mode === 'full') {
+    receipt.stageAcceptance = await verifyPublishedStages(path.join(root,'delivery'),path.join(root,'acceptance'),run,artifacts);
     receipt.acceptance = await verifyNativeAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), options.commit);
     assert.ok(options.publishedFacts && options.tag, 'Full publication requires independent published-release facts');
     receipt.historicalAcceptance = await verifyHistoricalAcceptance(path.join(root, 'acceptance'), path.join(root, 'plan'), options.publishedFacts,

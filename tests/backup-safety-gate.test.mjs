@@ -60,7 +60,22 @@ test('the backup gate blocks failing tests, killed workers and timeouts', () => 
 
 for (const workflow of ['build-integrated-launcher.yml', 'publish-component-update.yml']) {
     test(`${workflow} cannot build release components before the mandatory backup gate`, () => {
-        const content = parse(fs.readFileSync(path.join(root, '.github/workflows', workflow), 'utf8'));
+        let content = parse(fs.readFileSync(path.join(root, '.github/workflows', workflow), 'utf8'));
+        if (workflow === 'build-integrated-launcher.yml') {
+            assert.equal(content.jobs.build.uses, './.github/workflows/launcher-platform-stages.yml');
+            content = parse(fs.readFileSync(path.join(root, '.github/workflows/launcher-platform-stages.yml'), 'utf8'));
+            const { source, runtime, package: packaging } = content.jobs;
+            assert.equal(source.if, undefined, 'The source backup gate cannot be conditionally skipped');
+            assert.ok(runtime.needs.includes('source') && runtime.if.includes("needs.source.result == 'success'"));
+            assert.ok(packaging.needs.includes('source') && packaging.if.includes("needs.source.result == 'success'"));
+            assert.ok(packaging.needs.includes('runtime') && packaging.if.includes("needs.runtime.result == 'success'"));
+            const restores = packaging.steps.filter(step => step.run?.includes('build-stage.cjs restore source'));
+            assert.equal(restores.length, 1, 'Packaging must restore the successful source checkpoint');
+            const restoreIndex = packaging.steps.indexOf(restores[0]);
+            assert.ok(restoreIndex < packaging.steps.findIndex(step => invokesAuthoredNodeScript(step.run, packageScript)));
+            // Preserve the gate's command assertions below across the actual DAG.
+            content.jobs = { build: { steps: [...source.steps, ...packaging.steps] } };
+        }
         const buildJobs = Object.values(content.jobs).filter(job => (job.steps || [])
             .some(step => invokesAuthoredNodeScript(step.run, packageScript)));
         assert.equal(buildJobs.length, 1);
