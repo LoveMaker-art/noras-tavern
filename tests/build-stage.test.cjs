@@ -5,7 +5,7 @@ const stage=require('../tooling/release/build-stage.cjs');
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 function fixture(t){const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-stage-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
  const root=path.join(home,'source'),temp=path.join(home,'temp');fs.mkdirSync(root);fs.mkdirSync(temp);
- const expected={repository:'owner/repo',commit:'a'.repeat(40),runId:7,attempt:2,platform:'win32-x64',baseline:'EMPTY',options:{},environment:{imageOS:'win22',imageVersion:'1',node:'v24',python:'3.11',platform:'win32-x64'}};
+ const expected={repository:'owner/repo',commit:'a'.repeat(40),runId:7,attempt:2,platform:'win32-x64',baseline:'EMPTY',options:{},environment:{imageOS:'win22',imageVersion:'1',kernel:'10.0.26100',node:'v24.19.0',python:'3.11.9',platform:'win32-x64'}};
  return {home,root,temp,expected};}
 function job(f,s='source'){return {id:20,run_id:7,run_attempt:2,head_sha:f.expected.commit,name:stage.jobName(s,f.expected.platform),status:'completed',conclusion:'success',
  steps:[...stage.required[s],...(s==='package'?['Test Windows installation and managed update with legacy path limits']:[])].map(name=>({name,status:'completed',conclusion:'success'}))};}
@@ -13,9 +13,16 @@ function receipt(f,s='source'){return {schema:'nora-build-stage/1',stage:s,conte
 test('stage identity rejects another commit, platform, run, inputs, image, interpreter and future attempt',t=>{
  const f=fixture(t);stage.verifyContext(receipt(f),f.expected,'source');
  for(const [key,value] of [['commit','c'.repeat(40)],['platform','darwin-x64'],['runId',8],['repository','fork/repo'],['baseline','v0.1.0'],['attempt',3],['options',{app_only:true}],
-  ...['node','python','imageVersion'].map(key=>['environment',{...f.expected.environment,[key]:'changed'}])]){
+  ...['node','python','imageOS','kernel','platform'].map(key=>['environment',{...f.expected.environment,[key]:'changed'}])]){
   const r=receipt(f);r.context[key]=value;assert.throws(()=>stage.verifyContext(r,f.expected,'source'));}
  const partial=receipt(f,'package');partial.inputs.pop();assert.throws(()=>stage.verifyContext(partial,f.expected,'package'));
+});
+test('a different hosted image batch preserves exact system and tool identity without erasing the producer record',t=>{
+ const f=fixture(t),r=receipt(f),expected=structuredClone(f.expected);expected.environment.imageVersion='2';
+ stage.verifyContext(r,expected,'source');assert.equal(r.context.environment.imageVersion,'1');
+ assert.equal(expected.environment.imageVersion,'2');
+ for(const change of [env=>delete env.imageVersion,env=>env.imageVersion='',env=>env.unreviewedTool='changed']){
+  const bad=structuredClone(r);change(bad.context.environment);assert.throws(()=>stage.verifyContext(bad,expected,'source'));}
 });
 test('an artifact name or same commit alone cannot replace repository, digest, freshness and run binding',t=>{
  const f=fixture(t),item={id:3,name:stage.name('source',f.expected.platform),expired:false,size_in_bytes:10,digest:'sha256:'+'b'.repeat(64),workflow_run:{id:7,head_sha:f.expected.commit,repository_id:9,head_repository_id:9}};
@@ -81,11 +88,14 @@ function chain(f,platform='win32-x64'){
   artifacts.artifacts.push(item);const nativeJob=job(f,s);if(s==='package'&&platform!=='win32-x64')nativeJob.steps.at(-1).name='Test real fresh installation and managed update before desktop packaging';jobs.jobs.push({...nativeJob,id:20+index,name:stage.jobName(s,platform),run_attempt:index+1});
   inputs.push({schema:'nora-stage-input/1',stage:s,artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt:r,producer:{id:20+index,attempt:index+1}});
  }
- artifacts.total_count=artifacts.artifacts.length;jobs.total_count=jobs.jobs.length;return {run,artifacts,jobs,proof:{schema:'nora-build-stages/1',inputs}};
+ artifacts.total_count=artifacts.artifacts.length;jobs.total_count=jobs.jobs.length;return {run,artifacts,jobs,proof:{schema:'nora-build-stages/1',inputs,acceptanceEnvironment:{...f.expected.environment,platform}}};
 }
 test('resumption preserves successful earlier attempts but never mixes upstream products or failed/missing evidence',t=>{
  const f=fixture(t),c=chain(f);assert.deepEqual(stage.verifyStageEvidence(c.proof,c.run,c.artifacts,c.jobs,'win32-x64'),c.proof.inputs[2].receipt.delivery);
  for(const mutate of [
+  c=>delete c.proof.acceptanceEnvironment,
+  c=>c.proof.acceptanceEnvironment.kernel='changed',
+  c=>c.proof.acceptanceEnvironment.python='changed',
   c=>c.proof.inputs[2].receipt.inputs[1].id=999,
   c=>c.proof.inputs[1].receipt.context.environment.node='v26',
   c=>c.jobs.jobs[0].steps[0].conclusion='skipped',
@@ -121,7 +131,7 @@ test('failed final acceptance reuses the exact three successful phase archives o
   for(const s of stage.stages)await stage.restore(s,{...f,root,temp,expected:{...f.expected,attempt},...transport(f,bundles[s],s)});
   assert.equal(fs.readFileSync(path.join(root,'release/stable-fixture/nora-tavern-launcher/desktop/dist/Nora-Tavern-fixture.exe'),'utf8'),'pkg');
   if(attempt===2)assert.throws(()=>{throw Error('isolated final-acceptance fixture failed');});
-  else assert.equal((await stage.provenance(temp,root)).inputs.length,3);
+  else assert.equal((await stage.provenance(temp,root,f.expected.environment)).inputs.length,3);
  }
  assert.equal(builds,3,'no upstream phase was built or resealed by either acceptance attempt');
 });

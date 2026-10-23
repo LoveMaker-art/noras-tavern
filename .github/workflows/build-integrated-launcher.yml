@@ -97,10 +97,10 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
       - name: Install the workflow contract parser
         run: python -m pip install PyYAML==6.0.2 psutil==7.0.0
       - name: Resolve explicit component publication inputs
@@ -215,12 +215,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
       - name: Reject publishing or rebuilding in package-check mode
         run: node "$PWD/tooling/checks/restore-launcher-check-package.cjs" modes
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
       - name: Configure the archive extractor
         shell: pwsh
         run: |
@@ -307,7 +307,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
       - name: Verify accepted Windows source and preserve its exact package bytes
         shell: bash
         run: |

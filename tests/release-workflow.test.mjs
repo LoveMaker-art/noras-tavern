@@ -50,6 +50,24 @@ test('same-run stage retries retain successful producers and cannot skip a nativ
   assert.ok(continuity.run.includes('test_native_maintenance_contract')||continuity.run.includes('test_native_lifecycle_locking'),'continuous recovery checks stay together');
 });
 
+test('all same-run stage handoffs use the same exact verification interpreters',()=>{
+  for(const workflow of [caller,staged])for(const job of Object.values(workflow.jobs))for(const step of job.steps||[]){
+    if(step.uses==='actions/setup-node@v4')assert.equal(step.with['node-version'],'24.19.0');
+    if(step.uses==='actions/setup-python@v5')assert.equal(step.with['python-version'],'3.11.9');
+  }
+});
+
+test('fresh package workers qualify real Chromium before native recovery tests',()=>{
+  const steps=staged.jobs.package.steps;
+  const dependencies=steps.findIndex(step=>step.name==='Install launcher test dependencies');
+  const qualify=steps.findIndex(step=>step.name==='Qualify actual Electron before native recovery tests');
+  const recovery=steps.findIndex(step=>step.name==='Test unified update and application replacement');
+  assert.ok(dependencies>=0&&qualify>dependencies&&recovery>qualify,'each fresh package VM must prepare the real Electron fixture before recovery');
+  assert.match(steps[qualify].run,/node launcher\/desktop\/node_modules\/electron\/install\.js/);
+  assert.match(steps[qualify].run,/launcher-test-environment\.mjs.*chromium/);
+  assert.equal(steps[qualify].if,undefined,'qualify the locked Electron on every native platform');
+});
+
 function pythonTestReferences(references) {
   // Inspect syntax only: native test imports can start fixtures or require an
   // installed runtime. A renamed class/method must fail before reaching them.
@@ -213,7 +231,7 @@ test('the repository default Node major matches all release workflows', () => {
     const setup = Object.values(workflow.jobs).flatMap(job => job.steps || [])
       .filter(step => step.uses?.startsWith('actions/setup-node@'));
     assert.ok(setup.length > 0, `${name} workflow must select its Node version`);
-    for (const step of setup) assert.equal(step.with?.['node-version'], defaultNode,
+    for (const step of setup) assert.equal(step.with?.['node-version'].split('.')[0], defaultNode,
       `${name} workflow differs from the repository default Node major`);
   }
 });
@@ -348,7 +366,7 @@ test('native and component build workflows cannot publish or access publishing c
   assert.ok(backups > componentCheck && backups < runtime, 'The complete backup gate must run before the cold runtime build');
   const backupPython = steps.findIndex(step => step.name === 'Prepare the Python interpreter for native backup lock tests');
   assert.ok(backupPython >= 0 && backupPython < backups);
-  assert.equal(steps[backupPython].with['python-version'], '3.11');
+  assert.equal(steps[backupPython].with['python-version'], '3.11.9');
   assert.match(steps[backups].run, /export NORA_TEST_PYTHON="\$\(python -B -c/);
   assert.equal(steps.filter(step => step.run?.includes('node --test tests/component-release.test.mjs')).length, 1);
   assert.ok(steps.some(step => step.run?.includes('ManagedInstallRecoveryTests.test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup')));
@@ -380,7 +398,7 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   assert.equal(steps.find(step => step.uses === 'actions/checkout@v4').with['fetch-depth'], '0',
     'The frozen client must load its exact historical commit, not a reconstructed current client');
   assert.match(steps[contracts].run, /node "\$PWD\/tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_launcher_shared_logic\.SharedLogicTests\.test_desktop_starts_gateway_before_scheduling_shared_hook/);
-  const python = steps.findIndex(step => step.uses === 'actions/setup-python@v5' && step.with?.['python-version'] === '3.11');
+  const python = steps.findIndex(step => step.uses === 'actions/setup-python@v5' && step.with?.['python-version'] === '3.11.9');
   assert.ok(python >= 0 && python < contracts);
   assert.equal(steps.find(step => step.with?.name === 'nora-release-plan').if, 'always()');
   assert.match(steps[gate].run, /APPROVE_UNKNOWN_INPUTS.*true/);

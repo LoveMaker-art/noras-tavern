@@ -85,7 +85,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
           cache: npm
           cache-dependency-path: |
             app/engine/sillytavern/package-lock.json
@@ -95,7 +95,7 @@ jobs:
         id: stage-python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
 
       - name: Pin stage verification interpreters
         shell: bash
@@ -269,7 +269,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
           cache: npm
           cache-dependency-path: |
             app/engine/sillytavern/package-lock.json
@@ -279,7 +279,7 @@ jobs:
         id: stage-python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
 
       - name: Pin stage verification interpreters
         shell: bash
@@ -498,7 +498,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
           cache: npm
           cache-dependency-path: |
             app/engine/sillytavern/package-lock.json
@@ -508,7 +508,7 @@ jobs:
         id: stage-python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
 
       - name: Pin stage verification interpreters
         shell: bash
@@ -525,6 +525,13 @@ jobs:
       - name: Install launcher test dependencies
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Qualify actual Electron before native recovery tests
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          node launcher/desktop/node_modules/electron/install.js
+          node "$PWD/tooling/checks/launcher-test-environment.mjs" chromium
 
       - name: Restore verified source stage
         id: test-impact
@@ -905,7 +912,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24.19.0'
           cache: npm
           cache-dependency-path: |
             app/engine/sillytavern/package-lock.json
@@ -915,7 +922,7 @@ jobs:
         id: stage-python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11.9'
 
       - name: Pin stage verification interpreters
         shell: bash

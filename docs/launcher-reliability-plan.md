@@ -1123,3 +1123,12 @@ flowchart LR
 修正提交`dfc6b98481285b74d928d87c381fc485396da291`的真实run39910824664又在Ubuntu preflight中失败，job120273185206用时60秒；583项中575通过、8失败。8项均是被错误前移的原生基线／真实打包用例调用只支持Windows／Mac的`readBaseline`，Linux按原产品支持范围被拒绝。本机Mac的583项通过不证明Linux资格，这次前移范围选择错误另行保留，不能归因为产品突然缺少Linux支持。
 
 据此将原Bash参数合同原文移到`tests/launcher-build-shell.test.mjs`，只把该可跨平台整文件前移到Ubuntu；原生基线与真实打包文件继续在三平台source阶段完整执行，新Bash合同也在每个原生平台运行。未添加skip或测试名称过滤，原17项原生／打包／Bash用例全部保留，移动正文逐字节相同。工作流回归明确检查前置组排除原生文件，同时原生组包含全部三文件。6份关联文件85项通过、0失败／跳过，12.875秒；修订后的实际preflight本机退出0、41.437秒，actionlint及定向ESLint通过。证据为`native-shell-case-move.json`、`native-platform-scope-associated.log`及`native-platform-scope-preflight*`。再次统一冻结修正后的单一提交运行三平台，原两轮与两次源码重跑均不覆盖、不记为成功。
+
+
+第三轮固定提交`940bfcb`的run39911728186未通过，原日志全部保留。Windows完整source1044秒、ARM source429秒和runtime300秒成功，ARM跨VM恢复源码与环境检查点已实际完成；Intel source568秒失败，978项中977通过，唯一失败是持续进度用例的180毫秒空闲窗口在子进程首帧前耗尽。对原执行器只增加200毫秒子进程启动延迟，本地从预期总时限错误稳定变为空闲时限错误；正式120秒空闲／30分钟总时限及关闭后才返回的规则没有修改。该用例现依据真实进度驱动受控检查时钟，同时保留真实子进程、独立5秒执行期限、实际关闭确认和其他真实墙钟空闲／重复心跳测试；没有把停滞当通过。
+
+ARM package279秒在真实Mac恢复测试中缺少Electron二进制而失败；此前源码VM安装了Electron，新package VM只有ignore-scripts依赖，不能继承该隐式条件。package现安装锁定Electron并先核验Chromium环境；对应工作流回归先失败后通过，本机真实Electron继承Crashpad与恢复子进程用例通过。其他引用Electron的原生测试、封装依赖、运行时和最终APP入口同步核查，不复制整台VM或把构建依赖全部加入检查点。
+
+Windows runtime61秒在source恢复阶段拒绝了不同GitHub预装镜像批次（20261021.278.1／20261007.264.1）及Node补丁版本（24.22.1／24.21.0）。这次拒绝符合原严格规则，但说明共享执行机不能保证跨阶段镜像批次恒定。说明差异后，用户明确批准：相同系统、架构、内核以及精确Node／Python版本才可复用，允许预装镜像批次不同，保留各阶段原始批次记录。验证工具固定为Node24.19.0／Python3.11.9；Hermes与产品内运行时、产品版本不变。新回归允许仅批次变化，继续拒绝系统／内核／解释器变化、缺失／未知环境字段、缺失最终验收环境和全部原身份／摘要／门禁异常；最终验收保存本次环境，发布消费者也核对。这是用户批准的复用条件修订，不是原规则下已通过。
+
+修正后的实际preflight命令本机退出0、42.201秒：工具合同570项、部署合同168项、极狐源码合同9项均通过，Python共享Hook1项通过，进程组8项中1项Windows专属在Mac跳过；直接关联环境／工作流／发布消费157项通过，0失败／跳过。卸载计时与输出9项定向通过，实际Electron恢复1项通过。额外本机卸载整文件曾被UNINSTALL_SERVICES_UNCONFIRMED进程归属门禁拦住，不能记作通过；未停止正式网关或放宽保护，完整文件仍交由隔离三平台source与native阶段执行。本机第一次关联命令漏选Python路径的ENOENT与后续修订环境字段所需的夹具失败均保留，不计入通过。证据为`native-prerequisites-preflight*`、`native-environment-batch-associated-green.log`、`native-inspection-policy-final.log`、`native-electron-recovery-local.log`及各原生job日志。修订后重新冻结同一提交执行三平台，不混用原轮次产物、不改版本、不发布。

@@ -1963,9 +1963,31 @@ test('repeated progress and diagnostic heartbeats cannot keep a stalled inspecti
 });
 
 test('continuous progress remains bounded by the total inspection limit',async()=>{
-  const run=pythonInspectionHarness(),frame=inspectionFrame.toString();
-  const script=`const frame=${frame};let n=0;setInterval(()=>process.stderr.write(frame(++n,n,0)),25);`;
-  await assert.rejects(run(script,{idleMs:180,maxMs:250,pollMs:5}),error=>error.code==='UNINSTALL_INSPECTION_LIMIT');
+  const {captureChild,stopChild}=require('./launcher_test_lifecycle.cjs');
+  let clock=0,child,held,timer,primary,cleanupFailure;const acknowledged=[];
+  const run=pythonInspectionHarness({onChild:value=>{child=value;held=captureChild(child);},now:progress=>{
+    // Establish continuous work from accepted progress, independently of VM
+    // startup/scheduling. Real idle/duplicate tests exercise the wall clock.
+    if(progress)acknowledged.push(clock+=50);
+    return clock;
+  }}),frame=inspectionFrame.toString();
+  const script=`const frame=${frame};let n=0;setTimeout(()=>setInterval(()=>process.stderr.write(frame(++n,n,0)),25),250);`;
+  try{
+    await assert.rejects(Promise.race([run(script,{idleMs:180,maxMs:250,pollMs:5}),new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Object.assign(new Error('Continuous inspection fixture exceeded its real execution deadline'),
+        {code:'FIXTURE_INSPECTION_TIMEOUT'})),5000);
+    })]),error=>error.code==='UNINSTALL_INSPECTION_LIMIT');
+    assert.ok(acknowledged.length>=5,'actual advancing progress must reach the logical total limit');
+    assert.ok(clock>=250);assert.equal(held.didClose,true);
+    assert.ok(held.stderr.includes('nora-uninstall-progress/1'));
+    assert.ok(held.result.signal||held.result.code!==0,'the actual inspector must be stopped before failure returns');
+  }catch(error){primary=error;throw error;}
+  finally{
+    clearTimeout(timer);
+    try{await stopChild(child,{signal:'SIGKILL',timeoutMs:1000});}
+    catch(error){if(primary)primary.cleanupFailure=error;else cleanupFailure=error;}
+  }
+  if(cleanupFailure)throw cleanupFailure;
 });
 
 test('progress never substitutes for successful exit and the final safe result',async()=>{

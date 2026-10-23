@@ -229,7 +229,7 @@ function fullCliFixture(t, {staged=false}={}) {
     for(const platform of tools.platforms){const inputs=[];
       for(const [index,phase] of tools.stages.entries()){
         const item={...f.artifacts.artifacts[0],id:100+stageArtifacts.length,name:tools.name(phase,platform)};stageArtifacts.push(item);
-        const context={repository:f.options.repository,commit:f.options.commit,runId:123,attempt:index+1,platform,baseline:'EMPTY',options:{},environment:{imageOS:'fixture',imageVersion:'1',node:'24',python:'3.11',platform}};
+        const context={repository:f.options.repository,commit:f.options.commit,runId:123,attempt:index+1,platform,baseline:'EMPTY',options:{},environment:{imageOS:'fixture',imageVersion:'1',kernel:'fixture',node:'24.19.0',python:'3.11.9',platform}};
         const [file,bytes]=members['nora-tavern-'+platform][0];
         const receipt={schema:'nora-build-stage/1',stage:phase,context,inputs:inputs.map(input=>({stage:input.stage,...input.artifact})),
           archive:{size:10,sha256:hash('fixture stage')},delivery:phase==='package'?{[file]:{size:Buffer.byteLength(bytes),sha256:hash(bytes)}}:null};
@@ -238,7 +238,7 @@ function fullCliFixture(t, {staged=false}={}) {
         stageJobs.push({id,run_id:123,head_sha:f.options.commit,run_attempt:index+1,name:tools.jobName(phase,platform),status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
         inputs.push({schema:'nora-stage-input/1',stage:phase,artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt,producer:{id,attempt:index+1}});
       }
-      members['nora-operation-acceptance-'+platform].push(['nora-build-stages.json',JSON.stringify({schema:'nora-build-stages/1',inputs})]);
+      members['nora-operation-acceptance-'+platform].push(['nora-build-stages.json',JSON.stringify({schema:'nora-build-stages/1',inputs,acceptanceEnvironment:{...inputs[0].receipt.context.environment,imageVersion:'2'}})]);
       const gates=['Verify stage provenance and unchanged product before delivery','Verify real APP production module closure and executor receipts','Verify packaged network modules in native Chromium',
         'Verify packaged Nora images and instructions','Preserve isolated operation acceptance evidence','Upload launcher',...(platform==='win32-x64'?['Test the actual Windows setup and installed application']:[])];
       stageJobs.push({id:200+stageJobs.length,run_id:123,head_sha:f.options.commit,run_attempt:3,name:tools.jobName('build',platform),status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});

@@ -386,7 +386,7 @@ test('the called native workflow is a committed build input; altered interpreter
     const repo=repository(t),file='.github/workflows/launcher-platform-stages.yml';
     const native=fs.readFileSync(path.join(root,file),'utf8');repo.write(file,native);repo.git('add','.');repo.git('commit','--quiet','-m','stage baseline');
     const baseline=readGitSnapshot(repo.directory,repo.git('rev-parse','HEAD'));
-    repo.write(file,native.replace('node-version: 24','node-version: 26'));repo.git('add','.');repo.git('commit','--quiet','-m','stage interpreter');
+    repo.write(file,native.replace(/node-version: [^\n]+/,"node-version: '26.0.0'"));repo.git('add','.');repo.git('commit','--quiet','-m','stage interpreter');
     const current=readGitSnapshot(repo.directory,repo.git('rev-parse','HEAD')),plan=createReleasePlan({baseline,current});
     assert.equal(plan.mode,'full');assert.deepEqual(plan.build.environment.hermesRuntime,[...PLATFORMS].sort());
     repo.write(file,native.replace('node --test tests/repository-layout.test.mjs','node tooling/runtime/unreviewed-builder.mjs'));

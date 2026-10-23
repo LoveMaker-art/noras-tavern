@@ -31,13 +31,21 @@ function context(env=process.env) {
     return {repository:env.GITHUB_REPOSITORY,commit:env.GITHUB_SHA,runId:Number(env.GITHUB_RUN_ID),
         attempt:Number(env.GITHUB_RUN_ATTEMPT),platform,baseline:env.ACCEPTANCE_BASELINE_TAG,options:canonical(options),environment};
 }
+function environmentIdentity(environment) {
+    assert.ok(environment&&typeof environment==='object'&&!Array.isArray(environment),'Missing stage environment');
+    assert.deepEqual(Object.keys(environment).sort(),['imageOS','imageVersion','kernel','node','platform','python']);
+    for(const value of Object.values(environment))assert.ok(typeof value==='string'&&value.trim().length>0&&value.length<=1024,'Invalid stage environment field');
+    // Hosted image batches rotate between fresh workers. Preserve their exact
+    // versions in receipts, while qualifying the same OS/kernel and pinned tools.
+    return Object.fromEntries(Object.entries(environment).filter(([key])=>key!=='imageVersion'));
+}
 function verifyContext(receipt, expected, stage) {
     assert.equal(receipt.schema,'nora-build-stage/1');assert.equal(receipt.stage,stage);
     for(const key of ['repository','commit','runId','platform','baseline'])assert.equal(receipt.context[key],expected[key],`Stage ${key} differs`);
     assert.match(receipt.context.baseline||'',/^(?:EMPTY|v\d+\.\d+\.\d+)$/);
     assert.ok(Number.isSafeInteger(receipt.context.attempt)&&receipt.context.attempt>0&&receipt.context.attempt<=expected.attempt,'Invalid producer attempt');
     assert.deepEqual(receipt.context.options,expected.options,'Stage inputs differ');
-    assert.deepEqual(receipt.context.environment,expected.environment,'Stage execution environment changed; rerun the affected producer');
+    assert.deepEqual(environmentIdentity(receipt.context.environment),environmentIdentity(expected.environment),'Stage execution environment changed; rerun the affected producer');
     assert.match(receipt.archive.sha256,/^[a-f0-9]{64}$/);assert.ok(Number.isSafeInteger(receipt.archive.size)&&receipt.archive.size>0);
     assert.deepEqual(receipt.inputs.map(input=>input.stage),previous(stage),'Incomplete stage dependencies');
 }
@@ -206,10 +214,10 @@ async function restore(stage,{root=process.cwd(),temp=process.env.RUNNER_TEMP,ex
     }
     fs.rmSync(scratch,{recursive:true,force:true});return proof;
 }
-async function provenance(temp=process.env.RUNNER_TEMP,root=process.cwd()) {
+async function provenance(temp=process.env.RUNNER_TEMP,root=process.cwd(),environment=context().environment) {
     const inputs=stages.map(stage=>JSON.parse(fs.readFileSync(path.join(temp,`nora-stage-input-${stage}.json`))));
     assert.deepEqual(await deliveryFiles(root),inputs[2].receipt.delivery,'Accepted product differs from sealed package');
-    const value={schema:'nora-build-stages/1',inputs};
+    const value={schema:'nora-build-stages/1',inputs,acceptanceEnvironment:environment};
     fs.writeFileSync(path.join(temp,'nora-build-stages.json'),JSON.stringify(value,null,2)+'\n',{flag:'wx'});return value;
 }
 function stageArtifacts(artifacts) {return artifacts.artifacts.filter(item=>/^nora-stage-(?:source|runtime|package)-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name));}
@@ -218,6 +226,7 @@ function verifyStageEvidence(value,run,artifacts,jobs,platform) {
     const expected={...value.inputs[0].receipt.context,attempt:run.run_attempt};
     assert.equal(expected.repository,run.repository.full_name);assert.equal(expected.runId,run.id);assert.equal(expected.commit,run.head_sha);assert.equal(expected.platform,platform);
     assert.equal(run.head_repository.id,run.repository.id);assert.equal(jobs.total_count,jobs.jobs.length,'Incomplete job listing');
+    assert.deepEqual(environmentIdentity(value.acceptanceEnvironment),environmentIdentity(expected.environment),'Final acceptance environment differs');
     for(const input of value.inputs){
         verifyContext(input.receipt,expected,input.stage);
         const matches=artifacts.artifacts.filter(item=>item.id===input.artifact.id);assert.equal(matches.length,1,'Missing original stage artifact');
