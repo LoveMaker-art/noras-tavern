@@ -1548,6 +1548,24 @@ test('a failed normal update retains the prior partial closure through actual re
  assert.deepEqual(fs.readFileSync(path.join(f.instance.installRoot,'tavern-state/native/default-user/chats/chat.jsonl')),before);
 });
 
+test('confirmed recovery allows later story edits through closed histories, updates and keep uninstall',{timeout:60000},async t=>{
+ for(const followup of ['keep','update'])await t.test(followup,async t=>{
+ const f=await restoredPartialRuntimeFixture(t,{pythonOnly:true});
+ await advancePartialSystemFixture(f,{restore:true});await f.inspect();
+ const state=path.join(f.instance.installRoot,'tavern-state');
+ const edited=new Map([
+  ['native/default-user/chats/chat.jsonl','new user chat after recovery'],
+  ['native/default-user/characters/edited.json','{"name":"edited character"}'],
+  ['native/default-user/nora-world-core/worlds/edited/manifest.json','{"title":"edited world"}'],
+ ]);
+ for(const [relative,data] of edited){const file=path.join(state,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,data);}
+ await f.inspect();
+ if(followup==='update'){await advancePartialSystemFixture(f,{version:'2.4.7',commit:'c'.repeat(40)});await f.inspect();}
+ await f.cleanup('keep');
+ for(const [relative,data] of edited)assert.equal(fs.readFileSync(path.join(state,relative),'utf8'),data);
+ });
+});
+
 test('retired partial proof rejects tampering, unknown successors and preserves metadata across Operation archive',{timeout:60000},async t=>{
  const f=await restoredPartialRuntimeFixture(t),next=await advancePartialSystemFixture(f);prunePartialFixture(f,next);await f.inspect();
  const reference=next.record.effectClosureRefs[0],proofFile=path.join(f.home,reference.path),raw=fs.readFileSync(proofFile);

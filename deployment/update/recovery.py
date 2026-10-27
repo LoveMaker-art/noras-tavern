@@ -652,6 +652,7 @@ class Journal:
         state=self.plan.get('state')
         if state is not None and not isinstance(state,dict):raise RuntimeError('剧情状态恢复计划格式无效')
         if state:
+            if state.get('verifiedBeforeResume') is not None:self.story_writes_released()
             active=safe_path(self.root,'tavern-state');saved=safe_path(self.backup,'state')
             if state.get('phase') in ('pending','copying','untouched'):
                 if identity(active)!=state.get('oldIdentity'):raise RuntimeError('未完成状态备份且原数据身份已变化')
@@ -659,6 +660,7 @@ class Journal:
         return self
 
     def check_tree(self,item,target,saved,*,state=False,full=True):
+        verify_current=full and not (state and self.story_writes_released())
         old=item.get('savedIdentity') if state and item.get('mode')=='copy' else item.get('oldIdentity')
         expected=item.get('savedDigest') if state and item.get('mode')=='copy' else item.get('oldDigest')
         saved_id=identity(saved);current_id=identity(target)
@@ -668,11 +670,41 @@ class Journal:
             if current_id is not None and current_id not in accepted:raise RuntimeError('当前目标身份未知，未覆盖文件')
         elif old is not None:
             if current_id!=old:raise RuntimeError('旧备份缺失且原目标尚未安全恢复')
-            if full and state and item.get('phase')=='restored':
+            if verify_current and state and item.get('phase')=='restored':
                 self.verify_story_inventory(target)
-            elif full and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
+            elif verify_current and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
         elif current_id is not None and current_id!=item.get('newIdentity'):
             raise RuntimeError('新建目标身份未知，未覆盖文件')
+
+    def story_checkpoint(self):
+        state=self.plan.get('state')
+        if not state or state.get('phase') not in ('restored','untouched'):return None
+        inventory=json.dumps(state.get('storyInventory',{}),sort_keys=True,separators=(',',':')).encode()
+        copied=state.get('phase')=='restored' and state.get('mode')=='copy'
+        return {'schema':1,'phase':state['phase'],'identity':state.get('savedIdentity') if copied else state.get('oldIdentity'),
+                'digest':state.get('savedDigest') if copied else state.get('oldDigest'),
+                'inventorySha256':hashlib.sha256(inventory).hexdigest()}
+
+    def story_writes_released(self):
+        state=self.plan.get('state') or {};checkpoint=state.get('verifiedBeforeResume')
+        if checkpoint is not None:
+            identity_value=checkpoint.get('identity') if isinstance(checkpoint,dict) else None
+            if (not isinstance(checkpoint,dict) or type(checkpoint.get('schema')) is not int
+                    or identity_value is not None and (not isinstance(identity_value,list) or len(identity_value)!=2
+                        or any(type(value) is not int for value in identity_value))
+                    or checkpoint!=self.story_checkpoint()):
+                raise RuntimeError('恢复数据验收检查点与原来源不一致')
+            return True
+        # Older writers also validated offline before these durable phases.
+        # Preserve that boundary when continuing an interrupted service restart.
+        return (state.get('phase') in ('restored','untouched') and self.plan.get('metadataPhase')=='restored'
+                and all(item.get('phase') in ('pending','restored') for item in self.plan.get('targets',[]))
+                and (self.plan.get('phase')=='restored' and self.record.get('status')=='restored'
+                     or self.plan.get('phase')=='resuming-services' and self.record.get('status') in RECOVERABLE_STATES))
+
+    def mark_story_verified(self):
+        checkpoint=self.story_checkpoint()
+        if checkpoint is not None:self.plan['state']['verifiedBeforeResume']=checkpoint
 
     def verify_story_inventory(self,target):
         for relative,expected in (self.plan.get('state') or {}).get('storyInventory',{}).items():
@@ -1183,7 +1215,10 @@ def effects(home,root):
         elif metadata=='restored' and all(value in ('pending','restored') for value in phases) and state_phase in ('pending','copying','untouched','restored'):
             effect='restored'
         else: effect='changed'
-        outcome='not-required' if effect=='untouched' else 'restored-and-verified' if journal.record.get('status')=='restored' else 'files-restored-start-failed' if effect=='restored' else 'recovery-required'
+        data_pending=state and state.get('phase')=='restored' and not journal.story_writes_released()
+        outcome=('not-required' if effect=='untouched' else 'recovery-required' if data_pending
+                 else 'restored-and-verified' if journal.record.get('status')=='restored'
+                 else 'files-restored-start-failed' if effect=='restored' else 'recovery-required')
         return {'effectState':effect,'recoveryOutcome':outcome,'reason':'',
                 'canRecover':journal.record.get('status') in RECOVERABLE_STATES,
                 'status':journal.record.get('status'),'operationId':journal.record.get('operationId')}
@@ -1191,16 +1226,18 @@ def effects(home,root):
         return {'effectState':'unknown','recoveryOutcome':'recovery-required','canRecover':False,'reason':str(error)}
 
 
-def recover(home,root,*,stop,resume,verify):
+def recover(home,root,*,stop,resume,verify,verify_files=None):
     journal=load(home,root);plan=journal.plan;backup=journal.backup
     gate=getattr(sys,'_nora_operation_delegate',None)
     if gate is not None:
         gate.assert_active()
         if journal.record.get('operationId') and journal.record['operationId']!=gate.operation_id:
             raise RuntimeError('更新事务属于另一次操作，未覆盖当前文件。请从原操作恢复入口继续。')
-    original_effect=effects(home,root)['effectState']
     reason=recovery_block_reason(journal.record.get('status'))
     if reason:raise RuntimeError(reason)
+    original_effect=effects(home,root)['effectState']
+    data_released=journal.story_writes_released()
+    if data_released:journal.mark_story_verified()
     try:
         plan['phase']='stopping';journal.save('recovery-failed')
         stopped=stop(plan,backup)
@@ -1220,7 +1257,9 @@ def recover(home,root,*,stop,resume,verify):
         # Authoritative backup and managed bytes are checked while services are
         # offline. Running code may legitimately create cache/generated files.
         journal.validate()
+        if verify_files is not None and not data_released:verify_files(plan,backup)
         journal.preserve_startup_backups()
+        journal.mark_story_verified()
         plan['phase']='resuming-services';journal.save();resume(plan,backup)
         journal.preserve_startup_backups(restore=True)
         proof=verify(plan,backup)
@@ -1236,9 +1275,6 @@ def recover(home,root,*,stop,resume,verify):
             raise RuntimeError('未恢复原服务状态：clawchatConnected')
         # Identity remains strict after start, without whole-tree byte checks.
         journal.validate(full=False)
-        state=plan.get('state')
-        if state and state.get('phase')=='restored':
-            journal.verify_story_inventory(journal.root/'tavern-state')
         plan['phase']='restored';journal.record['recovery']='restored';journal.record.pop('error',None)
         journal.save('restored')
         journal.receipt_status('restored')
