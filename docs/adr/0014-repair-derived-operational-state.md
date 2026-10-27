@@ -3,6 +3,23 @@
 - Status: Accepted
 - Date: 2026-09-01
 
+## Scope clarification — 2026-10-27
+
+[Product baseline 1.35](../product/README.md#validation-boundaries) limits the
+historical decision below: user content and user-data backups are not immutable
+program-maintenance evidence. Their edits, replacement or deletion do not by
+themselves block program startup, update, rollback or data-retaining uninstall.
+Program rollback preserves current user content. A source check constrains the
+specific operation that would consume that source; actual competing program
+writes still constrain conflicting operations. User-authorized content restore
+or configuration changes retain their own operation-specific validation.
+
+The current updater still snapshots and restores whole state and retains some
+data/configuration digest gates. This implementation gap is recorded as
+[L-D07](../product/launcher.md#differences); merging the existing partial fixes
+does not implement the full separation. The historical text below records the
+earlier decision and must not override the newer product scope.
+
 ## Context
 
 The updater accumulated several durable-looking files that are actually hints,
