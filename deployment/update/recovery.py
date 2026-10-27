@@ -669,14 +669,81 @@ class Journal:
         elif old is not None:
             if current_id!=old:raise RuntimeError('旧备份缺失且原目标尚未安全恢复')
             if full and state and item.get('phase')=='restored':
-                for relative,expected_file in item.get('storyInventory',{}).items():
-                    current=safe_path(target,relative)
-                    if not _io_path(current).exists() and self.startup_backup(relative,expected_file) is not None:
-                        continue  # Verified archive remains recoverable after a restart cut.
-                    if not _io_path(current).is_file() or digest(current)!=expected_file:raise RuntimeError('恢复后原有剧情数据发生变化')
+                self.verify_story_inventory(target)
             elif full and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
         elif current_id is not None and current_id!=item.get('newIdentity'):
             raise RuntimeError('新建目标身份未知，未覆盖文件')
+
+    def verify_story_inventory(self,target):
+        for relative,expected in (self.plan.get('state') or {}).get('storyInventory',{}).items():
+            current=safe_path(target,relative)
+            if _io_path(current).is_file() and digest(current)==expected:continue
+            if not _io_path(current).exists() and self.startup_backup(relative,expected) is not None:
+                continue  # A verified maintenance archive retains the rotating copy.
+            kind='changed' if _io_path(current).exists() else 'missing'
+            error=RuntimeError('恢复后原有剧情数据发生变化 '
+                               f'[relative={relative}; reason={kind}; expected={expected}]')
+            error.code='RECOVERY_DATA_UNCONFIRMED';error.relative_path=relative
+            raise error
+
+    def automatic_chat_backup(self,relative,expected,*,prepare=False):
+        """Recognize committed v1 automatic pairs, without duplicating retention.
+
+        The chat store owns expiration/count/byte decisions. Retain exact original
+        bytes here before resuming it; protected, legacy and unknown files never
+        acquire this exception merely by living under a backups directory.
+        """
+        parts=Path(relative).parts
+        if len(parts)<4 or parts[0]!='native' or parts[2]!='backups':return None
+        match=(re.fullmatch(r'chat_nora1_([a-f0-9-]{36})\.jsonl',parts[3]) if len(parts)==4
+               else re.fullmatch(r'([a-f0-9-]{36})\.json',parts[4])
+               if len(parts)==5 and parts[3]=='.nora-chat' else None)
+        if match is None:return None
+        backup_id=match[1];base=Path('native')/parts[1]/'backups'
+        pair=[(base/f'chat_nora1_{backup_id}.jsonl').as_posix(),(base/'.nora-chat'/f'{backup_id}.json').as_posix()]
+        inventory=(self.plan.get('state') or {}).get('storyInventory',{})
+        if inventory.get(relative)!=expected or any(name not in inventory for name in pair):return None
+        archive=safe_path(self.backup,'startup-chat-backups')
+
+        def verified(root):
+            data,metadata=[safe_path(root,name) for name in pair]
+            if any(not _io_path(file).is_file() for file in (data,metadata)):return False
+            if any(digest(file)!=inventory[name] for name,file in zip(pair,(data,metadata))):return False
+            try:value=read_object(metadata,max_bytes=65536)
+            except (OSError,ValueError,RuntimeError):return False
+            if (type(value.get('version')) is not int or value['version']!=1
+                    or value.get('id')!=backup_id or value.get('protected') is not False
+                    or not re.fullmatch('[a-f0-9]{64}',str(value.get('sha256','')))
+                    or not re.fullmatch('[a-f0-9]{64}',str(value.get('sessionKey','')))
+                    or any(type(value.get(key)) is not int or value[key]<minimum or value[key]>2**53-1
+                           for key,minimum in (('bytes',0),('createdAt',0),('sequence',1)))
+                    or value['bytes']>256*1024*1024 or value['bytes']!=_io_path(data).stat().st_size
+                    or value.get('consistency')!='chat-only'
+                    or (value.get('mvuState') if value.get('mvuState') is not None else 'unverified')
+                        not in ('unverified','pending','incomplete','confirmed')
+                    or any(key not in value or value[key] is not None and not isinstance(value[key],str)
+                           for key in ('worldId','sessionId'))):return False
+            actual=hashlib.sha256()
+            with _io_path(data).open('rb') as stream:
+                for chunk in iter(lambda:stream.read(1024*1024),b''):actual.update(chunk)
+            return actual.hexdigest()==value['sha256']
+
+        present=[_io_path(safe_path(archive,name)).exists() for name in pair]
+        if any(present):
+            for name,exists in zip(pair,present):
+                if exists and digest(safe_path(archive,name))!=inventory[name]:
+                    raise RuntimeError('启动前封存的聊天备份已变化，已保留现场')
+            if all(present):
+                if not verified(archive):raise RuntimeError('启动前封存的聊天备份无法核验，已保留现场')
+                return safe_path(archive,relative)
+        if not prepare:return None
+        for root in (self.root/'tavern-state',self.backup/'state',self.backup/'failed-new/state'):
+            if not verified(root):continue
+            for name,exists in zip(pair,present):
+                if not exists:copy_startup_backup(safe_path(root,name),safe_path(archive,name),inventory[name])
+            if not verified(archive):raise RuntimeError('启动前封存的聊天备份无法核验，未启动旧版本')
+            return safe_path(archive,relative)
+        return None
 
     def startup_backup(self,relative,expected,*,prepare=False):
         parts=Path(relative).parts
@@ -684,7 +751,7 @@ class Journal:
         # startup. Preserve their bytes, rather than weakening story checks.
         if (len(parts)!=4 or parts[0]!='native' or parts[2]!='backups'
                 or re.fullmatch('settings_'+re.escape(parts[1])+r'_[0-9]{8}-[0-9]{6}\.json',parts[3]) is None):
-            return None
+            return self.automatic_chat_backup(relative,expected,prepare=prepare)
         archive=safe_path(self.backup,'startup-settings-backups/'+Path(relative).as_posix())
         if _io_path(archive).exists():
             if not _io_path(archive).is_file() or digest(archive)!=expected:
@@ -702,6 +769,8 @@ class Journal:
         for relative,expected in (self.plan.get('state') or {}).get('storyInventory',{}).items():
             saved=self.startup_backup(relative,expected,prepare=not restore)
             if saved is None or not restore:continue
+            if saved.relative_to(self.backup).parts[0]=='startup-chat-backups':
+                continue  # Keep normal retention in effect; recovery evidence stays archived.
             target=safe_path(self.root/'tavern-state',Path(relative).as_posix())
             if not _io_path(target).exists():
                 copy_startup_backup(saved,target,expected)
@@ -1169,10 +1238,7 @@ def recover(home,root,*,stop,resume,verify):
         journal.validate(full=False)
         state=plan.get('state')
         if state and state.get('phase')=='restored':
-            for relative,expected in state.get('storyInventory',{}).items():
-                current=safe_path(journal.root/'tavern-state',relative)
-                if not _io_path(current).is_file() or digest(current)!=expected:
-                    raise RuntimeError('恢复后原有剧情数据发生变化')
+            journal.verify_story_inventory(journal.root/'tavern-state')
         plan['phase']='restored';journal.record['recovery']='restored';journal.record.pop('error',None)
         journal.save('restored')
         journal.receipt_status('restored')

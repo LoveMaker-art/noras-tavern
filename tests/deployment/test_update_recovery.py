@@ -791,6 +791,84 @@ class CronMetadataClassificationTests(unittest.TestCase):
 
 
 class InterruptedRecoveryTests(unittest.TestCase):
+    def rolling_chat_backup(self, mode):
+        from ops.tests.launcher_test_environment import resolve_node
+        program = r'''
+import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';
+const {createChatBackupStore}=await import(pathToFileURL(path.resolve('app/engine/sillytavern/src/chat-backup-store.js')));
+const [mode,root]=process.argv.slice(1),directories={root,chats:path.join(root,'chats'),backups:path.join(root,'backups')};
+for(const dir of Object.values(directories))await fs.mkdir(dir,{recursive:true});
+if(mode==='capture'){
+ const store=createChatBackupStore({directories,now:()=>Date.parse('2026-09-01T00:00:00Z')}),records=[];
+ for(const protect of [false,true]){
+  const filePath=path.join(directories.chats,'fixture.jsonl'),data=JSON.stringify({chat_metadata:{}})+'\n'+JSON.stringify({mes:protect?'kept':'automatic'});
+  await fs.writeFile(filePath,data);records.push(await store.capture({filePath,data,protect}));
+ }console.log(JSON.stringify(records));
+}else console.log(JSON.stringify(await createChatBackupStore({directories,now:()=>Date.parse('2026-10-27T00:00:00Z')}).maintain()));
+'''
+        result=subprocess.run([resolve_node(),'--input-type=module','-e',program,mode,
+                               str(self.state/'native/default-user')],capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        return json.loads(result.stdout)
+
+    def test_recovery_accepts_real_automatic_backup_retention_and_preserves_originals(self):
+        records=self.rolling_chat_backup('capture');automatic,kept=[item['id'] for item in records]
+        original=self.state/'native/default-user/chats/fixture.jsonl';before=original.read_bytes()
+        originals={}
+        for relative in ('characters/retained.json','nora-world-core/worlds/retained/manifest.json',
+                         'nora-story-ledger/retained.json'):
+            file=self.state/'native/default-user'/relative;file.parent.mkdir(parents=True,exist_ok=True)
+            file.write_text('{"fixture":"retained"}');originals[file]=file.read_bytes()
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        maintenance=[]
+        result=self.run_recover(resume=lambda *_:maintenance.append(self.rolling_chat_backup('maintain')))
+        self.assertEqual(result['status'],'restored');self.assert_restored()
+        self.assertEqual(maintenance[0]['deleted'],[automatic]);self.assertEqual(original.read_bytes(),before)
+        backups=self.state/'native/default-user/backups'
+        self.assertFalse((backups/f'chat_nora1_{automatic}.jsonl').exists())
+        self.assertFalse((backups/f'.nora-chat/{automatic}.json').exists())
+        self.assertTrue((backups/f'chat_nora1_{kept}.jsonl').is_file())
+        self.assertTrue((backups/f'.nora-chat/{kept}.json').is_file())
+        for file,expected in originals.items():self.assertEqual(file.read_bytes(),expected)
+
+    def test_retention_after_restart_cut_can_resume_same_recovery(self):
+        self.rolling_chat_backup('capture')
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        def cut(*_):
+            self.rolling_chat_backup('maintain');raise KeyboardInterrupt('fixture cut after backup retention')
+        with self.assertRaises(KeyboardInterrupt):self.run_recover(resume=cut)
+        self.assertEqual(self.run_recover()['status'],'restored');self.assert_restored()
+
+    def test_backup_retention_exception_never_accepts_protected_unknown_or_changed_files(self):
+        for kind in ('protected','legacy','invalid-record','changed-automatic','damaged-archive'):
+            with self.subTest(kind=kind):
+                self.setUp();records=self.rolling_chat_backup('capture')
+                automatic,kept=[item['id'] for item in records];backups=self.state/'native/default-user/backups'
+                target=backups/f'chat_nora1_{kept if kind=="protected" else automatic}.jsonl'
+                if kind=='legacy':target=backups/'legacy-user-backup.json';target.write_text('unknown original')
+                if kind=='invalid-record':
+                    metadata=backups/f'.nora-chat/{automatic}.json';value=json.loads(metadata.read_text())
+                    value['version']=True;metadata.write_text(json.dumps(value))
+                journal=self.journal();journal.snapshot_state();journal.swap('app')
+                def mutate(*_):
+                    if kind=='changed-automatic':target.write_text('changed')
+                    elif kind=='damaged-archive':
+                        self.rolling_chat_backup('maintain')
+                        archived=self.backup/'startup-chat-backups/native/default-user/backups'/f'.nora-chat/{automatic}.json'
+                        archived.write_text('{}')
+                    else:target.unlink()
+                with self.assertRaises(RuntimeError):self.run_recover(resume=mutate)
+                self.assertEqual((self.old/'program.txt').read_text(),'old program')
+                self.assertEqual((self.state/'chat.txt').read_text(),'old chat')
+
+    def test_unknown_backup_metadata_is_preserved_without_becoming_a_restart_gate(self):
+        records=self.rolling_chat_backup('capture');backup_id=records[0]['id']
+        metadata=self.state/f'native/default-user/backups/.nora-chat/{backup_id}.json'
+        metadata.write_text('legacy unreadable metadata');original=metadata.read_bytes()
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        self.assertEqual(self.run_recover()['status'],'restored');self.assert_restored()
+        self.assertEqual(metadata.read_bytes(),original)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='nora-recovery-test-')
         self.addCleanup(self.temp.cleanup)

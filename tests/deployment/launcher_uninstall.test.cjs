@@ -886,7 +886,7 @@ test('only all can clear an offline root with malformed metadata and an unknown 
   fs.writeFileSync(file,JSON.stringify(plan));
   const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
   const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
-  assert.equal(result.state,'complete');assert.equal(result.serviceVerification.mode,'native-root');
+  assert.equal(result.state,'complete',JSON.stringify(result.diagnosticError||result));assert.equal(result.serviceVerification.mode,'native-root');
   assert.equal(result.serviceVerification.method,'native-os');assertLockShell(f.home);
 });
 
@@ -1649,12 +1649,13 @@ test('worker preserves the specific inspection cause and project call stack in i
   assert.equal(fs.readFileSync(path.join(f.home,f.programs[0]),'utf8'),'fixture');
 });
 
-function pythonInspectionHarness({now,onChild,ipc=false}={}) {
+function pythonInspectionHarness({now,onChild,ipc=false,pythonScript,environment=process.env}={}) {
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js');
   const localRequire=createRequire(file),childProcess=require('node:child_process');let childScript,readingProgress=false;
   const context=vm.createContext({require:name=>name==='node:child_process'?{...childProcess,
     spawn:(command,_args,options)=>{
-      const child=childProcess.spawn(command,['-e',childScript],ipc?{...options,stdio:[...options.stdio,'ipc']}:options);onChild?.(child);
+      const child=childProcess.spawn(pythonScript?process.env.NORA_TEST_PYTHON:command,
+        pythonScript?['-B',pythonScript]:['-e',childScript],ipc?{...options,stdio:[...options.stdio,'ipc']}:options);onChild?.(child);
       if(now)child.stderr.on('data',()=>{
         readingProgress=true;queueMicrotask(()=>{readingProgress=false;});
       });
@@ -1662,7 +1663,7 @@ function pythonInspectionHarness({now,onChild,ipc=false}={}) {
     }}:name==='node:perf_hooks'&&now?{...localRequire(name),performance:{now:()=>now(readingProgress)}}:localRequire(name),__filename:file,__dirname:path.dirname(file),module:{exports:{}},
     process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
-  return (script,policy)=>{childScript=script;return context.runPythonInspection({command:process.execPath,env:process.env},'{}',policy);};
+  return (script,policy)=>{childScript=script;return context.runPythonInspection({command:process.execPath,env:environment},'{}',policy);};
 }
 const inspectionFrame=(sequence,bytes,entries)=>JSON.stringify({schema:'nora-uninstall-progress/1',sequence,bytes,entries})+'\n';
 
@@ -2000,10 +2001,50 @@ test('progress never substitutes for successful exit and the final safe result',
   }
 });
 
-test('oversized output or invalid progress fails closed instead of growing buffers',async()=>{
+test('uninstall inspection keeps the concrete failure without progress chatter',async()=>{
   const run=pythonInspectionHarness();
+  const script=`for(let index=1;index<=100;index++)process.stderr.write(JSON.stringify({schema:'nora-uninstall-progress/1',sequence:index,bytes:index*1024,entries:index})+'\\n');
+    process.stderr.write('RuntimeError: unconfirmed launcher effects [job=job-test; phase=prepared; effect=untouched]\\n');process.exitCode=1;`;
+  await assert.rejects(run(script,{idleMs:1000,maxMs:2000,pollMs:10}),error=>{
+    assert.equal(error.code,'UNINSTALL_PYTHON_INSPECTION_FAILED');
+    assert.match(error.message,/phase=prepared; effect=untouched/);
+    assert.doesNotMatch(error.message,/nora-uninstall-progress/);return true;
+  });
+});
+
+test('uninstall Python diagnostics stay readable when the parent requests a non-UTF8 encoding',async t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-inspection-encoding-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const pythonScript=path.join(directory,'inspection.py');
+  fs.writeFileSync(pythonScript,'import sys\nsys.stderr.write("保护数据校验未通过\\n")\nsys.exit(1)\n');
+  const run=pythonInspectionHarness({pythonScript,environment:{...process.env,PYTHONIOENCODING:'ascii',PYTHONUTF8:'0'}});
+  await assert.rejects(run('',{idleMs:5000,maxMs:10000,pollMs:20}),error=>{
+    assert.equal(error.code,'UNINSTALL_PYTHON_INSPECTION_FAILED');
+    assert.match(error.message,/保护数据校验未通过/);assert.doesNotMatch(error.message,/UnicodeEncodeError|\uFFFD/);return true;
+  });
+});
+
+test('oversized output or invalid progress fails closed instead of growing buffers',async()=>{
+  const {captureChild,stopChild}=require('./launcher_test_lifecycle.cjs');
   for(const script of [`process.stdout.write('x'.repeat(20000));setInterval(()=>{},1000);`,
     `process.stderr.write('{"schema":"nora-uninstall-progress/1","sequence":1,"bytes":-1,"entries":1}\\n');setInterval(()=>{},1000);`]){
-    await assert.rejects(run(script,{idleMs:500,maxMs:1000,pollMs:5}),error=>error.code==='UNINSTALL_PYTHON_INSPECTION_FAILED');
+    let child,held,timer,primary,cleanupFailure;
+    // Exercise the output guard independently of process startup latency. The
+    // tests above cover real idle/total deadlines; this child also has a real
+    // cleanup deadline, so a missing output guard cannot hang or pass on timeout.
+    const run=pythonInspectionHarness({now:()=>0,onChild:value=>{child=value;held=captureChild(child);}});
+    try{
+      await assert.rejects(Promise.race([run(script,{idleMs:500,maxMs:1000,pollMs:5}),new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(Object.assign(new Error('Output inspection fixture exceeded its real deadline'),
+          {code:'FIXTURE_INSPECTION_TIMEOUT'})),5000);
+      })]),error=>error.code==='UNINSTALL_PYTHON_INSPECTION_FAILED');
+      assert.equal(held.didClose,true);
+      assert.ok(held.result.signal||held.result.code!==0,'invalid output must terminate the actual inspector');
+    }catch(error){primary=error;throw error;}
+    finally{
+      clearTimeout(timer);
+      try{await stopChild(child,{signal:'SIGKILL',timeoutMs:1000});}
+      catch(error){if(primary)primary.cleanupFailure=error;else cleanupFailure=error;}
+    }
+    if(cleanupFailure)throw cleanupFailure;
   }
 });

@@ -599,32 +599,34 @@ function runPythonInspection(execution,input,policy=INSPECTION_POLICY){
     const started=performance.now();let lastProgress=started,sequence=0,bytes=0,entries=0;
     let stdout='',pending='',diagnostic='',failure=null,closed=false;
     const child=spawn(execution.command,['-B','-c',PYTHON_TRANSACTION_FACTS],
-      {env:execution.env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+      {env:{...execution.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'},windowsHide:true,stdio:['pipe','pipe','pipe']});
     // Every failure waits for close: no caller may release the writer or
     // delete files while a timed-out inspector is still running.
     const stop=error=>{if(!failure)failure=error;if(!closed)child.kill('SIGKILL');};
     const failed=message=>inspectionFailure('UNINSTALL_PYTHON_INSPECTION_FAILED',message);
     const frame=line=>{
-      if(!line.startsWith('{"schema": "nora-uninstall-progress/1"')&&!line.startsWith('{"schema":"nora-uninstall-progress/1"'))return;
-      let value;try{value=JSON.parse(line);}catch{stop(failed('只读检查进度记录无效，未删除文件。'));return;}
+      if(!line.startsWith('{"schema": "nora-uninstall-progress/1"')&&!line.startsWith('{"schema":"nora-uninstall-progress/1"'))return false;
+      let value;try{value=JSON.parse(line);}catch{stop(failed('只读检查进度记录无效，未删除文件。'));return true;}
       if(value.schema!=='nora-uninstall-progress/1'||![value.sequence,value.bytes,value.entries].every(Number.isSafeInteger)
         ||value.sequence<1||value.bytes<0||value.entries<0||value.bytes<bytes||value.entries<entries){
-        stop(failed('只读检查进度记录无效，未删除文件。'));return;
+        stop(failed('只读检查进度记录无效，未删除文件。'));return true;
       }
       // Replayed counters, diagnostic messages and periodic heartbeats do
       // not extend the deadline. Only confirmed read/entry work counts.
       if(value.sequence>sequence&&(value.bytes>bytes||value.entries>entries)){
         sequence=value.sequence;bytes=value.bytes;entries=value.entries;lastProgress=performance.now();
       }
+      return true;
     };
     child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
     child.stdout.on('data',value=>{stdout+=value;if(Buffer.byteLength(stdout)>16*1024){stdout='';stop(failed('只读检查输出超过限制，未删除文件。'));}});
     child.stderr.on('data',value=>{
-      diagnostic=(diagnostic+value).slice(-8192);pending+=value;
+      pending+=value;
       let newline;while((newline=pending.indexOf('\n'))!==-1){
         const line=pending.slice(0,newline);pending=pending.slice(newline+1);
-        if(line.length<=1024)frame(line);
+        if(line.length<=1024){if(!frame(line))diagnostic=(diagnostic+line+'\n').slice(-8192);}
         else if(line.startsWith('{"schema"'))stop(failed('只读检查进度记录超过限制，未删除文件。'));
+        else diagnostic=(diagnostic+line+'\n').slice(-8192);
       }
       if(pending.length>8192){if(pending.startsWith('{"schema"'))stop(failed('只读检查进度记录超过限制，未删除文件。'));pending=pending.slice(-1024);}
     });
@@ -638,6 +640,8 @@ function runPythonInspection(execution,input,policy=INSPECTION_POLICY){
     child.once('exit',()=>clearInterval(timer));
     child.on('close',(status,signal)=>{
       closed=true;clearInterval(timer);
+      if(failure){reject(failure);return;}
+      if(pending&&!frame(pending))diagnostic=(diagnostic+pending).slice(-8192);
       if(failure){reject(failure);return;}
       if(status!==0||signal){reject(failed(diagnostic||'Python 只读事务检查失败，未删除文件。'));return;}
       let facts;try{facts=JSON.parse(stdout);}catch{reject(failed('只读事务检查未返回有效结果，未删除文件。'));return;}
@@ -899,7 +903,15 @@ if args['appJobs']:
     if contexts:
         latest=contexts[0]
         pending=replacement.assess(latest['job'])
-        if pending is not None:raise RuntimeError('unconfirmed launcher effects')
+        if pending is not None:
+            # Preserve the actual assessment, not only a generic historical label.
+            # Relative job identity is enough to find local evidence without
+            # emitting the full private installation path.
+            reason=str(pending.get('reason') or '启动器替换任务尚未确认结束').replace('\r',' ').replace('\n',' ')[:500]
+            raise RuntimeError('unconfirmed launcher effects '
+                f"[job={latest['job'].name}; phase={pending.get('status','unknown')}; "
+                f"effect={pending.get('effectState','unknown')}; busy={pending.get('busy','unknown')}; "
+                f"workerOffline={pending.get('workerOffline','unknown')}; reason={reason}]")
         if required:
             # A full current APP check anchors the chain. Committed backups
             # may already be retired; the sealed old/incoming inventories stay.
