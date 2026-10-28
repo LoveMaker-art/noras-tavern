@@ -74,10 +74,8 @@ export function normalizeWorldPreset(value) {
         if (!['number', 'string', 'boolean'].includes(typeof field) || (typeof field === 'number' && !Number.isFinite(field))) invalid();
         parameters[key] = field;
     }
-    const extensions = {};
-    for (const key of ['regex_scripts', 'tavern_helper', 'TavernHelper_scripts', 'TavernHelper_characterScriptVariables']) {
-        if (preset.extensions?.[key] !== undefined) extensions[key] = structuredClone(preset.extensions[key]);
-    }
+    const extensions = structuredClone(preset.extensions ?? {});
+    if (!extensions || typeof extensions !== 'object' || Array.isArray(extensions)) invalid();
     if (extensions.regex_scripts !== undefined && !Array.isArray(extensions.regex_scripts)) invalid();
     if (extensions.tavern_helper !== undefined && (!extensions.tavern_helper || typeof extensions.tavern_helper !== 'object' || Array.isArray(extensions.tavern_helper))) invalid();
     return { schema: 'nora-world-preset/v1', name: value.name.trim(), modified: value.modified,

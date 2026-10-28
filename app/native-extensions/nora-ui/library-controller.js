@@ -2,7 +2,7 @@ import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i1
 import { describePreset } from './preset-presentation.js';
 import { libraryTabs, beginLibraryView } from './library-tabs.js';
 import { normalizeCharacterActivation } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
-import { createWorldPreset, validateWorldPresetParameters, WORLD_PRESET_PARAMETERS } from '../../engine/sillytavern/public/scripts/nora-worlds/world-preset.js';
+import { createWorldPreset, validateWorldPresetParameters, WORLD_PRESET_PARAMETERS, scriptCode, regexCode } from '../../engine/sillytavern/public/scripts/nora-worlds/world-preset.js';
 
 export function createLibraryController({ worlds, presets, dialogs, operations, activeWorldModel, isGenerating,
     characterField, openCards, openExtensions, refresh, select: $, selectAll: $$, escapeHtml: html }) {
@@ -324,6 +324,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
         let saving = false;
         let savedPending = false;
         let savedDraft = false;
+        let choosing = false;
         let persistedPreset = world?.preset;
         const draftPreset = () => {
             const draft = structuredClone(snapshot.preset);
@@ -468,11 +469,11 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             } catch (error) { errorToast(error); }
             finally { saving = false; if (!deleted) updateActions(); }
         });
-        const canLeave = async () => {
+        const canLeave = async (replacing = false) => {
             if (saving) return false;
             if (savedPending) return dialogs.confirm({ title: tr('离开待应用的预设？'), body: tr('预设已保存，但尚未应用。离开不会撤销已保存的内容。'),
                 confirmLabel: tr('离开'), cancelLabel: tr('继续编辑'), restoreSheet: true });
-            return !dirty() || dialogs.confirm({ title: tr('放弃未保存的修改？'), body: tr('关闭后，本次修改不会保存。'),
+            return !dirty() || dialogs.confirm({ title: tr('放弃未保存的修改？'), body: tr(replacing ? '重新选择预设后，本次修改不会保存。' : '关闭后，本次修改不会保存。'),
                 confirmLabel: tr('放弃修改'), cancelLabel: tr('继续编辑'), restoreSheet: true });
         };
         dialogs.setCloseGuard(() => {
@@ -501,6 +502,11 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                         if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
                         const value = createWorldPreset(presetName, draftPreset(), templateChanged ? changes.size + parameterChanges.size + contentChanges.size > 0 : (world.preset.modified || dirty()));
                         if (!templateChanged) value.extension_permissions = { ...world.preset.extension_permissions };
+                        else if (presetName === world.preset.name) {
+                            for (const [kind, code] of [['scripts', scriptCode], ['regex', regexCode]]) {
+                                if (code(value.preset) === code(world.preset.preset)) value.extension_permissions[kind] = world.preset.extension_permissions[kind] === true;
+                            }
+                        }
                         const result = await worlds.updateActive({ preset: value }, { expectedRevision });
                         savedWorld = result.world;
                         if (!result.runtimeApplied) throw Object.assign(new Error(tr('预设已保存，请回到对应世界查看。')), { saved: true });
@@ -549,21 +555,24 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             const normalized = query.trim().toLocaleLowerCase();
             $('[data-results]', modal).innerHTML = choices.map((item, index) => ({ item, index })).filter(({ item }) => item.name.toLocaleLowerCase().includes(normalized))
                 .map(({ item, index }) => `<button type="button" class="nora-preset-row${item.name === presetName ? ' is-current' : ''}" data-choice="${index}" ${item.name === presetName ? 'aria-current="true"' : ''}><strong>${html(item.name)}</strong>${item.name === presetName ? `<span><i class="fa-solid fa-check" aria-hidden="true"></i>${tr('当前')}</span>` : ''}</button>`).join('') || `<p class="nora-sheet-empty">${tr('没有匹配的预设')}</p>`;
-            $$('[data-choice]', modal).forEach(button => button.addEventListener('click', () => {
-                if (saving || panel !== 'choose') return;
+            $$('[data-choice]', modal).forEach(button => button.addEventListener('click', async () => {
+                if (saving || choosing || panel !== 'choose') return;
                 const name = choices[Number(button.dataset.choice)].name;
-                if (name === presetName) { closePanel(); return; }
+                choosing = true;
                 try {
                     const candidate = presets.readPreset(name, { storedOnly: true });
                     const info = describePreset(candidate.preset);
-                    const order = candidate.preset.prompt_order.find(group => String(group.character_id) === '100001') || { character_id: 100001, order: [] };
-                    const selected = createWorldPreset(candidate.name, { ...draftPreset(), ...candidate.preset, extensions: candidate.preset.extensions, prompt_order: [order] });
+                    const selected = createWorldPreset(candidate.name, candidate.preset);
+                    if (!await canLeave(true) || panel !== 'choose') return;
+                    if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
+                    if (busy()) throw new Error(tr('请等待当前生成或保存完成。'));
+                    if (presets.readPreset(name, { storedOnly: true }).revision !== candidate.revision) throw new Error(tr('预设已改变，请重新打开后再编辑。'));
                     const toggleable = presets.toggleablePresetEntries(selected.preset);
                     snapshot = { preset: selected.preset, toggleable };
                     presetName = selected.name;
                     templateChanged = true;
                     view = describePreset(snapshot.preset);
-                    changes.clear(); contentChanges.clear(); parameterChanges.clear(); savedPending = false;
+                    changes.clear(); contentChanges.clear(); parameterChanges.clear(); savedPending = false; savedDraft = false;
                     $('[data-current-preset]', modal).textContent = presetName;
                     $('[data-preset-fields]', modal).innerHTML = renderFields();
                     bindFields();
@@ -571,6 +580,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                     $('.nora-preset-detail-scroll', modal).scrollTop = 0;
                     if (info.scripts || candidate.preset.extensions?.regex_scripts?.length) dialogs.toast(tr('附带扩展已保留。保存后请在扩展管理中确认启用。'));
                 } catch (error) { errorToast(error); }
+                finally { choosing = false; }
             }));
         };
         $('[data-change-preset]', modal)?.addEventListener('click', () => {
