@@ -6,7 +6,7 @@ import { translate as tr } from '../public/scripts/nora-i18n/core.js';
 import { createWorldPreset } from '../public/scripts/nora-worlds/world-preset.js';
 
 // Parse the real controller markup; only DOM event delivery and storage are fakes.
-function fixture(worldMode = true) {
+function fixture(worldMode = true, { extensions, permissions } = {}) {
     let dom, modal, guard, confirmed = true, fail = null, importFailure = null, focused;
     let opens = 0, closes = 0;
     const wrappers = new WeakMap(), writes = [], notices = [], imports = [], deletions = [], confirmations = [];
@@ -15,9 +15,14 @@ function fixture(worldMode = true) {
         prompts: [{ identifier: 'a', name: 'A', content: '<unsafe>' }, { identifier: 'b', name: 'B', content: 'B' },
             { identifier: 'c', content: 'C' }, { identifier: 'locked', marker: true }],
         prompt_order: [{ character_id: 100001, order: [{ identifier: 'a', enabled: true }, { identifier: 'b', enabled: false }, { identifier: 'locked', enabled: true }] }] };
+    if (extensions) preset.extensions = structuredClone(extensions);
     let world = { id: 'a', name: 'World A', revision: 1, preset: createWorldPreset('Test', preset) };
+    if (permissions) world.preset.extension_permissions = { ...permissions };
     let currentId = 'a';
-    const snapshot = (name = 'Test') => ({ name, current: false, preset: structuredClone(name === 'Other' ? { ...preset, temperature: 0.9 } : preset), revision: '1', runtimeRevision: '1', toggleable: ['a', 'b', 'c'] });
+    const snapshot = (name = 'Test') => {
+        const stored = name === 'Other' ? { ...preset, temperature: 0.9 } : preset;
+        return { name, current: false, preset: structuredClone(stored), revision: JSON.stringify(stored), runtimeRevision: '1', toggleable: ['a', 'b', 'c'] };
+    };
     const wrap = raw => {
         if (!raw) return null;
         if (wrappers.has(raw)) return wrappers.get(raw);
@@ -69,14 +74,14 @@ function fixture(worldMode = true) {
                 opens++;
                 dom = load('<div id="modal"><div class="nora-sheet"><header><button class="nora-modal-close"></button></header><div class="nora-sheet-body">' + content + '</div></div></div>');
                 modal = wrap(dom('#modal').get(0)); return modal;
-            }, async close() { if (!guard || await guard()) closes++; }, setCloseGuard: fn => { guard = fn; }, confirm: async options => { confirmations.push(options); return confirmed; },
+            }, async close() { if (!guard || await guard()) closes++; }, setCloseGuard: fn => { guard = fn; }, confirm: async options => { confirmations.push(options); return typeof confirmed === 'function' ? confirmed(options) : confirmed; },
             toast: message => notices.push(message), normalizeError: error => error.message,
         },
         operations: { isBusy: () => false, run: async (_scope, fn) => fn() }, isGenerating: () => false,
         activeWorldModel: () => ({ ...structuredClone(world), id: currentId }), select, selectAll, escapeHtml: value => String(value).replaceAll('<', '&lt;'), refresh() {},
     });
     return { controller, select, selectAll, writes, notices, imports, deletions, confirmations, worldMode, changeWorld: id => { currentId = id; },
-        world: () => structuredClone(world), template: () => structuredClone(preset),
+        world: () => structuredClone(world), template: () => structuredClone(preset), editTemplate: update => update(preset),
         canLeave: () => guard(), confirm: value => { confirmed = value; }, fail: error => { fail = error; },
         failImport: error => { importFailure = error; }, opens: () => opens, closes: () => closes, focused: () => focused };
 }
@@ -416,7 +421,7 @@ test('footer has one primary command per mode; copying expands in the same sheet
     assert.equal(f.writes.length + f.imports.length, 0);
 });
 
-test('inline chooser searches, marks the current choice and never resets it on reselection', async () => {
+test('inline chooser searches, marks the current choice and preserves edits when replacement is cancelled', async () => {
     const f = fixture(); await open(f);
     const input = f.select('[data-preset-parameter="temperature"]'); input.value = '0.2'; await input.fire('input');
     await f.select('[data-change-preset]').fire('click');
@@ -429,11 +434,165 @@ test('inline chooser searches, marks the current choice and never resets it on r
     assert.equal(f.selectAll('[data-choice]').length, 0);
     assert.equal(f.select('[data-results]').textContent, tr('没有匹配的预设'));
     search.value = ''; await search.fire('input');
+    f.confirm(false);
     await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.confirmations.length, 1);
     assert.equal(f.select('[data-preset-parameter="temperature"]'), input, 'Keep the same draft controls');
     assert.equal(input.value, '0.2');
-    assert.equal(f.select('[data-change-preset]').getAttribute('aria-expanded'), 'false');
+    assert.equal(f.select('[data-change-preset]').getAttribute('aria-expanded'), 'true');
+    await f.select('[data-chooser-cancel]').fire('click');
     assert.equal(f.opens(), 1);
+});
+
+test('same-name selection reloads saved library toggles in both directions without an extra confirmation', async () => {
+    for (const index of [0, 1]) {
+        const f = fixture(false); await open(f);
+        const original = f.select(`[data-prompt-toggle="${index}"]`).checked;
+        f.select(`[data-prompt-toggle="${index}"]`).checked = !original;
+        await f.select(`[data-prompt-toggle="${index}"]`).fire('change');
+        await f.select('[data-apply]').fire('click');
+        await f.controller.openWorldPreset();
+        assert.equal(f.select(`[data-prompt-toggle="${index}"]`).checked, original);
+        await f.select('[data-change-preset]').fire('click');
+        await f.select('[data-choice="0"]').fire('click');
+        assert.equal(f.select(`[data-prompt-toggle="${index}"]`).checked, !original);
+        assert.equal(f.confirmations.length, 0);
+        assert.equal(f.writes.length, 1, 'Selecting only previews the template');
+        await f.select('[data-apply]').fire('click');
+        await f.controller.openWorldPreset();
+        assert.equal(f.select(`[data-prompt-toggle="${index}"]`).checked, !original);
+        assert.equal(f.world().preset.preset.prompt_order[0].order[index].enabled, !original);
+    }
+});
+
+test('loading a saved copy replaces parameters and content without inheriting omitted fields or saving automatically', async () => {
+    const f = fixture(); await open(f);
+    f.editTemplate(preset => { preset.temperature = 0.8; preset.prompts[0].content = 'Updated template'; delete preset.openai_max_tokens; });
+    await f.select('[data-change-preset]').fire('click'); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.8');
+    assert.equal(f.select('[data-prompt-content="0"]').value, 'Updated template');
+    assert.equal(f.select('[data-preset-parameter="openai_max_tokens"]').value, '');
+    assert.equal(f.world().preset.preset.temperature, 0.5); assert.equal(f.writes.length, 0);
+    f.fail(new Error('write failed')); await f.select('[data-apply]').fire('click');
+    assert.equal(f.world().preset.preset.temperature, 0.5);
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.8');
+    f.fail(null); await f.select('[data-apply]').fire('click');
+    assert.equal(f.world().preset.preset.temperature, 0.8);
+    assert.equal(f.world().preset.preset.prompts[0].content, 'Updated template');
+    assert.equal(Object.hasOwn(f.world().preset.preset, 'openai_max_tokens'), false);
+});
+
+test('loading an identical saved copy keeps values and existing permissions without confirmation or a write', async () => {
+    const f = fixture(true, { permissions: { scripts: true, regex: true } }); await open(f);
+    const input = f.select('[data-preset-parameter="temperature"]');
+    await f.select('[data-change-preset]').fire('click'); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, input.value);
+    assert.equal(f.select('[data-apply]').disabled, true);
+    assert.equal(f.confirmations.length, 0); assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.world().preset.extension_permissions, { scripts: true, regex: true });
+});
+
+test('loading copies source data independently of its name, including opaque extensions and prompt metadata', async () => {
+    for (const choice of ['0', '1']) {
+        const f = fixture(); await open(f);
+        f.editTemplate(preset => {
+            delete preset.openai_max_tokens;
+            preset.prompt_order[0].order[1].enabled = true;
+            preset.prompts[1].opaque_mvu = { disabled: false, count: 0, fields: ['first', 'second'] };
+            preset.extensions = { future_plugin: { enabled: false, count: 0, data: { text: '保留原数据' } } };
+            preset.custom_url = 'must-not-copy'; preset.api_key = 'synthetic-key-must-not-copy';
+        });
+        const source = f.template();
+        await f.select('[data-change-preset]').fire('click'); await f.select(`[data-choice="${choice}"]`).fire('click');
+        assert.equal(f.select('[data-prompt-toggle="1"]').checked, true);
+        assert.equal(f.confirmations.length, 0);
+        await f.select('[data-apply]').fire('click');
+        const copy = f.world().preset.preset;
+        assert.equal(Object.hasOwn(copy, 'openai_max_tokens'), false);
+        assert.deepEqual(copy.extensions, source.extensions);
+        assert.deepEqual(copy.prompts[1].opaque_mvu, source.prompts[1].opaque_mvu);
+        assert.equal(copy.custom_url, undefined); assert.equal(copy.api_key, undefined);
+        f.editTemplate(preset => { preset.extensions.future_plugin.data.text = '库后来修改'; });
+        assert.equal(f.world().preset.preset.extensions.future_plugin.data.text, '保留原数据');
+        await f.controller.openWorldPreset();
+        f.select('[data-prompt-toggle="1"]').checked = false; await f.select('[data-prompt-toggle="1"]').fire('change');
+        await f.select('[data-apply]').fire('click');
+        assert.equal(f.template().prompt_order[0].order[1].enabled, true);
+    }
+});
+
+test('confirmed same-name reload replaces the draft while cancellation keeps edits; it never saves automatically', async () => {
+    const f = fixture(); await open(f);
+    f.select('[data-preset-parameter="temperature"]').value = '0.2';
+    await f.select('[data-preset-parameter="temperature"]').fire('input');
+    await f.select('[data-change-preset]').fire('click');
+    f.confirm(false); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.2');
+    f.confirm(true); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.5');
+    assert.equal(f.writes.length, 0);
+});
+
+test('same-name reload keeps permission for unchanged executable code and revokes only the changed kind', async () => {
+    for (const changed of ['none', 'scripts', 'regex']) {
+        const extensions = { tavern_helper: { scripts: [{ id: 's', content: 'original code' }] },
+            regex_scripts: [{ id: 'r', findRegex: 'original', replaceString: 'replacement' }] };
+        const f = fixture(true, { extensions, permissions: { scripts: true, regex: true } }); await open(f);
+        f.editTemplate(preset => {
+            preset.prompt_order[0].order[1].enabled = true;
+            if (changed === 'scripts') preset.extensions.tavern_helper.scripts[0].content = 'changed code';
+            if (changed === 'regex') preset.extensions.regex_scripts[0].findRegex = 'changed';
+        });
+        await f.select('[data-change-preset]').fire('click'); await f.select('[data-choice="0"]').fire('click');
+        await f.select('[data-apply]').fire('click');
+        assert.deepEqual(f.world().preset.extension_permissions, { scripts: changed !== 'scripts', regex: changed !== 'regex' });
+    }
+});
+
+test('a source change while confirming replacement keeps the draft instead of loading a stale template', async () => {
+    const f = fixture(); await open(f);
+    f.select('[data-preset-parameter="temperature"]').value = '0.2';
+    await f.select('[data-preset-parameter="temperature"]').fire('input');
+    f.confirm(() => { f.editTemplate(preset => { preset.temperature = 0.8; }); return true; });
+    await f.select('[data-change-preset]').fire('click'); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.2');
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.notices, [tr('预设已改变，请重新打开后再编辑。')]);
+});
+
+test('switching Worlds while confirming replacement cannot load into the stale editor or save either World', async () => {
+    const f = fixture(); await open(f);
+    f.select('[data-preset-parameter="temperature"]').value = '0.2';
+    await f.select('[data-preset-parameter="temperature"]').fire('input');
+    f.confirm(() => { f.changeWorld('b'); return true; });
+    await f.select('[data-change-preset]').fire('click'); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.2');
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.notices, [tr('当前世界已改变，请重新打开编辑。')]);
+});
+
+test('repeated clicks during draft confirmation produce one confirmation and preserve the cancelled draft', async () => {
+    const f = fixture(); await open(f);
+    f.select('[data-preset-parameter="temperature"]').value = '0.2';
+    await f.select('[data-preset-parameter="temperature"]').fire('input');
+    let resolve;
+    f.confirm(() => new Promise(done => { resolve = done; }));
+    await f.select('[data-change-preset]').fire('click');
+    const first = f.select('[data-choice="0"]').fire('click');
+    await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.confirmations.length, 1);
+    resolve(false); await first;
+    assert.equal(f.select('[data-preset-parameter="temperature"]').value, '0.2');
+    assert.equal(f.writes.length, 0);
+});
+
+test('malformed same-name templates fail without replacing the existing fields', async () => {
+    const f = fixture(); await open(f);
+    const input = f.select('[data-preset-parameter="temperature"]');
+    f.editTemplate(preset => { preset.prompts = []; });
+    await f.select('[data-change-preset]').fire('click'); await f.select('[data-choice="0"]').fire('click');
+    assert.equal(f.select('[data-preset-parameter="temperature"]'), input);
+    assert.equal(f.writes.length, 0); assert.equal(f.notices.length, 1);
 });
 
 test('Escape closes only the inline panel, retaining draft values, expanded prompts and focus', async () => {

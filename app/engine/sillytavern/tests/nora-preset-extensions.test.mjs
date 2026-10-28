@@ -24,6 +24,15 @@ test('snapshot retains embedded regex and scripts but never imports execution pe
     assert.deepEqual(snapshot.extension_permissions, { scripts: false, regex: false });
     assert.equal(snapshot.preset.api_key, undefined); assert.equal(snapshot.preset.custom_url, undefined);
 });
+test('preset copies retain opaque extension data without aliasing the source or importing authorization', () => {
+    const source = data();
+    source.extensions.future_plugin = { enabled: false, amount: 0, nested: { text: '独立副本' }, order: ['second', 'first'] };
+    const snapshot = createWorldPreset('Copy', source);
+    assert.deepEqual(snapshot.preset.extensions, source.extensions);
+    snapshot.preset.extensions.future_plugin.nested.text = '世界后来修改';
+    assert.equal(source.extensions.future_plugin.nested.text, '独立副本');
+    assert.deepEqual(snapshot.extension_permissions, { scripts: false, regex: false });
+});
 test('permissions are World-local; replacing code revokes permission while a toggle preserves it', async () => {
     const f = fixture(), p = f.projection;
     await p.permission('scripts', true); await p.permission('regex', true);

@@ -665,7 +665,7 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 .nora-card-library-open small { margin-top: 1px; color: var(--nora-muted); font-size: 10px; }
 .nora-card-library-delete { position: absolute; z-index: 2; top: 5px; right: 5px; border-radius: 50%; background: rgba(20, 18, 14, .72); color: #fff; }
 .nora-card-library-delete:disabled { cursor: not-allowed; opacity: .32; }
-.nora-card-duplicate { position: absolute; z-index: 2; top: 6px; left: 6px; padding: 2px 5px; border-radius: 5px; background: rgba(20, 18, 14, .72); color: #fff; font-size: 9px; }
+.nora-card-duplicate { margin-right: 5px; }
 .nora-library-pager { display: flex; min-height: 34px; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; }
 .nora-library-pager button { display: grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 1px solid var(--nora-line-2); border-radius: 50%; background: transparent; color: var(--nora-ink-2); cursor: pointer; }
 .nora-library-pager button:hover:not(:disabled) { border-color: var(--nora-brand); color: var(--nora-brand-ink); }
@@ -1071,11 +1071,31 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-library-search { display:flex; align-items:center; gap:6px; flex:0 0 auto; margin:0; }
 .nora-library-search input { flex:1; min-width:0; width:0; height:40px; padding:8px 10px; border:1px solid var(--nora-line); border-radius:6px; background:var(--nora-surface); color:var(--nora-ink); font-size:13px; }
 .nora-library-search .nora-icon-button { flex:0 0 40px; width:40px; height:40px; }
+.nora-library-display { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; color:var(--nora-muted); font-size:12px; }
+.nora-library-display label { display:flex; align-items:center; gap:8px; }
+.nora-library-display select { width:auto; min-height:32px; padding:3px 24px 3px 8px; border:1px solid var(--nora-line); border-radius:6px; background:var(--nora-surface); color:var(--nora-ink); }
+.nora-world-library-modal .nora-library-pager { flex:0 0 auto; flex-wrap:wrap; gap:10px; margin:0; padding-top:10px; border-top:1px solid var(--nora-line); }
+.nora-library-jump { display:flex; align-items:center; gap:6px; }
+.nora-library-jump label { display:flex; align-items:center; gap:5px; color:var(--nora-muted); font-size:12px; }
+.nora-library-jump input { width:58px; min-height:30px; padding:3px 5px; border:1px solid var(--nora-line); border-radius:5px; background:var(--nora-surface); color:var(--nora-ink); text-align:center; }
+.nora-library-pager .nora-library-jump button { display:block; width:auto; height:30px; padding:3px 9px; border-radius:5px; font-size:12px; }
+.nora-card-import-preview { display:flex; flex-wrap:wrap; align-items:start; gap:14px; padding:12px; border:1px solid var(--nora-line); border-radius:8px; }
+.nora-card-import-preview[hidden] { display:none; }
+.nora-card-import-preview img { width:120px; max-height:180px; object-fit:contain; border-radius:6px; }
+.nora-card-import-preview > div { flex:1; min-width:120px; overflow-wrap:anywhere; }
+.nora-card-import-preview p { white-space:pre-wrap; font-size:12px; line-height:1.65; }
+.nora-script-editor-modal .nora-extension-manager { display:flex; flex:1; flex-direction:column; min-height:0; }
+.nora-script-editor-modal .nora-extension-world { flex:0 0 auto; margin:0; padding:12px 18px 0; }
+.nora-script-editor-code { min-height:220px; resize:vertical; tab-size:4; }
 .nora-library-results { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
-.nora-world-library-modal .nora-card-waterfall { grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; justify-content:start; padding:2px 2px 8px; }
-.nora-world-library-modal .nora-card-library-item { width:100%; height:218px; box-shadow:none; }
-.nora-world-library-modal .nora-card-library-open { grid-template-rows:140px minmax(0, 1fr); }
-.nora-world-library-modal .nora-card-library-open img { height:140px; }
+.nora-world-library-modal .nora-card-waterfall { grid-template-columns:repeat(var(--nora-library-columns, 4), minmax(0, 1fr)); gap:12px; justify-content:start; padding:2px 2px 8px; }
+.nora-world-library-modal .nora-card-library-item { width:100%; height:var(--nora-library-card-height, 218px); box-shadow:none; }
+.nora-world-library-modal .nora-card-library-open { grid-template-rows:var(--nora-library-cover, 140px) minmax(0, 1fr); }
+.nora-world-library-modal .nora-card-library-open img { height:var(--nora-library-cover, 140px); object-fit:contain; }
+.nora-world-library-modal .nora-card-waterfall[data-density="compact"] .nora-card-library-open,
+.nora-world-library-modal .nora-card-waterfall[data-density="large"] .nora-card-library-open { grid-template-rows:var(--nora-library-cover, 140px) minmax(0, 1fr); }
+.nora-world-library-modal .nora-card-waterfall[data-density="compact"] .nora-card-library-open img,
+.nora-world-library-modal .nora-card-waterfall[data-density="large"] .nora-card-library-open img { height:var(--nora-library-cover, 140px); }
 .nora-world-library-modal .nora-card-library-open > span { padding:8px; }
 .nora-world-library-modal .nora-card-library-open > span::before { display:none; }
 .nora-world-library-modal .nora-card-library-open strong { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; white-space:normal; overflow-wrap:anywhere; line-height:17px; height:34px; }
@@ -1158,8 +1178,8 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-library-footer button { min-width:0; min-height:40px; white-space:normal; overflow-wrap:anywhere; }
 .nora-library-footer > button { align-self:flex-end; }
 @media (max-width:560px) {
-    .nora-world-library-modal .nora-card-waterfall { grid-template-columns:repeat(2, minmax(0, 1fr)); }
-    .nora-world-library-modal .nora-card-library-item { height:212px; }
+    .nora-world-library-modal .nora-card-waterfall { grid-template-columns:repeat(var(--nora-library-mobile-columns, 2), minmax(0, 1fr)); }
+    .nora-world-library-modal .nora-card-library-item { height:var(--nora-library-card-height, 212px); }
     .nora-world-library-modal .nora-card-library-open { grid-template-rows:134px minmax(0, 1fr); }
     .nora-world-library-modal .nora-card-library-open img { height:134px; }
 }

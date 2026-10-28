@@ -14,6 +14,62 @@ function fixture(t, execute, overrides = {}) {
   return {directory, options, controller:createOperationController(options)};
 }
 
+test('service retry cooldown expires across reopen without discarding original failures',async t=>{
+  for(const kind of ['start','restart','stop','shutdown'])await t.test(kind,async t=>{
+    let now=Date.parse('2026-10-27T00:00:00Z'),runs=0,healthy=false;
+    const execute=async()=>{runs++;if(!healthy)throw Object.assign(new Error('fixture temporary connection failure'),{code:'CLAWCHAT_CONNECT_TIMEOUT'});return {};};
+    const f=fixture(t,execute,{now:()=>new Date(now).toISOString(),executors:{[kind]:execute},
+      observeEffects:async()=>({effectState:'untouched',recoveryOutcome:'not-required'})});
+    const request={target:{request:{action:kind,service:'nora'}}};
+    const first=await f.controller.start(kind,request,'first');
+    now+=1000;const second=await f.controller.start(kind,request,'second');
+    const bytes=id=>fs.readFileSync(path.join(f.directory,'operations',id,'operation.json'));
+    const saved=[bytes(first.operationId),bytes(second.operationId)];
+    const blocked=await f.controller.start(kind,request,'cooldown');
+    assert.equal(blocked.failureCode,'SERVICE_RETRY_COOLDOWN');assert.equal(runs,2);
+    assert.ok(!blocked.allowedActions.includes('retry'));
+    const retryAt=blocked.serviceRetryAt;
+    for(const index of [1,2,3]){
+      now+=1000;const again=await f.controller.start(kind,request,'blocked-'+index);
+      assert.equal(again.serviceRetryAt,retryAt);assert.equal(runs,2);
+    }
+    now+=30001;healthy=true;
+    const reopened=createOperationController(f.options);
+    const ready=await reopened.snapshot(blocked.operationId);
+    assert.ok(ready.allowedActions.includes('retry'));
+    assert.equal((await reopened.resume(blocked.operationId)).state,'succeeded');assert.equal(runs,3);
+    assert.deepEqual(bytes(first.operationId),saved[0]);assert.deepEqual(bytes(second.operationId),saved[1]);
+  });
+});
+
+test('service retry never bypasses unknown effects or an unfinished recovery',async t=>{
+  let runs=0;
+  const execute=async context=>{runs++;await context.effect('unknown');throw new Error('fixture service failure');};
+  const f=fixture(t,execute,{executors:{start:execute},
+    observeEffects:async()=>({effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false})});
+  const request={target:{request:{action:'start',service:'nora'}}};
+  const failed=await f.controller.start('start',request,'first');
+  assert.ok(!failed.allowedActions.includes('retry'));
+  await assert.rejects(f.controller.start('start',request,'second'),{code:'UPDATE_RECOVERY_REQUIRED'});
+  assert.equal(runs,1);
+});
+
+test('legacy service retry blocks cannot extend the cooldown by repeated blocked clicks',async t=>{
+  let now=Date.parse('2026-10-27T00:00:00Z'),runs=0,healthy=false;
+  const execute=async()=>{runs++;if(!healthy)throw Object.assign(new Error('fixture timeout'),{code:'CLAWCHAT_CONNECT_TIMEOUT'});return {};};
+  const f=fixture(t,execute,{now:()=>new Date(now).toISOString(),executors:{start:execute}});
+  const request={target:{request:{action:'start',service:'nora'}}};
+  await f.controller.start('start',request,'one');await f.controller.start('start',request,'two');
+  const blocked=await f.controller.start('start',request,'three');
+  const file=path.join(f.directory,'operations',blocked.operationId,'operation.json');
+  const old=JSON.parse(fs.readFileSync(file));old.primaryFailure={code:'RETRY_CONDITIONS_UNCHANGED',site:'launcher.operation'};
+  old.currentFailure=null;delete old.serviceRetryAt;old.state='blocked';fs.writeFileSync(file,JSON.stringify(old));
+  now+=86400000;healthy=true;
+  const reopened=createOperationController(f.options);
+  assert.ok((await reopened.snapshot(blocked.operationId)).allowedActions.includes('retry'));
+  assert.equal((await reopened.resume(blocked.operationId)).state,'succeeded');assert.equal(runs,3);
+});
+
 test('recheck closes a verified restored handoff durably and admits a subsequent operation',async t=>{
   let reads=0;
   const f=fixture(t,async context=>{

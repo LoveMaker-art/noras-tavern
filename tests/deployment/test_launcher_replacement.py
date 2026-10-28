@@ -656,6 +656,32 @@ else: w.recover(job,allow_legacy=True)
 
 
 class OperationReplacementTests(unittest.TestCase):
+    def test_uninstall_pending_launcher_reports_phase_effects_and_reason(self):
+        import io
+        from contextlib import redirect_stdout
+        f=self.fixture();worker.prepare(f['job'])
+        source=(SOURCE.parent/'uninstall.js').read_text(encoding='utf-8')
+        body=source.split('const PYTHON_TRANSACTION_FACTS=String.raw`',1)[1].split('`;',1)[0]
+        args={'root':str(f['home']),'hermesHome':str(f['home']/'hermes'),'installRoot':str(f['home']/'tavern'),
+              'system':False,'systemHistory':False,'first':[],'legacy':None,'appJobs':[str(f['job'])],
+              'requiredHandoffs':[],'executable':str(f['app']/'launcher.exe'),
+              'resources':{name:{'path':str((SOURCE.parent if name=='replace-launcher.py' else SOURCE.parents[1])/name)}
+                           for name in ('replace-launcher.py','update_recovery.py','first_install.py')}}
+        def inspect():
+            with patch.object(sys,'stdin',io.StringIO(json.dumps(args))),redirect_stdout(io.StringIO()):
+                exec(compile(body,'uninstall-readonly-inspector','exec'),{'__name__':'uninstall_fixture'})
+        snapshot=worker.read_json(f['job']/'recovery.json')
+        with self.assertRaises(RuntimeError) as prepared:inspect()
+        self.assertIn('phase=prepared',str(prepared.exception));self.assertIn('effect=untouched',str(prepared.exception))
+        self.assertIn('job=job-test',str(prepared.exception))
+        damaged=json.loads(json.dumps(snapshot));damaged['old']['digest']='invalid'
+        worker.write_json(f['job']/'recovery.json',damaged)
+        with self.assertRaises(RuntimeError) as invalid:inspect()
+        self.assertIn('effect=unknown',str(invalid.exception));self.assertIn('恢复计划缺少原程序快照',str(invalid.exception))
+        worker.write_json(f['job']/'recovery.json',snapshot);worker.recover(f['job']);inspect()
+        self.assertEqual((f['app']/'launcher.exe').read_text(),'old')
+        self.assertEqual((f['home']/'world.json').read_text(),'user-world')
+
     def fixture(self):
         owner = DurableReplacementTests('test_real_ack_retains_backup_until_verified_combined_commit')
         f = owner.fixture()

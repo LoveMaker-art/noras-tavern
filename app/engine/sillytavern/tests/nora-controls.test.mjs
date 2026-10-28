@@ -233,6 +233,42 @@ test('script management uses helper API, preserves siblings, rejects stale edits
     assert.equal(f.trees.find(item => item.id === created.id).enabled, false);
 });
 
+test('a failed script save restores its own live edit so the retained draft can be saved again', async () => {
+    const f = runtimeFixture(); f.scriptScopes.global.enabled = false;
+    const before = await f.controls.execute(command('scripts.list', { scope: 'global' }));
+    const original = structuredClone(f.trees);
+    f.failSave = true;
+    let failure;
+    try { await f.controls.execute(command('scripts.update', { scope: 'global', id: 'one', expectedRevision: before.revision, patch: { content: 'retained draft' } })); }
+    catch (error) { failure = error; }
+    assert.match(failure?.message || '', /save rejected/);
+    assert.deepEqual(f.trees, original, 'A failed save must not leave its unsaved edit in the live script tree');
+    assert.equal(f.scriptScopes.global.enabled, false, 'Failure recovery must not grant script permission');
+    f.failSave = false;
+    await f.controls.execute(command('scripts.update', { scope: 'global', id: 'one', expectedRevision: failure.retryRevision || before.revision, patch: { content: 'retained draft' } }));
+    assert.equal(f.trees[0].content, 'retained draft');
+    assert.deepEqual(f.trees[1], original[1]);
+});
+
+test('failed script recovery never overwrites concurrent edits or a newly selected World', async () => {
+    for (const changeWorld of [false, true]) {
+        const f = runtimeFixture();
+        const before = await f.controls.execute(command('scripts.list', { scope: 'global' }));
+        f.context.saveSettingsStrict = async () => {
+            if (changeWorld) f.context.chatMetadata.nora_world.id = 'other-world';
+            else f.trees[1].content = 'concurrent edit';
+            throw new Error('save rejected');
+        };
+        let failure;
+        try { await f.controls.execute(command('scripts.update', { scope: 'global', id: 'one', expectedRevision: before.revision, patch: { content: 'failed draft' } })); }
+        catch (error) { failure = error; }
+        assert.match(failure?.message || '', /save rejected/);
+        assert.equal(failure.retryRevision, undefined);
+        assert.equal(f.trees[0].content, 'failed draft', 'Do not restore through an uncertain target or changed tree');
+        if (!changeWorld) assert.equal(f.trees[1].content, 'concurrent edit');
+    }
+});
+
 test('product exclusions, dependency protection, strict configuration fields and stale World guard are enforced', async () => {
     const f = runtimeFixture();
     const list = await f.controls.execute(command('plugins.list'));

@@ -63,6 +63,31 @@ async function fixture(t,{execute,capture=true,selectBeforeExecute=true,executio
   return {home,hermesHome,installRoot,policy,controller,options,networkFetch,get runs(){return runs;},target};
 }
 
+test('native service retries close real children, release the writer and preserve user files',async t=>{
+  const f=await fixture(t);let clock=Date.parse('2026-10-27T00:00:00Z'),healthy=false,runs=0;
+  const saved=path.join(f.home,'retained-user.json');fs.writeFileSync(saved,'fixture protected user file');
+  const initial=fs.readFileSync(saved),{spawnSync}=require('node:child_process');
+  const node=process.execPath;
+  const entry=path.join(f.home,'service-child.cjs');
+  fs.writeFileSync(entry,"process.exit(process.argv[2]==='healthy'?0:7);");
+  const execute=async context=>{
+    context.check();runs++;
+    const child=spawnSync(node,[entry,healthy?'healthy':'failed'],{cwd:f.home,encoding:'utf8',timeout:5000});
+    context.check();assert.equal(child.signal,null);
+    if(child.status!==0)throw Object.assign(new Error('fixture ClawChat connection timeout'),{userCode:'CLAWCHAT_CONNECT_TIMEOUT',exitCode:child.status});
+    return {verification:'confirmed'};
+  };
+  const options={...f.options,now:()=>new Date(clock).toISOString(),executors:{start:execute},recheckers:{start:f.policy.recheck}};
+  const controller=()=>createOperationController(options),request={target:{request:{action:'start',service:'nora'}}};
+  await controller().start('start',request,'first');await controller().start('start',request,'second');
+  const blocked=await controller().start('start',request,'blocked');assert.equal(runs,2);
+  clock+=31000;healthy=true;
+  assert.equal((await controller().resume(blocked.operationId)).state,'succeeded');assert.equal(runs,3);
+  assert.equal((await lock.probe({directory:options.directory})).busy,false);
+  assert.equal((await controller().start('start',request,'next')).state,'succeeded');assert.equal(runs,4);
+  assert.deepEqual(fs.readFileSync(saved),initial);
+});
+
 test('native writer records the baseline before two real permission failures; recheck, reopen and new requests cannot add execution',{skip:process.platform==='win32'?'POSIX chmod does not prove Windows ACL behavior':false},async t=>{
   const f=await fixture(t);fs.chmodSync(f.hermesHome,0o500);
   const first=await f.controller().start('install',{target:f.target},'first');
