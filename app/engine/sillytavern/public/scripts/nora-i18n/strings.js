@@ -2,6 +2,7 @@
 // Display text only: never use this catalog to rewrite user or model content.
 export const english = Object.freeze({
     '显示密度': 'Display density',
+    '没有匹配的角色卡': 'No matching character cards',
     '紧凑': 'Compact',
     '标准': 'Standard',
     '大图': 'Large covers',
@@ -22,6 +23,7 @@ export const english = Object.freeze({
     '脚本已保存。': 'Script saved.',
     '脚本已保存，但回读结果已变化，请重新打开查看。': 'The script was saved, but its contents changed before verification. Reopen to inspect it.',
     '脚本已保存，详情刷新未完成，请重新打开查看。': 'The script was saved. Details could not be refreshed; reopen to inspect it.',
+    '脚本保存未完成，草稿已保留，可再次保存。': 'Saving did not complete. Your draft is preserved; you can save again.',
     '没有正则规则': 'No regex rules',
     '返回正则规则': 'Back to regex rules',
     '正则可以改变显示内容和发送给模型的内容。此操作不修改聊天原文。': 'Regex rules can change displayed text and text sent to the model. This does not modify the original chat.',

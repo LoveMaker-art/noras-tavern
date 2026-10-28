@@ -375,7 +375,7 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
     function editScript(snapshot, scope) {
         const original = snapshot.script;
         const owner = target;
-        let draft, persisted = false;
+        let draft, persisted = false, expectedRevision = snapshot.revision;
         const back = () => persisted ? void scripts() : scriptDetail(snapshot, scope);
         const leave = () => persisted ? back() : draft?.leave(back);
         const modal = sheet(tr('编辑脚本'), `<form class="nora-form nora-editor-form" data-script-edit-form autocomplete="off"><div class="nora-editor-fields"><p class="nora-model-note">${tr(scopes[scope])}${scope === 'global' ? ` · ${tr('此操作会影响所有世界。')}` : ''}</p><label>${tr('脚本名称')}<input name="name" required value="${attr(original.name || '')}"></label><label>${tr('脚本源码')}<textarea name="content" class="nora-regex-code nora-script-editor-code" rows="16" spellcheck="false">\n${esc(original.content || '')}</textarea></label><p data-script-save-status role="status"></p></div><footer class="nora-form-actions nora-editor-toolbar"><button class="nora-secondary" data-script-cancel type="button">${tr('取消')}</button><span class="nora-editor-toolbar-spacer"></span><button class="nora-primary" type="submit">${tr('保存')}</button></footer></form>`, leave);
@@ -407,7 +407,7 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
                     if (!approved || !owned()) return;
                 }
                 if (isGenerating()) throw new Error(tr('请等待当前操作完成。'));
-                await run('scripts.update', { scope, id: original.id, expectedRevision: snapshot.revision, patch }, true);
+                await run('scripts.update', { scope, id: original.id, expectedRevision, patch }, true);
                 saved = true;
                 persisted = true;
                 draft.release();
@@ -421,7 +421,10 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
                 scriptDetail(fresh, scope);
             } catch (error) {
                 if (!owned()) return;
-                status.textContent = saved ? tr('脚本已保存，详情刷新未完成，请重新打开查看。') : dialogs.normalizeError(error);
+                const retryable = !saved && /^[a-f0-9]{64}$/.test(error?.retryRevision || '');
+                if (retryable) expectedRevision = error.retryRevision;
+                status.textContent = saved ? tr('脚本已保存，详情刷新未完成，请重新打开查看。')
+                    : retryable ? tr('脚本保存未完成，草稿已保留，可再次保存。') : dialogs.normalizeError(error);
                 status.setAttribute('role', 'alert');
                 if (saved) button.hidden = true;
             } finally {

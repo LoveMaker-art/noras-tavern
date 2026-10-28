@@ -227,6 +227,17 @@ test('failed and stale script writes keep the draft and do not claim success', a
     assert.equal(f.ui.notices.length, 0); assert.notEqual(f.script.content, 'draft');
 });
 
+test('script retry uses only the revision confirmed by its own failure recovery', async () => {
+    const f = scriptFixture(), form = await f.edit(); form.elements.content.value = 'retained draft';
+    const recoveredRevision = 'a'.repeat(64);
+    f.setError(Object.assign(new Error('write unavailable'), { retryRevision: recoveredRevision }));
+    await form.fire('submit');
+    assert.equal(form.elements.content.value, 'retained draft');
+    f.setError(undefined); await form.fire('submit');
+    assert.equal(f.calls.filter(c => c.action === 'scripts.update').at(-1).params.expectedRevision, recoveredRevision);
+    assert.equal(f.script.content, 'retained draft');
+});
+
 test('pending script save rejects duplicate submit and late results cannot replace another World', async () => {
     const f = scriptFixture(), form = await f.edit(), gate = deferred(); f.setWait(gate);
     form.elements.content.value = 'changed'; const first = form.fire('submit'); await form.fire('submit');

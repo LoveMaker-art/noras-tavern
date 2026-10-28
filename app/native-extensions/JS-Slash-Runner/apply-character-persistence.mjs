@@ -17,6 +17,14 @@ export function transformCharacterPersistence(source) {
         throw new Error('Managed runner changed: review character persistence function');
     }
     source = source.slice(0, start) + delegate + source.slice(end);
+    // Library refreshes can reindex the same avatar without changing Worlds.
+    // Keep the Helper owner index aligned with ST before its save/read guards run.
+    const oldOwner = 'k.makeFirst(A.CHAT_CHANGED,()=>{let r=b?.[He]?.avatar;n.value!==r&&(e.value=He,t.value=b?.[He]?.name,n.value=r)});';
+    const newOwner = 'let noraSyncCharacterOwner=()=>{let r=b?.[He]?.avatar;(e.value!==He||n.value!==r)&&(e.value=He,t.value=b?.[He]?.name,n.value=r)};k.makeFirst(A.CHAT_CHANGED,noraSyncCharacterOwner);k.makeFirst(A.CHARACTER_LIST_CHANGED,noraSyncCharacterOwner);';
+    const oldOwnerCount = source.split(oldOwner).length - 1;
+    const newOwnerCount = source.split(newOwner).length - 1;
+    if (oldOwnerCount === 1 && newOwnerCount === 0) source = source.replace(oldOwner, newOwner);
+    else if (oldOwnerCount !== 0 || newOwnerCount !== 1) throw new Error('Managed runner changed: review character owner synchronization');
     const before = "import { createHelperControlAdapter, synchronizeHelperRuntimeReadiness } from '../nora-control-adapter.js';";
     const after = "import { createHelperControlAdapter, synchronizeHelperRuntimeReadiness, persistCharacterExtension } from '../nora-control-adapter.js';";
     const oldCount = source.split(before).length - 1;

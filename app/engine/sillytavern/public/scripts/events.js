@@ -44,6 +44,7 @@ export const event_types = {
     CHARACTER_EDITOR_OPENED: 'character_editor_opened',
     CHARACTER_EDITED: 'character_edited',
     CHARACTER_PAGE_LOADED: 'character_page_loaded',
+    CHARACTER_LIST_CHANGED: 'character_list_changed',
     CHARACTER_GROUP_OVERLAY_STATE_CHANGE_BEFORE: 'character_group_overlay_state_change_before',
     CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER: 'character_group_overlay_state_change_after',
     USER_MESSAGE_RENDERED: 'user_message_rendered',

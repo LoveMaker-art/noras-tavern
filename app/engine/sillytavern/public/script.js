@@ -1781,6 +1781,10 @@ export async function getCharacters() {
             }
         }
 
+        // Refreshing the library can reindex the active avatar without changing
+        // the chat. Let extension stores follow that index without replaying a
+        // CHAT_CHANGED event or reopening the current conversation.
+        await eventSource.emit(event_types.CHARACTER_LIST_CHANGED);
         if (!isNoraProductMode()) {
             await printCharacters(true);
         }
