@@ -215,8 +215,34 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
                 if (current.source !== source.source || current.ownerId !== source.ownerId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'Helper source changed before mutation.');
                 const previous = new Set(activeEmbeddedCores(trees));
                 if (managedMvu && activeEmbeddedCores(next).some(id => !previous.has(id))) rejectDuplicateCore();
-                await api.replaceScriptTrees(next, option);
-                await saveHelper(params.scope, source.source);
+                const original = structuredClone(trees);
+                const intended = JSON.stringify(next);
+                const avatar = params.scope === 'character' ? character().avatar : null;
+                const sameTarget = () => {
+                    const current = helperControl().scope(params.scope);
+                    return scope().worldId === command.worldId && scope().sessionId === command.sessionId
+                        && current.source === source.source && current.ownerId === source.ownerId
+                        && (avatar === null || character().avatar === avatar && String(getContext().characterId) === String(source.ownerId));
+                };
+                try {
+                    await api.replaceScriptTrees(next, option);
+                    await saveHelper(params.scope, source.source);
+                } catch (error) {
+                    // Helper changes its live tree before persistence. Undo only
+                    // our exact failed edit; never overwrite another writer or World.
+                    if (action === 'scripts.update') try {
+                        if (sameTarget() && JSON.stringify(api.getScriptTrees(option)) === intended) {
+                            await api.replaceScriptTrees(original, option);
+                            if (sameTarget()) {
+                                try { await saveHelper(params.scope, source.source); } catch { /* Persistence can still be unavailable. */ }
+                                if (sameTarget() && JSON.stringify(api.getScriptTrees(option)) === JSON.stringify(original)) {
+                                    error.retryRevision = await treeRevision();
+                                }
+                            }
+                        }
+                    } catch { /* Preserve the original failure when recovery cannot be confirmed. */ }
+                    throw error;
+                }
             };
             if (action === 'scripts.list') {
                 const summary = items => items.map(item => ({ id: item.id, type: item.type, name: item.name, enabled: item.enabled,
