@@ -2,6 +2,14 @@ import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora
 import { storyCharacterView, normalizeCharacterActivation } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
 import { resolveCharacterReferences } from '../../engine/sillytavern/public/scripts/nora-worlds/character-references.js';
 import { libraryTabs, beginLibraryView } from './library-tabs.js';
+import { readCardImportPreview } from './card-import-preview.js';
+
+const libraryDensities = {
+    compact: { label: '紧凑', desktop: [18, 6], mobile: [9, 3], cover: 106, height: 184 },
+    standard: { label: '标准', desktop: [8, 4], mobile: [4, 2], cover: 140, height: 218 },
+    large: { label: '大图', desktop: [4, 2], mobile: [2, 1], cover: 220, height: 298 },
+};
+const densityStorageKey = 'nora.library.cards.density';
 export function createCharacterController({
     cards,
     listLibraryCards,
@@ -36,17 +44,19 @@ export function createCharacterController({
         if (typeof key !== 'string' || !key.startsWith('world-character:')) return null;
         return activeWorldModel()?.storyContext?.characters.find(item => item.id === key.slice(16)) || null;
     }
-    const desktopLibraryPageSize = 8;
-    const mobileLibraryPageSize = 4;
+    let libraryDensity = 'standard';
+    try {
+        const saved = globalThis.localStorage?.getItem(densityStorageKey);
+        if (Object.hasOwn(libraryDensities, saved)) libraryDensity = saved;
+    } catch { /* Display preferences must work without browser storage. */ }
     let libraryPage = 0;
     let libraryLoaded = false;
     let libraryQuery = '';
     let libraryCatalog = null;
 
     function libraryPageSize() {
-        return globalThis.matchMedia?.('(max-width: 560px)').matches
-            ? mobileLibraryPageSize
-            : desktopLibraryPageSize;
+        const density = libraryDensities[libraryDensity];
+        return (globalThis.matchMedia?.('(max-width: 560px)').matches ? density.mobile : density.desktop)[0];
     }
 
     function stableJson(value) {
@@ -178,16 +188,39 @@ export function createCharacterController({
                 const sourceLabel = libraryCatalog?.get(character.avatar)?.legacy ? tr('已有世界快照') : characterField(character, 'creator') || tr('角色卡');
                 return `<article class="nora-card-library-item"><button class="nora-card-library-open" data-library-character="${index}" type="button"><img src="/thumbnail?type=avatar&amp;file=${encodeURIComponent(character.avatar)}" alt="" loading="lazy"><span><strong title="${escapeHtml(character.name || '')}">${escapeHtml(character.name || tr("未命名角色"))}</strong><small>${escapeHtml(sourceLabel)}</small></span></button>${duplicateBadge}</article>`;
             }).join('');
-            const pager = pageCount > 1 ? `<nav class="nora-library-pager" aria-label="${tr("角色卡分页")}"><button data-library-page="${Math.max(0, libraryPage - 1)}" type="button" aria-label="${tr("上一页")}" ${libraryPage === 0 ? 'disabled' : ''}>${icons.left}</button><span>${t`第 ${libraryPage + 1} / ${pageCount} 页`}</span><button data-library-page="${Math.min(pageCount - 1, libraryPage + 1)}" type="button" aria-label="${tr("下一页")}" ${libraryPage === pageCount - 1 ? 'disabled' : ''}>${icons.right}</button></nav>` : '';
-            const columns = Math.min(4, pageGroups.length);
-            const mobileColumns = Math.min(2, pageGroups.length);
-            const content = libraryGroups.length ? `<div class="nora-card-waterfall" style="--nora-library-columns:${columns};--nora-library-mobile-columns:${mobileColumns}">${cardMarkup}</div>${pager}` : `<p class="nora-sheet-empty" role="status">${tr(query ? '没有匹配的角色卡' : '还没有导入角色卡。')}</p>`;
+            const pager = pageCount > 1 ? `<nav class="nora-library-pager" aria-label="${tr("角色卡分页")}"><button data-library-page="${Math.max(0, libraryPage - 1)}" type="button" aria-label="${tr("上一页")}" ${libraryPage === 0 ? 'disabled' : ''}>${icons.left}</button><span>${t`第 ${libraryPage + 1} / ${pageCount} 页`}</span><button data-library-page="${Math.min(pageCount - 1, libraryPage + 1)}" type="button" aria-label="${tr("下一页")}" ${libraryPage === pageCount - 1 ? 'disabled' : ''}>${icons.right}</button><form class="nora-library-jump" data-library-jump><label>${tr('跳至')}<input type="number" name="page" min="1" max="${pageCount}" step="1" value="${libraryPage + 1}" required aria-label="${tr('跳转页码')}"></label><button type="submit" class="nora-secondary">${tr('跳转')}</button></form></nav>` : '';
+            const density = libraryDensities[libraryDensity];
+            const columns = Math.min(density.desktop[1], pageGroups.length);
+            const mobileColumns = Math.min(density.mobile[1], pageGroups.length);
+            const content = libraryGroups.length ? `<div class="nora-card-waterfall" style="--nora-library-columns:${columns};--nora-library-mobile-columns:${mobileColumns};--nora-library-cover:${density.cover}px;--nora-library-card-height:${density.height}px">${cardMarkup}</div>` : `<p class="nora-sheet-empty" role="status">${tr(query ? '没有匹配的角色卡' : '还没有导入角色卡。')}</p>`;
             const tabs = libraryTabs('cards');
-            const modal = view.open(tr("世界卡库"), `${tabs}<form class="nora-library-search" data-library-search-form><input type="search" data-library-search value="${escapeHtml(libraryQuery)}" placeholder="${tr('搜索角色卡或作者')}" aria-label="${tr('搜索角色卡或作者')}"><button class="nora-icon-button" type="submit" title="${tr('搜索')}" aria-label="${tr('搜索')}"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></button><button class="nora-icon-button" type="button" data-library-import title="${tr('导入角色卡')}" aria-label="${tr('导入角色卡')}"><i class="fa-solid fa-file-import" aria-hidden="true"></i></button></form><div class="nora-library-results">${content}</div>`, 'nora-character-library-modal nora-world-library-modal nora-plain-sheet');
+            const display = `<div class="nora-library-display"><label>${tr('显示密度')}<select data-library-density aria-label="${tr('显示密度')}">${Object.entries(libraryDensities).map(([key, item]) => `<option value="${key}" ${key === libraryDensity ? 'selected' : ''}>${tr(item.label)}</option>`).join('')}</select></label><span>${t`每页 ${pageSize} 张`}</span></div>`;
+            const modal = view.open(tr("世界卡库"), `${tabs}<form class="nora-library-search" data-library-search-form><input type="search" data-library-search value="${escapeHtml(libraryQuery)}" placeholder="${tr('搜索角色卡或作者')}" aria-label="${tr('搜索角色卡或作者')}"><button class="nora-icon-button" type="submit" title="${tr('搜索')}" aria-label="${tr('搜索')}"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></button><button class="nora-icon-button" type="button" data-library-import title="${tr('导入角色卡')}" aria-label="${tr('导入角色卡')}"><i class="fa-solid fa-file-import" aria-hidden="true"></i></button></form>${display}<div class="nora-library-results">${content}</div>${pager}`, 'nora-character-library-modal nora-world-library-modal nora-plain-sheet');
+            select('[data-library-density]', modal)?.addEventListener('change', event => {
+                if (!view.isCurrent() || !Object.hasOwn(libraryDensities, event.target.value)) return;
+                libraryDensity = event.target.value;
+                try { globalThis.localStorage?.setItem(densityStorageKey, libraryDensity); } catch { /* Keep the in-memory choice. */ }
+                return openLibrary(Math.floor(pageStart / libraryPageSize()));
+            });
+            const jump = select('[data-library-jump]', modal);
+            jump?.addEventListener('submit', event => {
+                event.preventDefault();
+                if (!view.isCurrent()) return;
+                const field = jump.elements.page;
+                const page = Number(field.value);
+                field.setCustomValidity('');
+                if (!Number.isInteger(page) || page < 1 || page > pageCount) {
+                    field.setCustomValidity(t`请输入 1 到 ${pageCount} 的整数页码`);
+                    field.reportValidity();
+                    return;
+                }
+                return openLibrary(page - 1);
+            });
+            jump?.elements.page.addEventListener('input', () => jump.elements.page.setCustomValidity(''));
             select('[data-library-search-form]', modal)?.addEventListener('submit', event => {
                 event.preventDefault();
                 libraryQuery = select('[data-library-search]', modal).value;
-                openLibrary(0);
+                return openLibrary(0);
             });
             select('[data-library-import]', modal)?.addEventListener('click', openCardImport);
             selectAll('[data-library-tab]', modal).forEach(button => button.addEventListener('click', () => {
@@ -222,31 +255,61 @@ export function createCharacterController({
     }
 
     function openCardImport() {
-        const modal = dialogs.open(tr('导入角色卡'), `<form class="nora-form" data-card-import-form><label>PNG / JSON / CHARX / YAML<input name="file" type="file" accept=".png,.json,.charx,.yaml,.yml,.byaf" required></label><div class="nora-form-actions"><button type="button" data-back>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('存入库')}</button></div></form>`, 'nora-detail-modal');
-        select('[data-back]', modal)?.addEventListener('click', () => openLibrary());
+        let previewRequest = 0, importing = false;
+        const modal = dialogs.open(tr('导入角色卡'), `<form class="nora-form" data-card-import-form><label>PNG / JSON / CHARX / YAML<input name="file" type="file" accept=".png,.json,.charx,.yaml,.yml,.byaf" required></label><section class="nora-card-import-preview" data-card-preview aria-live="polite" hidden></section><div class="nora-form-actions"><button type="button" data-back>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('存入库')}</button></div></form>`, 'nora-detail-modal');
+        const version = dialogs.version;
+        const form = select('[data-card-import-form]', modal);
+        const preview = select('[data-card-preview]', modal);
+        const current = () => dialogs.version === version && form.isConnected !== false;
+        dialogs.setCloseGuard?.(() => !importing);
+        select('[data-back]', modal)?.addEventListener('click', () => { if (!importing) openLibrary(); });
+        form.elements.file.addEventListener('change', async () => {
+            const request = ++previewRequest;
+            const file = form.elements.file.files[0];
+            preview.hidden = !file;
+            preview.textContent = file ? tr('正在读取预览') : '';
+            if (!file) return;
+            try {
+                const result = await readCardImportPreview(file);
+                if (!current() || request !== previewRequest) return;
+                preview.innerHTML = `${result.image ? `<img src="${escapeHtml(result.image)}" alt="${escapeHtml(result.name)}">` : `<p class="nora-model-note">${tr(result.format === 'json' ? '未提供封面' : '此格式暂无封面预览')}</p>`}<div><strong>${escapeHtml(result.name)}</strong>${result.description ? `<p>${escapeHtml(result.description)}</p>` : ''}</div>`;
+                select('img', preview)?.addEventListener('error', event => {
+                    if (!current() || request !== previewRequest) return;
+                    event.target.hidden = true;
+                    preview.insertAdjacentHTML('beforeend', `<p class="nora-model-note">${tr('图片预览失败，导入时将校验完整文件。')}</p>`);
+                });
+            } catch {
+                if (current() && request === previewRequest) preview.textContent = tr('预览不可用，导入时将校验完整文件。');
+            }
+        });
         select('[data-card-import-form]', modal)?.addEventListener('submit', async event => {
             event.preventDefault();
+            if (!current() || importing) return;
             if (isGenerating() || operations.isBusy('world') || operations.isBusy('library')) return dialogs.toast(tr('请等待当前操作完成。'));
             const form = event.currentTarget;
             const button = select('button[type="submit"]', form);
+            const file = form.elements.file.files[0];
+            if (!file || !form.reportValidity()) return;
+            importing = true;
+            form.elements.file.disabled = true;
             button.disabled = true;
             let saved = false;
             try {
                 await operations.run('library', async () => {
-                    const result = await cards.importLibraryCard(form.elements.file.files[0]);
+                    const result = await cards.importLibraryCard(file);
                     if (result?.reused) dialogs.toast(tr('相同卡已在库中，已复用原件。'));
                     if (result?.retained?.length) dialogs.toast(tr('部分重复文件仍有关联数据，已保留。'));
                     if (result?.same_name_different) dialogs.toast(tr('同名卡内容不同，已作为独立版本保留。'));
                     saved = true;
                     libraryLoaded = false;
                     libraryQuery = '';
-                    await openLibrary(0);
+                    if (current()) await openLibrary(0);
                 });
                 dialogs.toast(tr('角色卡已存入库。'));
             } catch (error) {
                 if (saved) dialogs.close();
                 dialogs.toast(`${tr(saved ? '角色卡已存入库，但列表刷新失败' : '角色卡导入失败')}：${dialogs.normalizeError(error)}`, { tone: 'error' });
-            } finally { button.disabled = false; }
+            } finally { importing = false; form.elements.file.disabled = false; button.disabled = false; }
         });
     }
 

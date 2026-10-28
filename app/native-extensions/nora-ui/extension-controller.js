@@ -327,8 +327,7 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
             try {
                 const result = await run('scripts.inspect', { scope: group.scope, id: selected.id });
                 if (!alive()) return;
-                const item = result.script;
-                sheet(tr('脚本详情'), `<h3 class="nora-script-title">${esc(item.name || tr('未命名脚本'))}</h3><p class="nora-model-note">${tr(scopes[group.scope])}</p>${takenOver(selected) ? `<p class="nora-model-note">${tr('由内置 MVU 提供；原脚本保留')}</p>` : ''}${item.info ? `<p class="nora-model-note">${esc(item.info)}</p>` : ''}<p class="nora-model-note">${tr('仅查看源代码，不会执行。')}</p><textarea class="nora-regex-code" rows="12" readonly spellcheck="false" aria-label="${tr('脚本源码')}">\n${esc(item.type === 'folder' ? JSON.stringify(item, null, 2) : item.content || '')}</textarea>`, () => void scripts());
+                scriptDetail(result, group.scope, Boolean(selected.managedByNora));
             } catch (error) { if (alive()) dialogs.toast(dialogs.normalizeError(error), { tone: 'error' }); }
         }));
         function importScript() {
@@ -360,6 +359,77 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
             });
         }
         if (importImmediately) importScript();
+    }
+
+    function scriptDetail(snapshot, scope, managed = false) {
+        const item = snapshot.script;
+        const editable = item.type === 'script' && item.id !== managedId && !managed;
+        const owner = target;
+        const modal = sheet(tr('脚本详情'), `<h3 class="nora-script-title">${esc(item.name || tr('未命名脚本'))}</h3><p class="nora-model-note">${tr(scopes[scope])}</p>${managed ? `<p class="nora-model-note">${tr('由内置 MVU 提供；原脚本保留')}</p>` : ''}${item.info ? `<p class="nora-model-note">${esc(item.info)}</p>` : ''}<p class="nora-model-note">${tr('仅查看源代码，不会执行。')}</p><textarea class="nora-regex-code" rows="12" readonly spellcheck="false" aria-label="${tr('脚本源码')}">\n${esc(item.type === 'folder' ? JSON.stringify(item, null, 2) : item.content || '')}</textarea>${editable ? `<footer class="nora-form-actions"><button class="nora-primary" data-script-edit type="button">${tr('编辑脚本')}</button></footer>` : ''}`, () => void scripts());
+        const version = dialogs.version;
+        select('[data-script-edit]', modal)?.addEventListener('click', () => {
+            if (!busy && current() && target === owner && dialogs.version === version) editScript(snapshot, scope);
+        });
+    }
+
+    function editScript(snapshot, scope) {
+        const original = snapshot.script;
+        const owner = target;
+        let draft, persisted = false;
+        const back = () => persisted ? void scripts() : scriptDetail(snapshot, scope);
+        const leave = () => persisted ? back() : draft?.leave(back);
+        const modal = sheet(tr('编辑脚本'), `<form class="nora-form nora-editor-form" data-script-edit-form autocomplete="off"><div class="nora-editor-fields"><p class="nora-model-note">${tr(scopes[scope])}${scope === 'global' ? ` · ${tr('此操作会影响所有世界。')}` : ''}</p><label>${tr('脚本名称')}<input name="name" required value="${attr(original.name || '')}"></label><label>${tr('脚本源码')}<textarea name="content" class="nora-regex-code nora-script-editor-code" rows="16" spellcheck="false">\n${esc(original.content || '')}</textarea></label><p data-script-save-status role="status"></p></div><footer class="nora-form-actions nora-editor-toolbar"><button class="nora-secondary" data-script-cancel type="button">${tr('取消')}</button><span class="nora-editor-toolbar-spacer"></span><button class="nora-primary" type="submit">${tr('保存')}</button></footer></form>`, leave);
+        modal.classList?.add('nora-fixed-editor', 'nora-script-editor-modal');
+        const form = select('[data-script-edit-form]', modal);
+        const owned = () => target === owner && current() && form.isConnected !== false;
+        draft = dialogs.protectForm(form, { isBusy: () => busy });
+        select('[data-script-cancel]', modal).addEventListener('click', leave);
+        form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (busy || !owned()) return;
+            if (isGenerating()) return dialogs.toast(tr('请等待当前操作完成。'));
+            if (!form.reportValidity()) return;
+            const patch = {};
+            for (const key of ['name', 'content']) {
+                const value = form.elements.namedItem(key).value;
+                if (value !== (original[key] || '')) patch[key] = value;
+            }
+            if (!Object.keys(patch).length) { draft.release(); back(); return; }
+            busy = true;
+            const button = select('button[type="submit"]', form);
+            button.disabled = true;
+            button.textContent = tr('正在保存');
+            const status = select('[data-script-save-status]', form);
+            let saved = false;
+            try {
+                if (original.enabled !== false) {
+                    const approved = await dialogs.confirm({ title: tr('保存脚本修改？'), body: tr('此脚本处于启用状态，保存后可能重新执行。不会自动开启尚未授权的脚本。'), restoreSheet: true });
+                    if (!approved || !owned()) return;
+                }
+                if (isGenerating()) throw new Error(tr('请等待当前操作完成。'));
+                await run('scripts.update', { scope, id: original.id, expectedRevision: snapshot.revision, patch }, true);
+                saved = true;
+                persisted = true;
+                draft.release();
+                if (!owned()) return;
+                const fresh = await run('scripts.inspect', { scope, id: original.id });
+                if (!owned()) return;
+                if (Object.entries(patch).some(([key, value]) => fresh.script?.[key] !== value)) {
+                    throw new Error(tr('脚本已保存，但回读结果已变化，请重新打开查看。'));
+                }
+                dialogs.toast(tr('脚本已保存。'));
+                scriptDetail(fresh, scope);
+            } catch (error) {
+                if (!owned()) return;
+                status.textContent = saved ? tr('脚本已保存，详情刷新未完成，请重新打开查看。') : dialogs.normalizeError(error);
+                status.setAttribute('role', 'alert');
+                if (saved) button.hidden = true;
+            } finally {
+                busy = false;
+                button.disabled = false;
+                button.textContent = tr('保存');
+            }
+        });
     }
     return Object.freeze({ open() {
         if (busy) return;
