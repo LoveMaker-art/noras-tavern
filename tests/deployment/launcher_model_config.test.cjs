@@ -1,276 +1,82 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { spawnSync } = require('node:child_process');
-
 const {
-  loadProviderModels,
-  modelCredential,
-  NO_AUTH_KEY,
-  normalizeCustomBaseUrl,
-  normalizeModels,
-  publicProviders,
-  readVerifiedModel,
-  testCustomModel,
-  writeVerifiedModel,
+  modelCredential, normalizeCustomBaseUrl, readVerifiedModel, requireProvider,
+  writeVerifiedModel, configurationFingerprint,
 } = require('../installer/desktop/model-config');
 
-test('exposes only the supported API-key providers', () => {
-  const providers = publicProviders();
-  assert.deepEqual(providers.map((provider) => provider.id), [
-    'openrouter', 'deepseek', 'anthropic', 'openai-api', 'gemini', 'custom',
-  ]);
-  assert.equal(providers.some((provider) => provider.id === 'nous'), false);
-  assert.ok(providers.filter((provider) => !provider.custom).every((provider) => provider.keyEnv && provider.signupUrl));
-  assert.deepEqual(providers.at(-1), {
-    id: 'custom',
-    label: '自定义模型',
-    keyEnv: '',
-    signupUrl: '',
-    recommended: undefined,
-    custom: true,
-  });
+test('provider selection comes from the installed Hermes catalog, including native custom identities', () => {
+  const providers = [{id:'opencode-go',label:'OpenCode Go'}, {id:'custom:existing',custom:true},
+    {id:'external-provider',available:false,reason:'请先安装外部依赖。'}];
+  assert.equal(requireProvider('opencode-go',providers),providers[0]);
+  assert.equal(requireProvider('custom:existing',providers),providers[1]);
+  assert.throws(()=>requireProvider('invented',providers),/当前 Hermes 不支持/);
+  assert.throws(()=>requireProvider('external-provider',providers),/外部依赖/);
 });
 
-test('normalizes OpenAI-compatible and Gemini model responses', () => {
-  const [openrouter, , , , gemini] = publicProviders();
-  assert.deepEqual(normalizeModels(openrouter, { data: [{ id: 'a/model' }, { id: 'a/model' }, { id: '' }] }), ['a/model']);
-  assert.deepEqual(normalizeModels(gemini, { models: [
-    { name: 'models/gemini-pro', supportedGenerationMethods: ['generateContent'] },
-    { name: 'models/embed', supportedGenerationMethods: ['embedContent'] },
-  ] }), ['gemini-pro']);
-  const openai = publicProviders().find((provider) => provider.id === 'openai-api');
-  assert.deepEqual(normalizeModels(openai, { data: [
-    { id: 'gpt-5' }, { id: 'text-embedding-3-large' }, { id: 'gpt-image-1' },
-  ] }), ['gpt-5']);
-});
-
-test('rejects an empty key before making a network request', async () => {
-  await assert.rejects(loadProviderModels('openrouter', ''), /API Key/);
-});
-
-test('invalid header characters are rejected as key input before list and protocol test requests', async () => {
+test('invalid API keys fail with actionable redacted input errors', () => {
   const {failureResult}=require('../installer/desktop/operation-result');
-  const base='http://127.0.0.1:1/v1';
-  for(const key of ['fake-密钥', 'fake-\u0001-key', 'fake-\r\n-key']) {
-    for(const work of [()=>loadProviderModels('custom',key,base),
-      ...['openai','anthropic','gemini'].map(protocol=>()=>testCustomModel(base,key,'fixture',protocol))]) {
-      await assert.rejects(async()=>work(), error=>{
-        assert.equal(error.userCode,'MODEL_KEY_INVALID');
-        const result=failureResult(error,{action:'model'});
-        assert.match(result.error.guidance.title,/API Key/);
-        assert.match(result.error.guidance.next,/重新复制/);
-        assert.doesNotMatch(JSON.stringify(result),/fake-|ERR_INVALID_CHAR|原因尚未确认/);
-        return true;
-      });
-    }
+  for(const key of ['', 'fake-密钥', 'fake-\u0001-key', 'fake-\r\n-key']) {
+    assert.throws(()=>modelCredential({id:'api-provider'}, {key}), error=>{
+      assert.equal(error.userCode,'MODEL_KEY_INVALID');
+      const result=failureResult(error,{action:'model'});
+      assert.match(result.error.guidance.title,/API Key/);
+      assert.match(result.error.guidance.next,/重新复制/);
+      assert.doesNotMatch(JSON.stringify(result),/fake-|ERR_INVALID_CHAR|原因尚未确认/);
+      return true;
+    });
   }
 });
 
-test('no-auth is explicit and cannot bypass a cloud provider key requirement', () => {
-  const custom = publicProviders().find(p => p.custom);
-  assert.equal(modelCredential(custom, { authMode: 'none' }), NO_AUTH_KEY);
-  assert.throws(() => modelCredential(custom, {}), /API Key/);
-  assert.throws(() => modelCredential(publicProviders()[0], { authMode: 'none' }), /API Key/);
+test('native authentication and saved credentials do not require pasting a second API key', () => {
+  assert.equal(modelCredential({id:'oauth-provider'}, {authMode:'oauth'}),'');
+  assert.equal(modelCredential({id:'sdk-provider',keyless:true}, {authMode:'external'}),'');
+  assert.equal(modelCredential({id:'api-provider',authenticated:true}, {}),'');
+  assert.equal(modelCredential({id:'custom',custom:true}, {authMode:'none'}),'');
+  assert.throws(()=>modelCredential({id:'api-provider'}, {}),/API Key/);
+  assert.equal(modelCredential({id:'api-provider',authenticated:true}, {key:'rotated-key'}),'rotated-key');
 });
 
-test('local custom endpoint lists models and tests content without an Authorization header', async () => {
-  const seen = [];
-  const server = http.createServer((req, res) => {
-    seen.push([req.url, req.headers.authorization]);
-    req.resume();
-    req.on('end', () => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(req.url.endsWith('/models') ? { data: [{ id: 'local-test' }] }
-        : { choices: [{ message: { content: 'NORA_OK' } }] }));
-    });
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  try {
-    const base = `http://127.0.0.1:${server.address().port}/v1`;
-    assert.deepEqual((await loadProviderModels('custom', '', base, 'none')).models, ['local-test']);
-    assert.equal((await testCustomModel(base, NO_AUTH_KEY, 'local-test')).toolSupport, 'unverified');
-    assert.deepEqual(seen, [['/v1/models', undefined], ['/v1/chat/completions', undefined]]);
-  } finally { await new Promise(resolve => server.close(resolve)); }
-});
-
-test('local service refusal points to model service, not an invalid key', async () => {
-  const server = http.createServer();
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  await new Promise(resolve => server.close(resolve));
-  await assert.rejects(testCustomModel(`http://127.0.0.1:${port}/v1`, NO_AUTH_KEY, 'local'), /先启动 Ollama/);
-});
-
-for (const action of ['list', 'test']) test(`an interrupted ${action} response becomes a request failure without crashing the launcher`, () => {
-  const script = `
-    const assert = require('node:assert/strict');
-    const http = require('node:http');
-    const partial = '{"partial":';
-    let serverResponse, consumed = '', requestCount = 0, resetCount = 0;
-    const method = ${JSON.stringify(action === 'list' ? 'get' : 'request')};
-    const original = http[method];
-    http[method] = (url, options, onResponse) => original.call(http, url, options, response => {
-      // Register the unchanged product's body/error handlers first. This ACK
-      // then observes actual client data, rather than assuming a 10 ms read.
-      onResponse(response);
-      response.on('data', chunk => {
-        consumed += chunk;
-        if (consumed.length < partial.length) return;
-        assert.equal(consumed, partial);
-        assert.equal(response.statusCode, 200);
-        assert.equal(requestCount, 1);
-        assert.equal(resetCount, 0);
-        assert.equal(serverResponse.destroyed, false);
-        resetCount++;
-        serverResponse.destroy();
-      });
-    });
-    const model = require(process.argv[1]);
-    const server = http.createServer((request, response) => {
-      requestCount++; serverResponse = response;
-      request.resume();
-      response.writeHead(200, {'Content-Type':'application/json'});
-      response.write(partial);
-    });
-    const deadline = setTimeout(() => process.exit(3), 2000);
-    server.listen(0, '127.0.0.1', async () => {
-      const base = 'http://127.0.0.1:' + server.address().port + '/v1';
-      try {
-        await (${JSON.stringify(action)} === 'list'
-          ? model.loadProviderModels('custom', '', base, 'none')
-          : model.testCustomModel(base, model.NO_AUTH_KEY, 'fixture-model'));
-        process.exitCode = 2;
-      } catch (error) {
-        if (error.code !== 'ECONNRESET' || error.source !== 'model_service'
-            || error.site !== ${JSON.stringify(action === 'list' ? 'model.list' : 'model.test')}
-            || consumed !== partial || requestCount !== 1 || resetCount !== 1) process.exitCode = 4;
-        else {
-          process.stdout.write('REQUEST_FAILURE_CAPTURED\\n');
-          process.stdout.write('BODY_ACK ' + JSON.stringify({bytes:Buffer.byteLength(consumed),requestCount,resetCount}) + '\\n');
-        }
-      } finally {
-        http[method] = original;
-        server.closeAllConnections();
-        server.close(() => { clearTimeout(deadline); process.stdout.write('LOOPBACK_SERVER_CLOSED\\n'); });
-      }
-    });
-  `;
-  const result = spawnSync(process.execPath, ['-e', script, require.resolve('../installer/desktop/model-config')],
-    {encoding:'utf8', timeout:5000});
-  assert.equal(result.status, 0, result.stderr || `fixture exit ${result.status}`);
-  assert.equal(result.signal, null);
-  assert.match(result.stdout, /REQUEST_FAILURE_CAPTURED/);
-  const ack = /^BODY_ACK (.+)$/m.exec(result.stdout);
-  assert.ok(ack, 'The real client must consume the partial body before reset');
-  assert.deepEqual(JSON.parse(ack[1]), {bytes:Buffer.byteLength('{"partial":'),requestCount:1,resetCount:1});
-  assert.match(result.stdout, /LOOPBACK_SERVER_CLOSED/);
-});
-
-test('response interruption handling preserves the model response size limit', async () => {
-  const server = http.createServer((request, response) => {
-    request.resume();
-    response.writeHead(200, {'Content-Type':'application/json'});
-    response.end('x'.repeat(4 * 1024 * 1024 + 1));
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  try {
-    const base = `http://127.0.0.1:${server.address().port}/v1`;
-    await assert.rejects(loadProviderModels('custom', '', base, 'none'), {code:'RESPONSE_TOO_LARGE'});
-    await assert.rejects(testCustomModel(base, NO_AUTH_KEY, 'fixture-model'), {code:'RESPONSE_TOO_LARGE'});
-  } finally { await new Promise(resolve => server.close(resolve)); }
-});
-
-test('normalizes and validates a custom OpenAI-compatible endpoint', () => {
+test('custom endpoint syntax validation preserves existing endpoint protection', () => {
   assert.equal(normalizeCustomBaseUrl('https://relay.example/v1///'), 'https://relay.example/v1');
-  assert.throws(() => normalizeCustomBaseUrl('ftp://relay.example/v1'), /HTTP\/HTTPS/);
-  assert.throws(() => normalizeCustomBaseUrl('https://user:pass@relay.example/v1'), /账号信息/);
+  assert.equal(normalizeCustomBaseUrl('https://relay.example/v1/chat/completions'), 'https://relay.example/v1');
+  for(const invalid of ['ftp://relay.example/v1','https://user:pass@relay.example/v1','https://relay.example/v1?key=x','https://relay.example/v1#part'])
+    assert.throws(()=>normalizeCustomBaseUrl(invalid));
 });
 
-test('tests a custom model through the OpenAI-compatible chat endpoint', async () => {
-  let requestBody = '';
-  let requestPath = '';
-  let authorization = '';
-  const server = http.createServer((request, response) => {
-    requestPath = request.url;
-    authorization = request.headers.authorization;
-    request.setEncoding('utf8');
-    request.on('data', (chunk) => { requestBody += chunk; });
-    request.on('end', () => {
-      response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ choices: [{ message: { content: 'NORA_OK' } }] }));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  try {
-    const { port } = server.address();
-    await testCustomModel(`http://127.0.0.1:${port}/v1`, 'relay-key', 'relay-model');
-    assert.equal(requestPath, '/v1/chat/completions');
-    assert.equal(authorization, 'Bearer relay-key');
-    assert.equal(JSON.parse(requestBody).model, 'relay-model');
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-});
-
-test('verified model marker contains no secret', () => {
+for(const provider of ['deepseek','opencode-go','custom','custom:existing']) test(`${provider} checkpoint supports the native identity without credentials`, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-model-marker-'));
-  try {
-    writeVerifiedModel(root, {
-      provider: 'deepseek',
-      model: 'deepseek-chat',
-      keyEnv: 'DEEPSEEK_API_KEY',
-      key: 'must-not-be-written',
-    });
-    const text = fs.readFileSync(path.join(root, 'installer', 'model.json'), 'utf8');
-    assert.doesNotMatch(text, /must-not-be-written/);
-    assert.equal(readVerifiedModel(root).model, 'deepseek-chat');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  writeVerifiedModel(root,{provider,model:'selected-model',key:'must-not-be-written',
+    baseUrl:provider.startsWith('custom')?'https://relay.example/v1/':'',authMode:'oauth',
+    credentialRef:{provider,authMode:'oauth'},tavernSyncUnsupported:true});
+  const serialized=fs.readFileSync(path.join(root,'installer/model.json'),'utf8');
+  assert.doesNotMatch(serialized,/must-not-be-written/);
+  const saved=readVerifiedModel(root);
+  assert.equal(saved.provider,provider);assert.equal(saved.model,'selected-model');
+  assert.equal(saved.authMode,'oauth');assert.equal(saved.tavernSyncUnsupported,true);
+  assert.deepEqual(saved.credentialRef,{provider,authMode:'oauth'});
+});
+
+test('legacy checkpoints remain readable while malformed checkpoints are rejected', t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-old-model-marker-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,'installer'));
+  const file=path.join(root,'installer/model.json');
+  const old={schema:1,provider:'custom:local-(127.0.0.1:8080)',model:'old-model',baseUrl:'http://127.0.0.1:8080/v1',authMode:'none',credentialSha256:'a'.repeat(64)};
+  fs.writeFileSync(file,JSON.stringify(old));assert.deepEqual(readVerifiedModel(root),old);
+  for(const value of [{...old,provider:''},{...old,provider:'x\ny'},{...old,model:[]},{...old,baseUrl:'https://user:secret@bad.example'}]) {
+    fs.writeFileSync(file,JSON.stringify(value));assert.equal(readVerifiedModel(root),null);
   }
 });
 
-for (const provider of ['custom', 'custom:local-(127.0.0.1:8080)']) test(`${provider} marker stores its endpoint without storing the key`, () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-custom-model-marker-'));
-  try {
-    writeVerifiedModel(root, {
-      provider,
-      model: 'relay-model',
-      baseUrl: 'https://relay.example/v1/',
-      key: 'must-not-be-written',
-    });
-    const text = fs.readFileSync(path.join(root, 'installer', 'model.json'), 'utf8');
-    assert.doesNotMatch(text, /must-not-be-written/);
-    assert.equal(readVerifiedModel(root).baseUrl, 'https://relay.example/v1');
-    assert.equal(readVerifiedModel(root).provider, provider);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+test('conditions are secret-keyed per installation and include native authentication mode', () => {
+  const input={provider:'opencode-go',model:'fixture',key:'private-fixture',authMode:'key'};
+  const first=configurationFingerprint(input,'isolated-installation-identity');
+  assert.match(first,/^[a-f0-9]{64}$/);assert.ok(!first.includes(input.key));
+  assert.notEqual(first,configurationFingerprint({...input,authMode:'oauth'},'isolated-installation-identity'));
+  assert.notEqual(first,configurationFingerprint(input,'another-isolated-installation'));
 });
-
-for (const protocol of ['anthropic', 'gemini']) {
-  test(`${protocol} credential test uses the native request format without tools`, async () => {
-    let captured;
-    const server = http.createServer((request, response) => {
-      let body = '';
-      request.on('data', chunk => { body += chunk; });
-      request.on('end', () => {
-        captured = { url: request.url, headers: request.headers, body: JSON.parse(body) };
-        response.writeHead(200, { 'Content-Type': 'application/json' });
-        response.end(JSON.stringify(protocol === 'anthropic' ? { content: [{ type: 'text', text: 'NORA_OK' }] }
-          : { candidates: [{ content: { parts: [{ text: 'NORA_OK' }] } }] }));
-      });
-    });
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    try {
-      await testCustomModel(`http://127.0.0.1:${server.address().port}/v1`, 'test-secret', 'test-model', protocol);
-      assert.equal(captured.headers[protocol === 'anthropic' ? 'x-api-key' : 'x-goog-api-key'], 'test-secret');
-      assert.ok(!captured.body.tools);
-      assert.ok(!captured.url.includes('test-secret'));
-      assert.equal(captured.url, protocol === 'anthropic' ? '/v1/messages' : '/v1/models/test-model:generateContent');
-    } finally { await new Promise(resolve => server.close(resolve)); }
-  });
-}

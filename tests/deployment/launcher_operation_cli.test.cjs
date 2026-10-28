@@ -651,3 +651,90 @@ for(const managedInstallation of [true,false])for(const appOnly of [false,true])
   assert.equal(fs.readFileSync(receipt,'utf8'),installed);
   assert.equal(fs.readFileSync(app,'utf8'),'current verified program');
 });
+
+function modelRequestFixture(t,body={action:'save-local',provider:'opencode-go',model:'fixture-model',key:'private-credential'}){
+  const f=fixture(t),model=path.join(f.receipt.resourcesRoot,'model_config.py');
+  f.receipt.resources['model_config.py']={path:model};
+  const request={schema:'nora-cli-request/1',kind:'model',argv:[model],stdin:Buffer.from(JSON.stringify(body)).toString('base64')};
+  return {...f,body,model,request};
+}
+
+test('independent model route authorizes only the installed helper and keeps its payload transient',t=>{
+  const f=modelRequestFixture(t),route=cli.routeRequest(f.receipt,f.request);
+  assert.equal(route.kind,'model');assert.deepEqual(route.request,{action:'model',mode:'save-local'});
+  assert.ok(!JSON.stringify(route.request).includes(f.body.key));
+  assert.equal(JSON.parse(route.stdin).key,f.body.key);
+  for(const patch of [{argv:[f.model,'--apply']},{kind:'update'},
+    {argv:[path.join(f.home,'skills/configure_provider.py')]},
+    {stdin:Buffer.from(JSON.stringify({...f.body,action:'arbitrary'})).toString('base64')}])
+    assert.throws(()=>cli.routeRequest(f.receipt,{...f.request,...patch}),{code:'OPERATION_ENTRY_UNSUPPORTED'});
+});
+
+test('unowned skill model save obtains the existing lease, verifies Hermes selection and preserves unrelated data',async t=>{
+  const f=modelRequestFixture(t),calls=[];
+  const data=path.join(f.home,'story.json');fs.writeFileSync(data,'preserved story and settings');
+  const operation=await cli.execute({receiptPath:'fixture',request:f.request},{validate:async()=>f.receipt,lock:f.lock,telemetry:false,
+    policy:{observe:async()=>({effectState:'untouched'})},run:async(context,target,args,options)=>{
+      calls.push({context:context!==null,target,args,readonly:options.readonly,body:JSON.parse(options.stdin)});
+      assert.equal(target,f.model);
+      if(options.readonly)return {ok:true,configured:true,provider:'opencode-go',model:'fixture-model'};
+      assert.equal((await f.lock.probe({directory:f.receipt.installerDirectory})).busy,true,'native lease must own the write');
+      return {ok:true,provider:'opencode-go',model:'fixture-model',validation:'configuration-only',activation:'next-session',key:'must-never-persist'};
+    }});
+  assert.equal(operation.state,'succeeded');assert.equal(calls.length,2);assert.equal(calls[0].context,true);assert.equal(calls[1].context,false);
+  assert.equal(operation.result.validation,'configuration-only');assert.equal(operation.result.key,undefined);
+  assert.equal(fs.readFileSync(data,'utf8'),'preserved story and settings');
+  const journal=fs.readFileSync(path.join(f.receipt.installerDirectory,'operations',operation.operationId,'operation.json'),'utf8');
+  assert.doesNotMatch(journal,/private-credential|must-never-persist/);
+  assert.equal(cli.terminalResult(operation).activation,'next-session');
+});
+
+test('model save cannot report success if readback belongs to another selection',async t=>{
+  const f=modelRequestFixture(t);
+  const operation=await cli.execute({receiptPath:'fixture',request:f.request},{validate:async()=>f.receipt,lock:f.lock,telemetry:false,
+    policy:{observe:async()=>({effectState:'untouched'})},run:async(_context,_target,_args,options)=>options.readonly
+      ?{ok:true,configured:true,provider:'old-provider',model:'old-model'}:{ok:true,provider:'opencode-go',model:'fixture-model'}});
+  assert.notEqual(operation.state,'succeeded');assert.equal(operation.primaryFailure.code,'VERIFICATION_FAILED');
+});
+
+test('CLI input accepts a one-shot request and bounded prompt replies in the same invocation',async()=>{
+  const {PassThrough}=require('node:stream'),stream=new PassThrough(),input=cli.requestInput(stream);
+  stream.write(JSON.stringify({kind:'model'})+'\n');assert.deepEqual(await input.request,{kind:'model'});
+  const reply=input.reply({promptId:'one'});stream.write(JSON.stringify({promptId:'one',response:'private-code'})+'\n');
+  assert.equal((await reply).response,'private-code');stream.end();
+  await assert.rejects(input.reply({promptId:'two'}),{code:'MODEL_AUTH_INPUT_REQUIRED'});
+  const old=new PassThrough(),legacy=cli.requestInput(old);old.end(JSON.stringify({kind:'start'}));assert.deepEqual(await legacy.request,{kind:'start'});
+});
+
+test('native auth duplex runner forwards only safe progress and pipes the returned code to its owned child',async t=>{
+  const f=modelRequestFixture(t,{action:'authenticate',provider:'native-oauth'}),events=[],logs=[];
+  const script=path.join(f.home,'auth.cjs'),privateCode='private-auth-reply-code';
+  // Only the pipe/ownership adapter is exercised here; the child below is a
+  // real isolated Node process, not a replacement Hermes installation.
+  const python=path.join(f.receipt.hermesHome,'hermes-agent/venv',process.platform==='win32'?'Scripts/python.exe':'bin/python3');
+  fs.mkdirSync(path.dirname(python),{recursive:true});fs.writeFileSync(python,'fixture interpreter identity');
+  f.receipt.resources['operation_control.py']={path:path.join(f.receipt.resourcesRoot,'operation_control.py')};
+  fs.writeFileSync(script,`const input=require('node:readline').createInterface({input:process.stdin});let first=true;
+    input.on('line',line=>{const value=JSON.parse(line);if(first){first=false;console.log(JSON.stringify({event:'auth',url:'https://login.example/',promptId:'return-code',prompt:'返回确认码'}));}
+      else{if(value.response!=='${privateCode}'||value.promptId!=='return-code')process.exit(3);
+        console.log('PRIVATE native presentation '+value.response);console.log(JSON.stringify({ok:true,authenticated:true}));input.close();process.stdin.destroy();}});`);
+  const runner=cli.guardedRunner(f.receipt,{diagnostics:{clean:value=>value,addSecret(){},event:value=>logs.push(value),write:(_name,value)=>logs.push(value)},
+    onEvent:value=>events.push(value),respondAuth:async prompt=>({promptId:prompt.promptId,response:privateCode})});
+  let writes=0;
+  const result=await runner({check(){},lease:{spawn(){writes++;return require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});}}},
+    f.model,[],{stdin:Buffer.from(JSON.stringify(f.body))});
+  assert.equal(result.ok,true);assert.equal(result.authenticated,true);assert.equal(writes,1);assert.equal(events[0].promptId,'return-code');
+  assert.doesNotMatch(JSON.stringify(logs)+JSON.stringify(events),/private-auth-reply-code|PRIVATE/);
+  const oneShot=cli.guardedRunner(f.receipt,{diagnostics:{clean:value=>value,addSecret(){},event(){},write(){}}});
+  await assert.rejects(oneShot({check(){},lease:{spawn:()=>require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'})}},
+    f.model,[],{stdin:Buffer.from(JSON.stringify(f.body))}),{code:'MODEL_AUTH_INPUT_REQUIRED'});
+});
+
+
+test('CLI native auth input rejects oversized responses before forwarding them',async()=>{
+  const {PassThrough}=require('node:stream'),stream=new PassThrough(),input=cli.requestInput(stream);
+  stream.write('{"kind":"model"}\n');await input.request;
+  const reply=input.reply({promptId:'one'});
+  stream.write('x'.repeat(65537));
+  await assert.rejects(reply,{code:'OPERATION_ENTRY_UNSUPPORTED'});input.close();
+});

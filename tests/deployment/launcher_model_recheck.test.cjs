@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { test, after } = require('node:test');
 const { parse } = require('../installer/desktop/node_modules/acorn');
-const { modelCredential,configurationFingerprint } = require('../installer/desktop/model-config');
+const { modelCredential,configurationFingerprint,requireProvider } = require('../installer/desktop/model-config');
 
 const mainPath = path.join(__dirname, '../installer/desktop/main.js');
 const mainRequire = createRequire(mainPath);
@@ -76,7 +76,7 @@ test('restored GUI startup waits for the helper writer and verifies its task onc
   });
 });
 
-function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, recheck = true, marker = null } = {}) {
+function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, recheck = true, marker = null, unsupported = false, provider = 'custom' } = {}) {
   const order = [], events = [];
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-model-recheck-'));
   fixtureHomes.add(home);
@@ -95,16 +95,17 @@ function fixture({ setupCompleted = false, running = true, syncFails = false, ru
       return result.value;
     },
     activeRun: false, modelBusy: false, statusRequest: Promise.resolve(),
-    requireProvider: () => ({ id: 'custom', keyEnv: '', custom: true }), normalizeCustomBaseUrl: value => value,
+    requireProvider, normalizeCustomBaseUrl: value => value,
     recordFailureEvent(){},recordEvent: event => { events.push(event); order.push(event.state); },
     runModelConfigHelper: async value => {
       order.push(value.action);
+      if (value.action === 'catalog') return {ok:true,providers:[{id:provider,keyEnv:'',custom:provider==='custom',authModes:provider==='custom'?['key','none']:['oauth'],authenticated:provider!=='custom'}]};
+      if (value.action === 'sync-saved-tavern' && unsupported) return {ok:true,tavernSyncUnsupported:true,reason:'fixture incompatible Tavern connector'};
       if (value.action === 'sync-saved-tavern') assert.equal(value.port, 18999);
       if (value.action === 'sync-saved-tavern' && syncFails) throw new Error('fixture sync failure');
       if (value.action === 'verify-runtime' && runtimeFails) throw new Error('实际模型服务与新配置不一致');
       return { ok: true, provider: 'custom:local', model: 'fixture-model', baseUrl: 'http://127.0.0.1:8080/v1' };
     },
-    testCustomModel: async () => { order.push('test'); },
     readInstallerState: () => ({ setupCompleted, port: 18999 }),
     noraHome: () => home, hermesHome: () => path.join(home, 'hermes'), installRoot: () => path.join(home, 'tavern'), DEFAULT_PORT: 8799,
     readVerifiedModel: () => marker,
@@ -177,4 +178,68 @@ test('runtime route mismatch never reports model setup complete', async () => {
   await assert.rejects(f.save({}, input), /实际模型服务与新配置不一致/);
   assert.equal(f.events.some(e => e.state === 'done'), false);
   assert.equal(f.context.modelBusy, false);
+});
+
+
+test('native OAuth provider validation and persistence both use Hermes without requiring an API key', async () => {
+  const f=fixture({provider:'opencode-go',setupCompleted:true});
+  const result=await f.save({}, {provider:'opencode-go',model:'fixture-model',authMode:'oauth'});
+  assert.equal(result.ok,true);
+  assert.ok(f.order.indexOf('normalize') < f.order.indexOf('test'));
+  assert.ok(f.order.indexOf('test') < f.order.indexOf('save'));
+  assert.equal(f.marker().authMode,'oauth');
+});
+
+test('unsupported Tavern synchronization retains verified Nora configuration and returns a separate outcome', async () => {
+  const f=fixture({unsupported:true});
+  const result=await f.save({},input);
+  assert.equal(result.ok,true);assert.equal(result.tavernSyncUnsupported,true);
+  assert.equal(f.marker().tavernSyncUnsupported,true);assert.equal(f.marker().tavernSyncPending,false);
+  assert.match(result.warning,/诺拉模型配置已保存/);
+  assert.ok(f.order.includes('verify-runtime'));
+});
+
+function authenticationFixture({authenticated=false}={}) {
+  const replies=[],requests=[];let finish,fail,options;
+  const provider={id:'native-oauth',authModes:['oauth'],loginAvailable:true,authenticated};
+  const context=vm.createContext({require:mainRequire,AbortController,activeRun:false,modelBusy:false,modelAuthentication:null,
+    requireProvider,externalUrl:mainRequire('./process-output').externalUrl,
+    diagnostics:{clean:value=>value,addSecret(){},error(){}},
+    runOwnedTask:async(_kind,_request,execute)=>execute({stage:async()=>{}}),
+    runModelConfigHelper:async(payload,authOptions)=>{
+      requests.push(payload);
+      if(payload.action==='catalog')return {ok:true,providers:[provider]};
+      options=authOptions;options.registerInput(value=>replies.push(value));
+      options.onAuth({event:'auth',url:'https://login.example/',promptId:'prompt-1',prompt:'请输入登录返回码'});
+      return new Promise((resolve,reject)=>{finish=()=>{provider.authenticated=true;resolve({ok:true});};fail=reject;
+        options.signal.addEventListener('abort',()=>reject(new Error('cancelled')),{once:true});});
+    }});
+  const load=name=>vm.runInContext('('+source.slice(nodes[name].start,nodes[name].end)+')',context);
+  return {context,replies,requests,start:load('nora:model-auth-start'),status:load('nora:model-auth-status'),
+    respond:load('nora:model-auth-respond'),cancel:load('nora:model-auth-cancel'),finish:()=>finish(),fail:error=>fail(error),options:()=>options};
+}
+
+const flush=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('native login IPC routes a reply only to its current prompt and reports success after native status confirms it', async () => {
+  const f=authenticationFixture();const started=await f.start({}, {provider:'native-oauth'});await flush();
+  assert.equal(f.context.modelBusy,true);
+  const status=await f.status({}, {id:started.id});assert.equal(status.progress.promptId,'prompt-1');
+  await assert.rejects(f.respond({}, {id:started.id,promptId:'expired',response:'must-not-send'}),/过期/);
+  await f.respond({}, {id:started.id,promptId:'prompt-1',response:'fixture-return-code'});
+  assert.equal(f.replies.length,1);assert.equal(f.replies[0].response,'fixture-return-code');
+  await assert.rejects(f.respond({}, {id:started.id,promptId:'prompt-1',response:'duplicate'}),/过期/);
+  f.finish();await flush();
+  assert.equal((await f.status({}, {id:started.id})).state,'succeeded');assert.equal(f.context.modelBusy,false);
+  assert.equal(f.requests.filter(item=>item.action==='catalog').length,2);
+  assert.ok(!JSON.stringify(f.requests).includes('fixture-return-code'));
+});
+
+test('native login cancellation releases busy state and leaves a failed login retryable', async () => {
+  const f=authenticationFixture();const started=await f.start({}, {provider:'native-oauth'});await flush();
+  await f.cancel({}, {id:started.id});await flush();
+  assert.equal((await f.status({}, {id:started.id})).state,'cancelled');assert.equal(f.context.modelBusy,false);
+  const second=await f.start({}, {provider:'native-oauth'});await flush();f.fail(new Error('fixture upstream rejected login'));await flush();
+  const result=await f.status({}, {id:second.id});assert.equal(result.state,'failed');assert.match(result.error,/upstream rejected/);
+  assert.equal(f.context.modelBusy,false);
 });

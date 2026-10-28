@@ -84,7 +84,8 @@ test('only sealed resource or fixed installed-manifest CLI scripts can be routed
   assert.equal(capability.authorizeTarget(receipt,receipt.resources['bootstrap.py'].path).type,'install-bootstrap');
   assert.throws(()=>capability.authorizeTarget(receipt,path.join(f.root,'arbitrary.py')),{code:'OPERATION_ENTRY_UNSUPPORTED'});
   assert.throws(()=>capability.authorizeTarget(receipt,'-c'),{code:'OPERATION_ENTRY_UNSUPPORTED'});
-  assert.throws(()=>capability.authorizeTarget(receipt,receipt.resources['model_config.py'].path),{code:'OPERATION_ENTRY_UNSUPPORTED'});
+  assert.equal(capability.authorizeTarget(receipt,receipt.resources['model_config.py'].path).type,'model');
+  assert.throws(()=>capability.authorizeTarget(receipt,receipt.resources['hermes_model_auth.py'].path),{code:'OPERATION_ENTRY_UNSUPPORTED'});
 });
 
 test('a JS registered receipt passes the real Python verifier and tampering fails closed',async t=>{

@@ -64,5 +64,59 @@ class CliBoundaryTest(unittest.TestCase):
             run.assert_not_called()
 
 
+class ModelCliBoundaryTest(unittest.TestCase):
+    def test_unowned_model_is_forwarded_only_to_the_verified_app_resource(self):
+        import base64
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
+            root = Path(directory).resolve()
+            entry = str(root / 'resources/model_config.py')
+            receipt = {'executable': {'path': '/trusted/Nora'}, 'entry': '/trusted/resources/app.asar/operation-cli.js',
+                       'noraHome': str(root), 'resources': {'model_config.py': {'path': entry}}, 'managed': {}}
+            body = json.dumps({'action': 'save-local', 'provider': 'opencode-go', 'key': 'private-key'})
+            with mock.patch.object(CLI, 'validate_receipt', return_value=receipt), mock.patch.object(CLI.subprocess, 'run') as run:
+                run.return_value.returncode = 0
+                with self.assertRaises(SystemExit) as raised:
+                    CLI.ensure_operation('model', [entry], nora_home=root, stdin=body)
+                self.assertEqual(raised.exception.code, 0)
+                request = json.loads(run.call_args.kwargs['input'])
+                self.assertEqual(request['kind'], 'model')
+                self.assertEqual(json.loads(base64.b64decode(request['stdin']))['provider'], 'opencode-go')
+                self.assertNotIn('private-key', str(run.call_args.args))
+                with self.assertRaises(CLI.OperationCliError):
+                    CLI.ensure_operation('model', [str(root / 'skills/configure_provider.py')], nora_home=root, stdin=body)
+                self.assertEqual(run.call_count, 1)
+
+    def test_native_login_uses_the_same_live_stdin_without_persisting_prompt_replies(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
+            root = Path(directory).resolve()
+            entry = str(root / 'resources/model_config.py')
+            receipt = {'executable': {'path': '/trusted/Nora'}, 'entry': '/trusted/resources/app.asar/operation-cli.js',
+                       'noraHome': str(root), 'resources': {'model_config.py': {'path': entry}}, 'managed': {}}
+            output = io.BytesIO()
+            class Pipe(io.BytesIO):
+                def close(self):
+                    output.write(self.getvalue())
+                    super().close()
+            process = mock.Mock(stdin=Pipe(), returncode=0)
+            source = io.StringIO('{"promptId":"one","response":"private-code"}\n')
+            def wait():
+                import time
+                for _ in range(100):
+                    if process.stdin.closed:
+                        return 0
+                    time.sleep(.001)
+                raise AssertionError('stdin relay did not finish')
+            process.wait.side_effect = wait
+            with mock.patch.object(CLI, 'validate_receipt', return_value=receipt), mock.patch.object(CLI.subprocess, 'Popen', return_value=process) as run, mock.patch.object(sys, 'stdin', source):
+                with self.assertRaises(SystemExit) as raised:
+                    CLI.ensure_operation('model', [entry], nora_home=root, stdin='{"action":"authenticate","provider":"native"}')
+                self.assertEqual(raised.exception.code, 0)
+                lines = output.getvalue().splitlines()
+                self.assertEqual(json.loads(lines[0])['kind'], 'model')
+                self.assertEqual(json.loads(lines[1])['response'], 'private-code')
+                self.assertNotIn('private-code', str(run.call_args.args))
+                self.assertEqual(list(root.iterdir()), [])
+
+
 if __name__ == '__main__':
     unittest.main()

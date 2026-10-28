@@ -64,7 +64,7 @@ class LocalModelSkillTests(unittest.TestCase):
         shutil.copytree(SKILL, self.entry.parent.parent)
         helper = self.tavern / 'apps/tavern-ops/installer'
         helper.mkdir(parents=True)
-        for name in ['model_config.py', 'nora_system.py', 'operation_cli.py',
+        for name in ['model_config.py', 'hermes_models.py', 'hermes_model_auth.py', 'nora_system.py', 'operation_cli.py',
                      'operation_control.py', 'error_diagnostics.py']:
             shutil.copy2(ROOT / 'ops/installer' / name, helper / name)
         (self.home / 'nora-instance.json').write_text(json.dumps({
@@ -259,7 +259,6 @@ class LocalModelSkillTests(unittest.TestCase):
         before = self.config.read_bytes()
         requests = [
             {**self.request, 'model': ''},
-            {**self.request, 'provider': 'deepseek'},
             {**self.request, 'base_url': 'https://user:password@example.invalid/v1'},
             {**self.request, 'api_key': ''},
             {**self.request, 'api_key': 'key with spaces'},
@@ -273,12 +272,31 @@ class LocalModelSkillTests(unittest.TestCase):
                 self.assertEqual(self.config.read_bytes(), before)
                 self.assertFalse(self.marker.exists())
 
+    def test_explicit_native_endpoint_keeps_hermes_provider_identity(self):
+        # The unified entry now supports Hermes' explicit endpoint override;
+        # retaining the native identity preserves its protocol/profile behavior.
+        result, reply = self.invoke({**self.request, 'provider': 'deepseek'})
+        self.assertEqual(result.returncode, 0, reply)
+        current = yaml.safe_load(self.config.read_text())
+        self.assertEqual(current['model']['provider'], 'deepseek')
+        self.assertEqual(current['model']['base_url'], self.request['base_url'])
+
     def test_corrupt_configuration_is_left_intact_without_backup(self):
         self.config.write_text('model: [broken')
         before = self.config.read_bytes()
         result, _ = self.invoke()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.config.read_bytes(), before)
+
+    def test_catalog_does_not_repair_or_quote_a_corrupt_key_bearing_config(self):
+        secret = 'synthetic-private-yaml-value'
+        self.config.write_text('model:\n  api_key: "' + secret + '\n')
+        before = self.config.read_bytes()
+        result = self.owned_run(self.entry, {'action': 'catalog'})
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertNotIn(secret, result.stdout + result.stderr)
+        self.assertFalse(list(self.home.glob('*.bak')))
 
     def test_redirected_config_is_rejected(self):
         outside = self.root / 'outside.yaml'

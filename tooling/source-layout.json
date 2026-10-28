@@ -20,6 +20,8 @@
     ["launcher/desktop/", "ops/installer/desktop/"],
     ["deployment/shared/services.py", "ops/installer/launcher_services.py"],
     ["deployment/shared/model_config.py", "ops/installer/model_config.py"],
+    ["deployment/shared/hermes_models.py", "ops/installer/hermes_models.py"],
+    ["deployment/shared/hermes_model_auth.py", "ops/installer/hermes_model_auth.py"],
     ["deployment/shared/nora_profile.py", "ops/installer/nora_profile.py"],
     ["deployment/shared/nora_system.py", "ops/installer/nora_system.py"],
     ["deployment/shared/error_diagnostics.py", "ops/installer/error_diagnostics.py"],

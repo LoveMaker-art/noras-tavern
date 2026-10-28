@@ -957,6 +957,7 @@
       if (!result.ok) throw new Error(result.warning);
       if (view !== 'model' || generation !== modelFormGeneration) return;
       providers = result.providers;
+      if (!Array.isArray(providers) || !providers.length) throw new Error('当前 Hermes 没有可用的模型服务。');
     } catch (error) { if (view === 'model' && generation === modelFormGeneration) fail(error, 'model', modelForm); return; }
     const form = document.createElement('form');
     form.innerHTML = '<div class="fields"><div><div class="field-line"><label for="provider">模型服务</label><a class="quiet" id="getKey" target="_blank" rel="noopener noreferrer">获取 API Key</a></div><select id="provider"></select></div><div><label for="key">API Key</label><div class="secret"><input id="key" type="password" autocomplete="off" placeholder="粘贴 API Key"><button class="eye" type="button" title="显示或隐藏 Key" aria-label="显示或隐藏 API Key"><i class="fa-solid fa-eye"></i></button></div></div><div class="wide" id="endpointField" hidden><label for="endpoint">接口地址</label><input id="endpoint" type="url" placeholder="https://example.com/v1"></div><div class="wide"><div class="field-line"><label for="model">模型名称</label><button type="button" class="quiet" id="loadModels">获取模型列表</button></div><input id="model" list="modelOptions" placeholder="选择或输入模型名称"><datalist id="modelOptions"></datalist></div></div><p class="model-feedback" id="feedback" role="status">API Key 保存在本机，不随日志上传。</p><div class="form-bottom"><span></span><button class="button primary" type="submit"></button></div>';
@@ -964,32 +965,51 @@
     $('inline').append(form);
     const authField = document.createElement('div');
     authField.id = 'authField';
-    authField.innerHTML = '<label for="authMode">认证方式</label><select id="authMode"><option value="key">API Key</option><option value="none">无需认证（本地服务）</option></select>';
+    authField.innerHTML = '<label for="authMode">认证方式</label><select id="authMode"></select>';
+    const loginField = document.createElement('div'); loginField.className = 'wide'; loginField.hidden = true;
+    loginField.innerHTML = '<div class="field-line"><label>服务登录</label><button type="button" class="quiet" id="modelLogin">登录</button></div><p class="model-feedback" id="modelLoginStatus" role="status"></p><a class="quiet" id="modelLoginUrl" target="_blank" rel="noopener noreferrer" hidden>打开登录页面</a><div id="modelLoginPrompt" hidden><label for="modelLoginResponse" id="modelLoginPromptText"></label><div class="secret"><input id="modelLoginResponse" type="password" autocomplete="off"><button type="button" class="quiet" id="modelLoginRespond">确认</button></div></div><button type="button" class="quiet" id="modelLoginCancel" hidden>取消登录</button>';
+    form.querySelector('.fields').append(loginField);
     form.querySelector('.fields').append(authField);
     const notice = document.createElement('p'); notice.className = 'model-feedback';
     notice.hidden = true;
     form.append(notice);
-    providers.forEach(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label; $('provider').append(option); });
-    const savedProvider = snapshot.modelProvider?.startsWith('custom:') ? 'custom' : snapshot.modelProvider;
-    $('provider').value = providers.some(p => p.id === savedProvider) ? savedProvider : providers[0].id;
+    providers.forEach(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label;
+      option.disabled = provider.available === false; if (provider.reason) option.title = provider.reason; $('provider').append(option); });
+    const savedProvider = providers.some(p => p.id === snapshot.modelProvider) ? snapshot.modelProvider
+      : snapshot.modelProvider?.startsWith('custom:') ? 'custom' : snapshot.modelProvider;
+    $('provider').value = providers.some(p => p.id === savedProvider && p.available !== false) ? savedProvider : (providers.find(p => p.available !== false) || providers[0]).id;
     const selected = () => providers.find(p => p.id === $('provider').value);
-    const syncProvider = () => {
-      const provider = selected(); $('endpointField').hidden = !provider.custom; $('loadModels').hidden = false;
-      authField.hidden = !provider.custom;
-      $('authMode').value = provider.custom && savedProvider === provider.id && snapshot.modelAuthMode === 'none' ? 'none' : 'key';
-      syncAuth();
-      $('getKey').hidden = !provider.signupUrl; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
-      $('key').value = ''; $('modelOptions').replaceChildren();
-      $('model').value = (savedProvider === provider.id ? snapshot.modelName : '')
-        || (provider.id === 'deepseek' ? 'deepseek-v4-flash' : '');
-      $('endpoint').value = savedProvider === provider.id ? snapshot.modelBaseUrl || '' : '';
-    };
+    const selectedAuthMode = () => $('authMode').value || selected().authModes?.[0] || 'key';
+    const endpointValue = () => $('endpointField').hidden ? '' : $('endpoint').value.trim();
+    const requiresKey = () => selectedAuthMode() === 'key' && !selected().keyless && !selected().authenticated;
     const syncAuth = () => {
-      const local = selected().custom && $('authMode').value === 'none';
-      $('key').closest('.secret').parentElement.hidden = local;
-      notice.hidden = !local; notice.textContent = local ? '请先启动本地模型服务。' : '';
+      const provider = selected(), mode = selectedAuthMode();
+      const local = mode === 'none' || provider.keyless;
+      $('key').closest('.secret').parentElement.hidden = local || mode !== 'key';
+      $('key').placeholder = provider.authenticated ? '留空使用已保存的凭据' : '粘贴 API Key';
+      loginField.hidden = mode !== 'oauth';
+      $('modelLoginStatus').textContent = provider.authenticated ? '已登录。' : '请先完成服务登录。';
+      $('modelLogin').textContent = provider.authenticated ? '重新登录' : '登录';
+      $('getKey').hidden = !provider.signupUrl || mode !== 'key'; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
+      notice.hidden = !local && mode !== 'external'; notice.textContent = mode === 'external'
+        ? (provider.reason || '使用 Hermes 已有的外部认证。') : local ? '请先启动本地模型服务。' : '';
     };
-    $('authMode').onchange = syncAuth;
+    const syncProvider = () => {
+      const provider = selected(); $('endpointField').hidden = !(provider.custom || provider.endpointEditable || provider.endpointRequired
+        || savedProvider === provider.id && snapshot.modelBaseUrl && snapshot.modelBaseUrl !== provider.baseUrl); $('loadModels').hidden = false;
+      const modes = provider.authModes?.length ? provider.authModes : provider.custom ? ['key', 'none'] : ['key'];
+      $('authMode').replaceChildren();
+      const labels = {key:'API Key', none:'无需认证（本地服务）', oauth:'登录账号', external:'现有环境认证'};
+      modes.forEach(mode => { const option = document.createElement('option'); option.value = mode; option.textContent = labels[mode] || mode; $('authMode').append(option); });
+      authField.hidden = modes.length < 2;
+      $('authMode').value = savedProvider === provider.id && modes.includes(snapshot.modelAuthMode) ? snapshot.modelAuthMode : modes[0];
+      $('key').value = ''; $('modelOptions').replaceChildren();
+      $('model').value = (savedProvider === provider.id ? snapshot.modelName : '') || provider.defaultModel || '';
+      $('endpoint').value = (savedProvider === provider.id ? snapshot.modelBaseUrl : '') || provider.baseUrl || '';
+      $('modelLoginUrl').hidden = true; $('modelLoginPrompt').hidden = true;
+      syncAuth();
+    };
+    $('authMode').onchange = () => { $('key').value = ''; syncAuth(); };
     $('provider').onchange = syncProvider; syncProvider();
     form.querySelector('.eye').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; };
     let modelOperationId;
@@ -1015,10 +1035,54 @@
     const lock = value => { busy = value; form.querySelectorAll('input,select,button').forEach(c => { c.disabled = value; });
       form.querySelector('button[type="submit"]').dataset.unavailable = String(submissionUncertain);
       query.dataset.pending = String(submissionUncertain); controls(); };
+    $('modelLogin').onclick = async () => {
+      if (busy) return;
+      lock(true); $('modelLoginCancel').hidden = false; $('modelLoginCancel').disabled = false;
+      let session, lastPromptId;
+      const showProgress = value => {
+        const progress = value.progress || {};
+        $('modelLoginStatus').textContent = [progress.message, progress.userCode].filter(Boolean).join(' ');
+        $('modelLoginUrl').hidden = !progress.url;
+        if (progress.url) $('modelLoginUrl').href = progress.url;
+        $('modelLoginPrompt').hidden = !progress.promptId;
+        if (progress.promptId) {
+          $('modelLoginPromptText').textContent = progress.prompt || '填写登录页面返回的确认内容';
+          if (lastPromptId !== progress.promptId) $('modelLoginResponse').value = '';
+          lastPromptId = progress.promptId;
+          $('modelLoginResponse').disabled = false; $('modelLoginRespond').disabled = false;
+        }
+      };
+      $('modelLoginCancel').onclick = () => session && api.modelAuthCancel({id:session.id}).catch(error => feedback(textError(error), true));
+      $('modelLoginRespond').onclick = async () => {
+        if (!session || !lastPromptId) return;
+        const response = $('modelLoginResponse').value.trim(); if (!response) return;
+        $('modelLoginResponse').value = ''; $('modelLoginRespond').disabled = true;
+        try { await api.modelAuthRespond({id:session.id,promptId:lastPromptId,response}); }
+        catch (error) { feedback(textError(error), true); $('modelLoginRespond').disabled = false; }
+      };
+      try {
+        session = await api.modelAuthStart({provider:selected().id}); showProgress(session);
+        while (session.state === 'running') {
+          await new Promise(resolve => setTimeout(resolve, 600));
+          if (view !== 'model' || generation !== modelFormGeneration) { await api.modelAuthCancel({id:session.id}); return; }
+          session = await api.modelAuthStatus({id:session.id}); showProgress(session);
+        }
+        if (session.state !== 'succeeded') throw new Error(session.error || '登录已取消，可以重新登录。');
+        const catalog = await api.modelProviders();
+        const updated = catalog.providers?.find(provider => provider.id === selected().id);
+        if (!updated?.authenticated) throw new Error('未能确认模型服务已登录。');
+        Object.assign(selected(), updated); syncAuth(); feedback('登录成功，可以选择模型。');
+      } catch (error) { feedback(textError(error), true); }
+      finally {
+        if (view === 'model' && generation === modelFormGeneration) {
+          $('modelLoginCancel').hidden = true; $('modelLoginPrompt').hidden = true; $('modelLoginUrl').hidden = true; lock(false);
+        }
+      }
+    };
     $('loadModels').onclick = async () => {
-      if (!$('key').value.trim() && !(selected().custom && $('authMode').value === 'none')) { feedback('请先填写 API Key。', true); return; }
+      if (!$('key').value.trim() && requiresKey()) { feedback('请先填写 API Key。', true); return; }
       lock(true); feedback('正在获取模型列表。');
-      try { const result = await api.modelOptions({ provider: $('provider').value, key: $('key').value.trim(), baseUrl: $('endpoint').value.trim(), authMode: $('authMode').value });
+      try { const result = await api.modelOptions({ provider: $('provider').value, key: $('key').value.trim(), baseUrl: endpointValue(), authMode: selectedAuthMode() });
         $('modelOptions').replaceChildren(); result.models.forEach(name => { const option = document.createElement('option'); option.value = name; $('modelOptions').append(option); });
         feedback('模型列表已更新。');
       } catch (error) {
@@ -1030,9 +1094,9 @@
     };
     form.onsubmit = async event => {
       event.preventDefault(); if (busy || submissionUncertain || statusUnknown) return;
-      const payload = { provider: $('provider').value, key: $('key').value.trim(), model: $('model').value.trim(), baseUrl: selected().custom ? $('endpoint').value.trim() : '', authMode: selected().custom ? $('authMode').value : 'key' };
-      if (!payload.key && payload.authMode !== 'none') { feedback('请填写 API Key。', true); return; }
-      if (selected().custom && !payload.baseUrl) { feedback('请填写模型服务的接口地址。', true); return; }
+      const payload = { provider: $('provider').value, key: $('key').value.trim(), model: $('model').value.trim(), baseUrl: endpointValue(), authMode: selectedAuthMode() };
+      if (!payload.key && requiresKey()) { feedback('请填写 API Key。', true); return; }
+      if ((selected().custom || selected().endpointRequired) && !payload.baseUrl) { feedback('请填写模型服务的接口地址。', true); return; }
       if (!payload.model) { feedback('请选择或填写模型名称。', true); return; }
       lock(true); feedback('正在测试模型响应。');
       let configurationSaved = false;
@@ -1041,7 +1105,9 @@
         if (result?.operation) syncState({operation:result.operation});
         configurationSaved = true; $('key').value = ''; await readStatus(); lock(false);
         if (!snapshot.modelConfigured) throw new Error('模型配置复核未通过，请重新连接。');
-        if (complete()) {
+        if (result?.tavernSyncUnsupported) {
+          pendingModel(result.warning, true);
+        } else if (complete()) {
           dailyHome(snapshot.gatewayRunning ? '模型配置已保存，重启诺拉后生效。' : '模型配置已保存，下次启动诺拉时生效。');
           if (snapshot.gatewayRunning) $('inline').append(button('重启诺拉', () => run('restart', { service: 'nora' })));
         } else route();
@@ -1062,9 +1128,14 @@
     };
     controls();
   };
-  function pendingModel(message = '') {
+  function pendingModel(message = '', unsupported = false) {
     view = 'model-pending'; setupStage(2); clearInline();
-    say('酒馆配置同步未完成。', message || '模型配置已保存，无需重新填写 API Key。');
+    say(unsupported ? '诺拉配置已保存，酒馆需要单独配置。' : '酒馆配置同步未完成。', message || '模型配置已保存，无需重新填写 API Key。');
+    if (unsupported) {
+      $('inline').append(button('打开酒馆', openTavern));
+      $('inline').append(button(complete() ? '返回酒馆' : '继续', () => route(), false));
+      controls(); return;
+    }
     $('inline').append(button('继续同步', async () => {
       if (busy) return;
       busy = true; controls();

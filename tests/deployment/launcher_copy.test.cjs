@@ -15,7 +15,7 @@ function definition(name) {
   return source.slice(statement.start, statement.end);
 }
 
-test('DeepSeek selection defaults to V4 Flash without replacing saved models or other provider defaults', () => {
+test('model selection uses the Hermes catalog default without replacing saved choices', () => {
   const form = statements.find(item => item.expression?.left?.name === 'modelForm').expression.right;
   const sync = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'syncProvider'));
   const saved = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'savedProvider'));
@@ -32,10 +32,10 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
   ]) {
     const elements = new Map();
     const $ = id => {
-      if (!elements.has(id)) elements.set(id, { value: '', disabled: false, replaceChildren() {} });
+      if (!elements.has(id)) elements.set(id, { value: '', disabled: false, replaceChildren() {}, append() {} });
       return elements.get(id);
     };
-    const context = vm.createContext({ $, snapshot, authField: {}, syncAuth() {}, selected: () => ({ id: provider, custom: provider === 'custom' }) });
+    const context = vm.createContext({ $, snapshot, authField: {}, syncAuth() {}, providers:[{id:provider,custom:provider==='custom'}], document:{createElement:()=>({})}, selected: () => ({ id: provider, custom: provider === 'custom', defaultModel:provider==='deepseek'?'deepseek-v4-flash':'' }) });
     vm.runInContext(`${source.slice(saved.start, saved.end)}\n${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
     assert.equal($('model').value, expected, JSON.stringify({ provider, snapshot }));
     assert.equal($('model').disabled, false, 'the default remains editable');
@@ -59,6 +59,18 @@ function uiContext(values = {}) {
   vm.runInContext(['hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','complete','canReturnHome'].map(definition).join('\n'),context);
   return context;
 }
+
+test('native auth form requirements follow Hermes modes rather than a cloud API-key whitelist', () => {
+  const form=statements.find(item=>item.expression?.left?.name==='modelForm').expression.right;
+  const requirement=form.body.body.find(item=>item.declarations?.some(declaration=>declaration.id.name==='requiresKey'));
+  for(const [mode,provider,expected] of [['oauth',{id:'native-subscription'},false],
+    ['external',{id:'sdk'},false],['none',{id:'local',keyless:true},false],
+    ['key',{id:'api',authenticated:true},false],['key',{id:'api',authenticated:false},true]]) {
+    const context=vm.createContext({selectedAuthMode:()=>mode,selected:()=>provider});
+    const actual=vm.runInContext(source.slice(requirement.start,requirement.end)+';requiresKey()',context);
+    assert.equal(actual,expected,JSON.stringify({mode,provider}));
+  }
+});
 
 test('completion needs all services while routine status stays in the service rows', () => {
   for (const firstCompletionPending of [false, true]) for (const running of [false, true]) for (const gatewayRunning of [false, true]) for (const clawchatConnected of [false, true]) {
@@ -160,16 +172,17 @@ test('version details and the daily notice name the channel actually checked', a
   }
 });
 
-test('an empty model list does not claim the key has connected', async () => {
-  const modelSource = read('desktop/model-config.js');
-  const node = parse(modelSource, { ecmaVersion: 'latest' }).body.find(item => item.id?.name === 'loadProviderModels');
-  const context = vm.createContext({
-    requireProvider: () => ({ id: 'test', modelsUrl: 'https://example.invalid/models' }),
-    requestHeaders: () => ({}), requestJson: async () => ({ data: [] }), normalizeModels: () => [],
-    modelCredential: () => 'test-key',
-  });
-  vm.runInContext(modelSource.slice(node.start, node.end), context);
-  await assert.rejects(vm.runInContext("loadProviderModels('test', 'test-key')", context), { message: '未获取到可用模型。' });
+test('model options delegate to Hermes and an empty result does not claim the key has connected', async () => {
+  const mainSource=read('desktop/main.js');let handler;
+  const visit=node=>{if(!node||typeof node!=='object')return;
+    if(node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.value==='nora:model-options')handler=node.arguments[1];
+    for(const value of Object.values(node))if(Array.isArray(value))value.forEach(visit);else if(value&&typeof value==='object')visit(value);};
+  visit(parse(mainSource,{ecmaVersion:'latest'}));
+  const calls=[],context=vm.createContext({diagnostics:{addSecret(){}},findHermes:()=>true,
+    trackLauncher:async(_action,_stage,execute)=>execute(),runModelConfigHelper:async payload=>{calls.push(payload);return {ok:true,models:[]};}});
+  const run=vm.runInContext('('+mainSource.slice(handler.start,handler.end)+')',context);
+  await assert.rejects(run({}, {provider:'native-provider',key:'test-key'}),/未获取到可用模型/);
+  assert.equal(calls.length,1);assert.equal(calls[0].action,'models');assert.equal(calls[0].provider,'native-provider');
 });
 
 test('opening an installed launcher starts only Tavern once, including unfinished model setup', () => {

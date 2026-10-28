@@ -118,6 +118,14 @@
         "to": "model_config.py"
       },
       {
+        "from": "../hermes_models.py",
+        "to": "hermes_models.py"
+      },
+      {
+        "from": "../hermes_model_auth.py",
+        "to": "hermes_model_auth.py"
+      },
+      {
         "from": "../bootstrap.py",
         "to": "bootstrap.py"
       },

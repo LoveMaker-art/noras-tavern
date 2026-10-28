@@ -14,7 +14,7 @@ import traceback
 from urllib.parse import urlparse
 
 
-PROVIDER_KEYS = {
+TAVERN_INITIALIZATION_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -26,41 +26,24 @@ PROVIDER_KEYS = {
 LAUNCHER_CUSTOM_PROVIDER = "custom:nora-launcher"
 
 
-def assign_custom_model(model: str, base_url: str, secret: str) -> dict:
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.web_server_config import _apply_model_assignment_sync
+def _models():
+    try:
+        from . import hermes_models
+    except ImportError:
+        import hermes_models
+    return hermes_models
 
-    config = load_config()
-    providers = config.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        raise ValueError("现有服务配置格式无效，未替换模型。")
-    existing = providers.get(LAUNCHER_CUSTOM_PROVIDER)
-    if existing is not None and (not isinstance(existing, dict) or existing.get("nora_launcher_managed") != 1):
-        raise ValueError("启动器服务名称已被其他配置占用，未替换模型。")
-    # A stable owned identity avoids Hermes' bare-custom fallback to an old
-    # provider. Its config-seeded credential pool also follows key rotations.
-    providers[LAUNCHER_CUSTOM_PROVIDER] = {
-        "name": "Nora Launcher", "base_url": base_url, "api_key": secret,
-        "default_model": model, "transport": "openai_chat", "api_mode": "chat_completions",
-        "nora_launcher_managed": 1,
-    }
-    save_config(config)
-    return _apply_model_assignment_sync(scope="main", provider=LAUNCHER_CUSTOM_PROVIDER,
-        model=model, task="", base_url=base_url, api_key=secret)
+
+def assign_custom_model(model: str, base_url: str, secret: str) -> dict:
+    models = _models()
+    return models.save(models.normalize("custom", model, base_url), secret)
 
 
 def verify_custom_runtime(model: str, base_url: str, secret: str) -> None:
     from hermes_cli.runtime_provider import resolve_runtime_provider
-
-    try:
-        runtime = resolve_runtime_provider()
-    except Exception:
-        raise ValueError("实际模型服务无法解析，未确认模型切换。") from None
-    if (str(runtime.get("base_url") or "").rstrip("/") != base_url.rstrip("/")
-            or not isinstance(runtime.get("api_key"), str)
-            or not hmac.compare_digest(runtime["api_key"].encode(), secret.encode())
-            or runtime.get("model") != model
-            or runtime.get("api_mode") != "chat_completions"):
+    actual = resolve_runtime_provider(target_model=model)
+    if (actual.get("model") != model or not isinstance(actual.get("api_key"), str)
+            or not hmac.compare_digest(actual["api_key"].encode(), secret.encode())):
         raise ValueError("实际模型服务与新配置不一致，未确认模型切换。")
 
 
@@ -86,20 +69,20 @@ def local_selection_record(home: Path) -> Path:
 
 
 def fail(message: str, secret: str = "") -> None:
-    clean = str(message).replace(secret, "***") if secret else str(message)
+    clean = _models().redact(str(message).replace(secret, "***") if secret else str(message))
     result={"ok":False,"error":clean[:300]}
     if isinstance(message,BaseException):
         # Keep the real exception chain on stderr; stdout remains the private
         # JSON response protocol. No locals or configuration body are emitted.
         trace=''.join(traceback.format_exception(type(message),message,message.__traceback__))
-        sys.stderr.write(trace.replace(secret,'***') if secret else trace)
+        sys.stderr.write(_models().redact(trace.replace(secret,'***') if secret else trace))
         try:
             from .error_diagnostics import exception_diagnostic
         except ImportError:
             from error_diagnostics import exception_diagnostic
         detail=exception_diagnostic(message,project_root=Path(__file__).resolve().parent)
         def redact(value):
-            if isinstance(value,str):return value.replace(secret,'***') if secret else value
+            if isinstance(value,str):return _models().redact(value.replace(secret,'***') if secret else value)
             if isinstance(value,list):return [redact(item) for item in value]
             if isinstance(value,dict):return {key:redact(item) for key,item in value.items()}
             return value
@@ -113,63 +96,82 @@ def fail(message: str, secret: str = "") -> None:
 def main() -> None:
     secret = ""
     try:
-        body = json.load(sys.stdin)
+        # One line also works with old callers that close stdin after JSON.
+        # Authentication may subsequently receive a prompt reply on this pipe.
+        body = json.loads(sys.stdin.readline())
         action = str(body.get("action") or "save").strip()
-        if action not in ('normalize', 'verify-runtime'):
+        read_actions = {"normalize", "verify-runtime", "catalog", "models", "inspect", "test"}
+        if action not in read_actions:
             spec = importlib.util.spec_from_file_location('nora_model_operation_cli', Path(__file__).with_name('operation_cli.py'))
             cli = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cli)
-            cli.ensure_operation('model', nora_home=os.environ.get('NORA_TAVERN_HOME'), stdin=json.dumps(body))
+            nora_home = os.environ.get('NORA_TAVERN_HOME')
+            target = str(Path(__file__).resolve())
+            if not (getattr(sys, '_nora_operation_delegate', None) is not None or
+                    any(name.startswith('NORA_OPERATION_') for name in os.environ)):
+                receipt = cli.validate_receipt(nora_home)
+                target = receipt['resources']['model_config.py']['path']
+            cli.ensure_operation('model', argv=[target], nora_home=nora_home, stdin=json.dumps(body))
+        home = Path(os.environ["HERMES_HOME"]).resolve()
+        agent = home / "hermes-agent"
+        if not agent.is_dir() and action not in {"sync-saved-tavern", "sync-tavern"}:
+            fail("没有找到 Nora 核心。")
+        sys.path.insert(0, str(agent))
+        models = _models()
+        secret = models.remember_secret(str(body.get("key") or "").strip())
+        if action not in {"sync-saved-tavern", "sync-tavern"}:
+            models.validate_config()
+        if action == "catalog":
+            print(json.dumps(models.catalog(), ensure_ascii=False)); return
+        if action == "inspect":
+            print(json.dumps({"ok": True, **models.inspect_model(body.get("credentialSha256", ""))}, ensure_ascii=False)); return
         if action == "verify-runtime":
-            home = Path(os.environ["HERMES_HOME"]).resolve()
-            sys.path.insert(0, str(home / "hermes-agent"))
-            import yaml
-            model_config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["model"]
-            provider = str(model_config.get("provider") or "")
-            if provider == "custom" or provider.startswith("custom:"):
-                secret = str(model_config.get("api_key") or "")
-                verify_custom_runtime(model_config["default"], model_config.get("base_url", ""), secret)
-            print(json.dumps({"ok": True}))
+            result = models.inspect_model()
+            if not result.get("configured"):
+                raise ValueError(result.get("reason") or "实际模型配置尚未就绪。")
+            print(json.dumps({"ok": True, **result}, ensure_ascii=False)); return
+        if action == "authenticate":
+            try:
+                from .hermes_model_auth import authenticate
+            except ImportError:
+                from hermes_model_auth import authenticate
+            def emit(event):
+                print(json.dumps(event, ensure_ascii=False), flush=True)
+            def respond(prompt):
+                line = sys.stdin.readline(65537)
+                if not line or len(line) > 65536:
+                    raise ValueError("登录输入已关闭或过长。")
+                response = json.loads(line)
+                if response.get("promptId") != prompt.get("promptId"):
+                    raise ValueError("登录输入不属于当前提示。")
+                return response.get("response", "")
+            print(json.dumps(authenticate(str(body.get("provider") or ""), emit, respond=respond), ensure_ascii=False))
             return
-        if action == "sync-saved-tavern":
-            # Read credentials only in the local helper, never return them to the
-            # renderer or logs. Verify the saved selection before resuming it.
-            from launcher_bridge import read_verified_model
-            import yaml
-            from dotenv import dotenv_values
-            home = Path(os.environ["HERMES_HOME"]).resolve()
-            problems = []
-            saved = read_verified_model(Path(os.environ["NORA_TAVERN_HOME"]), home, problems, allow_pending=True)
-            if not saved:
-                fail("无法继续同步：" + "；".join(problems))
-            custom = saved["provider"] == "custom" or saved["provider"].startswith("custom:")
-            config = yaml.safe_load((home / "config.yaml").read_text())
-            secret = config["model"].get("api_key", "") if custom else dotenv_values(home / ".env").get(saved["keyEnv"], "")
-            body = {**body, "provider": "custom" if custom else saved["provider"], "model": saved["model"],
-                    "keyEnv": saved["keyEnv"], "key": secret, "baseUrl": saved["baseUrl"]}
-            action = "sync-tavern"
-        provider = str(body.get("provider") or "").strip()
-        model = str(body.get("model") or "").strip()
-        secret = str(body.get("key") or "").strip()
-        base_url = str(body.get("baseUrl") or "").strip().rstrip("/")
-        expected_key = PROVIDER_KEYS.get(provider)
-        if expected_key is None or body.get("keyEnv") != expected_key:
-            fail("不支持这个模型服务。")
-        if not model or len(model) > 240 or "\n" in model or "\r" in model:
-            fail("模型名称无效。")
-        if provider == "custom":
-            parsed = urlparse(base_url)
-            if (
-                len(base_url) > 2048
-                or parsed.scheme not in {"http", "https"}
-                or not parsed.hostname
-                or parsed.username
-                or parsed.password
-                or (action == "save-local" and (parsed.query or parsed.fragment))
-            ):
-                fail("中转地址格式不正确。")
-
-        if action == "sync-tavern":
+        if action == "models":
+            print(json.dumps(models.models(body.get("provider"), secret, body.get("baseUrl", ""), body.get("authMode", "key")), ensure_ascii=False))
+            return
+        if action in {"sync-saved-tavern", "sync-tavern"}:
+            if action == "sync-saved-tavern":
+                from launcher_bridge import read_verified_model
+                from dotenv import dotenv_values
+                import yaml
+                problems = []
+                saved = read_verified_model(Path(os.environ["NORA_TAVERN_HOME"]), home, problems, allow_pending=True)
+                if not saved:
+                    fail("无法继续同步：" + "；".join(problems))
+                provider = saved["provider"]
+                custom = provider == "custom" or provider.startswith("custom:")
+                # Tavern has its own execution engine. Never export OAuth tokens,
+                # external-process credentials, or a provider it cannot execute.
+                if saved.get("authMode", "key") not in {"key", "none"} or (not custom and provider not in TAVERN_INITIALIZATION_KEYS):
+                    print(json.dumps({"ok": True, "noraConfigured": True, "changed": False,
+                        "tavernSyncUnsupported": True, "reason": "诺拉模型已保留；此服务需在酒馆中单独配置。"}, ensure_ascii=False))
+                    return
+                config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+                secret = config["model"].get("api_key", "") if custom else dotenv_values(home / ".env").get(saved["keyEnv"], "")
+                models.remember_secret(secret)
+                body = {**body, "provider": "custom" if custom else provider, "model": saved["model"],
+                    "key": secret, "keyEnv": saved["keyEnv"], "baseUrl": saved["baseUrl"]}
             root = Path(os.environ["TAVERN_DATA_ROOT"]).resolve()
             script = root / "apps/tavern-runtime/native_model_config.py"
             if not script.is_file() or not script.resolve().is_relative_to(root):
@@ -178,75 +180,43 @@ def main() -> None:
             if not isinstance(port, int) or not 1024 <= port <= 65535:
                 fail("酒馆端口无效。")
             spec = importlib.util.spec_from_file_location("nora_tavern_model", script)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            provider = body.get("provider")
+            if hasattr(module, "LAUNCHER_PROVIDERS") and provider not in module.LAUNCHER_PROVIDERS:
+                print(json.dumps({"ok": True, "noraConfigured": True, "changed": False,
+                    "tavernSyncUnsupported": True, "reason": "诺拉模型已保留；此服务需在酒馆中单独配置。"}, ensure_ascii=False)); return
             if not hasattr(module, "initialize_launcher_model"):
                 fail("当前酒馆版本不支持安装时同步模型，请更新酒馆后重试。")
             marker = root / "tavern-state/launcher-model.json"
             if marker.is_symlink() or not marker.resolve().is_relative_to(root):
                 fail("酒馆模型记录路径无效。")
-            result = module.initialize_launcher_model(module.launcher_config(provider, model, secret, base_url),
+            result = module.initialize_launcher_model(module.launcher_config(provider, body["model"], secret, body.get("baseUrl", "")),
                 marker, f"http://127.0.0.1:{port}")
-            print(json.dumps(result, ensure_ascii=False))
-            return
-
-        hermes_home = Path(os.environ["HERMES_HOME"]).resolve()
-        agent_root = hermes_home / "hermes-agent"
-        if not agent_root.is_dir():
-            fail("没有找到 Nora 核心。")
-        marker = local_selection_record(hermes_home) if action == "save-local" else None
-        sys.path.insert(0, str(agent_root))
-
-        from hermes_cli.web_server_config import _apply_model_assignment_sync, _normalize_main_model_assignment
-
-        if provider == "custom":
-            normalized_provider, normalized_model = provider, model
-        else:
-            normalized_provider, normalized_model = _normalize_main_model_assignment(provider, model)
+            print(json.dumps(result, ensure_ascii=False)); return
+        # Validate local ownership BEFORE Hermes loads potentially corrupt YAML.
+        marker = local_selection_record(home) if action == "save-local" else None
+        mode = str(body.get("authMode") or "key")
+        selection = models.normalize(body.get("provider"), body.get("model"), body.get("baseUrl", ""), mode)
         if action == "normalize":
-            print(json.dumps({
-                "ok": True,
-                "provider": normalized_provider,
-                "model": normalized_model,
-                "keyEnv": expected_key,
-                "baseUrl": base_url,
-            }, ensure_ascii=False))
-            return
+            print(json.dumps({"ok": True, **selection}, ensure_ascii=False)); return
+        if action == "test":
+            print(json.dumps(models.test(selection, secret), ensure_ascii=False)); return
         if action not in {"save", "save-local"}:
             fail("不支持这个配置操作。")
-        if not secret or len(secret) > 8192 or "\n" in secret or "\r" in secret:
-            fail("API Key 无效。")
-        if action == "save-local" and any(char.isspace() for char in secret):
-            fail("API Key 不能包含空白字符。", secret)
-
-        # Keep the previous credentials usable if a later config write fails.
-        paths = [hermes_home / name for name in (".env", "config.yaml", "auth.json")]
+        paths = [home / name for name in (".env", "config.yaml", "auth.json")]
         if marker:
             paths.append(marker)
         previous = {path: path.read_bytes() if path.exists() else None for path in paths}
         try:
-            if provider == "custom":
-                result = assign_custom_model(normalized_model, base_url, secret)
-                verify_custom_runtime(normalized_model, base_url, secret)
-            else:
-                from hermes_cli.credential_lifecycle import save_provider_env_credential
-                save_provider_env_credential(expected_key, secret)
-                result = _apply_model_assignment_sync(scope="main", provider=normalized_provider,
-                                                      model=normalized_model, task="", base_url="", api_key="")
+            result = models.save(selection, secret)
+            if selection["provider"] == "custom":
+                verify_custom_runtime(selection["model"], selection["baseUrl"], secret or models.NO_AUTH_KEY)
             if marker:
-                import yaml
-                config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
-                saved = config.get("model", {})
-                if (saved.get("provider") != result.get("provider")
-                        or saved.get("default") != result.get("model")):
-                    raise ValueError("模型配置写入后复核失败。")
                 from nora_system import save_json
-                save_json(marker, {
-                    "schema": 1, "provider": result["provider"], "model": result["model"],
-                    "keyEnv": expected_key, "baseUrl": base_url,
-                    "validation": "configuration-only",
-                    "savedAt": datetime.now(timezone.utc).isoformat(),
-                })
+                save_json(marker, {"schema": 1, "hermesNative": True,
+                    "provider": result["provider"], "model": result["model"], "keyEnv": result["keyEnv"],
+                    "baseUrl": result["baseUrl"], "authMode": mode, "validation": "configuration-only",
+                    "savedAt": datetime.now(timezone.utc).isoformat()})
         except Exception:
             for path, contents in previous.items():
                 if contents is None:
@@ -254,18 +224,9 @@ def main() -> None:
                 else:
                     temporary = path.with_name(path.name + ".nora-rollback")
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    temporary.write_bytes(contents)
-                    os.chmod(temporary, 0o600)
-                    temporary.replace(path)
+                    temporary.write_bytes(contents); os.chmod(temporary, 0o600); temporary.replace(path)
             raise
-        print(json.dumps({
-            "ok": True,
-            "provider": result.get("provider", provider),
-            "model": result.get("model", model),
-            "keyEnv": expected_key,
-            "baseUrl": base_url,
-            **({"activation": "next-session", "validation": "configuration-only"} if marker else {}),
-        }, ensure_ascii=False))
+        print(json.dumps(result, ensure_ascii=False))
     except SystemExit:
         raise
     except Exception as error:

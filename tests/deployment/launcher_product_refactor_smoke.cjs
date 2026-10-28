@@ -13,7 +13,6 @@ const {createOperationController} = require('../installer/desktop/operation-stat
 const {createEvidenceStore} = require('../installer/desktop/evidence-store');
 const {createFaultPackets} = require('../installer/desktop/fault-packet');
 const {validateRuntimeLinks} = require('../installer/desktop/runtime');
-const {testCustomModel} = require('../installer/desktop/model-config');
 
 const installer = path.resolve(__dirname, '../installer');
 const projection = path.resolve(__dirname, '../..');
@@ -290,9 +289,11 @@ async function modelConfigurationFixture(run,hermes,root) {
     const body={action:'save-local',provider:'custom',model:`fixture-model-${selected}`,keyEnv:'',
       key:`fixture-only-credential-${selected}`,baseUrl:`${base}/${selected}/v1`};
     const before=requests.length;
-    // Exercise the same real HTTP credential test used by model-save-test.
-    // Persistence remains a genuine ACKed Python actor inside this operation.
-    assert.equal((await testCustomModel(body.baseUrl,body.key,body.model)).ok,true);
+    // Both launcher and skill use the installed Hermes request path; the
+    // isolated fixture must see exactly the selected provider and model.
+    const tested=JSON.parse((await run(`model-test-${selected}`,[path.join(installer,'model_config.py')],
+      {input:JSON.stringify({...body,action:'test'})})).stdout.trim());
+    assert.equal(tested.ok,true);
     assert.equal(requests.length,before+1,'The launcher credential test did not reach the fixture');
     const result=JSON.parse((await run(`model-config-${selected}`,[path.join(installer,'model_config.py')],
       {input:JSON.stringify(body)})).stdout.trim());

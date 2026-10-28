@@ -563,6 +563,26 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
         base_url = str(value.get("baseUrl") or "").strip().rstrip("/")
         if value.get("schema") != 1 or not provider or not model:
             return reject("模型验证记录格式无效")
+        if value.get("hermesNative") is True:
+            # Ask the instance interpreter: this bridge may run before Hermes
+            # dependencies are importable, and OAuth has no .env key to check.
+            result = subprocess.run([python_command(hermes_home), "-B", str(HERE / "model_config.py")],
+                input=json.dumps({"action": "inspect", "credentialSha256": value.get("credentialSha256", "")}),
+                env={**os.environ, "HERMES_HOME": str(hermes_home), "NORA_TAVERN_HOME": str(nora_home)},
+                capture_output=True, text=True, timeout=15)
+            if result.returncode:
+                return reject("Hermes 模型状态检查未完成，现有配置已保留")
+            actual = json.loads(result.stdout.strip().splitlines()[-1])
+            if (not actual.get("configured") or actual.get("provider") != provider
+                    or actual.get("model") != model or actual.get("credentialMatches") is False):
+                return reject("Hermes 当前配置或认证与模型记录不一致，请重新检查")
+            if value.get("tavernSyncPending") and not allow_pending:
+                return reject("模型已验证，酒馆同步尚未完成")
+            return {"provider": provider, "model": model, "keyEnv": key_env,
+                    "baseUrl": actual.get("baseUrl", base_url), "authMode": value.get("authMode", "key"),
+                    "hermesNative": True, "tavernSyncPending": bool(value.get("tavernSyncPending")),
+                    "tavernSyncUnsupported": bool(value.get("tavernSyncUnsupported")),
+                    "tavernSyncReason": value.get("tavernSyncReason", "")}
         is_custom = provider == "custom" or (provider.startswith("custom:") and bool(provider[7:].strip()))
         env_values = {}
         if env_file.is_file():
@@ -603,7 +623,7 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
             return reject("模型已验证，酒馆同步尚未完成")
         return {"provider": provider, "model": model, "keyEnv": key_env, "baseUrl": base_url,
                 "authMode": value.get("authMode", "key"), "tavernSyncPending": bool(value.get("tavernSyncPending"))}
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, IndexError, subprocess.SubprocessError):
         return reject("无法读取模型验证记录")
 
 
@@ -645,6 +665,8 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "noraInstalled": system["noraInstalled"],
             "modelConfigured": credentials_ready,
             "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
+            "modelTavernSyncUnsupported": bool(verified_model.get("tavernSyncUnsupported")),
+            "modelTavernSyncReason": verified_model.get("tavernSyncReason", ""),
             "modelAuthMode": verified_model.get("authMode", "key"),
             "modelProvider": verified_model.get("provider", ""),
             "modelName": verified_model.get("model", ""),
@@ -677,6 +699,8 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "noraInstalled": system["noraInstalled"],
         "modelConfigured": credentials_ready,
         "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
+        "modelTavernSyncUnsupported": bool(verified_model.get("tavernSyncUnsupported")),
+        "modelTavernSyncReason": verified_model.get("tavernSyncReason", ""),
         "modelAuthMode": verified_model.get("authMode", "key"),
         "modelProvider": verified_model.get("provider", ""),
         "modelName": verified_model.get("model", ""),

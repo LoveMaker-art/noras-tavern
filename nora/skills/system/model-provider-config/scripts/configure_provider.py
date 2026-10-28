@@ -30,39 +30,48 @@ def configure() -> int:
     if not entry.is_file() or not entry.resolve().is_relative_to(tavern.resolve()):
         raise ValueError("未找到本地模型配置程序，请先通过启动器更新。")
 
-    data = json.load(sys.stdin)
-    fields = {"provider", "model", "api_key", "base_url"}
+    original_stdin = sys.stdin
+    data = json.loads(original_stdin.readline())
+    fields = {"action", "provider", "model", "api_key", "base_url", "auth_mode"}
     if (not isinstance(data, dict) or set(data) - fields
             or any(not isinstance(value, str) for value in data.values())):
-        raise ValueError("输入应为包含供应商、模型、Key 和接口地址的 JSON 对象。")
-    provider = data.get("provider", "").strip().lower()
-    provider = {"openai": "openai-api", "google": "gemini"}.get(provider, provider)
-    model = data.get("model", "").strip()
-    base_url = data.get("base_url", "").strip()
-    if base_url and provider != "custom":
-        raise ValueError("自定义接口请使用 custom，避免将 Key 发给错误的供应商。")
-    if provider == "deepseek" and not model:
-        model = "deepseek-v4-flash"
+        raise ValueError("输入应为模型配置 JSON 对象。")
+    action = data.get("action", "save")
+    if action not in {"save", "catalog", "models", "inspect", "authenticate", "test"}:
+        raise ValueError("不支持这个配置操作。")
     sys.path.insert(0, str(entry.parent))
     spec = importlib.util.spec_from_file_location("nora_skill_model_config", entry)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     if not hasattr(module, "local_selection_record"):
         raise ValueError("当前版本尚不支持技能配置模型，请先通过启动器更新。")
-    if provider not in module.PROVIDER_KEYS:
-        raise ValueError("不支持这个供应商；中转服务请选择 custom。")
-    # Only stdin reaches the shared writer. No key-bearing argv or request file.
-    import io
-    previous_stdin = sys.stdin
+    provider = data.get("provider", "").strip()
+    model = data.get("model", "").strip()
+    # Keep the previously confirmed product default; other choices are read
+    # from Hermes and are never guessed from the key or catalog order.
+    if provider == "deepseek" and not model and action == "save":
+        model = "deepseek-v4-flash"
+    payload = {"action": "save-local" if action == "save" else action,
+        "provider": provider, "model": model, "key": data.get("api_key", "").strip(),
+        "baseUrl": data.get("base_url", "").strip(), "authMode": data.get("auth_mode", "key")}
+    class Input:
+        def __init__(self):
+            self.first = json.dumps(payload) + "\n"
+        def readline(self, *args):
+            if self.first:
+                value, self.first = self.first, ""
+                return value
+            return original_stdin.readline(*args)
+    previous_argv = sys.argv
     try:
-        sys.stdin = io.StringIO(json.dumps({
-            "action": "save-local", "provider": provider, "model": model,
-            "key": data.get("api_key", "").strip(), "baseUrl": base_url,
-            "keyEnv": module.PROVIDER_KEYS[provider],
-        }))
+        sys.stdin = Input()
+        # The shared entry, rather than this skill path, owns maintenance.
+        sys.argv = [str(entry)]
         module.main()
     finally:
-        sys.stdin = previous_stdin
+        sys.stdin = original_stdin
+        sys.argv = previous_argv
+
     return 0
 
 

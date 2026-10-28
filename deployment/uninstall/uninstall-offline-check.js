@@ -8,7 +8,7 @@ const {TextDecoder}=require('node:util');
 // The offline bridge's import closure; update/install-only resources are not
 // required to discard a broken installation or its history.
 const resources=['launcher_bridge.py','nora_system.py','nora_profile.py','launcher_services.py',
-  'error_diagnostics.py','operation_control.py','operation_evidence.py','operation-budget.json','model_config.py'];
+  'error_diagnostics.py','operation_control.py','operation_evidence.py','operation-budget.json','model_config.py','hermes_models.py','hermes_model_auth.py'];
 const SCHEMA='nora-uninstall-offline-check/1';
 const failed=(message,cause)=>Object.assign(new Error(message,cause?{cause}:undefined),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
 const same=(left,right)=>process.platform==='win32'?left.toLowerCase()===right.toLowerCase():left===right;

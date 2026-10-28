@@ -18,7 +18,7 @@ const safeName = name => {
 };
 const allowedFiles = new Set([
     'app/.tavern-release-version', 'deployment/update/releases.js', 'deployment/update/system-update.js',
-    'deployment/shared/services.py', 'deployment/shared/model_config.py',
+    'deployment/shared/services.py', 'deployment/shared/model_config.py', 'deployment/shared/hermes_models.py', 'deployment/shared/hermes_model_auth.py',
     'deployment/shared/nora_profile.py', 'deployment/shared/nora_system.py',
     'tooling/release/package-launcher-update.cjs', 'tooling/release/package-local-launcher.mjs',
     'tooling/release/verify-launcher-release.cjs', 'tooling/release/launcher-release-notes.cjs',

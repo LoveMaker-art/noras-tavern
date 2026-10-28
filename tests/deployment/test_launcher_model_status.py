@@ -22,6 +22,24 @@ else:
     from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 
 class VerifiedModelStatusTests(unittest.TestCase):
+    def test_native_oauth_checkpoint_uses_hermes_without_requiring_env_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); home = root / 'hermes'; home.mkdir()
+            (root / 'installer').mkdir()
+            (home / 'config.yaml').write_text('model: {provider: openai-codex, default: native-model}')
+            (root / 'installer/model.json').write_text(json.dumps({'schema': 1, 'hermesNative': True,
+                'provider': 'openai-codex', 'model': 'native-model', 'authMode': 'oauth',
+                'tavernSyncUnsupported': True}))
+            result = SimpleNamespace(returncode=0, stdout=json.dumps({'ok': True, 'configured': True,
+                'provider': 'openai-codex', 'model': 'native-model', 'credentialMatches': True}))
+            with patch.object(launcher_bridge, 'python_command', return_value='instance-python'), \
+                    patch.object(launcher_bridge.subprocess, 'run', return_value=result) as run:
+                selected = read_verified_model(root, home)
+            self.assertEqual(selected['authMode'], 'oauth')
+            self.assertTrue(selected['tavernSyncUnsupported'])
+            self.assertFalse((home / '.env').exists())
+            self.assertEqual(json.loads(run.call_args.kwargs['input'])['action'], 'inspect')
+
     def test_first_start_reports_typed_setup_blocker_without_starting_a_service(self):
         args = SimpleNamespace(nora_home=Path('/fixture'), hermes_home=Path('/fixture/hermes'),
                                install_root=Path('/fixture/tavern'), service='nora')

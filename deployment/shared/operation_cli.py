@@ -14,12 +14,13 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 RESOURCE_NAMES = ('launcher_bridge.py', 'first_install.py', 'nora_system.py', 'nora_profile.py',
-    'launcher_services.py', 'model_config.py', 'bootstrap.py', 'update_recovery.py', 'update_paths.py',
+    'launcher_services.py', 'model_config.py', 'hermes_models.py', 'hermes_model_auth.py', 'bootstrap.py', 'update_recovery.py', 'update_paths.py',
     'error_diagnostics.py', 'operation_control.py', 'operation_cli.py', 'operation_evidence.py', 'operation_node.mjs', 'mcp_probe.mjs', 'operation-delegate.js', 'operation-budget.json', 'replace-launcher.py')
 MANAGED = {'ops/updater/bootstrap.py': 'bootstrap', 'ops/updater/update.py': 'update', 'ops/installer/nora_system.py': 'system'}
-KINDS = {'install', 'update', 'repair', 'start', 'stop', 'restart', 'pair', 'recover'}
+KINDS = {'install', 'update', 'repair', 'start', 'stop', 'restart', 'pair', 'recover', 'model'}
 
 
 class OperationCliError(RuntimeError):
@@ -153,8 +154,8 @@ def validate_receipt(nora_home):
 def authorize_target(receipt, script):
     if not isinstance(script, str) or not Path(script).is_absolute():
         raise OperationCliError('OPERATION_ENTRY_UNSUPPORTED')
-    for name, kind in (('launcher_bridge.py', 'bridge'), ('first_install.py', 'install'), ('bootstrap.py', 'install-bootstrap')):
-        if _same(script, receipt['resources'][name]['path']):
+    for name, kind in (('launcher_bridge.py', 'bridge'), ('first_install.py', 'install'), ('bootstrap.py', 'install-bootstrap'), ('model_config.py', 'model')):
+        if name in receipt['resources'] and _same(script, receipt['resources'][name]['path']):
             return kind
     for name, item in receipt.get('managed', {}).items():
         if name in MANAGED and _same(script, item['path']):
@@ -192,7 +193,42 @@ def ensure_operation(kind, argv=None, *, nora_home=None, stdin=None, operation_i
     environment = {name: value for name, value in os.environ.items()
                    if not name.startswith('NORA_OPERATION_') and name not in {'NODE_OPTIONS', 'NODE_PATH', 'NORA_UPDATE_LIFECYCLE'}}
     environment['ELECTRON_RUN_AS_NODE'] = '1'
-    result = subprocess.run([receipt['executable']['path'], receipt['entry'], '--receipt',
-        str(Path(receipt['noraHome']) / 'installer/launcher-control.json')],
-        input=json.dumps(request, separators=(',', ':')).encode('utf-8'), env=environment, check=False)
+    command = [receipt['executable']['path'], receipt['entry'], '--receipt',
+        str(Path(receipt['noraHome']) / 'installer/launcher-control.json')]
+    encoded = json.dumps(request, separators=(',', ':')).encode('utf-8')
+    try:
+        native_auth = kind == 'model' and json.loads(stdin).get('action') == 'authenticate'
+    except (ValueError, AttributeError):
+        native_auth = False
+    if native_auth:
+        # A native login can ask for a returned authorization code. Reuse this
+        # one foreground invocation's stdin; do not persist credentials or run
+        # a separate server/session manager. One-shot tools naturally send EOF.
+        result = subprocess.Popen(command, stdin=subprocess.PIPE, env=environment)
+        result.stdin.write(encoded + b'\n')
+        result.stdin.flush()
+        def relay():
+            try:
+                stream = sys.stdin
+                while True:
+                    line = stream.readline(65537)
+                    if not line:
+                        break
+                    if isinstance(line, str):
+                        line = line.encode('utf-8')
+                    if len(line) > 65536:
+                        break
+                    result.stdin.write(line if line.endswith(b'\n') else line + b'\n')
+                    result.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+            finally:
+                try:
+                    result.stdin.close()
+                except (OSError, ValueError):
+                    pass
+        threading.Thread(target=relay, daemon=True).start()
+        result.wait()
+    else:
+        result = subprocess.run(command, input=encoded, env=environment, check=False)
     raise SystemExit(result.returncode)

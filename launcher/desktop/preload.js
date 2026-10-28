@@ -81,6 +81,10 @@ if (contextBridge && ipcRenderer) {
     modelProviders() {
       return invoke('nora:model-providers');
     },
+    modelAuthStart(payload) { return invoke('nora:model-auth-start', payload); },
+    modelAuthStatus(payload) { return invoke('nora:model-auth-status', payload); },
+    modelAuthRespond(payload) { return invoke('nora:model-auth-respond', payload); },
+    modelAuthCancel(payload) { return invoke('nora:model-auth-cancel', payload); },
     modelOptions(payload) {
       return invoke('nora:model-options', payload);
     },
