@@ -2,7 +2,7 @@
 
 产品设计版本：**1.36**。确认日期：2026-10-28。本轮用户批准补齐脚本编辑保存、导入前本地预览、卡库页码跳转及显示密度，详细规则只在[酒馆设计](tavern.md#card-library)及[脚本编辑](tavern.md#scripts)维护；保留原数据、既有控件及脚本授权。用户现已批准验收后合并本地主分支，仍不推送、不打包发布。1.35用户数据归属与程序维护边界继续有效；完整程序／数据分离和匿名现场确诊尚未完成，见[实现差异](launcher.md#differences)。1.33桌面更新职责、1.31故事档案及现有模型／配对操作保持。设计批准、实现、验证和部署分别记录，见[本轮实施记录](../reports/20261028-tavern-library-script-ui.md)。
 
-技能库既有确认另行保留：2026-10-23已确认的默认交付与按需加载规则见[诺拉技能库管理](nora.md#skill-library)。2026-10-28仅将该分支文档对齐本1.36基线，保留主线全部规则；技能库资源问题暂缓处理，本次未合并主分支或发布。整合范围与验证见[执行记录](../launcher-reliability-plan.md#skill-library-doc-integration-20261028)。
+技能库既有确认另行保留：2026-10-23已确认的默认交付与按需加载规则见[诺拉技能库管理](nora.md#skill-library)。2026-10-29公开技能库已按单独授权上线，用户随后要求检查应用管理技能并合并本地主分支，暂不发布应用；保留本1.36基线及全部既有规则。范围、合并结果与未验项见[执行记录](../launcher-reliability-plan.md#skill-library-main-integration-20261029)，此前文档整合历史见[原记录](../launcher-reliability-plan.md#skill-library-doc-integration-20261028)。
 
 <a id="current-baseline"></a>
 ## 当前确认的故事档案设计

@@ -1,5 +1,24 @@
 # 启动器可靠性交付设计与执行方案
 
+<a id="skill-library-main-integration-20261029"></a>
+## 2026-10-29 管理技能检查与本地主分支整合
+
+用户在网页会话最新明确要求检查诺拉应用管理技能分支，无阻塞问题后合并本地main，暂不发布应用。本轮适用1.36的PB-01／02／05／06／08／09、N-06／N-16及共同变更控制；只整合默认管理技能已有实现和必要的阶段说明，不改变模型配置、普通聊天加载策略、安装更新恢复机制、投稿取消选择或平台支持承诺。
+
+固定比较：本地main `35dffc988065303b5c338ca78e7efb1f5ea6df47`，技能分支 `86b8a8e658678a98ed7b7cc84e7251a23c298fc7`；后者已包含前者，无源码冲突。源技能工作区未提交的公网联调记录保留原位；模型配置分支全部无关修改不动。在独立整合工作区检查，合格后仅快进本地main，不推送、打标签、打包、发布或修改正式Hermes实例。
+
+关联核对与计划：默认清单变化影响首装技能准备/安装、系统盘点、独立和桌面增量准备、恢复白名单及发行完整性，分别重跑既有 `test_first_install`、`test_nora_system`、`test_incremental_update`、`test_managed_context`、`test_update_recovery`、`nora-release-source.test.mjs` 与 `repository-layout.test.mjs`；不更改这些公共执行机制，不做应用打包。本机真实Hermes/匹配Python只在临时home验证默认技能发现、索引和读取，保留配置、人格及用户内容；公网管理器搜索/下载/安装启用和同名保护使用临时home，逐项保存结果，不调用模型。Windows专属跳过与未验原生平台分别报告。
+
+审查结果：标准与需求两轴均未发现有证据支持的代码合并阻塞；首装/更新/恢复/制品四文件与技能模块、指纹均接通。修正交付SKILL中“公网未上线”的过期断言，改为实际请求判断，保留所有查询/安装保护与默认交付协议；同步现行文档阶段说明，不修改网站或分发源。
+
+公网基线：网站main `35189acc6a5ad0f80fb3b2fc8c3360160dde4086`，活动Worker `d844d39d-b2e4-4aa9-8658-b6d15988f176`，极狐目录提交 `d7609eaf7df0f0eface7671a2fbc28cf3ec3c638`；目录SHA256 `688ebc58ac83860466ffb799616d688b51bc106e2b33fcc8cbd7adb8f7ecc49c`。两份固定下载为人格0.1.3（7271字节、SHA256 `28603b6af0588552caf63e754a5d3fb4c5918dbc588feeeb608ece0a1e48a340`）和SillyTavern管理0.2.1（10443字节、SHA256 `192637f50cb0ed3bb910118cb7d3449505ef623851620a5f7c288c68039beada`）。原分支忽略目录 `local-state/skill-library-rollout-20261029/` 留有公网真实Hermes及官网后备结果：临时home安装/启用/读取、同名重复与无关配置保护通过，无模型调用或正式home写入。
+
+范围外发现：GitHub Pages镜像在极狐失效时，跨域fetch官网技能包所需ACAO尚缺；官网同源和Python管理器后备不受此浏览器规则影响。该网站镜像问题不阻断应用管理器本地合并，本轮不修改网站。应用完整安装器、Windows/Intel/Linux原生及真实诺拉对话/技能任务效果未验，源码合并不代表用户已收到应用更新。本轮命令结果、固定合并提交和实际状态在验收后补录。
+
+本轮验收结果：真实Hermes及匹配Python通过源码投影执行上述5份Python测试，167项中166通过、1项真实Windows路径I/O在macOS按原用例跳过；包括默认管理技能完整安装、索引与skill_view读取，独立/桌面更新准备、受管文件保护和恢复。首次隔离工作区没有酒馆node_modules，8项用例因缺少`write-file-atomic`失败；核对酒馆package-lock与现有依赖来源逐字节一致后，以忽略的本地依赖链接供runner导出，原测试与产品代码不变，重跑全部5份文件取得上述结果。nora-release-source合同10项、repository-layout 17项通过，git diff --check通过。没有运行产品打包或全产品/所有平台验收。
+
+对本次应用管理器脚本重新执行真实公网`list/search/info/install`：7项目录可查询，两项新技能从极狐实际下载、校验、安装启用并经Hermes读取，重复安装返回already-installed，无关模型/禁用设置、其他平台禁用、人格和内容哨兵均保留。临时home随检查结束删除，无模型调用、技能任务执行或正式实例写入。证据保存在本整合工作区忽略的`local-state/skill-library-integration-20261029/`，包括deployment-tests.log、public-acceptance.json和本地合并回执；合并固定分支祖先关系及main状态由回执记录。只允许把验收后的提交快进本地main，不执行任何应用远程写操作。
+
 <a id="skill-library-resource-update-20261029"></a>
 ## 2026-10-29 技能库本地资源同步
 
