@@ -13,9 +13,10 @@ const shellHtmlBrotliSize = brotliCompressSync(Buffer.from(index), {
     params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
 }).length;
 
-// 2026-09-29: user approved 560 KB for ST 1.19 integration (first measurement 558,868 bytes).
+// 2026-10-30: user approved increasing the critical manifest budget to 570 KB.
+// Current design: docs/product/tavern.md#interface; visible HTML retains its 30 KB limit.
 // Keep a bounded startup gate; future growth needs another review.
-assert.ok(manifestBrotliSize <= 560_000, `critical module manifest exceeds 560 KB Brotli budget: ${manifestBrotliSize}`);
+assert.ok(manifestBrotliSize <= 570_000, `critical module manifest exceeds 570 KB Brotli budget: ${manifestBrotliSize}`);
 assert.ok(shellHtmlBrotliSize <= 30_000, `visible shell HTML exceeds 30 KB Brotli budget: ${shellHtmlBrotliSize}`);
 assert.equal(manifest.legacy, 'dist/nora/legacy.js', 'legacy libraries must use their immutable standalone asset');
 assert.equal(manifest.compiled?.['lib-core.js'], 'dist/nora/lib-core.js', 'compiled core libraries must use their immutable standalone module');
