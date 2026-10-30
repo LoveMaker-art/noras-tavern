@@ -1,6 +1,11 @@
 // Shared by the authenticated broker and the browser executor. No eval/reflective dispatch.
 const action = (description, fields = {}, options = {}) => Object.freeze({ description, fields, readOnly: false, ...options });
 export const CONTROL_ACTIONS = Object.freeze({
+    'reading.catalog': action('Read reading ranges; fonts use theme.catalog', {}, { readOnly: true }),
+    'reading.inspect': action('Read reading scope, inheritance and revision', { scope: ['global', 'world'] }, { readOnly: true }),
+    'reading.apply': action('Patch reading values; null inherits', { scope: ['global', 'world'], values: 'object', expectedRevision: 'string' }),
+    'reading.reset': action('Clear reading override(s)', { scope: ['global', 'world'], field: ['all', 'font_size', 'line_height', 'paragraph_spacing'], expectedRevision: 'string' }),
+    'reading.refresh': action('Reapply saved reading values', {}),
     'appearance.inspect': action('Read whole-page light/dark/system mode, local control availability and applied mode. Separate from World visuals.', {}, { readOnly: true }),
     'appearance.set': action('Set and persist whole-page appearance on a local loopback page; no World/model/card changes. Non-local Liveware pages remain automatic. Inspect first; do not edit CSS.', { mode: ['system', 'light', 'dark'], expectedRevision: 'string' }),
     'preset.list': action('List stored chat-completion preset template names; no selection or generation.', {}, { readOnly: true }),

@@ -9,6 +9,8 @@ import { normalizeIdempotencyKey, operationIdForKey } from '../nora-world-core/d
 import { stageBlankWorld, stageLibraryCard, stageStCardImport } from '../nora-world-core/st-import-staging.js';
 import { validateThemeAssets, importThemeBackground } from '../nora-world-core/theme-assets.js';
 import { readGlobalTheme, saveGlobalTheme } from '../nora-world-core/global-theme.js';
+import { readReadingPreferences, saveReadingPreferences } from '../nora-world-core/reading-preferences.js';
+import { readingTarget } from '../../public/scripts/nora-worlds/reading-preferences.js';
 import { inspectUserStorage } from '../nora-world-core/storage-inventory.js';
 
 function defaultResolveCore(request) {
@@ -39,6 +41,8 @@ function publicOperation(operation) {
 }
 
 function errorStatus(error) {
+    if (error?.code === 'NORA_READING_INVALID') return 400;
+    if (error?.code === 'NORA_READING_REVISION_CONFLICT') return 409;
     if (error?.code === 'NORA_OPERATION_NOT_FOUND' || error?.code === 'NORA_WORLD_NOT_FOUND') return 404;
     if (error?.code === 'NORA_OPERATION_CONFLICT' || error?.code === 'NORA_WORLD_REVISION_CONFLICT'
         || error?.code === 'NORA_CAPABILITY_ATTEMPT_CONFLICT' || error?.code === 'NORA_WORLD_NEEDS_REPAIR'
@@ -85,6 +89,28 @@ export function createNoraWorldsV2Router({
 } = {}) {
     const router = express.Router();
     const inventoryRequests = new Map();
+
+    async function readingScope(request, input) {
+        let target;
+        try { target = readingTarget(input.scope, input.worldId); }
+        catch (cause) { throw new NoraWorldCoreError('NORA_READING_INVALID', cause.message, { cause }); }
+        if (target.scope === 'world') await resolveCore(request).getWorld(target.worldId);
+        return target;
+    }
+    router.get('/reading', async (request, response) => {
+        response.setHeader('Cache-Control', 'no-store');
+        try {
+            const target = await readingScope(request, request.query);
+            return response.json(readReadingPreferences(request.user.directories, target));
+        } catch (error) { return sendError(response, error); }
+    });
+    router.post('/reading', async (request, response) => {
+        response.setHeader('Cache-Control', 'no-store');
+        try {
+            await readingScope(request, request.body || {});
+            return response.json(saveReadingPreferences(request.user.directories, request.body));
+        } catch (error) { return sendError(response, error); }
+    });
 
     router.get('/storage/inventory', async (request, response) => {
         const directories = request.user.directories;

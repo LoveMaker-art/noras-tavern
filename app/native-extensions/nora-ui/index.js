@@ -48,6 +48,8 @@ import { createStoryProfileCheckpoint, createStoryPreferenceSettings } from './s
     let messageController;
     let panelController;
     let worldThemeController;
+    let readingController;
+    let ensureReadingController;
     let appearanceController;
     let smartReplyController;
     let storyScroller;
@@ -136,6 +138,7 @@ import { createStoryProfileCheckpoint, createStoryPreferenceSettings } from './s
         removeNestedLayoutCopies();
         panelController.applyHostPersonality();
         worldThemeController.render(activeWorldModel());
+        readingController?.render();
         renderRail();
         renderPanel();
         refreshHeader();
@@ -181,6 +184,13 @@ import { createStoryProfileCheckpoint, createStoryPreferenceSettings } from './s
             media: window.matchMedia('(prefers-color-scheme: dark)'), hostname: window.location.hostname,
             settings: () => settingsDomain.uiSettings(), persist: () => settingsDomain.saveUiSettings({ immediate: true }) });
         worldThemeController = createWorldThemeController(selector => $(selector), () => settingsDomain.uiSettings().globalTheme ?? {});
+        let readingPromise;
+        ensureReadingController = () => readingPromise ??= import('./reading-controller.js').then(({ createReadingController }) => {
+            readingController = createReadingController({ select: $, getWorldId: () => activeWorldModel()?.id,
+                requestHeaders: transport.requestHeaders });
+            readingController.render();
+            return readingController;
+        }).catch(error => { readingPromise = undefined; throw error; });
         const notifyStoryProfileCheckpoint = createStoryProfileCheckpoint({ activeWorldModel, requestHeaders: transport.requestHeaders });
         operations = createUiOperationRegistry();
         storyActions = createStoryActionDispatcher({
@@ -472,6 +482,7 @@ import { createStoryProfileCheckpoint, createStoryPreferenceSettings } from './s
             onWorldbookChanged: (name, book) => uiStore.cacheWorldbook(name, book),
         });
         startupController.start();
+        void ensureReadingController().catch(error => console.warn('[Nora Reading]', error));
     }
 
 
@@ -488,6 +499,10 @@ import { createStoryProfileCheckpoint, createStoryPreferenceSettings } from './s
     });
 
     window.NoraUI = Object.freeze({ prepareShell: () => shellController.prepareShell(), mount, controlActions: () => storyActions,
+        controlReading: async (action, params) => {
+            if (!ensureReadingController) throw Object.assign(new Error('Reading controls are not mounted.'), { code: 'NORA_READING_NOT_READY' });
+            return (await ensureReadingController()).execute(action, params);
+        },
         pageControlState, controlPage,
         setRuntimeControls: controls => { runtimeControls = controls; },
         appearanceState: () => appearanceController?.inspect() || { ready: false },

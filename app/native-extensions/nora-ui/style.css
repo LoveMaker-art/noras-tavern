@@ -441,6 +441,19 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 }
 #nora-chat .mes[is_user="true"] .mes_block { align-items: flex-end; }
 #nora-chat .mes[is_user="true"] .mes_text { width: fit-content !important; max-width: 80% !important; padding: 8px 13px !important; border-radius: 14px !important; background: var(--nora-user-bg) !important; color: var(--nora-ink-2) !important; font-size: 14px !important; line-height: 1.6 !important; }
+/* Numeric reading overrides are scoped to ordinary story text, never card-owned layouts. */
+#nora-chat .mes:not(.nora-rich-message) .mes_text,
+#nora-chat .mes.nora-rich-message .mes_text > :is(p, ol, ul, blockquote):not(:has(style, iframe, form, button, input, select, textarea, canvas, video, audio, table, [data-nora-rich], [class*="interactive"], [class*="status"])) {
+    font-size: var(--nora-reading-font-size, 15.5px) !important;
+    line-height: var(--nora-reading-line-height, 1.68) !important;
+}
+#nora-chat .mes[is_user="true"]:not(.nora-rich-message) .mes_text,
+#nora-chat .mes[is_user="true"].nora-rich-message .mes_text > :is(p, ol, ul, blockquote):not(:has(style, iframe, form, button, input, select, textarea, canvas, video, audio, table, [data-nora-rich], [class*="interactive"], [class*="status"])) {
+    font-size: var(--nora-reading-font-size, 14px) !important;
+    line-height: var(--nora-reading-line-height, 1.6) !important;
+}
+#nora-chat[data-nora-reading-paragraph-spacing] .mes:not(.nora-rich-message) .mes_text p:not(:last-child),
+#nora-chat[data-nora-reading-paragraph-spacing] .mes.nora-rich-message .mes_text > p:not(:last-child):not(:has(style, iframe, form, button, input, select, textarea, canvas, video, audio, table, [data-nora-rich], [class*="interactive"], [class*="status"])) { margin-bottom: var(--nora-reading-paragraph-spacing); }
 #nora-chat .mes_text > p:first-child { margin-top: 0; }
 #nora-chat .mes_text > p:last-child { margin-bottom: 0; }
 #nora-chat .mes_media_wrapper, #nora-chat .mes_file_wrapper { width: 100%; max-width: var(--nora-content); }

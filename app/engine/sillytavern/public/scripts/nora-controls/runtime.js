@@ -145,6 +145,10 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             return action === 'appearance.inspect' ? ui.appearanceState() : ui.setAppearance(params);
         }
         if (action.startsWith('theme.')) return themeAction(action, params);
+        if (action.startsWith('reading.')) {
+            if (!globalRef.NoraUI?.controlReading) throw controlError('NORA_READING_NOT_READY', 'Page reading controls are unavailable.');
+            return globalRef.NoraUI.controlReading(action, params);
+        }
         const context = getContext();
         if (action === 'library.card-regex' || action === 'library.card-regex-update') {
             const catalog = await request('/api/nora-worlds-v2/library/cards');
