@@ -1357,11 +1357,12 @@ def recover_standalone(home, root, *, helper=None):
         runtime = standalone_runtime(root)
         if before['running'] and runtime.status().get('health', {}).get('ok') is not True:
             raise RuntimeError('旧版文件已恢复，但服务健康检查未通过。')
+        return result
+    def verify_files(_plan, _backup):
         if journal.plan.get('worlds') is not None:
             verify_preserved_worlds(Path(root) / 'apps/tavern-runtime', Path(root) / 'tavern-state',
                                    journal.plan.get('storyInventory', {}), journal.plan['worlds'])
-        return result
-    return helper.recover(home, root, stop=stop, resume=resume, verify=verify)
+    return helper.recover(home, root, stop=stop, resume=resume, verify=verify, verify_files=verify_files)
 
 
 @contextmanager
@@ -2207,11 +2208,12 @@ def install(args):
                         state = managed_lifecycle("recover-verify", hermes_home, install_root, version)
                         if partial:
                             verify_partial_baseline(hermes_home, install_root, plan, partial, recovery_helper)
-                        elif plan.get("worlds") is not None:
-                            verify_preserved_worlds(install_root / 'apps/tavern-runtime',
-                                                   install_root / "tavern-state", story_inventory, plan["worlds"])
                         verify_partial_configuration(hermes_home, install_root, partial)
                         return state
+                    def verify_restored_files(plan, _backup):
+                        if not partial and plan.get('worlds') is not None:
+                            verify_preserved_worlds(install_root / 'apps/tavern-runtime',
+                                                   install_root / 'tavern-state', story_inventory, plan['worlds'])
                     try:
                         # install already holds tavern-installer.lock. Both the
                         # automatic rollback and the desktop's later retry use
@@ -2221,6 +2223,7 @@ def install(args):
                             stop=lambda *_: managed_lifecycle("recover-stop", hermes_home, install_root, version),
                             resume=lambda *_: managed_lifecycle("rollback", hermes_home, install_root, version),
                             verify=verify_restored,
+                            verify_files=verify_restored_files,
                         )
                     except BaseException as recovery_error:
                         _operation_evidence.freeze(recovery_error, nora_home=managed_home or os.environ.get('NORA_TAVERN_HOME') or install_root.parent,

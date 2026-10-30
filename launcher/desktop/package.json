@@ -118,6 +118,18 @@
         "to": "model_config.py"
       },
       {
+        "from": "../hermes_model_config.py",
+        "to": "hermes_model_config.py"
+      },
+      {
+        "from": "../hermes_model_probe.py",
+        "to": "hermes_model_probe.py"
+      },
+      {
+        "from": "../hermes_model_state.py",
+        "to": "hermes_model_state.py"
+      },
+      {
         "from": "../bootstrap.py",
         "to": "bootstrap.py"
       },

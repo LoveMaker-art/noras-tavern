@@ -4,6 +4,8 @@ const SCHEMA='nora-launcher-result/1';
 const NETWORK=new Set(['dns_failed','connection_refused','network','tls_failed','timeout','http_unauthorized','http_forbidden','rate_limited','http_error']);
 const BUSINESS_ACTIONS={MODEL_SETUP_REQUIRED:['configure-model','recheck','logs'],CLAWCHAT_PAIR_REQUIRED:['pair-clawchat','recheck','logs'],
   MODEL_SYNC_PENDING:['resume-model','recheck','logs'],MODEL_CONFIG_PARTIAL:['recheck','logs'],
+  MODEL_DELETE_REFUSED:['recheck','logs'],MODEL_DELETE_RESTORED:['recheck','logs'],
+  MODEL_DELETE_RECOVERY_REQUIRED:['recheck','logs'],
   INSTALLER_STATE_WRITE_FAILED:['recheck','logs'],UPDATE_RECOVERY_REQUIRED:['recover','recheck','logs'],
   TAVERN_OWNERSHIP:['recheck','logs'],GATEWAY_IDENTITY:['recheck','logs'],TAVERN_PORT_OCCUPIED:['recheck','logs'],
   TAVERN_START_TIMEOUT:['recheck','logs'],
@@ -42,6 +44,7 @@ function failureResult(error,{action,operation}={}){
   const actions=failureActions(userCode,{operation})||
     (NETWORK.has(technical.error_code)?['recheck','logs']:['logs','recheck']);
   return {schema:SCHEMA,ok:false,error:{failureCode:technical.error_code,userCode:/^[A-Z0-9_]{1,100}$/.test(userCode||'')?userCode:'',
+    ...(error?.modelFailureStage==='candidate'?{modelFailureStage:'candidate'}:{}),
     logOperationId:/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(error?.logOperationId||'')?error.logOperationId:undefined,
     technical,guidance:operation?.currentFailure?.guidance||operation?.primaryFailure?.guidance||presentError(error,{action}),allowedActions:actions,
     operation:operation?{...operation,allowedActions:actions}:null}};

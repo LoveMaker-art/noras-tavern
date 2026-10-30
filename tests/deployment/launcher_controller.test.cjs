@@ -1,9 +1,301 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { test } = require('node:test');
 const { chromium } = require(process.env.NORA_PLAYWRIGHT || 'playwright');
 const url = pathToFileURL(path.resolve(__dirname, '../installer/launcher-conversation-prototype.html')).href;
+async function openModelEditor(page) {
+  await page.locator('#management > [data-action="model"]').click();
+  await page.getByRole('button', {name:'+ 添加模型',exact:true}).click();
+}
+async function closeModelEditor(page) {
+  await page.getByRole('button',{name:'返回模型设置',exact:true}).click();
+  await page.getByRole('button',{name:'返回酒馆',exact:true}).click();
+}
+test('model addition keeps an interrupted result queryable before a deliberate retry', {timeout:15000}, async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const page=await browser.newPage({viewport:{width:1120,height:680}}),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{
+      let current={configured:true,provider:'custom',model:'old-model',baseUrl:'https://fixture.invalid/v1',authMode:'key'};
+      const operation={operationId:'model-save-fixture',kind:'model',snapshotSequence:4,state:'failed',busy:false,
+        effectState:'unknown',verification:'unconfirmed',recoveryOutcome:'recovery-required',allowedActions:['recheck','logs']};
+      window.modelWrites=0;window.modelOperation=operation;window.modelQueryFails=false;
+      window.NoraLauncherBridge={
+        status:async()=>({installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
+          modelConfigured:true,clawchatPaired:true,clawchatConnected:true,gatewayRunning:true,running:true}),
+        checkUpdate:async()=>({state:'current',available:false}),
+        modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}],current}),
+        operationSnapshot:async id=>{
+          if(id!==operation.operationId)throw new Error('wrong task');
+          if(window.modelQueryFails)throw new Error('任务查询暂时中断。');
+          return window.modelOperation;
+        },
+        saveAndTestModel:async payload=>{
+          if(++window.modelWrites===1)throw Object.assign(new Error('模型保存响应中断。'),{operation});
+          current={configured:true,provider:'custom',model:payload.model,baseUrl:payload.baseUrl,authMode:'key'};
+          return {ok:true};
+        },
+      };
+    });
+    await page.goto(url);await page.locator('.services').waitFor();await openModelEditor(page);
+    await page.locator('#key').fill('synthetic-fixture-key');await page.locator('#model').fill('new-model');
+    await page.getByRole('button',{name:'验证并保存',exact:true}).click();
+    const query=page.locator('#modelStatusRecheck'),submit=page.getByRole('button',{name:'验证并保存',exact:true});
+    await query.waitFor({state:'visible'});assert.equal(await submit.isEnabled(),false);
+    await query.click();assert.equal(await submit.isEnabled(),false);assert.equal(await page.locator('#model').inputValue(),'new-model');
+    await page.evaluate(()=>{window.modelQueryFails=true;});await query.click();
+    assert.equal(await query.isEnabled(),true);assert.equal(await submit.isEnabled(),false);
+    await page.evaluate(()=>{window.modelQueryFails=false;window.modelOperation={...window.modelOperation,
+      snapshotSequence:5,effectState:'untouched',recoveryOutcome:'not-required',allowedActions:['retry','recheck','logs']};});
+    await query.click();assert.equal(await submit.isEnabled(),true);
+    assert.equal(await page.locator('#key').inputValue(),'synthetic-fixture-key');
+    assert.equal(await page.evaluate(()=>window.modelWrites),1,'querying does not invoke the model writer');
+    await submit.click();await page.locator('.model-name').filter({hasText:'new-model'}).waitFor();
+    assert.equal(await page.evaluate(()=>window.modelWrites),2);assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+test('model task requery keeps writes blocked until the original committed task closes', {timeout:15000}, async()=>{
+ const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+ try{
+  const page=await browser.newPage({viewport:{width:1120,height:680}}),errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.addInitScript(()=>{
+    let operation={operationId:'original-delete',kind:'model',snapshotSequence:7,state:'failed',busy:false,
+      effectState:'changed',verification:'unconfirmed',recoveryOutcome:'recovery-required'};
+    const current={configured:true,provider:'custom',model:'keep',selectedId:'keep',models:[
+      {id:'keep',provider:'custom',model:'keep',selected:true,available:true},
+      {id:'remove',provider:'custom',model:'remove',available:true}]};
+    window.confirmOutcome=false;window.deleteWrites=0;window.rechecked=[];
+    window.NoraLauncherBridge={
+      status:async()=>({installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
+        modelConfigured:true,clawchatPaired:true,clawchatConnected:true,gatewayRunning:true,running:true}),
+      checkUpdate:async()=>({state:'current',available:false}),
+      modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}],current}),
+      operationSnapshot:async id=>{if(id!==operation.operationId)throw new Error('wrong operation');return operation;},
+      recheckOperation:async payload=>{
+        window.rechecked.push(payload.operationId);
+        if(window.confirmOutcome)operation={...operation,state:'succeeded',verification:'confirmed',recoveryOutcome:'not-required'};
+        return {operation};
+      },
+      deleteModel:async()=>{window.deleteWrites++;current.models=current.models.filter(row=>row.id!=='remove');
+        throw {operation,guidance:{title:'删除结果尚未确认。'}};},
+    };
+  });
+  await page.goto(url);await page.locator('.services').waitFor();
+  await page.locator('#management > [data-action="model"]').click();
+  await page.getByRole('button',{name:'删除',exact:true}).last().click();
+  await page.getByRole('button',{name:'确认删除',exact:true}).click();
+  await page.getByRole('button',{name:'重新查询',exact:true}).click();
+  await page.getByText('本次模型操作结果尚未确认，请重新查询。',{exact:false}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'+ 添加模型',exact:true}).count(),0);
+  await page.evaluate(()=>{window.confirmOutcome=true;});
+  await page.getByRole('button',{name:'重新查询',exact:true}).click();
+  await page.locator('#modelList .model-row').waitFor();
+  assert.equal(await page.locator('.model-row').count(),1);
+  assert.equal(await page.getByRole('button',{name:'+ 添加模型',exact:true}).isEnabled(),true);
+  assert.equal(await page.evaluate(()=>window.deleteWrites),1);
+  assert.deepEqual(await page.evaluate(()=>window.rechecked),['original-delete','original-delete']);
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});
+test('model deletion confirms inline, preserves refused rows and finishes without changing other controls', {timeout:15000}, async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    for(const viewport of [{width:1120,height:680},{width:760,height:600}]){
+      const page=await browser.newPage({viewport}),errors=[];
+      page.on('pageerror',error=>errors.push(error.message));
+      await page.addInitScript(()=>{
+        let current={configured:true,provider:'custom',model:'current-model',selectedId:'current',models:[
+          {id:'current',provider:'custom',model:'current-model',selected:true,available:true,connectionLabel:'https://current.invalid/v1'},
+          {id:'saved',provider:'opencode-go',model:'saved-model',selected:false,available:true,connectionLabel:'备用连接'}]};
+        window.deleteWrites=0;window.allowDelete=false;
+        window.NoraLauncherBridge={
+          status:async()=>({installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
+            modelConfigured:true,clawchatPaired:true,clawchatConnected:true,gatewayRunning:true,running:true}),
+          checkUpdate:async()=>({state:'current',available:false}),
+          modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}],current}),
+          switchModel:async()=>{throw new Error('deletion must not switch');},
+          deleteModel:async({id})=>{
+            window.deleteWrites++;
+            if(!window.allowDelete)throw Object.assign(new Error('会话仍在使用该模型，请先更换对应模型，再删除。'),
+              {modelFailureStage:'candidate',guidance:{title:'暂时不能删除该模型。',detail:'会话仍在使用该模型，请先更换对应模型，再删除。'}});
+            current={...current,models:current.models.filter(row=>row.id!==id)};return {ok:true,current};
+          },
+        };
+      });
+      await page.goto(url);await page.locator('.services').waitFor();
+      await page.locator('#management > [data-action="model"]').click();
+      const other=page.locator('.model-row[data-selected="false"]');
+      assert.equal(await page.locator('.model-row[data-selected="true"] .model-delete').isVisible(),false);
+      assert.equal(await page.getByRole('button',{name:'重启诺拉',exact:true}).count(),0);
+      await other.getByRole('button',{name:'删除',exact:true}).click();
+      await page.getByRole('button',{name:'取消',exact:true}).click();
+      assert.equal(await page.evaluate(()=>window.deleteWrites),0);
+      await other.getByRole('button',{name:'删除',exact:true}).click();
+      await page.evaluate(()=>document.fonts.ready);
+      const geometry=await other.evaluate(row=>{
+        const prompt=row.querySelector('.model-delete-prompt').getBoundingClientRect();
+        const name=row.querySelector('.model-name').getBoundingClientRect();
+        const buttons=[...row.querySelectorAll('.model-delete-buttons button')].map(button=>button.getBoundingClientRect());
+        return {overflow:row.scrollWidth-row.clientWidth,promptLeft:prompt.left,nameLeft:name.left+20,
+          promptCenter:prompt.top+prompt.height/2,buttonCenters:buttons.map(rect=>rect.top+rect.height/2),
+          heights:buttons.map(rect=>rect.height),confirm:row.querySelector('.model-row-actions').getBoundingClientRect().bottom,
+          limit:document.querySelector('#modelList').getBoundingClientRect().bottom};
+      });
+      assert.ok(geometry.overflow<=1);assert.ok(geometry.confirm<=geometry.limit+1);
+      assert.ok(Math.abs(geometry.promptLeft-geometry.nameLeft)<=1,'confirmation aligns with model text');
+      assert.ok(geometry.buttonCenters.every(center=>Math.abs(center-geometry.promptCenter)<=1),'prompt and buttons share one line');
+      assert.equal(geometry.heights[0],geometry.heights[1]);
+      assert.equal(await other.locator('.model-delete-prompt').textContent(),'删除这个模型？');
+      if(process.env.NORA_MODEL_DELETE_VISUAL_DIR){
+        fs.mkdirSync(process.env.NORA_MODEL_DELETE_VISUAL_DIR,{recursive:true});
+        await page.locator('#main').screenshot({path:path.join(process.env.NORA_MODEL_DELETE_VISUAL_DIR,`delete-${viewport.width}.png`),animations:'disabled'});
+      }
+      await page.getByRole('button',{name:'确认删除',exact:true}).click();
+      await other.getByText('暂时不能删除该模型。',{exact:false}).waitFor();
+      assert.equal(await page.locator('.model-row').count(),2);
+      await page.evaluate(()=>{window.allowDelete=true;});
+      await other.getByRole('button',{name:'重试',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelectorAll('.model-row').length===1);
+      assert.equal(await page.locator('.model-row').getAttribute('data-model-id'),'current');
+      assert.equal(await page.evaluate(()=>window.deleteWrites),2);
+      assert.equal(await page.getByRole('button',{name:'+ 添加模型',exact:true}).isEnabled(),true);
+      assert.deepEqual(errors,[]);await page.close();
+    }
+  }finally{await browser.close();}
+});
+test('saved model rows keep the title, return and add controls fixed while only the list scrolls', {timeout:30000}, async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    for(const viewport of [{width:1120,height:680},{width:900,height:612},{width:760,height:600},{width:1120,height:900}]){
+      const page=await browser.newPage({viewport,reducedMotion:'reduce'}),errors=[];
+      const capture=async name=>{
+        if(!process.env.NORA_MODEL_VISUAL_DIR)return;
+        fs.mkdirSync(process.env.NORA_MODEL_VISUAL_DIR,{recursive:true});
+        await page.locator('#main').screenshot({path:path.join(process.env.NORA_MODEL_VISUAL_DIR,
+          `${viewport.width}-${viewport.height}-${name}.png`),animations:'disabled'});
+      };
+      page.on('pageerror',error=>errors.push(error.message));
+      try{
+        await page.addInitScript(()=>{
+          const current={configured:true,provider:'custom',model:'story-model',selectedId:'saved-0',activation:{state:'unknown'},
+            models:Array.from({length:12},(_,index)=>({id:`saved-${index}`,provider:'custom',model:index<2?'story-model':`saved-model-${index}`,
+              connectionLabel:index===0?'日常连接':index===1?'备用连接':`连接 ${index+1}`,baseUrl:`https://connection-${index+1}.invalid/v1`,
+              authMode:'key',selected:index===0,available:true}))};
+          window.NoraLauncherBridge={status:async()=>({installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,
+            setupCompleted:true,modelConfigured:true,clawchatPaired:true,clawchatConnected:true,gatewayRunning:true,running:true}),
+            checkUpdate:async()=>({state:'current',available:false,current:'fixture',latest:'fixture'}),
+            modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}],current}),
+            switchModel:async()=>({ok:true,current})};
+        });
+        await page.goto(url);await page.locator('.services').waitFor();
+        await page.locator('#management > [data-action="model"]').click();await page.locator('#modelList .model-row').first().waitFor();
+        await page.evaluate(()=>document.fonts.ready);
+        const facts=()=>page.evaluate(()=>{
+          const rect=selector=>{const box=document.querySelector(selector).getBoundingClientRect();return {top:box.top,bottom:box.bottom,left:box.left,right:box.right};};
+          const list=document.getElementById('modelList');
+          return {title:rect('#copy'),back:rect('.edit-head button'),add:rect('.model-add'),list:rect('#modelList'),
+            scrollHeight:list.scrollHeight,clientHeight:list.clientHeight,listOverflow:getComputedStyle(list).overflowY,
+            inlineOverflow:getComputedStyle(document.getElementById('inline')).overflowY,
+            modelFont:getComputedStyle(document.querySelector('.model-name')).fontSize,
+            savedModelFont:getComputedStyle(document.querySelector('.model-row[data-selected="false"] .model-name')).fontSize,
+            connectionFont:getComputedStyle(document.querySelector('.model-connection')).fontSize,
+            pageHeight:document.documentElement.scrollHeight,height:innerHeight};
+        });
+        const before=await facts();
+        await capture('multiple-closed');
+        assert.equal(await page.locator('#copy').textContent(),'模型设置');
+        assert.equal(await page.locator('.edit-head > span').textContent(),'');
+        assert.equal(before.modelFont,'14px');assert.equal(before.savedModelFont,'14px');assert.equal(before.connectionFont,'12px');
+        assert.equal(before.listOverflow,'auto');assert.equal(before.inlineOverflow,'hidden');
+        assert.ok(before.scrollHeight>before.clientHeight,`list scrolls at ${JSON.stringify(viewport)}`);
+        assert.ok(before.clientHeight>=60);assert.ok(before.list.top>=before.back.bottom-1);
+        assert.ok(before.list.bottom<=before.add.top+1);assert.ok(before.add.bottom<=viewport.height);
+        assert.ok(before.pageHeight<=before.height+1);
+        await page.locator('#modelList').evaluate(list=>{list.scrollTop=list.scrollHeight;});
+        const after=await facts();
+        for(const control of ['title','back','add'])assert.deepEqual(after[control],before[control],`${control} remains fixed`);
+        assert.equal(await page.locator('#modelList').evaluate(list=>list.scrollTop>0),true);
+        await page.locator('#modelList').evaluate(list=>{list.scrollTop=0;});
+        await page.locator('.model-details summary').first().click();
+        const opened=await facts();assert.deepEqual(opened.add,before.add);assert.deepEqual(opened.title,before.title);
+        await capture('multiple-expanded');
+        assert.equal(await page.locator('#key').count(),0);
+        if(process.env.NORA_MODEL_LIST_SCREENSHOT&&viewport.width===1120&&viewport.height===680)
+          await page.screenshot({path:process.env.NORA_MODEL_LIST_SCREENSHOT,animations:'disabled'});
+        await page.locator('#modelList').evaluate(list=>{list.scrollTop=90;});
+        const scrollBefore=await page.locator('#modelList').evaluate(list=>list.scrollTop);
+        const anchors=await workflowAnchors(page);await page.getByRole('button',{name:'+ 添加模型',exact:true}).click();
+        await page.locator('#provider').waitFor();assert.deepEqual(await workflowAnchors(page),anchors,'the existing form retains the workflow title anchor');
+        await page.getByRole('button',{name:'返回模型设置',exact:true}).click();await page.locator('#modelList').waitFor();
+        assert.deepEqual(await workflowAnchors(page),anchors,'returning to the list retains the title anchor');
+        assert.equal(await page.locator('#modelList').evaluate(list=>list.scrollTop),scrollBefore);
+        await page.getByRole('button',{name:'返回酒馆',exact:true}).click();
+        await page.evaluate(()=>{
+          const model={id:'only-current',provider:'custom',model:'kimi-for-coding',selected:true,available:true,
+            connectionLabel:'https://api.fixture.invalid/coding/v1',baseUrl:'https://api.fixture.invalid/coding/v1',authMode:'key'};
+          window.NoraLauncherBridge.modelProviders=async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}],
+            current:{configured:true,provider:'custom',model:model.model,selectedId:model.id,models:[model]}});
+        });
+        await page.locator('#management > [data-action="model"]').click();await page.locator('#modelList .model-row').waitFor();
+        const compact=await page.evaluate(()=>{
+          const row=document.querySelector('.model-row').getBoundingClientRect(),add=document.querySelector('.model-add').getBoundingClientRect();
+          const connection=document.querySelector('.model-connection').getBoundingClientRect(),details=document.querySelector('.model-details-label').getBoundingClientRect();
+          const name=document.querySelector('.model-name').getBoundingClientRect(),rowStyle=getComputedStyle(document.querySelector('.model-row'));
+          return {gap:add.top-row.bottom,buttonWidth:add.width,rowWidth:row.width,rowHeight:row.height,
+            lineGap:connection.top-name.bottom,detailGap:details.left-connection.right,
+            paddingTop:parseFloat(rowStyle.paddingTop),paddingBottom:parseFloat(rowStyle.paddingBottom),
+            connectionTop:connection.top,detailsTop:details.top,scrollHeight:document.documentElement.scrollHeight,height:innerHeight};
+        });
+        assert.ok(compact.gap>=0&&compact.gap<=20,'a short list keeps the add control close to its last model');
+        assert.ok(compact.buttonWidth<compact.rowWidth/2,'adding a model remains a secondary action');
+        assert.ok(compact.rowHeight>=76&&compact.rowHeight<=96,'a two-line model leaves breathing room without becoming a large card');
+        assert.ok(compact.lineGap>=8,'the primary and secondary text have visible separation');
+        assert.ok(compact.detailGap>=16,'details follow connection information with a clear gap');
+        assert.ok(compact.paddingTop>=12&&compact.paddingBottom>=12,'text does not touch the row edges');
+        assert.ok(Math.abs(compact.connectionTop-compact.detailsTop)<=4,'details share the secondary information line');
+        assert.ok(compact.scrollHeight<=compact.height+1);
+        await capture('single-closed');
+        const summary=page.locator('.model-details summary'),beforeOpen=await summary.boundingBox();
+        await summary.click();await page.locator('.model-details[open] p').first().waitFor();
+        const afterOpen=await summary.boundingBox();assert.deepEqual(afterOpen,beforeOpen,'expansion keeps the disclosure target in place');
+        await capture('single-expanded');
+        await summary.click();await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab');
+        assert.equal(await summary.evaluate(element=>element.matches(':focus-visible')),true);
+        const focus=await summary.locator('.model-details-label').evaluate(element=>getComputedStyle(element).textDecorationLine);
+        assert.match(focus,/underline/,'keyboard focus stays visible without a heavy summary frame');
+        await capture('single-focused');
+        await page.getByRole('button',{name:'返回酒馆',exact:true}).click();
+        await page.evaluate(()=>{
+          const models=[
+            {id:'long-current',provider:'custom',model:'provider/long-context-story-model-with-reasoning-and-extended-context',
+              selected:true,available:true,authMode:'key',connectionLabel:'https://relay.example.invalid/v1',
+              baseUrl:'https://relay.example.invalid/api/proxy/extended-context/compatible/v1'},
+            {id:'other-one',provider:'custom',model:'deepseek-chat',selected:false,available:true,authMode:'key',connectionLabel:'日常连接'},
+            {id:'other-two',provider:'custom',model:'deepseek-chat',selected:false,available:true,authMode:'key',connectionLabel:'备用连接'},
+          ];
+          window.NoraLauncherBridge.modelProviders=async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}],
+            current:{configured:true,selectedId:'long-current',models}});
+        });
+        await page.locator('#management > [data-action="model"]').click();await page.locator('#modelList .model-row').first().waitFor();
+        await capture('long-name-multiple');
+        await page.locator('.model-details summary').first().click();
+        const overflow=await page.locator('.model-row').evaluateAll(rows=>rows.map(row=>{
+          const name=row.querySelector('.model-name').getBoundingClientRect(),controls=row.querySelector('.model-row-controls').getBoundingClientRect();
+          return {horizontal:row.scrollWidth-row.clientWidth,nameRight:name.right,controlsLeft:controls.left,
+            detailOverflow:[...row.querySelectorAll('.model-details p')].filter(p=>p.getClientRects().length).map(p=>p.scrollWidth-p.clientWidth)};
+        }));
+        assert.ok(overflow.every(row=>row.horizontal<=1&&row.nameRight<=row.controlsLeft+1&&row.detailOverflow.every(value=>value<=1)),
+          'long identifiers and expanded addresses must wrap without covering controls or overflowing their row');
+        await capture('long-name-expanded');
+        assert.deepEqual(errors,[]);
+      }finally{await page.close();}
+    }
+  }finally{await browser.close();}
+});
 async function dailyInteractionPage(browser,viewport,options={}){
   const page=await browser.newPage({viewport});
   page.uiErrors=[];page.on('pageerror',error=>page.uiErrors.push(error.message));
@@ -69,7 +361,7 @@ test('production configuration fields, pairing and settings share aligned geomet
   };
   const navigate=async(page,action)=>{
     await page.locator('.services').waitFor();
-    if(action==='model'){await page.locator('#management > [data-action="model"]').click();return;}
+    if(action==='model'){await openModelEditor(page);return;}
     await page.locator('#moreButton').click();
     await page.locator(`#more [data-action="${action}"]`).click();
   };
@@ -480,10 +772,10 @@ test('connection failure and a failure after the daily page use the same workflo
   try {
     const page=await dailyInteractionPage(browser,{width:1120,height:680});
     try {
-      await page.locator('#management > [data-action="model"]').click();await page.locator('#provider').waitFor();
+      await openModelEditor(page);await page.locator('#provider').waitFor();
       await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
       const baseline=await workflowAnchors(page);
-      await page.getByRole('button',{name:'返回酒馆',exact:true}).click();await page.locator('.services').waitFor();
+      await closeModelEditor(page);await page.locator('.services').waitFor();
       await page.evaluate(()=>{window.NoraLauncherBridge.checkUpdate=async()=>{throw Object.assign(new Error('更新查询失败。'),{guidance:{title:'更新查询失败。',detail:'保留现有安装，重新查询。'}});};});
       await page.locator('#moreButton').click();await page.locator('#more [data-action="update"]').click();
       await page.getByText('更新查询失败。',{exact:true}).waitFor();
@@ -612,8 +904,9 @@ test('More navigation retains its right-column origin and returns without moving
           sameAnchors(await dailyAnchors(page),baseline,'More opened');
           await page.locator(`#more [data-action="${action}"]`).click();
         }
-        const target=action==='logs'?'.operation-console':action==='model'?'#provider':'#inline';
+        const target=action==='logs'?'.operation-console':'#inline';
         await page.locator(target).waitFor();
+        if(action==='model')await page.getByRole('button',{name:'+ 添加模型',exact:true}).waitFor();
         const actualOrigin=await page.locator('#main').boundingBox();
         assert.ok(Math.abs(actualOrigin.x-origin.x)<=1,`${action} moved the whole right column sideways`);
         const workflow=await page.locator('main').getAttribute('data-layout')==='workflow';
@@ -646,7 +939,7 @@ test('workflow feature pages share anchors while auxiliary pages retain their or
         if(action==='model')await page.locator('#management > [data-action="model"]').click();
         else{await page.locator('#moreButton').click();await page.locator(`#more [data-action="${action}"]`).click();}
         await page.getByRole('button',{name:'返回酒馆',exact:true}).waitFor();
-        if(action==='model')await page.locator('#provider').waitFor();
+        if(action==='model')await page.getByRole('button',{name:'+ 添加模型',exact:true}).waitFor();
         for(const viewport of [{width:1120,height:680},{width:1120,height:652},{width:900,height:612}]){
           await page.setViewportSize(viewport);
           const placement=await page.evaluate(async()=>{
@@ -695,7 +988,7 @@ test('background refresh and version results preserve More, model drafts and bod
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('#more').isVisible(),false);
       assert.equal(await page.evaluate(()=>document.activeElement.id),'moreButton');
-      await page.locator('#management > [data-action="model"]').click();
+      await openModelEditor(page);
       await page.locator('#key').fill('test-only-draft');await page.locator('#model').fill('draft-model');
       await page.getByRole('button',{name:'显示或隐藏 API Key'}).click();
       assert.equal(await page.locator('#key').getAttribute('type'),'text');
@@ -708,7 +1001,7 @@ test('background refresh and version results preserve More, model drafts and bod
       await page.waitForFunction(reads=>window.statusReads>reads,formReads);
       assert.equal(await page.locator('#key').inputValue(),'test-only-draft');
       assert.equal(await page.locator('#model').inputValue(),'draft-model');
-      await page.getByRole('button',{name:'返回酒馆',exact:true}).click();
+      await closeModelEditor(page);
       sameAnchors(await dailyAnchors(page),baseline,'model draft discarded by explicit return');
       assert.deepEqual(page.uiErrors,[]);
     }finally{await page.close();}
@@ -993,7 +1286,7 @@ test('all launcher routes keep content and actions reachable within their design
           if(name==='logs')await page.locator('#consoleOutput span').first().waitFor({timeout:3000});
         }
         if(['model-edit','model-local','model-builtin','model-error'].includes(name)){
-          await page.locator('[data-action="model"]').first().click();await page.locator('#authMode').waitFor();
+          await openModelEditor(page);await page.locator('#authMode').waitFor();
           if(name==='model-local')await page.locator('#authMode').selectOption('none');
           if(name==='model-builtin')await page.locator('#provider').selectOption('deepseek');
           if(name==='model-error'){

@@ -5,7 +5,7 @@ const {createHash,randomUUID}=require('node:crypto');
 
 const SCHEMA='nora-launcher-control/1';
 const RESOURCE_NAMES=Object.freeze(['launcher_bridge.py','first_install.py','nora_system.py','nora_profile.py',
-  'launcher_services.py','model_config.py','bootstrap.py','update_recovery.py','update_paths.py',
+  'launcher_services.py','model_config.py','hermes_model_config.py','hermes_model_probe.py','hermes_model_state.py','bootstrap.py','update_recovery.py','update_paths.py',
   'error_diagnostics.py','operation_control.py','operation_cli.py','operation_evidence.py','operation_node.mjs','mcp_probe.mjs','operation-delegate.js','operation-budget.json','replace-launcher.py']);
 const SOURCES=Object.freeze({'ops/updater/bootstrap.py':'bootstrap','ops/updater/update.py':'update','ops/installer/nora_system.py':'system'});
 const failure=(code='OPERATION_CAPABILITY_INVALID')=>Object.assign(new Error(

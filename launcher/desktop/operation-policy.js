@@ -545,6 +545,11 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       recoveryOutcome:filesOnly?'files-restored-start-failed':restored?'restored-and-verified':'not-required',canRecover:false};
   }
   async function observe(record,{launcherOutcome}={}){
+    if(record.kind==='model'&&record.target?.request?.mode==='configure'){
+      const safe=record.effectState==='untouched'||record.effectState==='restored'&&record.verification==='confirmed';
+      return {effectState:record.effectState||'unknown',
+        recoveryOutcome:safe?record.recoveryOutcome||'not-required':'recovery-required',canRecover:false};
+    }
     if(!['install','update','repair','recover'].includes(record.kind))return {effectState:'untouched',recoveryOutcome:'not-required'};
     try{
       const parts=[inspectRuntime(locations(record.operationId)),await system(record)];

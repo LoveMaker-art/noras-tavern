@@ -76,8 +76,8 @@ test('restored GUI startup waits for the helper writer and verifies its task onc
   });
 });
 
-function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, recheck = true, marker = null } = {}) {
-  const order = [], events = [];
+function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, configureFailure = null, recheck = true, marker = null } = {}) {
+  const order = [], events = [], helperRequests = [], effects = [];
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-model-recheck-'));
   fixtureHomes.add(home);
   const context = vm.createContext({
@@ -90,7 +90,7 @@ function fixture({ setupCompleted = false, running = true, syncFails = false, ru
     // This fixture isolates model ordering; the real ownership/close protocol
     // is exercised separately by launcher_operation_lock.test.cjs.
     runOwnedTask: async (_kind, _request, execute) => {
-      const result = await execute({ stage: async () => {} });
+      const result = await execute({ stage: async () => {}, effect:async value => effects.push(value) });
       assert.equal(result.verification, 'confirmed');
       return result.value;
     },
@@ -98,17 +98,31 @@ function fixture({ setupCompleted = false, running = true, syncFails = false, ru
     requireProvider: () => ({ id: 'custom', keyEnv: '', custom: true }), normalizeCustomBaseUrl: value => value,
     recordFailureEvent(){},recordEvent: event => { events.push(event); order.push(event.state); },
     runModelConfigHelper: async value => {
+      helperRequests.push({ ...value });
       order.push(value.action);
+      if (value.action === 'configure') {
+        if (configureFailure) throw configureFailure;
+        // The shared helper owns candidate validation, configuration commit and
+        // this checkpoint. Its real validation ordering has separate integration
+        // coverage; this fixture verifies the desktop orchestration boundary.
+        marker = { provider: 'custom:local', model: value.model, baseUrl: value.baseUrl,
+          keyEnv: value.keyEnv, authMode: value.authMode, tavernSyncPending: value.tavernSyncPending };
+        order.push('shared-checkpoint');
+      }
       if (value.action === 'sync-saved-tavern') assert.equal(value.port, 18999);
       if (value.action === 'sync-saved-tavern' && syncFails) throw new Error('fixture sync failure');
       if (value.action === 'verify-runtime' && runtimeFails) throw new Error('实际模型服务与新配置不一致');
       return { ok: true, provider: 'custom:local', model: 'fixture-model', baseUrl: 'http://127.0.0.1:8080/v1' };
     },
-    testCustomModel: async () => { order.push('test'); },
+    testCustomModel: async () => { throw new Error('Desktop must delegate validation to configure'); },
+    testProviderModel: async () => { throw new Error('Desktop must delegate validation to configure'); },
     readInstallerState: () => ({ setupCompleted, port: 18999 }),
     noraHome: () => home, hermesHome: () => path.join(home, 'hermes'), installRoot: () => path.join(home, 'tavern'), DEFAULT_PORT: 8799,
     readVerifiedModel: () => marker,
-    writeVerifiedModel: (_home, value) => { marker = value; order.push('save-marker'); },
+    writeVerifiedModel: (_home, value) => {
+      assert.equal(value.tavernSyncPending, false, 'JS only clears the completed Tavern synchronization checkpoint');
+      marker = value; order.push('sync-checkpoint');
+    },
     runBridge: async (command, options) => {
       order.push(command);
       if (command === 'start') { assert.equal(options.service, 'tavern'); assert.equal(options.port, 18999); return { running }; }
@@ -121,21 +135,49 @@ function fixture({ setupCompleted = false, running = true, syncFails = false, ru
   context.confirmedMaintenanceIdentity = load('confirmedMaintenanceIdentity');
   context.installationPort = load('installationPort');
   context.finishModelSetup = load('finishModelSetup');
-  return { context, order, events, marker: () => marker, save: load('nora:model-save-test'), resume: load('nora:model-resume') };
+  return { context, order, events, helperRequests, effects, marker: () => marker, save: load('nora:model-save-test'), resume: load('nora:model-resume') };
 }
 const input = { provider: 'custom', key: 'fixture-only', model: 'fixture-model', baseUrl: 'http://127.0.0.1:8080/v1' };
 
-test('model validation, saved checkpoint, Tavern readiness, sync and recheck occur in order', async () => {
+test('desktop delegates validation and commit once to configure before Tavern synchronization and final checks', async () => {
   const f = fixture();
   assert.equal((await f.save({}, input)).ok, true);
-  for (const [a, b] of [['test', 'save'], ['save', 'save-marker'], ['start', 'sync-saved-tavern'], ['sync-saved-tavern', 'verify-model'], ['verify-model', 'done']]) {
+  assert.deepEqual(f.helperRequests[0], { action: 'configure', provider: 'custom', keyEnv: '', key: input.key,
+    model: input.model, baseUrl: input.baseUrl, authMode: 'key', tavernSyncPending: true });
+  assert.equal(f.helperRequests.filter(request => request.action === 'configure').length, 1);
+  assert.ok(!f.order.includes('save'), 'the desktop must not run the old independent save action');
+  for (const [a, b] of [['configure', 'shared-checkpoint'], ['shared-checkpoint', 'start'], ['start', 'sync-saved-tavern'],
+    ['sync-saved-tavern', 'sync-checkpoint'], ['sync-checkpoint', 'verify-model'], ['verify-model', 'done']]) {
     assert.ok(f.order.indexOf(a) < f.order.indexOf(b), `${a} before ${b}`);
   }
   assert.equal(f.marker().tavernSyncPending, false);
   assert.ok(f.order.indexOf('verify-model') < f.order.indexOf('verify-runtime'));
   assert.ok(f.order.indexOf('verify-runtime') < f.order.indexOf('done'));
   assert.equal(f.context.modelBusy, false);
+  assert.deepEqual(f.effects,['unknown','changed']);
   assert.ok(!JSON.stringify(f.events).includes('fixture-only'));
+});
+
+test('a missing shared helper response reports an uncertain save rather than a candidate refusal', async () => {
+  const f=fixture({configureFailure:new Error('helper response interrupted')});
+  await assert.rejects(f.save({},input),error=>error.userCode==='MODEL_CONFIG_PARTIAL'
+    && error.modelFailureStage!=='candidate');
+  assert.equal(f.context.modelBusy,false);
+  assert.equal(f.helperRequests.length,1);
+  assert.equal(f.marker(),null,'the desktop does not invent a saved checkpoint from a lost response');
+  assert.deepEqual(f.effects,['unknown']);
+});
+
+test('a rejected shared candidate leaves the old checkpoint and skips synchronization while releasing busy state', async () => {
+  const previous = { provider: 'old-provider', model: 'old-model', tavernSyncPending: false };
+  const failure = Object.assign(new Error('fixture candidate validation rejected'), { modelFailureStage: 'candidate' });
+  const f = fixture({ marker: previous, configureFailure: failure });
+  await assert.rejects(f.save({}, input), error => error === failure);
+  assert.equal(f.marker(), previous);
+  assert.deepEqual(f.effects,['unknown','untouched']);
+  assert.deepEqual(f.order, ['running', 'configure']);
+  assert.equal(f.events.some(event => event.state === 'done'), false);
+  assert.equal(f.context.modelBusy, false);
 });
 
 test('failed sync survives restart and resumes without credentials or another model request', async () => {
@@ -145,7 +187,7 @@ test('failed sync survives restart and resumes without credentials or another mo
   assert.equal(first.events.some(e => e.state === 'done'), false);
   const restarted = fixture({ marker: first.marker() });
   await restarted.resume();
-  assert.ok(!restarted.order.includes('test'));
+  assert.ok(!restarted.order.includes('configure'));
   assert.ok(!restarted.order.includes('save'));
   assert.equal(restarted.marker().tavernSyncPending, false);
 });

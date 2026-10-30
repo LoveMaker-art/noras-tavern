@@ -88,6 +88,14 @@ def local_selection_record(home: Path) -> Path:
 def fail(message: str, secret: str = "") -> None:
     clean = str(message).replace(secret, "***") if secret else str(message)
     result={"ok":False,"error":clean[:300]}
+    status = getattr(message, 'http_status', None)
+    if isinstance(status, int) and 100 <= status <= 599:
+        result.update(httpStatus=status, source='model_service')
+    code = getattr(message, 'code', '')
+    if isinstance(code, str) and code.startswith('MODEL_') and len(code) <= 80:
+        result['code'] = code
+    if getattr(message, 'failure_phase', '') in ('candidate', 'restored'):
+        result['failureStage'] = message.failure_phase
     if isinstance(message,BaseException):
         # Keep the real exception chain on stderr; stdout remains the private
         # JSON response protocol. No locals or configuration body are emitted.
@@ -115,11 +123,32 @@ def main() -> None:
     try:
         body = json.load(sys.stdin)
         action = str(body.get("action") or "save").strip()
-        if action not in ('normalize', 'verify-runtime'):
+        if action not in ('normalize', 'verify-runtime', 'inspect', 'inspect-outcome'):
             spec = importlib.util.spec_from_file_location('nora_model_operation_cli', Path(__file__).with_name('operation_cli.py'))
             cli = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cli)
             cli.ensure_operation('model', nora_home=os.environ.get('NORA_TAVERN_HOME'), stdin=json.dumps(body))
+        if action == 'inspect-outcome':
+            from hermes_model_config import inspect_outcome
+            print(json.dumps(inspect_outcome(Path(os.environ['HERMES_HOME']),
+                Path(os.environ['NORA_TAVERN_HOME']), body.get('operationId')), ensure_ascii=False))
+            return
+        if action == 'inspect':
+            from hermes_model_state import public_model_state
+            result = public_model_state(Path(os.environ['NORA_TAVERN_HOME']), Path(os.environ['HERMES_HOME']))
+            if result.get('configurationStatus') == 'unknown':
+                raise ValueError(result.get('validationProblem') or '模型配置暂时无法读取。')
+            print(json.dumps({'ok': True, **result}, ensure_ascii=False))
+            return
+        if action in ('switch', 'delete'):
+            home = Path(os.environ['HERMES_HOME']).resolve()
+            local_selection_record(home)
+            import hermes_model_config as native_config
+            instance = json.loads((home / 'nora-instance.json').read_text(encoding='utf-8'))
+            result = (native_config.delete(home, instance, body.get('id')) if action == 'delete'
+                      else native_config.switch(home, instance, body.get('id'), verify_authorized=True))
+            print(json.dumps(result, ensure_ascii=False))
+            return
         if action == "verify-runtime":
             home = Path(os.environ["HERMES_HOME"]).resolve()
             sys.path.insert(0, str(home / "hermes-agent"))
@@ -212,12 +241,28 @@ def main() -> None:
                 "baseUrl": base_url,
             }, ensure_ascii=False))
             return
-        if action not in {"save", "save-local"}:
+        if action not in {"save", "save-local", "configure"}:
             fail("不支持这个配置操作。")
         if not secret or len(secret) > 8192 or "\n" in secret or "\r" in secret:
             fail("API Key 无效。")
         if action == "save-local" and any(char.isspace() for char in secret):
             fail("API Key 不能包含空白字符。", secret)
+
+        if action == 'configure':
+            # The existing form keeps its supported providers and fields; its
+            # actual probe and commit are exactly the chat skill's native path.
+            local_selection_record(hermes_home)
+            import hermes_model_config as native_config
+            instance = json.loads((hermes_home / 'nora-instance.json').read_text(encoding='utf-8'))
+            request = {'provider': provider, 'model': model, 'api_key': secret,
+                       'verify_authorized': True}
+            if provider == 'custom':
+                request.update(base_url=base_url, auth_mode=body.get('authMode', 'key'))
+            native_config.remember(secret)
+            result = native_config.configure(hermes_home, instance, request,
+                tavern_sync_pending=body.get('tavernSyncPending') is True)
+            print(json.dumps(result, ensure_ascii=False))
+            return
 
         # Keep the previous credentials usable if a later config write fails.
         paths = [hermes_home / name for name in (".env", "config.yaml", "auth.json")]

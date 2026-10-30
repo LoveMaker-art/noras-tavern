@@ -33,7 +33,11 @@ const business = {
   CLAWCHAT_PAIR_REQUIRED: ['ClawChat 尚未连接。', '', '请在启动器中连接 ClawChat，再启动诺拉。'],
   CLAWCHAT_CONNECT_TIMEOUT: ['诺拉已启动，ClawChat 尚未连通。', '', '请检查网络和代理；配对码失效时重新获取并配对。'],
   MODEL_CONFIG_PARTIAL: ['模型配置已保存，后续检查未完成。', '', '请先重新查询状态，无需再次提交配置。'],
+  MODEL_DELETE_REFUSED: ['暂时不能删除该模型。', '', ''],
+  MODEL_DELETE_RESTORED: ['删除未完成，原配置已恢复。', '', '请重新查询模型列表后重试。'],
+  MODEL_DELETE_RECOVERY_REQUIRED: ['模型删除未完成，配置恢复尚未确认。', '', '请保留安装目录并查看日志，暂勿继续修改模型。'],
   MODEL_RETRY_COOLDOWN: ['模型验证提交过于频繁。', '这次没有发送模型请求。', '请等待30秒后重新验证，无需更改配置。'],
+  SERVICE_RETRY_COOLDOWN: ['服务操作暂时频繁。', '连续失败后暂缓重试，这次没有执行服务操作；原始失败记录已保留。', '请等待30秒后重新检查并重试。'],
   INSTALLER_STATE_WRITE_FAILED: ['操作记录未能保存。', '部分步骤可能已执行。', '请先重新查询状态，勿重复更新或删除安装目录。'],
   TAVERN_OWNERSHIP: ['无法确认酒馆进程归属。', '启动器没有接管或结束这个进程。', '请保留当前进程和日志，勿按提示中的 PID 强行结束程序。'],
   GATEWAY_IDENTITY: ['无法确认诺拉后台进程。', '', '请重启电脑后重新检查；仍失败时复制日志，勿强行结束未知进程。'],
@@ -107,7 +111,7 @@ function presentError(error, context = {}) {
     const safetyCause = userCode === 'MODEL_CONFIG_PARTIAL' && chain.map(value => value.userCode || value.code)
       .find(code => code !== userCode && Object.hasOwn(business, code));
     const next = safetyCause ? business[safetyCause][2] : defaultNext;
-    const detail = userCode === 'RELEASE_COMPATIBILITY' ? readable || fallback : fallback;
+    const detail = ['RELEASE_COMPATIBILITY','MODEL_DELETE_REFUSED'].includes(userCode) ? readable || fallback : fallback;
     return { title, detail, next };
   }
   const technical = describeError(error, context);

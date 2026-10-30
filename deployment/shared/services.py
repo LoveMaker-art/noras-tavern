@@ -168,7 +168,8 @@ def gateway_status(nora_home, hermes_home):
         raise GatewayIdentityError(_GATEWAY_STATUS_MESSAGE) from cause.__cause__
     if process is None:
         # First-install inspection does not require psutil before the runtime exists.
-        return {"gatewayRunning": False, "clawchatConnected": False, "clawchatState": "offline"}
+        return {"gatewayRunning": False, "clawchatConnected": False, "clawchatState": "offline",
+                "gatewayActivity": "stopped", "activeWorkCount": None}
     import psutil
     try:
         state = read_json(Path(hermes_home) / "gateway_state.json")
@@ -197,10 +198,18 @@ def gateway_status(nora_home, hermes_home):
                        and platform.get("writer_pid") == writer.pid
                        and platform.get("writer_start_time") == state.get("start_time"))
         connected = current and platform.get("state") == "connected"
+        # Hermes reports aggregate in-flight work (chat, cron, API and deferred
+        # agents), not the current reply or its model. Read the same bound writer
+        # snapshot; an absent/malformed count is not evidence that it is idle.
+        count = state.get("active_agents")
+        activity_known = (current and state.get("gateway_state") == "running"
+                          and type(count) is int and count >= 0)
         return {
             "gatewayRunning": bool(process),
             "clawchatConnected": bool(connected),
             "clawchatState": platform.get("state", "unknown") if current else "offline",
+            "gatewayActivity": ("busy" if count else "idle") if activity_known else "unknown",
+            "activeWorkCount": count if activity_known else None,
         }
     except psutil.AccessDenied as cause:
         # A denied inspection is no evidence of a stopped or disconnected service.

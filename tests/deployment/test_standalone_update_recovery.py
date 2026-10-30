@@ -118,12 +118,14 @@ class StandaloneRecoveryTests(unittest.TestCase):
                     journal.preserve_startup_backups(restore=True)
                 archive.write_text('original automatic backup')
                 manual.unlink()
-                with self.assertRaisesRegex(RuntimeError,'剧情数据发生变化'):
-                    helper.load(root,root)
+                # Completed recovery is historical proof, not a permanent
+                # prohibition on the user's later backup/data management.
+                self.assertEqual(helper.load(root,root).record['status'],'restored')
+                self.assertFalse(manual.exists())
 
     def test_shared_root_and_interrupted_swaps_restore_data_configuration_and_old_program(self):
-        for interrupted in (False, True):
-            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory() as directory:
+        for interrupted,running in ((False,False),(True,False),(False,True),(True,True)):
+            with self.subTest(interrupted=interrupted,running=running), tempfile.TemporaryDirectory() as directory:
                 base = Path(directory).resolve()
                 root = base / 'installation'
                 app = root / 'apps/tavern-runtime'
@@ -147,12 +149,13 @@ class StandaloneRecoveryTests(unittest.TestCase):
                 prepared = base / 'prepared'; prepared.mkdir()
                 new_app = prepared / 'app'; new_app.mkdir(); (new_app / 'program.txt').write_text('new program')
                 new_skill = prepared / 'skill'; new_skill.mkdir(); (new_skill / 'SKILL.md').write_text('new skill')
-                before = {'scope':'standalone-tavern','version':'2.4.2','running':False}
+                before = {'scope':'standalone-tavern','version':'2.4.2','running':running}
                 journal = helper.Journal.create(root, root, backup,
                     [('app',new_app,app),('skill-system-tavern-updater',new_skill,skill)],
                     version='2.5.2',before=before,state=root/'tavern-state')
                 self.assertEqual([item['namespace'] for item in journal.plan['targets']], ['install','hermes'])
                 journal.seal_offline({'offline':True}); journal.snapshot_state()
+                journal.plan.update(worlds={},storyInventory=updater.world_data_inventory(root/'tavern-state'))
                 original_replace = helper.os.replace
                 def replace(source, target):
                     original_replace(source, target)
@@ -169,14 +172,17 @@ class StandaloneRecoveryTests(unittest.TestCase):
                     journal.mark_metadata([root/'config.yaml'])
                     (root/'config.yaml').write_text('model: {api_key: changed-placeholder}\n')
                     journal.finish_metadata([root/'config.yaml'])
-                runtime = SimpleNamespace(status=lambda:{'processes':{'native':False},'health':{'ok':False}})
-                with patch.object(updater,'standalone_runtime',return_value=runtime):
+                runtime = SimpleNamespace(status=lambda:{'processes':{'native':running},'health':{'ok':running}})
+                def reopen(*_):state.write_text('new normal chat after reopening')
+                with patch.object(updater,'standalone_runtime',return_value=runtime), \
+                        patch.object(updater,'start_old',side_effect=reopen), \
+                        patch.object(updater,'verify_worlds',return_value={}):
                     result = updater.recover_standalone(root, root, helper=helper)
                 self.assertEqual(result['status'],'restored')
                 self.assertEqual(result['version'],'2.4.2')
                 self.assertEqual((app/'program.txt').read_text(),'old program')
                 self.assertEqual((skill/'SKILL.md').read_text(),'old skill')
-                self.assertEqual(state.read_text(),'original chat')
+                self.assertEqual(state.read_text(),'new normal chat after reopening' if running else 'original chat')
                 self.assertEqual((root/'config.yaml').read_text(),'model: {api_key: acceptance-placeholder}\n')
                 self.assertEqual(json.loads((receipts/'transaction.json').read_text())['status'],'restored')
                 self.assertEqual((root/'AGENTS.md').read_text(),'old instructions')

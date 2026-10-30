@@ -32,6 +32,9 @@ function retryIdentity(target){
 const failedAttempt=record=>record&&record.state!=='succeeded'&&Boolean(record.primaryFailure);
 const PAIR_COOLDOWN_MS=30000;
 const MODEL_RETRY_WINDOW_MS=30000;
+const SERVICE_RETRY_WINDOW_MS=30000;
+const serviceCommand=record=>['start','restart','stop','shutdown'].includes(record?.kind);
+const retryAdmission=code=>['RETRY_CONDITIONS_UNCHANGED','SERVICE_RETRY_COOLDOWN'].includes(code);
 const modelValidation=(record,target=record?.target)=>record?.kind==='model'&&target?.request?.mode==='configure'
   &&record.stageId==='selecting'&&record.effectState==='untouched'&&!record.handoffRef
   &&!['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome);
@@ -154,7 +157,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
   function failureCondition(record){
     const current=record.currentFailure||record.primaryFailure;
     if(current&&Object.hasOwn(current,'conditionTarget'))return current.conditionTarget;
-    if(current?.code!=='RETRY_CONDITIONS_UNCHANGED')return identifyFailureCondition?identifyFailureCondition(current,record)||null:undefined;
+    if(!retryAdmission(current?.code))return identifyFailureCondition?identifyFailureCondition(current,record)||null:undefined;
     // A first resume can seal its plan, then encounter an older admission block.
     // Only this two-execution legacy shape has no intervening actual failure;
     // a later unknown failure must never borrow the initial metadata condition.
@@ -174,7 +177,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     const previous=records().filter(value=>value.operationId!==record.operationId&&value.kind===record.kind
       &&Date.parse(value.createdAt)<=Date.parse(record.createdAt)
       &&(value.retryTargetDigest||retryIdentity(value.target))===(record.retryTargetDigest||retryIdentity(record.target))
-      &&failedAttempt(value)&&(value.currentFailure||value.primaryFailure)?.code!=='RETRY_CONDITIONS_UNCHANGED').at(-1);
+      &&failedAttempt(value)&&!retryAdmission((value.currentFailure||value.primaryFailure)?.code)).at(-1);
     return previous?failureCondition(previous):null;
   }
   function failure(error,kind,record){
@@ -183,9 +186,9 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       technical:describeError(error),
       guidance:presentError(error,{action:kind})};
     if(record)try{
-      const target=error?.code==='RETRY_CONDITIONS_UNCHANGED'?error.retryConditionTarget:identifyFailureCondition?.(error,record);
+      const target=retryAdmission(error?.code)?error.retryConditionTarget:identifyFailureCondition?.(error,record);
       // An explicit absence preserves the latest real failure's boundary.
-      if(error?.code==='RETRY_CONDITIONS_UNCHANGED'&&target===null)detail.conditionTarget=null;
+      if(retryAdmission(error?.code)&&target===null)detail.conditionTarget=null;
       if(target?.kind==='directory-write'&&['hermesHome','installRoot','noraHome'].includes(target.directory))
         detail.conditionTarget={kind:target.kind,directory:target.directory};
       else if(target?.kind==='setup-ready'&&['clawchatPaired','modelConfigured'].includes(target.requirement))
@@ -239,6 +242,19 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     }catch{}
     return detail;
   }
+  function serviceRetryAt(record){
+    if(!serviceCommand(record))return null;
+    const target=record.retryTargetDigest||retryIdentity(record.target);
+    // Only actual failed executions set the clock. Blocked clicks and reopens
+    // cannot extend it; old admission records can use their original failures.
+    const failures=records().filter(item=>item.kind===record.kind&&item.state==='failed'
+      &&(item.retryTargetDigest||retryIdentity(item.target))===target
+      &&item.conditionFingerprint===record.conditionFingerprint
+      &&item.attempt>=2);
+    const last=Math.max(0,...failures.map(item=>Date.parse(item.updatedAt)||0));
+    const until=last+SERVICE_RETRY_WINDOW_MS;
+    return last&&until>Date.parse(now())?until:null;
+  }
   function dto(record,fields={},recoveryClosurePending=false){
     let allowedActions;
     if(record.archived)allowedActions=['logs'];
@@ -269,16 +285,31 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       &&['untouched','restored'].includes(record.effectState)
       &&!['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome))
       allowedActions=[...new Set(['pair-clawchat',...allowedActions])];
+    const serviceSafe=serviceCommand(record)&&!record.archived&&!fields.busy&&!record.handoffRef
+      &&!recoveryClosurePending&&['failed','cancelled','blocked','rolled-back'].includes(record.state)
+      &&['untouched','restored'].includes(record.effectState)
+      &&!['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome);
+    const retryAt=serviceSafe?serviceRetryAt(record):null;
+    if(serviceSafe){
+      allowedActions=retryAt?allowedActions.filter(action=>!['retry','resume'].includes(action))
+        :[...new Set(['retry',...allowedActions])];
+    }
+    const currentFailure=serviceSafe&&!retryAt&&['RETRY_CONDITIONS_UNCHANGED','SERVICE_RETRY_COOLDOWN']
+      .includes((record.currentFailure||record.primaryFailure)?.code)
+      ?{...(record.currentFailure||record.primaryFailure),guidance:{title:'可以重试服务操作。',
+        detail:'上次失败记录已保留，本次尚未重新执行。',next:'点击“重试”重新执行；服务归属和维护状态仍会核验。'}}
+      :record.currentFailure;
     return {schema:SCHEMA,operationId:record.operationId,requestId:record.requestId,kind:record.kind,
       snapshotSequence:record.sequence,ownerEpoch:record.ownerEpoch,state:record.state,stageId:record.stageId,
       target:record.target,planDigest:record.planDigest,attempt:record.attempt,totalAttempts:record.totalAttempts||1,
       restoredStartAttempts:record.restoredStartAttempts||0,effectState:record.effectState,
       failureCode:record.state==='succeeded'?'':(record.currentFailure||record.primaryFailure)?.code||'',
-      primaryFailure:record.primaryFailure||null,currentFailure:record.currentFailure||null,
+      primaryFailure:record.primaryFailure||null,currentFailure:currentFailure||null,
       secondaryFailures:record.secondaryFailures||[],primaryFailureRef:record.evidenceRef||null,
       recoveryOutcome:record.recoveryOutcome||'not-required',verification:record.verification||'unconfirmed',
       evidenceStatus:record.evidenceStatus||'not-needed',evidenceMissingReasons:record.evidenceMissingReasons||[],journalRefs:record.journalRefs||[],
       handoffRef:record.handoffRef||null,result:record.result,archived:record.archived===true,allowedActions,
+      ...(serviceCommand(record)?{serviceRetryAt:retryAt}:{}),
       ...(record.kind==='pair'?{pairRetryAt:Number.isSafeInteger(record.pairRetryAt)&&record.pairRetryAt>Date.parse(now())?record.pairRetryAt:null}:{}),...fields};
   }
   async function snapshot(id){
@@ -385,7 +416,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
           &&(value.retryTargetDigest||retryIdentity(value.target))===retryTargetDigest
           &&value.conditionFingerprint===record.conditionFingerprint).at(-1);
         await update({target:JSON.parse(JSON.stringify(target)),planDigest,retryTargetDigest,planSelected:true,attempt:failedAttempt(previous)?previous.attempt+1:1});
-        if(record.kind!=='pair'&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
+        if(record.kind!=='pair'&&!serviceCommand(record)&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
           const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
           const ownFailure=(record.currentFailure||record.primaryFailure)&&Date.parse(record.createdAt)>Date.parse(previous.createdAt);
           error.retryConditionTarget=ownFailure?failureCondition(record):failureCondition(previous);throw error;
@@ -586,6 +617,13 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       }
       const previous=candidates.filter(value=>value.conditionFingerprint===record.conditionFingerprint).at(-1);
       record.attempt=failedAttempt(previous)?previous.attempt+1:1;
+      if(serviceCommand(record)&&serviceRetryAt(record)){
+        const error=fail('SERVICE_RETRY_COOLDOWN','Service retries are temporarily limited');
+        error.retryConditionTarget=failureCondition(previous);
+        record.state='blocked';record.primaryFailure=previous?.primaryFailure||failure(error,kind,record);
+        record.currentFailure=failure(error,kind,record);
+        await write(record,lease,{expected:null});await lease.release();return dto(record);
+      }
       if(modelValidation(record)){
         // Count actual failed executions, not blocked clicks. Their original
         // timestamps survive reopening; rejected submissions cannot extend the window.
@@ -599,7 +637,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
           await write(record,lease,{expected:null});await lease.release();return dto(record);
         }
       }
-      if(kind!=='pair'&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
+      if(kind!=='pair'&&!serviceCommand(record)&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
         const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
         record.state='blocked';record.primaryFailure={code:'RETRY_CONDITIONS_UNCHANGED',site:'launcher.operation',
           guidance:presentError(error,{action:kind})};
@@ -695,6 +733,20 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       const verify=recheckers[record.kind];
       if(!verify)return dto(record);
       const proof=await verify(record,{lease,...options,conditionTarget:failureCondition(record)});
+      // A model helper may commit fully before its reply/final read fails.
+      // Only its exact, unchanged native checkpoint can close that task; a
+      // readable list or another task's success never authorizes this closure.
+      if(record.kind==='model'&&record.target.request?.mode==='configure'
+        &&['changed','unknown'].includes(record.effectState)
+        &&['succeeded','failed'].includes(proof?.completion)&&proof.verification==='confirmed'
+        &&proof.effectState==='changed'&&proof.operationId===id&&proof.planDigest===record.planDigest){
+        record.ownerEpoch=ownerEpoch;record.state=proof.completion;record.stageId='verifying';
+        record.effectState='changed';record.verification='confirmed';record.recoveryOutcome='not-required';
+        if(record.state==='succeeded')record.currentFailure=null;
+        record.result=projectResult(proof,record.kind);
+        await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence}});
+        return dto(record);
+      }
       if(proof?.changed===true&&typeof proof.fingerprint==='string'&&proof.fingerprint!==record.conditionFingerprint
         &&['untouched','restored'].includes(proof.effectState)){
         const baseline=conditionProof(proof.baseline);

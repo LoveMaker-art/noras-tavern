@@ -301,6 +301,7 @@ function writeVerifiedModel(noraHome, value) {
     ...(value.baseUrl ? { baseUrl: normalizeCustomBaseUrl(value.baseUrl) } : {}),
     authMode: value.authMode === 'none' ? 'none' : 'key',
     toolSupport: 'unverified',
+    ...(value.validation ? { validation: value.validation } : {}),
     tavernSyncPending: Boolean(value.tavernSyncPending),
     ...(value.key ? { credentialSha256: createHash('sha256').update(value.key).digest('hex') }
       : value.credentialSha256 ? { credentialSha256: value.credentialSha256 } : {}),
@@ -314,7 +315,7 @@ function readVerifiedModel(noraHome) {
     const value = JSON.parse(fs.readFileSync(verifiedModelPath(noraHome), 'utf8'));
     const custom = value.provider === 'custom' || (typeof value.provider === 'string'
       && value.provider.startsWith('custom:') && Boolean(value.provider.slice(7).trim()));
-    if (value.schema !== 1 || (!custom && !PROVIDER_BY_ID.has(value.provider)) || !value.model) return null;
+    if (value.schema !== 1 || typeof value.provider !== 'string' || !value.provider.trim() || !value.model) return null;
     if (custom) value.baseUrl = normalizeCustomBaseUrl(value.baseUrl);
     return value;
   } catch {

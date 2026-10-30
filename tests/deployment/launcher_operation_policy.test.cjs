@@ -554,3 +554,15 @@ test('a recovery process exit without confirmation of the restored runtime canno
   const f=setup(t,{inspectRuntime:()=>runtime,bridge:async()=>({offline:true,running:false,gatewayRunning:false}),runRuntime:async()=>{}});
   await assert.rejects(f.policy.recover(f.context),{code:'UPDATE_RECOVERY_REQUIRED'});
 });
+
+test('an unconfirmed model deletion must not become untouched just because it is not an installer transaction',async t=>{
+ const f=setup(t);
+ Object.assign(f.record,{kind:'model',target:{request:{mode:'configure',action:'delete'}},
+   effectState:'unknown',verification:'unconfirmed',recoveryOutcome:'recovery-required'});
+ let observed=await f.policy.observe(f.record);
+ assert.equal(observed.effectState,'unknown');assert.equal(observed.recoveryOutcome,'recovery-required');
+ assert.equal(observed.canRecover,false);
+ Object.assign(f.record,{effectState:'restored',verification:'confirmed',recoveryOutcome:'restored-and-verified'});
+ observed=await f.policy.observe(f.record);
+ assert.equal(observed.effectState,'restored');assert.equal(observed.recoveryOutcome,'restored-and-verified');
+});
