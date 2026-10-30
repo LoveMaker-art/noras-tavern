@@ -98,7 +98,7 @@ export function createReadingController({ select, getWorldId, requestHeaders, fe
     }
     async function execute(action, params = {}) {
         if (action === 'reading.catalog') return { fields: READING_FIELDS, builtin: READING_DEFAULTS,
-            unsetParagraphSpacing: 'built-in 10px paragraph spacing; no numeric override',
+            unsetParagraphSpacing: 'existing stylesheet; no numeric override',
             scopes: ['global', 'world'], fontActions: 'theme.catalog', crossTab: 'reload', visualVerified: false };
         const id = getWorldId() || '';
         if (params.scope === 'world' && !id) throw failure('NORA_READING_INVALID', 'An active World is required.');
