@@ -47,7 +47,7 @@ function client(dirs, { id = 'a', fetcher, element = surface(), scheduleFrame = 
     return { controller, element, switch: id => { worldId = id; controller.render(); } };
 }
 
-test('stylesheet reading rules target prose, retain fonts/default paragraph styles and exclude card widgets/navigation', () => {
+test('stylesheet reading rules target prose, use approved built-in spacing and exclude card widgets/navigation', () => {
     const css = fs.readFileSync(new URL('../../../native-extensions/nora-ui/style.css', import.meta.url), 'utf8');
     const rules = parseCss(css).stylesheet.rules.filter(rule => rule.type === 'rule'
         && rule.declarations.some(declaration => declaration.value?.includes('var(--nora-reading-')));
@@ -62,7 +62,8 @@ test('stylesheet reading rules target prose, retain fonts/default paragraph styl
     for (const id of ['widget', 'status', 'frame', 'nav']) assert.equal(matches(id, rules), false, id);
     for (const rule of rules) assert.equal(rule.declarations.some(declaration => ['font-family', 'white-space'].includes(declaration.property)), false);
     const paragraphs = rules.filter(rule => rule.declarations.some(declaration => declaration.property === 'margin-bottom'));
-    assert.equal(matches('story', paragraphs), false, 'Unset paragraph spacing leaves the existing stylesheet untouched');
+    assert.equal(matches('story', paragraphs), true, 'Unset paragraph spacing uses the approved built-in default');
+    for (const rule of paragraphs) assert.equal(rule.declarations.find(d => d.property === 'margin-bottom').value, 'var(--nora-reading-paragraph-spacing, 10px)');
     $('#nora-chat').attr('data-nora-reading-paragraph-spacing', '');
     assert.equal(matches('story', paragraphs), true); assert.equal(matches('last', paragraphs), false);
     assert.match(css, /margin:\s*30px auto 0 !important/);
@@ -86,7 +87,8 @@ test('persistent defaults, per-World partial patches and reset inherit without r
     const dirs = temporary(t), other = temporary(t);
     for (const name of ['settings.json', 'chat.jsonl', 'USER.md', 'MEMORY.md', 'world.json']) fs.writeFileSync(path.join(dirs.root, name), `KEEP:${name}`);
     const builtIn = inspect(dirs, 'a');
-    assert.equal(builtIn.effective.assistant.font_size, 15.5); assert.equal(builtIn.effective.user.font_size, 14);
+    for (const role of ['assistant', 'user']) assert.deepEqual(builtIn.effective[role], { font_size: 17, line_height: 1.75, paragraph_spacing: 10 });
+    assert.equal(fs.existsSync(path.join(dirs.root, READING_FILE)), false, 'Built-in defaults do not materialize user overrides');
     patch(dirs, { font_size: 18, line_height: 1.8 });
     patch(dirs, { font_size: 20, paragraph_spacing: 0 }, 'a');
     patch(dirs, { paragraph_spacing: 12 }, 'b');
@@ -97,7 +99,7 @@ test('persistent defaults, per-World partial patches and reset inherit without r
     patch(dirs, { font_size: null }, 'a');
     assert.equal(inspect(dirs, 'a').effective.assistant.font_size, 18);
     patch(dirs, { line_height: null, font_size: null, paragraph_spacing: null });
-    assert.equal(inspect(dirs, 'a').effective.assistant.font_size, 15.5);
+    assert.equal(inspect(dirs, 'a').effective.assistant.font_size, 17);
     assert.equal(inspect(dirs, 'a').effective.assistant.paragraph_spacing, 0);
     assert.equal(inspect(dirs, 'b').values.paragraph_spacing, 12);
     assert.deepEqual(inspect(other).values, {});
@@ -238,7 +240,7 @@ test('runtime global controls need no character, model or script permission; Wor
     await assert.rejects(controls.execute(command('reading.inspect', { scope: 'world' })), { code: 'NORA_CONTROL_NO_WORLD' });
 });
 
-test('inspect rejects a switched World, failed save never claims success and empty overrides keep paragraph CSS inactive', async t => {
+test('inspect rejects a switched World, failed save never claims success and empty overrides retain built-in styling', async t => {
     const dirs = temporary(t); let id = 'a';
     const f = createReadingController({ select: () => surface(), getWorldId: () => id, requestHeaders: () => ({}), scheduleFrame: f => f(),
         fetcher: async () => { id = 'b'; return response(inspect(dirs, 'a')); } });

@@ -6,8 +6,8 @@ export const READING_FIELDS = Object.freeze({
     paragraph_spacing: Object.freeze({ min: 0, max: 40, step: 1, unit: 'px' }),
 });
 export const READING_DEFAULTS = Object.freeze({
-    assistant: Object.freeze({ font_size: 15.5, line_height: 1.68, paragraph_spacing: null }),
-    user: Object.freeze({ font_size: 14, line_height: 1.6, paragraph_spacing: null }),
+    assistant: Object.freeze({ font_size: 17, line_height: 1.75, paragraph_spacing: 10 }),
+    user: Object.freeze({ font_size: 17, line_height: 1.75, paragraph_spacing: 10 }),
 });
 export function readingError(message) {
     return Object.assign(new Error(message), { code: 'NORA_READING_INVALID' });

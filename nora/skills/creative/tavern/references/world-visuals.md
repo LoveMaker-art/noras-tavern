@@ -129,8 +129,10 @@ CSS, web font downloads, message rewrites, model calls or user-script execution.
    whose outcome is unknown must be inspected rather than blindly retried.
 
 Only ordinary story body and user messages are controlled; card-owned widgets,
-iframes, navigation and message-to-message spacing stay unchanged. Built-in
-paragraph spacing is reported as null: no override of existing stylesheet spacing.
+iframes, navigation and message-to-message spacing stay unchanged. Built-in reading
+defaults are 17px text, 1.75 line height and 10px paragraph spacing for both story
+and user messages. Empty overrides inherit those defaults without writing them
+into the user's preference document. Existing explicit values remain in effect.
 Numeric reading preferences live in an independent user file for older-version
 compatibility; use the interface, never hand-edit settings or World manifests.
 Malformed/unreadable preferences are reported without deleting them or blocking
