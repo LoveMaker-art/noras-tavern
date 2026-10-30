@@ -1,29 +1,41 @@
 import './fixtures/nora-zh-locale.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { load as loadHtml } from 'cheerio';
 import { createCharacterController } from '../../../native-extensions/nora-ui/character-controller.js';
 import { createStCardAdapter } from '../public/scripts/nora-adapters/st-card-adapter.js';
 
 function fixture(options = {}) {
     const nodes = new Map();
     const node = selector => {
-        if (!nodes.has(selector)) nodes.set(selector, { handlers: {}, addEventListener(type, fn) { this.handlers[type] = fn; } });
+        if (!nodes.has(selector)) {
+            const value = { selector, handlers: {}, isConnected: true, reportValidity: () => true,
+                addEventListener(type, fn) { this.handlers[type] = fn; } };
+            nodes.set(selector, value);
+            if (selector === '[data-card-import-form]') value.elements = { file: Object.assign(node('input[name="file"]'), { files: [] }) };
+        }
         return nodes.get(selector);
     };
+    let dom = loadHtml('');
     let markup = ''; let modalClass = ''; let world = { id: 'world:a', name: 'Target' }; let generating = false;
     const imported = []; const created = []; const roles = []; const deleted = []; const toasts = [];
     const bookPreviews = [];
     const characters = [{ name: 'Alice', avatar: 'alice.png', data: { description: 'Long description', creator: 'Author' } }];
+    const dialogs = { version: 0, open: (_title, content, css) => {
+        for (const value of nodes.values()) value.isConnected = false;
+        nodes.clear(); dom = loadHtml(content);
+        markup = content; modalClass = css; dialogs.version++; return {};
+    }, confirm: async () => true, close() {}, toast: value => toasts.push(value), normalizeError: error => error.message };
     const controller = createCharacterController({
         listLibraryCards: options.listLibraryCards || (async () => ({ items: characters.map(card => ({ avatar: card.avatar, revision: 'viewed-revision' })) })),
         cards: { refreshCharacters: async () => {}, importLibraryCard: async file => imported.push(file),
             deleteCharacterCards: async input => { deleted.push(input); return { removed: input.avatars, retained: [] }; } },
         operations: { isBusy: () => false, run: async (_key, fn) => fn() },
-        dialogs: { open: (_title, content, css) => { markup = content; modalClass = css; return {}; },
-            confirm: async () => true, close() {}, toast: value => toasts.push(value), normalizeError: error => error.message },
+        dialogs,
         readState: () => ({ characters }), settings: () => ({}), characterField: (card, field) => card.data?.[field] || '',
         characterCapabilities: () => ({ regexScripts: [], helperScripts: [] }), worldbookEntries: () => [],
-        select: node, selectAll: () => [], escapeHtml: value => String(value ?? '').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
+        select: (selector, root) => (root?.selector ? dom(root.selector).find(selector) : dom(selector)).length ? node(selector) : null,
+        selectAll: () => [], escapeHtml: value => String(value ?? '').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
         icons: {}, reloadWorlds: async () => {}, refresh() {}, isCharacterInWorld: () => Boolean(world),
         createWorldFromCard: card => created.push(card), addRoleFromCard: card => roles.push(card),
         openCardWorldbook: (source, onBack) => bookPreviews.push({ source, onBack }),
@@ -89,10 +101,13 @@ test('backend catalog excludes runtime copies even when cards are shallow, and p
 test('library-only card import blocks generation and does not create or activate a world', async () => {
     const f = fixture();
     await f.controller.openLibrary();
+    assert.doesNotMatch(f.markup(), /data-library-jump/, 'A one-page library has no jump form');
+    assert.equal(typeof f.node('[data-library-import]').handlers.click, 'function');
     f.node('[data-library-import]').handlers.click();
     const form = f.node('[data-card-import-form]');
     const file = new File(['card'], 'alice.png');
-    form.elements = { file: { files: [file] } };
+    assert.equal(typeof form.elements.file.handlers.change, 'function', 'The actual file input supports preview events');
+    form.elements.file.files = [file];
     f.setGenerating(true);
     await form.handlers.submit({ preventDefault() {}, currentTarget: form });
     assert.equal(f.imported.length, 0);
