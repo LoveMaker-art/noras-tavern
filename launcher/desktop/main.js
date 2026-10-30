@@ -41,7 +41,7 @@ function launcherBuild() {
   try {
     const hash = require('node:crypto').createHash('sha256');
     const resources = ['replace-launcher.py','nora_profile.py','nora_system.py','launcher-conversation-prototype.html',
-      'launcher-controller.js','launcher_services.py','launcher_bridge.py','model_config.py','hermes_models.py','hermes_model_auth.py','bootstrap.py','update_recovery.py','error_diagnostics.py'];
+      'launcher-controller.js','launcher_services.py','launcher_bridge.py','model_config.py','bootstrap.py','update_recovery.py','error_diagnostics.py'];
     for (const [directory, names] of [[__dirname,fs.readdirSync(__dirname).filter(name => /\.(?:js|json)$/.test(name)).sort()],
       [installerRoot(),resources]]) {
       for (const name of names) {
@@ -103,9 +103,11 @@ if (!['stable', 'beta'].includes(CHANNEL)) throw new Error('启动器发布通�
 const ISOLATED_TEST = LOCAL_TEST || CHANNEL === 'beta';
 const { consumeLines, externalUrl } = require('./process-output');
 const {
+  loadProviderModels,
   modelCredential,
   configurationFingerprint,
   normalizeCustomBaseUrl,
+  publicProviders,
   readVerifiedModel,
   requireProvider,
   writeVerifiedModel,
@@ -193,7 +195,8 @@ function requireOperationResult(operation,{recover=false,cause}={}) {
     const failure=operation.currentFailure||operation.primaryFailure;
     throw Object.assign(new Error(failure?.guidance?.detail||'操作尚未完成，请查看当前状态。',cause?{cause}:undefined),
       {code:failure?.code||'OPERATION_INTERRUPTED',userCode:failure?.code,operation,logOperationId:operation.operationId},
-      cause?{status:cause.status,source:cause.source,site:cause.site}:{});
+      cause?{status:cause.status,source:cause.source,site:cause.site,
+        ...(cause.modelFailureStage==='candidate'&&operation.effectState==='untouched'?{modelFailureStage:'candidate'}:{})}:{});
   }
   return {...operation.result,operation};
 }
@@ -262,7 +265,6 @@ async function runOwnedTask(kind,request,execute,{requestId=require('node:crypto
 }
 let activeRun = false;
 let modelBusy = false;
-let modelAuthentication = null;
 let statusRequest = null;
 let lastStatusError = '';
 let cancelled = false;
@@ -715,9 +717,6 @@ function nodeStatus(error = '', operation) {
     modelConfigured: false,
     modelProvider: verifiedModel?.provider || '',
     modelName: verifiedModel?.model || '',
-    modelAuthMode: verifiedModel?.authMode || 'key',
-    modelTavernSyncUnsupported: Boolean(verifiedModel?.tavernSyncUnsupported),
-    modelTavernSyncReason: verifiedModel?.tavernSyncReason || '',
     modelBaseUrl: verifiedModel?.baseUrl || '',
     running: false,
     gatewayRunning: false,
@@ -1284,21 +1283,24 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
 }
 
 function modelConfigScript() {
+  // Prefer the installed core used by the chat skill. The bundled copy is
+  // only a bootstrap/old-core fallback, never a second authored implementation.
+  const core = path.join(installRoot(), 'apps', 'tavern-ops', 'installer');
+  if (['model_config.py','hermes_model_config.py','hermes_model_probe.py','hermes_model_state.py']
+      .every(name => fs.existsSync(path.join(core, name)))) return path.join(core, 'model_config.py');
   return path.join(installerRoot(), 'model_config.py');
 }
 
-function runModelConfigHelper(payload, { onAuth, signal, registerInput } = {}) {
+function runModelConfigHelper(payload) {
   diagnostics.addSecret(payload.key);
-  const helperSite = payload.action === 'test' ? 'model.test' : payload.action === 'models' ? 'model.list' : 'model.save';
-  const helperSource = ['test', 'models'].includes(payload.action) ? 'model_service' : 'launcher_process';
   return new Promise((resolve, reject) => {
     const python = findPython();
     if (!python) {
       reject(new Error('没有找到 Nora 的 Python 环境。'));
       return;
     }
-    const spawnHelper = !activeOperationContext && ['catalog', 'models', 'inspect'].includes(payload.action) ? spawn : spawnMaintenance;
-    const proc = spawnHelper(python.command, [
+    const start = ['inspect','inspect-outcome'].includes(payload.action) ? spawn : spawnMaintenance;
+    const proc = start(python.command, [
       ...python.args.filter((arg) => arg !== '-V'),
       '-u', '-B', modelConfigScript(),
     ], {
@@ -1307,63 +1309,56 @@ function runModelConfigHelper(payload, { onAuth, signal, registerInput } = {}) {
       windowsHide: true,
     });
     let result=null,inputFailure,outputFailure;
-    let stderr = '', timedOut = false, cancelled = false;
+    let stderr = '', timedOut = false;
     const started=Date.now();
-    diagnostics.write('model.helper-start',{site:helperSite,pid:proc.pid});
-    const inputError=error=>{inputFailure ||= error;diagnostics.error('model.input-failed',error,{site:helperSite});};
-    const outputError=error=>{outputFailure ||= error;diagnostics.error('model.output-failed',error,{site:helperSite});};
-    const log=(line,stream)=>diagnostics.event({event:'log',line,stream,uploadScope:'maintenance',site:helperSite});
-    const abort = () => { cancelled = true; proc.kill('SIGTERM'); };
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-    const timer = setTimeout(() => {timedOut = true;diagnostics.write('model.helper-timeout',{site:helperSite,pid:proc.pid});proc.kill('SIGTERM');}, payload.action === 'authenticate' ? 600000 : payload.action === 'test' ? 150000 : 60000);
+    diagnostics.write('model.helper-start',{site:'model.save',pid:proc.pid});
+    const inputError=error=>{inputFailure ||= error;diagnostics.error('model.input-failed',error,{site:'model.save'});};
+    const outputError=error=>{outputFailure ||= error;diagnostics.error('model.output-failed',error,{site:'model.save'});};
+    const log=(line,stream)=>diagnostics.event({event:'log',line,stream,uploadScope:'maintenance',site:'model.save'});
+    const timer = setTimeout(() => {timedOut = true;diagnostics.write('model.helper-timeout',{site:'model.save',pid:proc.pid});proc.kill('SIGTERM');}, ['configure','switch'].includes(payload.action) ? 210000 : 60000);
     consumeLines(proc.stdout,line=>{
       // The JSON protocol can contain saved configuration and credentials.
       // Retain execution output, never serialize this response into the log.
-      try { const value=JSON.parse(line);if(typeof value?.ok==='boolean'){result=value;return;}
-        if (value?.event === 'auth') { onAuth?.(value); return; } }
+      try { const value=JSON.parse(line);if(typeof value?.ok==='boolean'){result=value;return;} }
       catch {}
-      if (payload.action !== 'authenticate') log(line,'stdout');
+      log(line,'stdout');
     },outputError,{preserveBlankLines:true});
     consumeLines(proc.stderr,line=>{
-      if (payload.action !== 'authenticate') log(line,'stderr');
+      log(line,'stderr');
       // Only the UI error summary is bounded; the operation log keeps every line.
       stderr=(stderr+'\n'+diagnostics.clean(line)).slice(-4000);
     },outputError,{preserveBlankLines:true});
-    proc.on('error', error => { clearTimeout(timer);diagnostics.error('model.helper-failed',error,{site:helperSite});
-      reject(launcherError(error.message,{source:helperSource,site:helperSite},error)); });
-    proc.on('close', (code,exitSignal) => {
+    proc.on('error', error => { clearTimeout(timer);diagnostics.error('model.helper-failed',error,{site:'model.save'});
+      reject(launcherError(error.message,{source:'launcher_process',site:'model.save'},error)); });
+    proc.on('close', (code,signal) => {
       clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
-      diagnostics.write('model.helper-exit',{site:helperSite,pid:proc.pid,exitCode:code,signal:exitSignal,durationMs:Date.now()-started});
+      diagnostics.write('model.helper-exit',{site:'model.save',pid:proc.pid,exitCode:code,signal,durationMs:Date.now()-started});
       const secret = String(payload.key || '');
       const clean = (value) => {
         const text = String(value || '');
         return (secret ? text.replaceAll(secret, '***') : text).trim();
       };
-      if (code === 0 && result?.ok===true&&!inputFailure&&!outputFailure&&!cancelled&&!timedOut) resolve(result);
+      if (code === 0 && result?.ok===true&&!inputFailure&&!outputFailure) resolve(result);
       else {
         const cause=require('./launcher-errors').programError(result?.diagnostic);
         const failure=inputFailure||outputFailure||cause;
-        const error = launcherError(cancelled ? '已取消模型服务登录。' : clean(result?.error || stderr || '模型配置操作未完成。'),{source:helperSource,site:helperSite,exitCode:code,signal:exitSignal,
-          code:cancelled ? 'MODEL_AUTH_CANCELLED' : timedOut ? 'TIMEOUT' : inputFailure?.code || outputFailure?.code || (code===0&&!result?'INVALID_RESPONSE':undefined)},failure);
+        const error = launcherError(clean(result?.error || stderr || '无法保存模型配置。'),{source:result?.source==='model_service'?'model_service':'launcher_process',
+          status:result?.httpStatus,site:'model.save',exitCode:code,signal,
+          code:timedOut ? 'TIMEOUT' : inputFailure?.code || outputFailure?.code || result?.code || (code===0&&!result?'INVALID_RESPONSE':undefined)},failure);
+        if (['candidate','restored'].includes(result?.failureStage) && !timedOut && !inputFailure && !outputFailure)
+          error.modelFailureStage = result.failureStage;
         const secondary=[{operation:'model-output',error:outputFailure},{operation:'model-helper',error:cause}]
           .filter(item=>item.error&&item.error!==failure);
         if(secondary.length)error.secondaryErrors=secondary;
-        error.remoteMessage = ['test', 'models'].includes(payload.action) ? 'Model request failed; see technical status.' : 'Model configuration helper failed; see technical exit status.';
-        diagnostics.error('model.helper-failed',error,{site:helperSite});
+        error.remoteMessage = 'Model configuration helper failed; see technical exit status.';
+        diagnostics.error('model.helper-failed',error,{site:'model.save'});
         reject(error);
       }
     });
     // A child can reject startup before reading its input. Stream errors do not
     // reach ChildProcess's error event; retain them until close drains its logs.
     proc.stdin.on('error',inputError);
-    try {
-      if (payload.action === 'authenticate') {
-        registerInput?.(value => { diagnostics.addSecret(value.response); proc.stdin.write(JSON.stringify(value) + '\n'); });
-        proc.stdin.write(JSON.stringify(payload) + '\n');
-      } else proc.stdin.end(JSON.stringify(payload));
-    }
+    try { proc.stdin.end(JSON.stringify(payload)); }
     catch (error) { inputError(error); }
   });
 }
@@ -1377,12 +1372,8 @@ async function finishModelSetup() {
       const port = installationPort();
       const runtime = await runBridge('start', { service: 'tavern', port });
       if (!runtime.running) throw new Error('酒馆接口尚未就绪。');
-      const sync = await runModelConfigHelper({ action: 'sync-saved-tavern', port });
-      saved.tavernSyncUnsupported = Boolean(sync.tavernSyncUnsupported);
-      saved.tavernSyncReason = saved.tavernSyncUnsupported ? String(sync.reason || '') : '';
-      saved.tavernSyncPending = Boolean(sync.tavernSyncPending);
-      if (saved.tavernSyncPending && !saved.tavernSyncUnsupported) throw new Error(sync.warning || '酒馆配置尚未完成。');
-      writeVerifiedModel(noraHome(), saved);
+      await runModelConfigHelper({ action: 'sync-saved-tavern', port });
+      writeVerifiedModel(noraHome(), { ...saved, tavernSyncPending: false });
     } catch (error) {
       throw launcherError(`模型验证已通过，但酒馆同步未完成：${error.message}。可继续同步，无需重新填写 Key。`,{site:'model.save',userCode:'MODEL_SYNC_PENDING'},error);
     }
@@ -1391,10 +1382,123 @@ async function finishModelSetup() {
   if (!verification.ok) throw new Error(verification.error || '模型配置复核未通过。');
   await runModelConfigHelper({ action: 'verify-runtime' });
   recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成（已验证文字响应，工具调用能力未验证）' });
-  return { ok: true, provider: saved.provider, model: saved.model, toolSupport: 'unverified',
-    tavernSyncUnsupported: Boolean(saved.tavernSyncUnsupported),
-    tavernSyncPending: Boolean(saved.tavernSyncPending),
-    ...(saved.tavernSyncUnsupported ? { warning: '诺拉模型配置已保存；酒馆无法直接使用此配置，请在酒馆中单独设置模型。' } : {}) };
+  return { ok: true, provider: saved.provider, model: saved.model, toolSupport: 'unverified' };
+}
+
+async function savedModelCatalog() {
+  const current = await runModelConfigHelper({action:'inspect'});
+  return {ok:true,providers:publicProviders(),current,models:current.models || [],selectedId:current.selectedId,
+    activation:{state:'default',currentReply:'unknown'}};
+}
+
+function savedModelRequest(payload) {
+  if (!payload || typeof payload.id !== 'string' || !/^[a-zA-Z0-9:_-]{1,160}$/.test(payload.id)
+      || typeof payload.runId !== 'string' || !/^[\w-]{1,100}$/.test(payload.runId)
+      || Object.keys(payload).some(key=>!['id','runId'].includes(key)))
+    throw launcherError('模型选择无效，请重新读取已配置模型。',{code:'CONDITIONS_CHANGED'});
+  return payload.id;
+}
+
+async function switchSavedModel(event,payload) {
+  const id=savedModelRequest(payload);
+  if(activeRun||modelBusy)throw launcherError('请等待当前任务完成。',{code:'OPERATION_BUSY'});
+  modelBusy=true;
+  try {
+    if(statusRequest)await statusRequest.catch(()=>{});
+    const before=await savedModelCatalog(),target=before.models.find(model=>model.id===id);
+    if(!target)throw launcherError('该模型配置已变化，请重新读取列表。',{code:'CONDITIONS_CHANGED'});
+    if(before.selectedId===id)return {...before,unchanged:true};
+    if(target.available===false)throw new Error(target.problem||'该模型需要先补齐配置或认证。');
+    const conditionFingerprint=configurationFingerprint({provider:target.provider,model:target.model,
+      key:id,baseUrl:target.baseUrl||'',authMode:target.authMode||'native'},uninstall.own(noraHome()));
+    return await runOwnedTask('model',{mode:'configure',profileId:id},async context=>{
+      sendBridgeEvent(event.sender,payload.runId,{event:'model-switch',phase:'verifying'});
+      let saved;
+      await context.effect('unknown');
+      try { saved=await runModelConfigHelper({action:'switch',id}); }
+      catch(error){
+        if(error.modelFailureStage==='candidate')await context.effect('untouched');
+        else {
+          await context.stage('applying');
+          if(error.modelFailureStage==='restored')await context.effect('restored');
+        }
+        throw error;
+      }
+      await context.effect('changed');
+      await context.stage('applying');
+      sendBridgeEvent(event.sender,payload.runId,{event:'model-switch',phase:'applying'});
+      const after=await savedModelCatalog();
+      if(after.selectedId!==id)throw launcherError('模型已保存，但当前默认尚未确认，请重新查询。',{userCode:'MODEL_CONFIG_PARTIAL'});
+      await context.stage('verifying');
+      return {verification:'confirmed',value:{...saved,...after}};
+    },{conditionFingerprint});
+  } finally {modelBusy=false;}
+}
+
+async function deleteSavedModel(event,payload) {
+  const id=savedModelRequest(payload);
+  if(activeRun||modelBusy)throw launcherError('请等待当前任务完成。',{code:'OPERATION_BUSY'});
+  modelBusy=true;
+  try {
+    if(statusRequest)await statusRequest.catch(()=>{});
+    const before=await savedModelCatalog(),target=before.models.find(model=>model.id===id);
+    if(!target)throw launcherError('该模型配置已变化，请重新读取列表。',{code:'CONDITIONS_CHANGED'});
+    if(before.selectedId===id)throw new Error('请先切换到其他模型，再删除当前默认模型。');
+    const state=await runBridge('status');
+    if(state.gatewayRunning!==false&&!(state.gatewayRunning===true&&state.gatewayActivity==='idle'))
+      throw launcherError('诺拉有运行任务或状态未确认，请稍后再删除。',{code:'OPERATION_BUSY'});
+    const conditionFingerprint=configurationFingerprint({provider:target.provider,model:target.model,
+      key:id,baseUrl:target.baseUrl||'',authMode:'delete'},uninstall.own(noraHome()));
+    return await runOwnedTask('model',{mode:'configure',action:'delete',profileId:id,selectedId:before.selectedId},async context=>{
+      const fresh=await runBridge('status');
+      if(fresh.gatewayRunning!==false&&!(fresh.gatewayRunning===true&&fresh.gatewayActivity==='idle'))
+        throw launcherError('诺拉有运行任务或状态未确认，请稍后再删除。',{code:'OPERATION_BUSY'});
+      sendBridgeEvent(event.sender,payload.runId,{event:'model-delete',phase:'deleting'});
+      let deleted;
+      await context.effect('unknown');
+      try { deleted=await runModelConfigHelper({action:'delete',id}); }
+      catch(error){
+        if(error.modelFailureStage!=='candidate')await context.stage('applying');
+        if(error.modelFailureStage==='candidate')await context.effect('untouched');
+        else if(error.modelFailureStage==='restored')await context.effect('restored');
+        throw error;
+      }
+      await context.effect('changed');
+      await context.stage('applying');
+      const after=await savedModelCatalog();
+      if(after.selectedId!==before.selectedId||after.models.some(model=>model.id===id))
+        throw launcherError('模型删除结果尚未确认，请重新查询。',{userCode:'MODEL_CONFIG_PARTIAL'});
+      await context.stage('verifying');
+      return {verification:'confirmed',value:{...deleted,...after}};
+    },{conditionFingerprint});
+  } finally {modelBusy=false;}
+}
+
+async function recoverModelConfiguration(context,{error}={}) {
+  const request=context.target.request;
+  if(request?.mode!=='configure'||error?.modelFailureStage!=='restored')
+    throw launcherError('本次模型操作的恢复结果尚未确认，请保留配置并查看日志。',{code:'VERIFICATION_FAILED'});
+  const after=await savedModelCatalog();
+  if(request.action==='delete'&&(after.selectedId!==request.selectedId||!after.models.some(model=>model.id===request.profileId)))
+    throw launcherError('原模型配置尚未完整恢复，请重新查询。',{code:'VERIFICATION_FAILED'});
+  return {verification:'confirmed',value:after};
+}
+
+async function recheckSavedModelOperation(record) {
+  if(record.target.request?.mode!=='configure'||record.state==='succeeded'
+      ||!['changed','unknown'].includes(record.effectState))return null;
+  const proof=await runModelConfigHelper({action:'inspect-outcome',operationId:record.operationId});
+  const request=record.target.request,action=request.action==='delete'?'delete':request.profileId?'switch':'configure';
+  if(!proof.confirmed||proof.operationId!==record.operationId||proof.action!==action
+      ||request.profileId&&proof.profileId!==request.profileId)return null;
+  const current=proof.current;
+  if(!current?.configured||current.modelsProblem||!current.selectedId
+      ||action==='delete'&&(current.selectedId!==request.selectedId||current.models.some(row=>row.id===request.profileId))
+      ||action==='switch'&&current.selectedId!==request.profileId)return null;
+  return {completion:action==='configure'?'failed':'succeeded',operationId:record.operationId,
+    planDigest:record.planDigest,verification:'confirmed',effectState:'changed',
+    value:{ok:true,current,models:current.models,selectedId:current.selectedId,
+      configurationSaved:true,activation:{state:'default',currentReply:'unknown'}}};
 }
 
 function createWindow() {
@@ -1651,7 +1755,7 @@ if (primaryInstance) {
       if (site) telemetry?.report(error,{source:'launcher',site});
       const action = channel === 'nora:run' ? args[0]?.action : {
         'nora:model-options':'list_models', 'nora:model-save-test':'model', 'nora:model-resume':'model',
-        'nora:model-providers':'model', 'nora:model-auth-start':'model', 'nora:model-auth-status':'model', 'nora:model-auth-cancel':'model', 'nora:model-auth-respond':'model', 'nora:check-update':'check_update', 'nora:uninstall':'uninstall',
+        'nora:model-providers':'model', 'nora:model-switch':'model', 'nora:model-delete':'model', 'nora:check-update':'check_update', 'nora:uninstall':'uninstall',
         'nora:recover-launcher':'repair',
         'nora:open-external':'open', 'nora:open-directory':'settings', 'nora:choose-directory':'settings',
       }[channel];
@@ -2024,6 +2128,8 @@ if (primaryInstance) {
     operationRecheckers[action]=(record,context)=>maintenancePolicy().recheck(record,context);
   }
   for(const action of ['start','restart'])operationRecheckers[action]=(record,context)=>maintenancePolicy().recheck(record,context);
+  operationRecoverers.model=recoverModelConfiguration;
+  operationRecheckers.model=recheckSavedModelOperation;
   operationExecutors.model=async context=>{
     if(context.target.request?.mode!=='resume')throw launcherError('请重新填写并提交模型配置。',{code:'OPERATION_ACTION_UNAVAILABLE'});
     activeOperationContext=context;
@@ -2343,72 +2449,14 @@ if (primaryInstance) {
   });
   handle('nora:model-providers', async () => {
     if (!findHermes()) return { ok: false, warning: '请先安装 Nora。', providers: [] };
-    return runModelConfigHelper({ action: 'catalog' });
+    return savedModelCatalog();
   });
+  handle('nora:model-switch',switchSavedModel);
+  handle('nora:model-delete',deleteSavedModel);
   handle('nora:model-options', async (_event, payload) => {
     diagnostics.addSecret(payload?.key);
     if (!findHermes()) throw new Error('请先安装 Nora。');
-    return trackLauncher('list_models','model_test', async () => {
-      const result = await runModelConfigHelper({ action: 'models', provider: payload?.provider,
-        key: payload?.key, baseUrl: payload?.baseUrl, authMode: payload?.authMode });
-      if (!Array.isArray(result.models) || !result.models.length) throw new Error('未获取到可用模型，可手动填写服务商公布的模型名称。');
-      return result;
-    });
-  });
-  handle('nora:model-auth-start', async (_event, payload) => {
-    if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
-    const catalog = await runModelConfigHelper({ action: 'catalog' });
-    const provider = requireProvider(payload?.provider, catalog.providers);
-    if (!provider.loginAvailable) throw new Error('这个服务不使用登录认证。');
-    const controller = new AbortController();
-    const session = { id: require('node:crypto').randomUUID(), provider: provider.id, state: 'running', progress: null };
-    if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
-    const authentication = { session, controller, respond: null };
-    modelAuthentication = authentication;
-    modelBusy = true;
-    void runOwnedTask('model', { mode: 'authenticate', provider: provider.id }, async context => {
-      await context.stage('applying');
-      await runModelConfigHelper({ action: 'authenticate', provider: provider.id }, {
-        signal: controller.signal,
-        registerInput: respond => { authentication.respond = respond; },
-        onAuth: value => {
-          let url;
-          try { if (value.url) url = externalUrl(value.url); } catch {}
-          session.progress = { message: String(value.message || '').slice(0, 500),
-            ...(url ? { url } : {}), ...(value.userCode ? { userCode: String(value.userCode).slice(0, 100) } : {}),
-            ...(value.promptId ? { promptId: String(value.promptId), prompt: String(value.prompt || '').slice(0, 500), requiresInput: true } : {}) };
-        },
-      });
-      await context.stage('verifying');
-      const refreshed = await runModelConfigHelper({ action: 'catalog' });
-      if (!refreshed.providers?.find(item => item.id === provider.id)?.authenticated) throw new Error('未能确认模型服务已登录。');
-      return { verification: 'confirmed', value: { ok: true } };
-    }).then(() => { session.state = 'succeeded'; }, error => {
-      session.state = controller.signal.aborted ? 'cancelled' : 'failed';
-      session.error = diagnostics.clean(error.message);
-      diagnostics.error('model.authentication-failed', error);
-    }).finally(() => { modelBusy = false; });
-    return { ok: true, ...session };
-  });
-  handle('nora:model-auth-status', async (_event, payload) => {
-    if (!modelAuthentication || modelAuthentication.session.id !== payload?.id) throw new Error('模型登录会话已结束，请重新登录。');
-    return { ok: true, ...modelAuthentication.session };
-  });
-  handle('nora:model-auth-respond', async (_event, payload) => {
-    const auth = modelAuthentication;
-    if (!auth || auth.session.id !== payload?.id || auth.session.state !== 'running'
-      || !auth.respond || auth.session.progress?.promptId !== payload?.promptId) throw new Error('模型登录确认已过期。');
-    const response = String(payload?.response || '').trim();
-    if (!response || response.length > 8192 || /[\r\n\0]/.test(response)) throw new Error('请填写有效的登录确认内容。');
-    diagnostics.addSecret(response);
-    auth.respond({ promptId: payload.promptId, response });
-    auth.session.progress = { message: '正在确认登录结果。' };
-    return { ok: true };
-  });
-  handle('nora:model-auth-cancel', async (_event, payload) => {
-    if (!modelAuthentication || modelAuthentication.session.id !== payload?.id) throw new Error('模型登录会话已结束。');
-    if (modelAuthentication.session.state === 'running') modelAuthentication.controller.abort();
-    return { ok: true, ...modelAuthentication.session };
+    return { ok: true, ...(await trackLauncher('list_models','model_test', () => loadProviderModels(payload?.provider, payload?.key, payload?.baseUrl, payload?.authMode))) };
   });
   handle('nora:model-resume', async () => {
     if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
@@ -2428,18 +2476,14 @@ if (primaryInstance) {
   });
   handle('nora:model-save-test', async (_event, payload) => {
     if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
-    const catalog = await runModelConfigHelper({ action: 'catalog' });
-    const provider = requireProvider(payload?.provider, catalog.providers);
+    const provider = requireProvider(payload?.provider);
     const key = modelCredential(provider, payload);
     diagnostics.addSecret(key);
     const model = String(payload?.model || '').trim();
-    const baseUrl = (payload?.baseUrl || provider.custom) ? normalizeCustomBaseUrl(payload?.baseUrl || provider.baseUrl) : '';
-    if (provider.endpointRequired && !baseUrl) throw new Error('请填写模型服务的接口地址。');
-    const authMode = String(payload?.authMode || provider.authModes?.[0] || 'key');
+    const baseUrl = provider.id === 'custom' ? normalizeCustomBaseUrl(payload?.baseUrl) : '';
     if (!model || model.length > 240 || /[\r\n]/.test(model)) throw new Error('请选择模型。');
     const conditionFingerprint=configurationFingerprint({provider:provider.id,model,key,baseUrl,
-      authMode},uninstall.own(noraHome()));
-    if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
+      authMode:provider.custom&&payload.authMode==='none'?'none':'key'},uninstall.own(noraHome()));
     modelBusy = true;
     let configurationSaved=false;
     try {
@@ -2447,31 +2491,34 @@ if (primaryInstance) {
       telemetry?.stage('model_test');
       recordEvent({ event: 'milestone', index: 2, state: 'running', task: '正在测试 Nora' });
       if (statusRequest) await statusRequest.catch(() => {});
-      const normalized = await runModelConfigHelper({
-        action: 'normalize',
+      await context.effect('unknown');
+      try { await runModelConfigHelper({
+        action: 'configure',
         provider: provider.id,
         keyEnv: provider.keyEnv,
+        key,
         model,
-        baseUrl, authMode,
-      });
-      await runModelConfigHelper({ action: 'test', provider: normalized.provider,
-        model: normalized.model, key, baseUrl, authMode });
+        baseUrl,
+        authMode: provider.custom && payload.authMode === 'none' ? 'none' : 'key',
+        tavernSyncPending: !readInstallerState().setupCompleted,
+      }); } catch (error) {
+        // Only an explicit native pre-commit refusal is an untouched model
+        // validation failure. A lost helper response may follow a real commit.
+        if (error.modelFailureStage !== 'candidate') {
+          await context.stage('applying');
+          if(error.modelFailureStage==='restored')await context.effect('restored');
+          if(error.modelFailureStage==='restored')throw error;
+          throw launcherError('模型保存结果尚未确认，请重新查询状态。',{userCode:'MODEL_CONFIG_PARTIAL'},error);
+        }
+        await context.effect('untouched');
+        throw error;
+      }
+      configurationSaved=true;
+      await context.effect('changed');
       telemetry?.stage('model_save');
       await context.stage('applying');
-      const saved = await runModelConfigHelper({
-        action: 'save',
-        provider: normalized.provider,
-        keyEnv: provider.keyEnv,
-        key,
-        model: normalized.model,
-        baseUrl, authMode,
-      });
-      configurationSaved=true;
       let result;
       try {
-        writeVerifiedModel(noraHome(), { ...saved, key,
-          authMode, tavernSyncUnsupported: Boolean(saved.tavernSyncUnsupported), tavernSyncReason: saved.tavernSyncReason || saved.reason || '',
-          tavernSyncPending: !readInstallerState().setupCompleted && !saved.tavernSyncUnsupported });
         result=await finishModelSetup();
       }
       catch(error){

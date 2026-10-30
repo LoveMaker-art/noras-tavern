@@ -122,7 +122,63 @@ class LauncherServicesTests(unittest.TestCase):
     def test_uninstalled_gateway_status_does_not_require_psutil(self):
         with patch.dict(sys.modules, {'psutil': None}):
             self.assertEqual(services.gateway_status(self.root, self.hermes), {
-                'gatewayRunning': False, 'clawchatConnected': False, 'clawchatState': 'offline'})
+                'gatewayRunning': False, 'clawchatConnected': False, 'clawchatState': 'offline',
+                'gatewayActivity': 'stopped', 'activeWorkCount': None})
+
+    def test_gateway_activity_requires_a_reported_nonnegative_integer_count(self):
+        process = Mock(pid=42)
+        process.create_time.return_value = 100
+        for count, expected in ((0, 'idle'), (3, 'busy'), (None, 'unknown'),
+                                (-1, 'unknown'), (True, 'unknown'), ('0', 'unknown'),
+                                (0.5, 'unknown'), ([], 'unknown')):
+            with self.subTest(count=count), patch.object(services, 'owned_gateway', return_value=process):
+                self.state({'pid': 42, 'start_time': 10000, 'gateway_state': 'running',
+                    'active_agents': count, 'platforms': {'clawchat': {'state': 'connected',
+                    'writer_pid': 42, 'writer_start_time': 10000}}})
+                file = self.hermes / 'gateway_state.json'
+                before = file.read_bytes(), file.stat().st_mtime_ns
+                status = services.gateway_status(self.root, self.hermes)
+                self.assertEqual(status['gatewayActivity'], expected)
+                self.assertEqual(status['activeWorkCount'], count if expected != 'unknown' else None)
+                self.assertEqual((file.read_bytes(), file.stat().st_mtime_ns), before)
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_gateway_activity_does_not_trust_unbound_or_starting_state(self):
+        process = Mock(pid=42)
+        process.create_time.return_value = 100
+        process.children.return_value = []
+        process.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        original = {'pid': 42, 'start_time': 10000, 'gateway_state': 'running', 'active_agents': 4,
+                    'platforms': {'clawchat': {'state': 'connected', 'writer_pid': 42, 'writer_start_time': 10000}}}
+        for changes in ({'pid': 43}, {'start_time': 9999}, {'gateway_state': 'starting'},
+                        {'gateway_state': 'stopping'}, {'platforms': {}}, {'active_agents': None}):
+            with self.subTest(changes=changes), patch.object(services, 'owned_gateway', return_value=process):
+                self.state({**original, **changes})
+                status = services.gateway_status(self.root, self.hermes)
+                self.assertTrue(status['gatewayRunning'])
+                self.assertEqual(status['gatewayActivity'], 'unknown')
+                self.assertIsNone(status['activeWorkCount'])
+        with patch.object(services, 'owned_gateway', return_value=process):
+            self.state(original)
+            os.utime(self.hermes / 'gateway_state.json', (99, 99))
+            status = services.gateway_status(self.root, self.hermes)
+            self.assertEqual(status['gatewayActivity'], 'unknown')
+            self.assertIsNone(status['activeWorkCount'])
+
+    def test_gateway_activity_uses_the_verified_windows_child_writer(self):
+        process, child = Mock(pid=42), Mock(pid=43)
+        command = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        process.cmdline.return_value = child.cmdline.return_value = command
+        process.children.return_value = [child]
+        child.status.return_value = 'sleeping'
+        child.create_time.return_value = 100
+        self.state({'pid': 43, 'start_time': 10000, 'gateway_state': 'running', 'active_agents': 2,
+            'platforms': {'clawchat': {'state': 'connected', 'writer_pid': 43, 'writer_start_time': 10000}}})
+        with patch.object(services, 'owned_gateway', return_value=process):
+            status = services.gateway_status(self.root, self.hermes)
+        self.assertEqual(status['gatewayActivity'], 'busy')
+        self.assertEqual(status['activeWorkCount'], 2)
 
     def test_gateway_status_does_not_report_stopped_when_identity_is_unreadable(self):
         import psutil
@@ -368,7 +424,8 @@ class LauncherServicesTests(unittest.TestCase):
              patch('psutil.Process', side_effect=fixture.inspect):
             self.assertIs(services.owned_gateway(self.root, require_readable=True), fixture.process)
             self.assertEqual(services.gateway_status(self.root, self.hermes), {
-                'gatewayRunning': True, 'clawchatConnected': True, 'clawchatState': 'connected'})
+                'gatewayRunning': True, 'clawchatConnected': True, 'clawchatState': 'connected',
+                'gatewayActivity': 'unknown', 'activeWorkCount': None})
         self.assertEqual({path: path.read_bytes() for path in paths}, original)
         fixture.process.terminate.assert_not_called()
         fixture.process.kill.assert_not_called()

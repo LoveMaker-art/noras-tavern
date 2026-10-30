@@ -1,0 +1,135 @@
+# Hermes 配置输入覆盖审计（2026-10-29）
+
+> 本文审计的是历史提交 `a1ccfb2` 的扩大方案；用户随后要求撤回启动器改动。下列缺项与源码定位只对应该历史方案；当前范围与验证按产品设计1.43及[最新整合记录](20261028-hermes-model-reuse.md#local-main-integration)核对，中途收敛不作为当前实现状态。
+
+审计对象：独立分支 `codex/hermes-model-reuse-20261028`，提交 `a1ccfb2`。产品设计 1.37。项目锁定 Hermes 0.21.1、revision `2237be355906fbe6065ce1815711eee52b2d646e`；对照本机保留的该交付源码，不以最新官网或其他版本的能力代替本项目能力。
+
+用户授权：仅分析配置项、启动器与技能的逐项对应及补齐方法；不改产品代码、不合并、不发布、不调用真实账号或模型。本报告不是新产品规则，也不是服务商真实账号验收报告。
+
+## 结论与纠正
+
+当前不满足“Hermes 所有服务都能由启动器和技能从零配置完整”。问题既包含未提供的必要配置，也包含新衔接代码的确定错误。此前将情况概括为“代码已完成，仅差真实账户实测”不准确；下面的新增证据要求撤回该范围的完成判断。已通过的旧离线用例只能证明其实际覆盖的路径。
+
+根因是把供应商身份元数据 `ProviderDef` 当成了完整的配置合同。它包含身份、传输、Key 环境变量、地址和认证类型，不包含各原生设置流程的全部必要输入、外部准备步骤及模式选择。动态下拉名单不能直接证明动态表单完整。
+
+## 方法与证据边界
+
+- 枚举原生目录得到 55 行，其中 `custom` 重复，去重后 54 个入口；别名不算新的服务。后文逐项覆盖这 54 个入口，另列用户创建的高级自定义条目。
+- 禁止 socket 连接、隔离 HOME/HERMES_HOME、无代理、无真实凭据，读取原生目录及分支实际元数据。无 models.dev 元数据缓存是本次明确覆盖的冷启动条件，不能外推为所有已使用实例必然相同。
+- 对 42 个仅显示 Key 模式的入口，用合成无效 Key 分别执行 normalize、候选运行配置解析和保存回读，均在不同临时目录内，未发送模型请求：41 个保存回读通过，OpenRouter 失败。这里没有通过完整 UI，也没有服务商响应；LM Studio 有 Key 分支通过不代表免 Key 分支通过，Azure OpenAI 分支通过不代表 Anthropic/Entra 分支通过。
+- 额外离线检查覆盖 LM Studio 无 Key 拦截、Azure 协议/认证选择缺失，以及原生登录事件到主进程快照的回放。没有浏览器、真实订阅、付费请求或正式实例写入。
+
+## 确定问题和补齐方式
+
+| 项目 | 已确定的条件与用户影响 | 应如何补齐（仅建议，未实施） |
+| --- | --- | --- |
+| 默认地址元数据不完整 | 无 models.dev 缓存时，部分原生服务的 ProviderDef 存在但 URL 为空，当前只在整个 definition 不存在时才回退 registry。启动器因此要求用户额外填写 Hermes 本来已有的官方地址；例如 DeepSeek、OpenCode Go/Zen、Anthropic。 | 按原生目录、registry、profile 的真实优先级补齐缺失字段。默认官方地址不应变成新用户必须猜测的输入。高级地址覆盖仍保留。 |
+| OpenRouter Key 保存失败 | 同一冷启动条件下 keyEnv 为空；显式 Key 能参与候选解析，但 save 只在 keyEnv 非空时持久保存；保存后原生解析无法取得本次 Key。 | 复用 Hermes 的 OpenRouter 凭据落点/保存合同，不能把“没有 registry 行/空元数据”解释为不需要保存 Key。 |
+| LM Studio / Actual 本地免认证误拦截 | Hermes 原生允许相应本地免 Key 模式，当前专名入口只给 key，提前要求 Key。通用 custom+none 是另一条可配置路径，不能代替专名修复。 | 按服务及实际地址提供原生免认证方式；保留云端或已开启鉴权服务需要 Key 的条件，不能对所有服务放开空 Key。 |
+| Codex / Anthropic 登录地址被覆盖 | Python 先发 URL，再发设备码/输入提示。主进程每次整对象覆盖 progress；600ms 轮询可能只读到后一个事件，页面隐藏登录链接。 | 同一登录挑战内保留 URL、设备码和输入提示；新挑战/结束后明确清理。技能直接读取事件流与启动器快照必须分别验收。 |
+| Qwen 首次登录未接入 | 当前原生 auth add 只导入 ~/.qwen/oauth_creds.json；没有该文件就不能靠当前登录按钮完成首次登录。 | 明确是导入现有登录；若承诺从零完成，需要接入/引导 Qwen 原生首次登录前置步骤。不能伪称点击按钮已经提供此能力。 |
+| Copilot 原生设备码入口未复用 | Hermes 有设备码与手填 Token 两路；当前目录只有 key，六项 OAuth 集合不含 Copilot。 | 接入 Hermes 已有 Copilot 设备码流程，保留手填受支持 Token 路径，不另写认证协议。 |
+| MiniMax 国内 OAuth 缺地区 | 原生支持 global/cn，当前共用认证调用固定走默认 global，没有 region 输入/传递。 | 将地区传给原生登录与推理配置，不能只替换推理 URL。国际默认流程保留。 |
+| Azure 模式缺失 | API Key 的 OpenAI 风格可配置；Claude/Anthropic 风格需要明确协议；Entra 需要不同认证方式。当前仅 key、无协议选择。 | 复用原生 endpoint→认证→协议探测/选择→模型流程。必要信息只在选中该模式时显示。 |
+| Bedrock/Vertex 缺云配置入口 | AWS 需按所选认证来源准备凭据/地区；Vertex 需 SA 或 ADC、可解析的项目和区域。当前只能 external，不能收集这些信息。 | 区分“使用已配置环境”与“首次配置”。若支持首次配置，接对应原生流程/必要字段；不把所有 AWS 认证方式同时列为必填，不把可从凭据解析的项目强制重复输入。 |
+| ACP 地址/环境不兼容 | 需要已安装登录的外部 CLI 或 ACP TCP。表单没有命令/参数；原生 acp:// 地址会被 HTTP-only 规范化及启动器记录写入拒绝。 | 按实际传输类型处理运行地址与记录，不当普通 API URL；明确 CLI 准备/登录状态，不能将 CLI 可执行等同于账号已登录。 |
+| 高级 custom 不能从零建完整 | 原生支持 api_mode、headers、extra_body、key_env/key_cmd；当前可保留已有条目，但表单/技能不能新增这些设置。 | 通过共用配置入口按需提供协议及实际必要的高级设置；技能使用同一字段合同。无需所有用户都看全部高级项。 |
+| MoA 多模型组合 | 原生是引用多个已配置服务的组合预设，不是一个 Key 服务；当前只有普通 provider/model，没有组合配置入口，moa:// 也不符合当前 HTTP 校验。 | 不当作单模型服务宣称从零完整；若纳入支持，复用原生组合预设及成员凭据检查。 |
+
+## 启动器与技能共同输入合同
+
+当前共用的是 provider/model/key/baseUrl/authMode；技能对额外字段直接拒绝。启动器另有原生登录进度/输入窗口，但没有云账户、协议、高级请求或组合预设编辑器。两入口存在相同配置缺项，技能默认不付费测试，所以某些候选能保存并不证明启动器完整“测试→保存→记录”也能完成。技能只面向有受管实例记录的本地安装，不是任意云端 Hermes 配置器。
+
+## 54 个服务入口逐项对照
+
+“已覆盖”表示字段与相应离线配置路径覆盖，不表示真实账户、调用、模型权限、工具调用或目标操作系统验收通过。底层模型/账号仍由用户选择，并需服务端确实支持。
+
+| 服务 ID | Hermes 实际需要 | 启动器当前情况 | 技能当前情况 | 结论/补齐 |
+| --- | --- | --- | --- | --- |
+| nous | 适用账号；原生设备码授权；模型 | 默认授权链接＋设备码＋状态回读链路已接 | 已接原生流程；需本人完成授权 | 默认流程字段覆盖，真实账号未验 |
+| fireworks | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| openrouter | OpenRouter Key、模型；原生默认 URL | 冷缓存地址/Key 落点为空；候选解析成功但保存失败 | 同一保存程序，受同一缺陷影响 | 确定衔接缺陷，必须修 Key 落点和元数据补全 |
+| moa | 组合预设、成员模型/服务及各自凭据、聚合模型 | 无组合设置，普通地址校验不接受 moa:// | 无组合字段，不能新建完整组合预设 | 未提供从零完整配置；应独立按原生组合规则处理 |
+| novita | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| lmstudio | 已运行本地服务地址、模型；服务启用认证时才需 Key | 只提供 key，误拦空 Key | 同样误拦 none/空 Key | 有 Key 分支配置通过；无 Key 应修专名入口；custom+none 是现有替代路径 |
+| anthropic | API Key＋模型，或本人完成原生 OAuth 并返回授权码 | Key 可填，但冷缓存需补默认地址；OAuth 的 URL 被输入提示覆盖 | Key 字段已接；OAuth 事件/输入已接，需持续会话，未真账号验收 | Key 基础字段具备；默认地址及启动器 OAuth 必须处理 |
+| openai-codex | 适用订阅；原生登录 URL、设备码；模型 | URL 被后续设备码事件覆盖 | 事件流有 URL/码；需持续输入/等待能力，真实宿主未验 | 启动器有确定登录衔接缺陷，不能据字段齐全声明通过 |
+| openai-api | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| alibaba | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| xai-oauth | 适用账号；原生设备码授权；模型 | 默认授权链接＋设备码＋状态回读链路已接 | 已接原生流程；需本人完成授权 | 默认流程字段覆盖，真实账号未验 |
+| xiaomi | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| tencent-tokenhub | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| tencent-tokenplan | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| nvidia | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| copilot | 受支持的 GitHub Token 或本人设备码授权；模型 | 手填 Token 有；原生设备码登录未接；冷缓存需补默认 URL | 仅 Token/已有登录；无原生设备码入口 | 手填路径配置通过；默认地址和原生登录路径需补齐 |
+| copilot-acp | 已安装并登录外部 CLI，或 ACP TCP；必要时命令/参数；模型 | 缺外部准备入口，acp:// 记录写入被 HTTP 校验拦截 | 只可依赖既有外部环境，无命令/参数/TCP 设置输入 | 不支持从零完整；已有环境也需处理启动器地址拦截 |
+| huggingface | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| gemini | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| vertex | SA JSON 或 ADC；可解析的项目；区域/模型；SDK | external，无凭据路径/项目/区域输入 | 同样只能复用已配置环境 | 不能从零配置完整；项目已可解析时无需重复必填 |
+| deepseek | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| xai | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| zai | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| kimi-coding | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| kimi-coding-cn | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| stepfun | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| minimax | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| minimax-oauth | 适用账号；原生设备码授权；模型 | 默认授权链接＋设备码＋状态回读链路已接 | 已接原生流程；需本人完成授权 | 默认流程字段覆盖，真实账号未验；仅国际版，国内 OAuth 缺 region |
+| minimax-cn | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| ollama-cloud | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| arcee | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| gmi | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| kilocode | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| opencode-zen | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| opencode-go | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| bedrock | 模型、适用地区；IAM/profile/role 凭据链或 Bearer Token（按来源选择） | external，无地区/来源/凭据输入 | 同样缺输入，只能依赖既有 AWS 环境 | 仅已有环境复用路径；需原生云配置流程或明确支持前提 |
+| azure-foundry | endpoint、部署模型；Key 或 Entra；OpenAI/Anthropic 协议 | Key＋endpoint＋模型可填；无 Entra/协议选择 | 共享参数只允许 key/external 等通用模式，Azure 不接受 external，缺协议 | OpenAI Key 分支配置通过；其他原生分支缺项 |
+| ai-gateway | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| qwen-oauth | 先由 Qwen CLI 登录生成凭据文件；模型 | 只能尝试导入已有登录 | 同样导入已有文件，不创建首次 Qwen 登录 | 不能在当前入口从零完成；需明确前置准备或补原生接入 |
+| actual | 云端 Key/模型；本地回环服务可免 Key | 云端 Key 字段覆盖；本地免认证误要求 Key | 同一专名模式限制 | 云 API 配置通过；本地无 Key 模式缺项 |
+| alibaba-cn | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| alibaba-token-plan | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| alibaba-token-plan-cn | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| alibaba-coding-plan | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖；冷缓存会额外强制填写 URL | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验；应补全原生默认 URL |
+| alibaba-coding-plan-cn | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| commandcode | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| commandcode-anthropic | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| custom | URL、模型、Key 或免认证；非默认协议/额外认证再需对应高级项 | 标准 OpenAI 兼容字段覆盖；无协议/headers/body/key_env/key_cmd 新建入口 | 标准兼容字段覆盖；拒绝上述额外字段 | 已运行标准兼容服务可从零配；高级配置仅能复用已有或靠原生自动识别 |
+| deepinfra | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| meta-ai | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| nebius-token-factory | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| opencode-free | 原生免费模型、可达服务；无需 Key | 原生免认证模式已接 | 需明确 auth_mode=none；默认 key 不能代替原生免认证 | 字段及离线配置覆盖，真实服务未验 |
+| router | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+| upstage | 对应服务 Key、模型；使用原生默认地址，或用户明确的覆盖地址 | 输入覆盖 | 配置保存离线通过；不自动付费测试 | Key 配置路径已覆盖；真实调用未验 |
+
+用户自建命名配置不属于上述固定 54 个入口；其协议、额外请求头/请求体、动态凭据命令及环境变量引用当前只有“保留已有”能力，没有完整新建输入。Ollama/vLLM 等已启动服务可走 custom+none；这不包含安装、下载或启动模型服务。
+
+## 补齐优先级与范围建议
+
+1. **先修当前衔接错误**：默认地址与 Key 元数据补全、OpenRouter 保存、专名本地免认证、登录挑战快照、ACP 地址分类。它们不需要新增一整套产品系统，须用空白实例及对应已有实例回归。
+2. **补齐已选择服务的必要参数**：Azure 认证/协议、MiniMax 地区、Copilot 原生设备码、自定义协议及实际必要的 headers。启动器与技能共用同一字段合同；高级项按服务/模式展开。
+3. **对外部环境型服务单独明确承诺**：Bedrock、Vertex、Qwen CLI、ACP、MoA 是“接入已有环境”还是“本入口负责首次准备”。若选择后者，再接对应原生设置流程；不能用普通 Key 表单或用户自己改文件冒充完整接入。
+4. **验收按配置类型和入口覆盖**：空白实例、已配置实例、取消登录、保存失败、重开后读取、真实指定模型调用分别验证；至少覆盖 Key/免Key/OAuth/云SDK/自定义多协议。不能把42个保存回读结果当成54个服务已能实际使用。
+
+## 主要源码依据
+
+- [项目固定 Hermes revision](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/tooling/runtime/hermes-bootstrap.lock.json:1>)
+- [原生 ProviderDef 只是身份元数据](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/providers.py:100>)
+- [当前字段及元数据拼接](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/deployment/shared/hermes_models.py:94>)
+- [当前 Key 保存与模型回读](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/deployment/shared/hermes_models.py:298>)
+- [技能允许字段](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/nora/skills/system/model-provider-config/scripts/configure_provider.py:35>)
+- [启动器通用表单](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/ui/launcher-controller.js:963>)
+- [登录进度整对象覆盖](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/desktop/main.js:2374>)
+- [UI 根据当前快照隐藏登录 URL](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/ui/launcher-controller.js:1042>)
+- [原生 LM Studio 无 Key 占位](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/auth.py:2016>)
+- [原生 Qwen 只导入已有凭据](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/auth_commands.py:189>)
+- [原生 Copilot 设备码/Token 两路](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:477>)
+- [原生 MiniMax OAuth 地区](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:423>)
+- [原生 Azure endpoint/认证/协议](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows_azure.py:148>)
+- [原生 Bedrock 配置](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows_bedrock.py:150>)
+- [原生 Vertex 配置](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:707>)
+- [原生 MoA 组合选择](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:102>)
+- [当前 HTTP-only 模型记录](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/desktop/model-config.js:36>)
+
+## 未实施与未验证
+
+本报告提出的补齐均未实施。没有改产品代码、用户数据、运行配置、设计基线或版本；没有合并、推送、构建或发布。真实账号、服务商模型权限、Windows/Mac 窗口、插件外部 CLI 安装、云 SDK 全流程和所有高级协议组合未验。API Key 缺失会被误当已认证的中间怀疑经完整源码核对已排除，未列为缺陷；不能截断读取初始化值而忽略后续覆盖。

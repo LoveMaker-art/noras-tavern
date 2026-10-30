@@ -325,18 +325,24 @@ test('upgrade preserves queued v1 events alongside v3 and refuses private detail
   fs.writeFileSync(f.file,JSON.stringify(invalid));f.restart();await f.client.flush();
   assert.equal(f.client.settings().available,false);assert.equal(f.requests.length,1);
 });
-test('Hermes model HTTP failure reaches telemetry with technical evidence but no private response', async t => {
-  const {launcherError,programError}=require(path.join(desktop,'launcher-errors'));
-  // Reconstruct the same Python diagnostic envelope consumed by the helper.
-  // Request/protocol execution is covered by test_hermes_models.py.
-  const native=programError({name:'AuthenticationError',code:401,message:'PRIVATE CHAT /Users/person token=private-key'});
-  const error=launcherError('模型服务拒绝认证。',{source:'model_service',site:'model.test'},native);
-  const f=fixture(t);f.client.begin('model');f.client.stage('model_test');f.client.finish('failed',error);
+test('model test HTTP failure reaches telemetry with technical evidence but no private response', async t => {
+  const http = require('node:http');
+  const {testCustomModel} = require(path.join(desktop, 'model-config'));
+  const server = http.createServer((req,res) => { req.resume(); res.writeHead(401); res.end(JSON.stringify({error:{message:'PRIVATE CHAT /Users/person token=private-key'}})); });
+  await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const f = fixture(t); f.client.begin('model'); f.client.stage('model_test');
+  await assert.rejects(testCustomModel(`http://127.0.0.1:${server.address().port}/v1`, 'private-key', 'private-model'), error => {
+    f.client.finish('failed', error); return true;
+  });
   await f.client.flush();
-  const events=f.requests.flatMap(r=>r.data.events),failure=events.find(e=>e.event==='operation_finished');
-  assert.equal(failure.http_status,401);assert.equal(failure.error_source,'model_service');
-  assert.equal(failure.error_site,'model.test');assert.equal(failure.error_code,'http_unauthorized');
-  assert.doesNotMatch(JSON.stringify(events),/PRIVATE|private-key|private-model|127\.0\.0\.1|Users/);
+  const events = f.requests.flatMap(r => r.data.events);
+  const failure = events.find(e => e.event === 'operation_finished');
+  assert.equal(failure.http_status, 401);
+  assert.equal(failure.error_source, 'model_service');
+  assert.equal(failure.error_site, 'model.test');
+  assert.equal(failure.error_code, 'http_unauthorized');
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE|private-key|private-model|127\.0\.0\.1|Users/);
 });
 test('launcher-only observation ignores runtime logs, deduplicates reported errors, and keeps process evidence', async t => {
   const f=fixture(t);f.client.begin('start');f.client.stage('start_tavern');

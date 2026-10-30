@@ -46,6 +46,8 @@
   let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
   let pageReturnFocus;
   let modelFormGeneration = 0;
+  let modelSelectionUncertain = false;
+  let modelSelectionOperation = null;
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
   let bundledUpgradeAttempted = false;
@@ -327,9 +329,11 @@
   function controls() {
     // Presentation follows the route, never the presence of a particular form.
     // Error/recovery routes may retain the previous page's daily/editing classes.
-    const workflow = ['loading', 'monitor', 'task', 'model', 'model-pending', 'claw', 'update', 'error', 'recovery'].includes(view);
+    const workflow = ['loading', 'monitor', 'task', 'model', 'model-overview', 'model-pending', 'claw', 'update', 'error', 'recovery'].includes(view);
     if (workflow) $('main').dataset.layout = 'workflow';
     else delete $('main').dataset.layout;
+    if (view === 'model-overview') $('main').dataset.modelView = 'list';
+    else delete $('main').dataset.modelView;
     const recoveryView = view === 'recovery' && Boolean(snapshot.updateRecovery || snapshot.launcherRecovery);
     const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.retainedInstallation && !snapshot.operation && !snapshot.installer?.startedAt
       && !snapshot.installed && !snapshot.hermesInstalled && !snapshot.noraInstalled && !serviceRunning();
@@ -387,6 +391,11 @@
       modelQuery.disabled = busy || Boolean(snapshot.busy);
       modelQuery.classList.toggle('primary', !modelQuery.hidden);
     }
+    $('inline').querySelectorAll('.model-mutation').forEach(control => {
+      control.disabled = busy || Boolean(snapshot.busy) || statusUnknown || modelSelectionUncertain || control.dataset.unavailable === 'true';
+    });
+    $('inline').querySelectorAll('.model-recheck').forEach(control => { control.disabled = busy || Boolean(snapshot.busy); });
+    if (view === 'model-overview') $('inline').querySelectorAll('.edit-head button').forEach(control => { control.disabled = busy || Boolean(snapshot.busy); });
   }
   function displaySteps() {
     if (complete()) { $('steps').hidden = true; return; }
@@ -510,7 +519,7 @@
       logCursor = undefined; logRecords = []; logBytes = 0; logIds.clear(); logMissing.clear();
       logErrorLocated = false; logFirstError = undefined; logFollow = true; consoleOutput.replaceChildren();
       $('consoleCopy').textContent = '复制本次日志'; $('consoleCopy').disabled = !logOperationId; $('consoleLatest').hidden = true;
-      $('consoleBack').textContent = view === 'model' ? '返回模型设置' : '返回操作页';
+      $('consoleBack').textContent = ['model', 'model-overview'].includes(view) ? '返回模型设置' : '返回操作页';
       consolePanel.hidden = false; $('main').classList.add('logs-open'); consoleOutput.focus({preventScroll:true});
       await readConsole(logGeneration); return;
     }
@@ -945,85 +954,287 @@
   }
   $('launch').onclick = openTavern;
 
-  modelForm = async () => {
+  function savedModelConfiguration(result) {
+    return result.current || { configured: snapshot.modelConfigured, provider: snapshot.modelProvider,
+      model: snapshot.modelName, baseUrl: snapshot.modelBaseUrl, authMode: snapshot.modelAuthMode };
+  }
+  function modelActivation(result) {
+    const value = result.activation ?? result.current?.activation;
+    return typeof value === 'string' ? { state:value } : value || { state:'unknown' };
+  }
+  function modelAuthLabel(mode) {
+    return ({key:'API Key', api_key:'API Key', none:'无需认证（本地服务）',
+      oauth:'账号登录', oauth_device_code:'账号登录', oauth_external:'账号登录', oauth_minimax:'账号登录', native:'Hermes 原生认证',
+      external_process:'外部程序认证', aws_sdk:'AWS 凭据', vertex:'Google Cloud 认证', entra_id:'Microsoft Entra 认证',
+      service_account:'服务账号', adc:'应用默认凭据', azure_cli:'Azure CLI 认证', virtual:'Hermes 组合配置'})[mode] || '';
+  }
+  function modelConnectionText(model, providers, models) {
+    const provider = providers.find(item => item.id === model.provider)?.label
+      || (model.provider?.startsWith('custom:') ? providers.find(item => item.id === 'custom')?.label || '自定义模型' : model.provider) || '';
+    let connection = model.connectionLabel || '';
+    try {
+      const [address,...suffix] = connection.split(' · '), endpoint = new URL(address);
+      if (['http:','https:'].includes(endpoint.protocol)) {
+        const sharesHost = models.some(other => {
+          if (other.id === model.id || other.model !== model.model || !other.baseUrl || other.baseUrl === model.baseUrl) return false;
+          try { return new URL(other.baseUrl).host === endpoint.host; } catch { return false; }
+        });
+        connection = endpoint.host + (sharesHost ? endpoint.pathname.replace(/\/$/,'') : '');
+        if (suffix.length) connection += ' · ' + suffix.join(' · ');
+      }
+    } catch {}
+    return [provider,connection && connection !== provider && connection !== model.provider ? connection : ''].filter(Boolean).join(' · ');
+  }
+  function renderModelList(result) {
+    const current = savedModelConfiguration(result), activation = modelActivation(result);
+    const selectedId = current.selectedId ?? result.selectedId;
+    const saved = current.models || result.models || [];
+    const models = [...(saved.length ? saved : current.configured ? [{...current,id:selectedId || '',selected:true}] : [])];
+    const isSelected = model => selectedId ? model.id === selectedId : model.selected === true;
+    models.sort((left,right) => Number(isSelected(right)) - Number(isSelected(left)));
+    const list = $('modelList'); list.replaceChildren();
+    const add = $('inline').querySelector('.model-add'); if (add) add.onclick = () => modelForm(result,true);
+    const problem = $('modelListProblem'), problemActions = $('modelListProblemActions');
+    problem.hidden = !current.modelsProblem; problem.textContent = current.modelsProblem || ''; problemActions.replaceChildren();
+    if (current.modelsProblem) {
+      modelSelectionUncertain = true;
+      const recheck = button('重新查询',modelSettings,false); recheck.className = 'quiet model-recheck'; problemActions.append(recheck);
+    }
+    for (const model of models) {
+      const selected = isSelected(model);
+      const row = document.createElement('div'); row.className = 'model-row'; row.dataset.modelId = model.id; row.dataset.selected = String(selected);
+      row.setAttribute('role','listitem');
+      const description = document.createElement('div'); description.className = 'model-description';
+      const name = document.createElement('div'); name.className = 'model-name'; name.textContent = model.model || '未设置';
+      const connection = document.createElement('span'); connection.className = 'model-connection';
+      connection.textContent = modelConnectionText(model,result.providers,models);
+      description.append(name);
+      const state = document.createElement('span'); state.className = 'model-state'; state.setAttribute('role','status');
+      if (selected) state.textContent = activation.state === 'pending' ? '待生效'
+        : activation.state === 'next-start' || !statusUnknown && snapshot.gatewayRunning === false ? '下次使用' : '当前默认';
+      const action = selected ? null : button('切换', () => mutate('switch'), false);
+      if (action) {
+        action.className = 'model-switch model-mutation'; action.type = 'button';
+        action.dataset.unavailable = String(model.available === false || !model.id || typeof api.switchModel !== 'function');
+      }
+      const details = document.createElement('details'); details.className = 'model-details';
+      const summary = document.createElement('summary');
+      const detailLabel = document.createElement('span'); detailLabel.className = 'model-details-label'; detailLabel.textContent = '连接详情';
+      summary.append(detailLabel); details.append(summary);
+      for (const [label,value] of [['接口地址',model.baseUrl],['认证方式',modelAuthLabel(model.authMode)]]) {
+        if (!value) continue;
+        const line = document.createElement('p'); line.textContent = `${label}：${value}`; details.append(line);
+      }
+      details.hidden = details.children.length === 1;
+      const secondary = document.createElement('div'); secondary.className = 'model-secondary';
+      if (details.hidden) secondary.append(connection,details);
+      else { summary.prepend(connection); secondary.append(details); }
+      const feedback = document.createElement('p'); feedback.className = 'model-row-feedback'; feedback.setAttribute('role','status');
+      feedback.hidden = !model.problem; feedback.textContent = model.problem || '';
+      const recovery = document.createElement('div'); recovery.className = 'model-row-actions';
+      const rowControls = document.createElement('div'); rowControls.className = 'model-row-controls'; rowControls.append(state); if (action) rowControls.append(action);
+      const remove = button('删除', () => {
+        if (busy || snapshot.busy || statusUnknown || modelSelectionUncertain) return;
+        const prompt = document.createElement('span'); prompt.className = 'model-delete-prompt';
+        prompt.textContent = '删除这个模型？';
+        const confirm = button('确认删除', () => mutate('delete'), false); confirm.className = 'model-switch model-delete-confirm model-mutation';
+        const cancel = button('取消', () => recovery.replaceChildren(), false); cancel.className = 'model-switch model-mutation';
+        const buttons = document.createElement('div'); buttons.className = 'model-delete-buttons'; buttons.append(cancel,confirm);
+        const confirmation = document.createElement('div'); confirmation.className = 'model-delete-confirmation'; confirmation.append(prompt,buttons);
+        recovery.replaceChildren(confirmation); controls();
+        confirm.scrollIntoView({block:'nearest',inline:'nearest'});
+      }, false);
+      remove.className = 'quiet model-delete model-mutation'; remove.type = 'button';
+      remove.hidden = selected;
+      remove.dataset.unavailable = String(selected || !model.id || typeof api.deleteModel !== 'function');
+      rowControls.append(remove);
+      row.append(description,rowControls,secondary,feedback,recovery); list.append(row);
+      async function mutate(mode) {
+        const deleting = mode === 'delete', control = deleting ? remove : action;
+        if (!control || busy || snapshot.busy || statusUnknown || modelSelectionUncertain || control.dataset.unavailable === 'true') return;
+        if (mode === 'switch' && selected) return;
+        const generation = modelFormGeneration;
+        busy = true; control.textContent = deleting ? '删除中' : '验证中';
+        feedback.hidden = true; recovery.replaceChildren(); controls();
+        try {
+          const response = await api[deleting ? 'deleteModel' : 'switchModel']({id:model.id},{onEvent:event => {
+            if (!deleting && action && view === 'model-overview' && generation === modelFormGeneration && event.event === 'model-switch')
+              action.textContent = event.phase === 'applying' ? '切换中' : '验证中';
+          }});
+          if (!response?.ok) throw response || new Error(deleting ? '模型删除结果尚未确认。' : '模型切换结果尚未确认。');
+          if (response.operation) syncState({operation:response.operation});
+          if (view !== 'model-overview' || generation !== modelFormGeneration) return;
+          const updated = response.current?.models ? {ok:true,providers:result.providers,current:response.current,activation:response.activation}
+            : await api.modelProviders();
+          if (!updated?.ok) throw new Error(updated?.warning || '模型切换结果尚未确认。');
+          if (deleting && (savedModelConfiguration(updated).models || updated.models || []).some(item => item.id === model.id))
+            throw new Error('模型删除结果尚未确认，请重新查询。');
+          modelSelectionUncertain = false; renderModelList(updated);
+        } catch (error) {
+          if (view !== 'model-overview' || generation !== modelFormGeneration) return;
+          if (error.operation) syncState({operation:error.operation});
+          const copy = errorCopy(error);
+          const candidate = (error.modelFailureStage === 'candidate' || error.failureStage === 'candidate')
+            && error.userCode !== 'MODEL_CONFIG_PARTIAL';
+          modelSelectionUncertain = !candidate;
+          modelSelectionOperation = candidate ? null : error.operation || modelSelectionOperation;
+          feedback.hidden = false; feedback.textContent = [copy.title,copy.detail].filter(Boolean).join('\n');
+          const retry = button(candidate ? '重试' : '重新查询', candidate ? () => mutate(mode) : modelSettings, false);
+          retry.className = candidate ? 'quiet model-mutation' : 'quiet model-recheck'; recovery.append(retry);
+          if (hasLogs()) { const logs = button('查看日志',event => openLogs(event,error.operation?.operationId || error.logOperationId),false); logs.className = 'quiet'; recovery.append(logs); }
+          if (deleting) recovery.scrollIntoView({block:'nearest',inline:'nearest'});
+        } finally {
+          busy = false; control.textContent = deleting ? '删除' : '切换'; controls();
+        }
+      }
+    }
+    controls();
+  }
+  function unresolvedModelOperation(operation) {
+    return Boolean(operation && (operation.busy || operation.effectState === 'unknown'
+      || ['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome)
+      || operation.effectState === 'changed' && !(operation.verification === 'confirmed'
+        && (operation.state === 'succeeded' || operation.state === 'failed' && operation.result?.configurationSaved))));
+  }
+  async function recheckModelOperation(operation) {
+    if (!operation?.operationId) return operation;
+    let observed = typeof api.operationSnapshot === 'function' ? await api.operationSnapshot(operation.operationId)
+      : snapshot.operation?.operationId === operation.operationId ? snapshot.operation : operation;
+    if (!observed || observed.operationId !== operation.operationId) throw new Error('原模型任务结果尚未确认。');
+    if (!observed.busy && unresolvedModelOperation(observed) && typeof api.recheckOperation === 'function') {
+      const checked = await api.recheckOperation({operationId:observed.operationId,snapshotSequence:observed.snapshotSequence});
+      if (checked?.operation?.operationId !== operation.operationId) throw new Error('原模型任务结果尚未确认。');
+      observed = checked.operation;
+    }
+    syncState({operation:observed});
+    return observed;
+  }
+  async function modelSettings(catalog) {
     if (busy) return;
+    const generation = ++modelFormGeneration;
+    view = 'model-overview'; setupStage(2); clearInline();
+    say('模型设置');
+    if (complete()) editHeader('', canReturnHome() ? '返回酒馆' : '返回操作页');
+    try {
+      if (modelSelectionUncertain) await readStatus();
+      const pending = modelSelectionOperation || (snapshot.operation?.kind === 'model' ? snapshot.operation : null);
+      if (unresolvedModelOperation(pending)) {
+        modelSelectionUncertain = true;
+        modelSelectionOperation = await recheckModelOperation(pending);
+        if (unresolvedModelOperation(modelSelectionOperation)) throw new Error('本次模型操作结果尚未确认，请重新查询。');
+      }
+      const result = catalog?.ok && Array.isArray(catalog.providers) ? catalog : await api.modelProviders();
+      if (view !== 'model-overview' || generation !== modelFormGeneration) return;
+      if (!result.ok) throw new Error(result.warning || '模型配置暂时无法读取。');
+      const current = savedModelConfiguration(result);
+      if (!current.configured && !current.modelsProblem && (!complete() || !(current.models || result.models)?.length)) { await modelForm(result); return; }
+      modelSelectionUncertain = false;
+      modelSelectionOperation = null;
+      const problem = document.createElement('p'); problem.id = 'modelListProblem'; problem.className = 'model-feedback error'; problem.hidden = true;
+      const problemActions = document.createElement('div'); problemActions.id = 'modelListProblemActions'; problemActions.className = 'model-list-problem-actions';
+      $('inline').append(problem,problemActions);
+      const list = document.createElement('div'); list.id = 'modelList'; list.className = 'model-list'; list.tabIndex = 0;
+      list.setAttribute('role','list'); list.setAttribute('aria-label','已保存的模型'); $('inline').append(list);
+      const footer = document.createElement('div'); footer.className = 'model-list-footer';
+      const add = button('+ 添加模型', () => modelForm(result,true), false); add.className = 'quiet model-add model-mutation'; footer.append(add); $('inline').append(footer);
+      renderModelList(result);
+    } catch (error) {
+      if (view !== 'model-overview' || generation !== modelFormGeneration) return;
+      const note = document.createElement('p'); note.className = 'model-feedback'; note.textContent = `模型配置读取失败。\n${textError(error)}`; $('inline').append(note);
+      const recheck = button('重新查询', modelSettings); recheck.className = 'button primary model-recheck'; $('inline').append(recheck);
+      if (hasLogs()) $('inline').append(button('查看日志', openLogs, false));
+    }
+    controls();
+  }
+  modelForm = async (catalog, fromList = false) => {
+    if (busy) return;
+    const listScrollTop = fromList ? $('modelList')?.scrollTop || 0 : 0;
     const generation = ++modelFormGeneration;
     view = 'model'; setupStage(2); clearInline();
     say(complete() ? '这次想用哪个模型？' : '连接一个模型，我们继续。');
-    if (complete()) editHeader('模型设置', canReturnHome() ? '返回酒馆' : '返回操作页');
-    let providers;
+    if (complete()) {
+      editHeader('模型设置', fromList ? '返回模型设置' : canReturnHome() ? '返回酒馆' : '返回操作页');
+      if (fromList) $('inline').querySelector('.edit-head button').onclick = async () => {
+        if (busy) return;
+        await modelSettings();
+        if (view === 'model-overview' && $('modelList')) $('modelList').scrollTop = listScrollTop;
+      };
+    }
+    let providers, saved;
     try {
-      const result = await api.modelProviders();
+      const result = catalog?.ok && Array.isArray(catalog.providers) ? catalog : await api.modelProviders();
       if (!result.ok) throw new Error(result.warning);
       if (view !== 'model' || generation !== modelFormGeneration) return;
-      providers = result.providers;
-      if (!Array.isArray(providers) || !providers.length) throw new Error('当前 Hermes 没有可用的模型服务。');
-    } catch (error) { if (view === 'model' && generation === modelFormGeneration) fail(error, 'model', modelForm); return; }
+      providers = result.providers; saved = savedModelConfiguration(result);
+    } catch (error) { if (view === 'model' && generation === modelFormGeneration) fail(error, 'model', () => modelForm(undefined,fromList)); return; }
     const form = document.createElement('form');
     form.innerHTML = '<div class="fields"><div><div class="field-line"><label for="provider">模型服务</label><a class="quiet" id="getKey" target="_blank" rel="noopener noreferrer">获取 API Key</a></div><select id="provider"></select></div><div><label for="key">API Key</label><div class="secret"><input id="key" type="password" autocomplete="off" placeholder="粘贴 API Key"><button class="eye" type="button" title="显示或隐藏 Key" aria-label="显示或隐藏 API Key"><i class="fa-solid fa-eye"></i></button></div></div><div class="wide" id="endpointField" hidden><label for="endpoint">接口地址</label><input id="endpoint" type="url" placeholder="https://example.com/v1"></div><div class="wide"><div class="field-line"><label for="model">模型名称</label><button type="button" class="quiet" id="loadModels">获取模型列表</button></div><input id="model" list="modelOptions" placeholder="选择或输入模型名称"><datalist id="modelOptions"></datalist></div></div><p class="model-feedback" id="feedback" role="status">API Key 保存在本机，不随日志上传。</p><div class="form-bottom"><span></span><button class="button primary" type="submit"></button></div>';
     form.querySelector('button[type="submit"]').textContent = complete() ? '验证并保存' : '验证并继续';
     $('inline').append(form);
     const authField = document.createElement('div');
     authField.id = 'authField';
-    authField.innerHTML = '<label for="authMode">认证方式</label><select id="authMode"></select>';
-    const loginField = document.createElement('div'); loginField.className = 'wide'; loginField.hidden = true;
-    loginField.innerHTML = '<div class="field-line"><label>服务登录</label><button type="button" class="quiet" id="modelLogin">登录</button></div><p class="model-feedback" id="modelLoginStatus" role="status"></p><a class="quiet" id="modelLoginUrl" target="_blank" rel="noopener noreferrer" hidden>打开登录页面</a><div id="modelLoginPrompt" hidden><label for="modelLoginResponse" id="modelLoginPromptText"></label><div class="secret"><input id="modelLoginResponse" type="password" autocomplete="off"><button type="button" class="quiet" id="modelLoginRespond">确认</button></div></div><button type="button" class="quiet" id="modelLoginCancel" hidden>取消登录</button>';
-    form.querySelector('.fields').append(loginField);
+    authField.innerHTML = '<label for="authMode">认证方式</label><select id="authMode"><option value="key">API Key</option><option value="none">无需认证（本地服务）</option></select>';
     form.querySelector('.fields').append(authField);
     const notice = document.createElement('p'); notice.className = 'model-feedback';
     notice.hidden = true;
     form.append(notice);
-    providers.forEach(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label;
-      option.disabled = provider.available === false; if (provider.reason) option.title = provider.reason; $('provider').append(option); });
-    const savedProvider = providers.some(p => p.id === snapshot.modelProvider) ? snapshot.modelProvider
-      : snapshot.modelProvider?.startsWith('custom:') ? 'custom' : snapshot.modelProvider;
-    $('provider').value = providers.some(p => p.id === savedProvider && p.available !== false) ? savedProvider : (providers.find(p => p.available !== false) || providers[0]).id;
+    providers.forEach(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label; $('provider').append(option); });
+    const savedProvider = saved.provider?.startsWith('custom:') ? 'custom' : saved.provider;
+    $('provider').value = providers.some(p => p.id === savedProvider) ? savedProvider : providers[0].id;
     const selected = () => providers.find(p => p.id === $('provider').value);
-    const selectedAuthMode = () => $('authMode').value || selected().authModes?.[0] || 'key';
-    const endpointValue = () => $('endpointField').hidden ? '' : $('endpoint').value.trim();
-    const requiresKey = () => selectedAuthMode() === 'key' && !selected().keyless && !selected().authenticated;
-    const syncAuth = () => {
-      const provider = selected(), mode = selectedAuthMode();
-      const local = mode === 'none' || provider.keyless;
-      $('key').closest('.secret').parentElement.hidden = local || mode !== 'key';
-      $('key').placeholder = provider.authenticated ? '留空使用已保存的凭据' : '粘贴 API Key';
-      loginField.hidden = mode !== 'oauth';
-      $('modelLoginStatus').textContent = provider.authenticated ? '已登录。' : '请先完成服务登录。';
-      $('modelLogin').textContent = provider.authenticated ? '重新登录' : '登录';
-      $('getKey').hidden = !provider.signupUrl || mode !== 'key'; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
-      notice.hidden = !local && mode !== 'external'; notice.textContent = mode === 'external'
-        ? (provider.reason || '使用 Hermes 已有的外部认证。') : local ? '请先启动本地模型服务。' : '';
-    };
     const syncProvider = () => {
-      const provider = selected(); $('endpointField').hidden = !(provider.custom || provider.endpointEditable || provider.endpointRequired
-        || savedProvider === provider.id && snapshot.modelBaseUrl && snapshot.modelBaseUrl !== provider.baseUrl); $('loadModels').hidden = false;
-      const modes = provider.authModes?.length ? provider.authModes : provider.custom ? ['key', 'none'] : ['key'];
-      $('authMode').replaceChildren();
-      const labels = {key:'API Key', none:'无需认证（本地服务）', oauth:'登录账号', external:'现有环境认证'};
-      modes.forEach(mode => { const option = document.createElement('option'); option.value = mode; option.textContent = labels[mode] || mode; $('authMode').append(option); });
-      authField.hidden = modes.length < 2;
-      $('authMode').value = savedProvider === provider.id && modes.includes(snapshot.modelAuthMode) ? snapshot.modelAuthMode : modes[0];
-      $('key').value = ''; $('modelOptions').replaceChildren();
-      $('model').value = (savedProvider === provider.id ? snapshot.modelName : '') || provider.defaultModel || '';
-      $('endpoint').value = (savedProvider === provider.id ? snapshot.modelBaseUrl : '') || provider.baseUrl || '';
-      $('modelLoginUrl').hidden = true; $('modelLoginPrompt').hidden = true;
+      const provider = selected(); $('endpointField').hidden = !provider.custom; $('loadModels').hidden = false;
+      authField.hidden = !provider.custom;
+      $('authMode').value = provider.custom && savedProvider === provider.id && saved.authMode === 'none' ? 'none' : 'key';
       syncAuth();
+      $('getKey').hidden = !provider.signupUrl; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
+      $('key').value = ''; $('modelOptions').replaceChildren();
+      $('model').value = (savedProvider === provider.id ? saved.model : '')
+        || (provider.id === 'deepseek' ? 'deepseek-v4-flash' : '');
+      $('endpoint').value = savedProvider === provider.id ? saved.baseUrl || '' : '';
     };
-    $('authMode').onchange = () => { $('key').value = ''; syncAuth(); };
+    const syncAuth = () => {
+      const local = selected().custom && $('authMode').value === 'none';
+      $('key').closest('.secret').parentElement.hidden = local;
+      notice.hidden = !local; notice.textContent = local ? '请先启动本地模型服务。' : '';
+    };
+    $('authMode').onchange = syncAuth;
     $('provider').onchange = syncProvider; syncProvider();
     form.querySelector('.eye').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; };
     let modelOperationId;
     const logs = button('查看日志', event => openLogs(event, modelOperationId), false); logs.type = 'button'; logs.className = 'quiet'; logs.hidden = true;
     form.querySelector('.form-bottom').prepend(logs);
-    let submissionUncertain = false, pendingMessage = '';
+    let submissionUncertain = false, pendingMessage = '', pendingOperation, saveAcknowledged = false;
+    const unresolved = unresolvedModelOperation;
     const query = button('重新查询状态', async () => {
       if (busy) return; lock(true);
       try {
         await readStatus();
-        if (submissionUncertain && snapshot.modelSyncPending && typeof api.resumeModelSetup === 'function') pendingModel(pendingMessage);
-        else if (submissionUncertain && snapshot.modelConfigured && !snapshot.modelSyncPending) route();
+        if (submissionUncertain && pendingOperation?.operationId) {
+          const observed = await recheckModelOperation(pendingOperation);
+          if (!observed || observed.operationId !== pendingOperation.operationId) throw new Error('原模型任务结果尚未确认。');
+          pendingOperation = observed;
+          if (unresolved(observed)) {
+            feedback(`${pendingMessage}\n本次保存结果尚未确认，请重新查询状态。`, true); return;
+          }
+          if (observed.verification === 'confirmed' && (observed.state === 'succeeded'
+              || observed.state === 'failed' && observed.result?.configurationSaved && observed.recoveryOutcome === 'not-required')) saveAcknowledged = true;
+          else if (!(observed.effectState === 'untouched' && observed.recoveryOutcome === 'not-required'
+            || observed.effectState === 'restored' && observed.verification === 'confirmed'
+              && observed.recoveryOutcome === 'restored-and-verified')) {
+            feedback(`${pendingMessage}\n本次保存结果尚未确认，请重新查询状态。`, true); return;
+          }
+        }
+        if (submissionUncertain && saveAcknowledged && snapshot.modelSyncPending && typeof api.resumeModelSetup === 'function') pendingModel(pendingMessage);
+        else if (submissionUncertain && saveAcknowledged && snapshot.modelConfigured && !snapshot.modelSyncPending) {
+          if (complete()) { lock(false); await modelSettings(); } else route();
+        }
+        else if (submissionUncertain && pendingOperation && !unresolved(pendingOperation)) {
+          submissionUncertain = false; saveAcknowledged = false; pendingOperation = undefined;
+          feedback('本次任务已结束，可以重新验证并保存。', true);
+        }
         else feedback(pendingMessage ? `${pendingMessage}\n当前状态已确认，请根据提示继续。` : '当前状态已确认，可以继续配置。', Boolean(pendingMessage));
-      } catch (error) { feedback(`${pendingMessage}\n${unknownStatusCopy()}`, true); }
+      } catch (error) { feedback(`${pendingMessage}\n${statusUnknown ? unknownStatusCopy() : '本次保存结果尚未确认，请重新查询状态。'}`, true); }
       finally { lock(false); }
     }, false);
     query.id = 'modelStatusRecheck'; query.type = 'button'; query.hidden = !statusUnknown;
@@ -1035,54 +1246,10 @@
     const lock = value => { busy = value; form.querySelectorAll('input,select,button').forEach(c => { c.disabled = value; });
       form.querySelector('button[type="submit"]').dataset.unavailable = String(submissionUncertain);
       query.dataset.pending = String(submissionUncertain); controls(); };
-    $('modelLogin').onclick = async () => {
-      if (busy) return;
-      lock(true); $('modelLoginCancel').hidden = false; $('modelLoginCancel').disabled = false;
-      let session, lastPromptId;
-      const showProgress = value => {
-        const progress = value.progress || {};
-        $('modelLoginStatus').textContent = [progress.message, progress.userCode].filter(Boolean).join(' ');
-        $('modelLoginUrl').hidden = !progress.url;
-        if (progress.url) $('modelLoginUrl').href = progress.url;
-        $('modelLoginPrompt').hidden = !progress.promptId;
-        if (progress.promptId) {
-          $('modelLoginPromptText').textContent = progress.prompt || '填写登录页面返回的确认内容';
-          if (lastPromptId !== progress.promptId) $('modelLoginResponse').value = '';
-          lastPromptId = progress.promptId;
-          $('modelLoginResponse').disabled = false; $('modelLoginRespond').disabled = false;
-        }
-      };
-      $('modelLoginCancel').onclick = () => session && api.modelAuthCancel({id:session.id}).catch(error => feedback(textError(error), true));
-      $('modelLoginRespond').onclick = async () => {
-        if (!session || !lastPromptId) return;
-        const response = $('modelLoginResponse').value.trim(); if (!response) return;
-        $('modelLoginResponse').value = ''; $('modelLoginRespond').disabled = true;
-        try { await api.modelAuthRespond({id:session.id,promptId:lastPromptId,response}); }
-        catch (error) { feedback(textError(error), true); $('modelLoginRespond').disabled = false; }
-      };
-      try {
-        session = await api.modelAuthStart({provider:selected().id}); showProgress(session);
-        while (session.state === 'running') {
-          await new Promise(resolve => setTimeout(resolve, 600));
-          if (view !== 'model' || generation !== modelFormGeneration) { await api.modelAuthCancel({id:session.id}); return; }
-          session = await api.modelAuthStatus({id:session.id}); showProgress(session);
-        }
-        if (session.state !== 'succeeded') throw new Error(session.error || '登录已取消，可以重新登录。');
-        const catalog = await api.modelProviders();
-        const updated = catalog.providers?.find(provider => provider.id === selected().id);
-        if (!updated?.authenticated) throw new Error('未能确认模型服务已登录。');
-        Object.assign(selected(), updated); syncAuth(); feedback('登录成功，可以选择模型。');
-      } catch (error) { feedback(textError(error), true); }
-      finally {
-        if (view === 'model' && generation === modelFormGeneration) {
-          $('modelLoginCancel').hidden = true; $('modelLoginPrompt').hidden = true; $('modelLoginUrl').hidden = true; lock(false);
-        }
-      }
-    };
     $('loadModels').onclick = async () => {
-      if (!$('key').value.trim() && requiresKey()) { feedback('请先填写 API Key。', true); return; }
+      if (!$('key').value.trim() && !(selected().custom && $('authMode').value === 'none')) { feedback('请先填写 API Key。', true); return; }
       lock(true); feedback('正在获取模型列表。');
-      try { const result = await api.modelOptions({ provider: $('provider').value, key: $('key').value.trim(), baseUrl: endpointValue(), authMode: selectedAuthMode() });
+      try { const result = await api.modelOptions({ provider: $('provider').value, key: $('key').value.trim(), baseUrl: $('endpoint').value.trim(), authMode: $('authMode').value });
         $('modelOptions').replaceChildren(); result.models.forEach(name => { const option = document.createElement('option'); option.value = name; $('modelOptions').append(option); });
         feedback('模型列表已更新。');
       } catch (error) {
@@ -1094,29 +1261,28 @@
     };
     form.onsubmit = async event => {
       event.preventDefault(); if (busy || submissionUncertain || statusUnknown) return;
-      const payload = { provider: $('provider').value, key: $('key').value.trim(), model: $('model').value.trim(), baseUrl: endpointValue(), authMode: selectedAuthMode() };
-      if (!payload.key && requiresKey()) { feedback('请填写 API Key。', true); return; }
-      if ((selected().custom || selected().endpointRequired) && !payload.baseUrl) { feedback('请填写模型服务的接口地址。', true); return; }
+      const payload = { provider: $('provider').value, key: $('key').value.trim(), model: $('model').value.trim(), baseUrl: selected().custom ? $('endpoint').value.trim() : '', authMode: selected().custom ? $('authMode').value : 'key' };
+      if (!payload.key && payload.authMode !== 'none') { feedback('请填写 API Key。', true); return; }
+      if (selected().custom && !payload.baseUrl) { feedback('请填写模型服务的接口地址。', true); return; }
       if (!payload.model) { feedback('请选择或填写模型名称。', true); return; }
       lock(true); feedback('正在测试模型响应。');
       let configurationSaved = false;
       try {
         const result = await api.saveAndTestModel(payload); modelOperationId = result?.operation?.operationId;
         if (result?.operation) syncState({operation:result.operation});
-        configurationSaved = true; $('key').value = ''; await readStatus(); lock(false);
+        configurationSaved = true; saveAcknowledged = true; pendingOperation = result?.operation;
+        $('key').value = ''; await readStatus(); lock(false);
         if (!snapshot.modelConfigured) throw new Error('模型配置复核未通过，请重新连接。');
-        if (result?.tavernSyncUnsupported) {
-          pendingModel(result.warning, true);
-        } else if (complete()) {
-          dailyHome(snapshot.gatewayRunning ? '模型配置已保存，重启诺拉后生效。' : '模型配置已保存，下次启动诺拉时生效。');
-          if (snapshot.gatewayRunning) $('inline').append(button('重启诺拉', () => run('restart', { service: 'nora' })));
+        if (complete()) {
+          await modelSettings();
         } else route();
       } catch (error) {
         if (error.operation) { modelOperationId = error.operation.operationId; syncState({operation:error.operation}); }
         const copy = errorCopy(error);
         const message = (copy.title + '\n' + copy.detail).replaceAll(payload.key || '\0', '***');
         try { await readStatus(); } catch {}
-        const partial = configurationSaved || error.userCode === 'MODEL_CONFIG_PARTIAL';
+        pendingOperation = error.operation || pendingOperation;
+        const partial = configurationSaved || error.userCode === 'MODEL_CONFIG_PARTIAL' || unresolved(pendingOperation);
         submissionUncertain = partial; pendingMessage = configurationSaved
           ? '配置已保存，请查询状态，无需再次提交。' : message;
         lock(false);
@@ -1128,14 +1294,9 @@
     };
     controls();
   };
-  function pendingModel(message = '', unsupported = false) {
+  function pendingModel(message = '') {
     view = 'model-pending'; setupStage(2); clearInline();
-    say(unsupported ? '诺拉配置已保存，酒馆需要单独配置。' : '酒馆配置同步未完成。', message || '模型配置已保存，无需重新填写 API Key。');
-    if (unsupported) {
-      $('inline').append(button('打开酒馆', openTavern));
-      $('inline').append(button(complete() ? '返回酒馆' : '继续', () => route(), false));
-      controls(); return;
-    }
+    say('酒馆配置同步未完成。', message || '模型配置已保存，无需重新填写 API Key。');
     $('inline').append(button('继续同步', async () => {
       if (busy) return;
       busy = true; controls();
@@ -1256,7 +1417,7 @@
     if (action === 'logs' && hasLogs()) { hideMenu(); openLogs({ currentTarget: control }); return; }
     if (busy) return; hideMenu();
     if (['model','claw','community','update','settings'].includes(action)) pageReturnFocus = control.closest('#more') ? $('moreButton') : control;
-    if (action === 'model') modelForm();
+    if (action === 'model') modelSettings();
     if (action === 'claw') clawForm();
     if (action === 'community') { view = 'community'; community(canReturnHome() ? '返回酒馆' : '返回操作页'); }
     if (action === 'update') checkUpdates();

@@ -33,16 +33,6 @@ function routeRequest(receipt,input,authorizeTarget=capability.authorizeTarget){
     ||input.argv.some(arg=>typeof arg!=='string'||arg.length>8192)||typeof input.stdin!=='string'||input.stdin.length>1400000
     ||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.stdin))throw fail('OPERATION_ENTRY_UNSUPPORTED');
   const target=authorizeTarget(receipt,input.argv[0]),flags={},positionals=[];
-  if(target.type==='model'){
-    if(input.kind!=='model'||input.argv.length!==1||input.operationId!==undefined)throw fail('OPERATION_ENTRY_UNSUPPORTED');
-    let body;try{body=JSON.parse(Buffer.from(input.stdin,'base64').toString('utf8'));}catch{throw fail('OPERATION_ENTRY_UNSUPPORTED');}
-    if(!body||typeof body!=='object'||Array.isArray(body)||!['save','save-local','authenticate','sync-saved-tavern'].includes(body.action))throw fail('OPERATION_ENTRY_UNSUPPORTED');
-    const provider=String(body.provider||'');
-    if(provider.length>200||/[\r\n\0]/.test(provider))throw fail('OPERATION_ENTRY_UNSUPPORTED');
-    // Credentials and the model request stay in the transient pipe. The task
-    // records only which native configuration operation was authorized.
-    return {kind:'model',action:'model',target,flags,request:{action:'model',mode:body.action},argv:[],stdin:Buffer.from(input.stdin,'base64')};
-  }
   for(let index=1;index<input.argv.length;index++){
     const arg=input.argv[index];
     if(valueFlags.has(arg)){
@@ -112,17 +102,15 @@ function bridgeArgs(receipt,command,options={}){
   if(options.allowCandidate&&['plan-update','update'].includes(command))args.push('--allow-candidate');
   return args;
 }
-function guardedRunner(receipt,{diagnostics,onEvent=()=>{},respondAuth}={}){
+function guardedRunner(receipt,{diagnostics,onEvent=()=>{}}={}){
   const packets=createFaultPackets({clean:diagnostics.clean,roots:()=>[receipt.noraHome,receipt.resourcesRoot,os.homedir()]});
   return (context,target,args,{readonly=false,stdin=Buffer.alloc(0),lifecycle,node=false}={})=>new Promise((resolve,reject)=>{
     let child;
     const legacy=node&&target===path.join(__dirname,'legacy-recovery-worker.js');
-    const modelHelper=target===receipt.resources['model_config.py']?.path;
-    const modelAuth=modelHelper&&JSON.parse(stdin.toString('utf8')).action==='authenticate';
     try{
       const env=environment(receipt);if(lifecycle)env.NORA_UPDATE_LIFECYCLE=JSON.stringify(lifecycle);
       if(readonly){
-        if(!(modelHelper&&JSON.parse(stdin.toString('utf8')).action==='inspect')&&(target!==receipt.resources['launcher_bridge.py'].path||!['status','repair-preflight','operation-effects','plan-update','verify-model'].some(name=>args.includes(name))))throw fail('OPERATION_ENTRY_UNSUPPORTED');
+        if(target!==receipt.resources['launcher_bridge.py'].path||!['status','repair-preflight','operation-effects','plan-update','verify-model'].some(name=>args.includes(name)))throw fail('OPERATION_ENTRY_UNSUPPORTED');
         child=spawn(pythonFor(receipt),['-B','-u',target,...args],{env,cwd:receipt.resourcesRoot,windowsHide:true});
       }else{
         context.check();
@@ -138,24 +126,6 @@ function guardedRunner(receipt,{diagnostics,onEvent=()=>{},respondAuth}={}){
     const evidence=packets.collector(true,{output:node||installer,components:node?(legacy?['updater']:['runtime']):installer?['bridge','installer','updater','native']:['bridge']});
     const observe=(line,stream)=>{
       let message;try{message=JSON.parse(line);}catch{message={event:'log',line,stream};}
-      if(modelHelper){
-        if(typeof message.ok==='boolean'){result=message;return;}
-        if(message.event==='auth'){
-          const progress={event:'auth',message:message.message,url:message.url,userCode:message.userCode,prompt:message.prompt,promptId:message.promptId};
-          onEvent(progress);
-          if(message.promptId){
-            Promise.resolve().then(()=>{if(typeof respondAuth!=='function')throw fail('MODEL_AUTH_INPUT_REQUIRED','此登录需要返回确认内容，请使用支持持续输入的会话或启动器登录。');return respondAuth(progress);})
-              .then(reply=>{
-                if(reply?.promptId!==message.promptId||typeof reply.response!=='string'||!reply.response.trim()||reply.response.length>8192||/[\r\n\0]/.test(reply.response))throw fail('MODEL_AUTH_INPUT_REQUIRED','登录确认输入无效。');
-                diagnostics.addSecret(reply.response);child.stdin.write(JSON.stringify(reply)+'\n');
-              }).catch(error=>{primary=error;child.stdin.end();});
-          }
-          return;
-        }
-        // Native auth presentation is private; its structured final diagnostic
-        // is the only error evidence allowed out of the helper protocol.
-        return;
-      }
       if(message.event==='result')result=message;
       else{
         const reviewed=diagnostics.clean(message);evidence.observe(reviewed.event==='log'?{...reviewed,stream:reviewed.stream||stream}:reviewed);
@@ -164,7 +134,6 @@ function guardedRunner(receipt,{diagnostics,onEvent=()=>{},respondAuth}={}){
       }
     };
     const badOutput=error=>{outputError ||= error;};
-    child.stdin.on('error',badOutput);
     consumeLines(child.stdout,line=>observe(line,'stdout'),badOutput,{preserveBlankLines:true});
     consumeLines(child.stderr,line=>observe(line,'stderr'),badOutput,{preserveBlankLines:true});
     const timer=setTimeout(()=>child.kill('SIGTERM'),readonly?(args.some(value=>['repair-preflight','operation-effects'].includes(value))?300000:90000):30*60*1000);timer.unref?.();
@@ -172,13 +141,10 @@ function guardedRunner(receipt,{diagnostics,onEvent=()=>{},respondAuth}={}){
     child.once('close',(code,signal)=>{
       clearTimeout(timer);
       diagnostics.write('process.exit',{exitCode:code,signal});
-      if(modelHelper&&(code!==0||result?.ok!==true||outputError)){
-        const errors=require('./launcher-errors'),cause=errors.programError(result?.diagnostic);
-        reject(errors.launcherError(result?.error||primary?.message||'模型配置程序未完成。',{code:primary?.code||outputError?.code,source:'launcher_process',site:'model.save',exitCode:code,signal},primary||outputError||cause));
-      }else if(code!==0||primary||outputError)reject(evidence.attach(Object.assign(primary||outputError||fail('OPERATION_CHILD_FAILED','维护进程未完成。现有安装和诊断记录已保留。'),{exitCode:code,signal})));
+      if(code!==0||primary||outputError)reject(evidence.attach(Object.assign(primary||outputError||fail('OPERATION_CHILD_FAILED','维护进程未完成。现有安装和诊断记录已保留。'),{exitCode:code,signal})));
       else resolve(result||{});
     });
-    if(modelAuth)child.stdin.write(Buffer.concat([stdin,Buffer.from('\n')]));else child.stdin.end(stdin);
+    child.stdin.end(stdin);
   });
 }
 function workflowVerified(route,result,status,before,target,receipt){
@@ -244,7 +210,7 @@ function operationTelemetry(receipt,operationId,{evidence,diagnostics,fetcher,co
   return telemetry;
 }
 
-async function execute({receiptPath,request},{validate=capability.validate,authorizeTarget=capability.authorizeTarget,client,lock,run,policy,telemetry:telemetryEnabled=true,fetcher=globalThis.fetch,onEvent=()=>{},onAdmission=()=>{},requestId=randomUUID(),respondAuth}={}){
+async function execute({receiptPath,request},{validate=capability.validate,authorizeTarget=capability.authorizeTarget,client,lock,run,policy,telemetry:telemetryEnabled=true,fetcher=globalThis.fetch,onEvent=()=>{},onAdmission=()=>{},requestId=randomUUID()}={}){
   const validation={receiptPath,noraHome:path.dirname(path.dirname(receiptPath)),currentExecutable:process.execPath};
   const receipt=await validate(validation);
   if(client==='updater'&&receipt.schema!=='nora-updater-control/1')throw fail('UPDATER_IDENTITY_INVALID');
@@ -255,9 +221,9 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
     Object.assign(executionOptions,{allowCandidate:true,explicitLocalRelease:path.resolve(route.flags['--release-dir'])});
   }
   const diagnostics=createDiagnostics({primary:()=>path.join(receipt.installerDirectory,'install.log')});
-  if(['pair','model'].includes(route.kind)){try{const body=JSON.parse(route.stdin.toString('utf8'));diagnostics.addSecret(route.kind==='pair'?body.code:body.key);}catch{throw fail('OPERATION_ENTRY_UNSUPPORTED');}}
+  if(route.kind==='pair'){try{diagnostics.addSecret(JSON.parse(route.stdin.toString('utf8')).code);}catch{throw fail('OPERATION_ENTRY_UNSUPPORTED');}}
   const evidence=createEvidenceStore({directory:receipt.installerDirectory,clean:diagnostics.clean});
-  const runner=run||guardedRunner(receipt,{diagnostics,onEvent,respondAuth});
+  const runner=run||guardedRunner(receipt,{diagnostics,onEvent});
   const bridge=(command,options={},context=null)=>runner(context,receipt.resources['launcher_bridge.py'].path,bridgeArgs(receipt,command,{...options,allowCandidate:executionOptions.allowCandidate}),
     {readonly:context===null,stdin:options.stdin||Buffer.alloc(0)});
   const native=lock||require('./operation-lock');
@@ -349,22 +315,6 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
     rejectAppHandoff(context.snapshot);
     beginTelemetry(context);
     const perform=async()=>{
-      if(route.kind==='model'){
-        await context.stage('applying');
-        const result=await runner(context,route.target.path,[],{stdin:route.stdin});
-        if(result.ok!==true)throw fail('VERIFICATION_FAILED','模型配置未确认完成。');
-        await context.stage('verifying');
-        if(['save','save-local'].includes(route.request.mode)){
-          const current=await runner(null,route.target.path,[],{readonly:true,stdin:Buffer.from(JSON.stringify({action:'inspect'}))});
-          if(!current.configured||current.provider!==result.provider||current.model!==result.model)throw fail('VERIFICATION_FAILED','已保存模型未通过当前实例复核。');
-        }
-        // The helper emits a non-secret receipt. Never persist arbitrary native
-        // response/configuration fields in the operation journal.
-        const value={ok:true};
-        for(const key of ['provider','model','activation','validation','authMode','authenticated','authVerification','configured','tavernSyncUnsupported','reason'])
-          if(['string','boolean'].includes(typeof result[key]))value[key]=result[key];
-        return {verification:'confirmed',value};
-      }
       const original=context.target.releasePlan;
       const managed=client==='updater'&&!receipt.managedInstallation?null:require('./operation-policy').inspectManagedInstallation({noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,
         installRoot:receipt.installRoot,port:receipt.port,platform:receipt.platform});
@@ -635,58 +585,18 @@ function terminalResult(operation){
     ||operation?.requestedAction===undefined&&operation?.kind==='recover'&&!operation?.primaryFailure;
   const ok=operation?.state==='succeeded'||recovery&&operation.state==='rolled-back'
     &&operation.verification==='confirmed';
-  return {event:'result',ok,...(operation?.kind==='model'&&ok?operation.result:{}),operation};
-}
-
-// The first line is the bounded admission request; later lines belong only to
-// native authentication prompts. Old one-shot callers may close without '\n'.
-function requestInput(stream){
-  let first=true,pending='',ended=false,broken=null,firstResolve,firstReject;
-  const queued=[],waiters=[];
-  const request=new Promise((resolve,reject)=>{firstResolve=resolve;firstReject=reject;});
-  const emit=line=>{
-    if(first){first=false;try{firstResolve(JSON.parse(line));}catch(error){broken=error;firstReject(error);}return;}
-    if(waiters.length)waiters.shift().resolve(line);else if(queued.length<8)queued.push(line);else broken=fail('MODEL_AUTH_INPUT_REQUIRED','登录输入过多。');
-  };
-  const finish=error=>{ended=true;broken=error||broken;
-    if(first)firstReject(error||fail('OPERATION_ENTRY_UNSUPPORTED'));
-    for(const waiter of waiters.splice(0))waiter.reject(error||fail('MODEL_AUTH_INPUT_REQUIRED','登录需要继续输入，请使用启动器登录。'));
-  };
-  stream.setEncoding('utf8');
-  stream.on('data',chunk=>{
-    if(broken)return;
-    pending+=chunk;
-    while(pending.includes('\n')){
-      const at=pending.indexOf('\n'),line=pending.slice(0,at);pending=pending.slice(at+1);
-      if(Buffer.byteLength(line)> (first?2*1024*1024:65536)){finish(fail('OPERATION_ENTRY_UNSUPPORTED'));return;}
-      emit(line.replace(/\r$/,''));
-    }
-    if(Buffer.byteLength(pending)>(first?2*1024*1024:65536))finish(fail('OPERATION_ENTRY_UNSUPPORTED'));
-  });
-  stream.once('end',()=>{if(pending&&!broken)emit(pending);pending='';finish();});
-  stream.once('error',finish);
-  return {request,close(){stream.pause();if(!stream.isTTY)stream.destroy();finish();},async reply(prompt){
-    let line;
-    if(queued.length)line=queued.shift();
-    else if(ended||broken)throw broken||fail('MODEL_AUTH_INPUT_REQUIRED','登录需要继续输入，请使用启动器登录。');
-    else line=await new Promise((resolve,reject)=>waiters.push({resolve,reject}));
-    let value;try{value=JSON.parse(line);}catch{throw fail('MODEL_AUTH_INPUT_REQUIRED','登录确认应为 JSON。');}
-    if(value?.promptId!==prompt.promptId)throw fail('MODEL_AUTH_INPUT_REQUIRED','登录确认已过期。');
-    return value;
-  }};
+  return {event:'result',ok,operation};
 }
 
 async function main(){
   const index=process.argv.indexOf('--receipt'),receiptPath=index>=0?process.argv[index+1]:undefined;
   if(!process.versions.electron||!receiptPath||process.env.ELECTRON_RUN_AS_NODE!=='1')throw fail('OPERATION_CAPABILITY_REQUIRED');
-  const input=requestInput(process.stdin),request=await input.request;
-  let operation;
-  try{operation=await execute({receiptPath,request},{respondAuth:prompt=>input.reply(prompt),onEvent:message=>{
-    if(['task','milestone','progress','diagnostic','error','auth'].includes(message.event))process.stdout.write(JSON.stringify(message)+'\n');}});}
-  finally{input.close();}
+  let chunks=[],size=0;for await(const chunk of process.stdin){size+=chunk.length;if(size>2*1024*1024)throw fail('OPERATION_ENTRY_UNSUPPORTED');chunks.push(chunk);}
+  const request=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const operation=await execute({receiptPath,request},{onEvent:message=>{if(['task','milestone','progress','diagnostic','error'].includes(message.event))process.stdout.write(JSON.stringify(message)+'\n');}});
   const result=terminalResult(operation);
   process.stdout.write(JSON.stringify(result)+'\n');
   process.exitCode=result.ok?0:1;
 }
 if(require.main===module)main().catch(error=>{process.stderr.write(JSON.stringify({event:'error',code:error.code||'OPERATION_CHILD_FAILED',message:error.message})+'\n');process.exitCode=1;});
-module.exports={execute,routeRequest,drainOperationOutboxes,terminalResult,currentFilesMatch,requestInput,guardedRunner};
+module.exports={execute,routeRequest,drainOperationOutboxes,terminalResult,currentFilesMatch};

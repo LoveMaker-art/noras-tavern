@@ -11,7 +11,7 @@ async function invoke(channel, ...args) {
   // Reject a plain DTO so recovery actions and the operation proof reach the UI.
   const error = { name: 'LauncherOperationError',
     message: [guidance.title, guidance.detail, guidance.next].filter(Boolean).join("\n") };
-  for (const key of ["failureCode", "userCode", "technical", "guidance", "allowedActions", "operation", "logOperationId"]) error[key] = payload[key];
+  for (const key of ["failureCode", "userCode", "technical", "guidance", "allowedActions", "operation", "logOperationId", "modelFailureStage"]) error[key] = payload[key];
   throw error;
 }
 
@@ -81,15 +81,17 @@ if (contextBridge && ipcRenderer) {
     modelProviders() {
       return invoke('nora:model-providers');
     },
-    modelAuthStart(payload) { return invoke('nora:model-auth-start', payload); },
-    modelAuthStatus(payload) { return invoke('nora:model-auth-status', payload); },
-    modelAuthRespond(payload) { return invoke('nora:model-auth-respond', payload); },
-    modelAuthCancel(payload) { return invoke('nora:model-auth-cancel', payload); },
     modelOptions(payload) {
       return invoke('nora:model-options', payload);
     },
     saveAndTestModel(payload) {
       return invoke('nora:model-save-test', payload);
+    },
+    switchModel(payload, options) {
+      return requestWithEvents('nora:model-switch', payload, options);
+    },
+    deleteModel(payload, options) {
+      return requestWithEvents('nora:model-delete', payload, options);
     },
     resumeModelSetup() { return invoke('nora:model-resume'); },
     openClawChat() {

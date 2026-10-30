@@ -275,36 +275,26 @@ async function modelRetryFixture(t) {
   }
   function reopen(){
     const context=mainContext(root);
-    // This fixture supplies the shared-helper boundary, retaining real HTTP
-    // errors for launcher retry/diagnostic tests. Hermes transport details have
-    // their own Python coverage; the launcher must not implement them again.
-    context.testModelRequest=async value=>{
-      if(state.transportError)throw state.transportError;
-      const {launcherError}=require(path.join(__dirname,'../installer/desktop/launcher-errors'));
-      return new Promise((resolve,reject)=>{
-        const request=require('node:http').request(value.baseUrl+'/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+value.key}},response=>{
-          let text='';response.setEncoding('utf8');response.on('data',chunk=>{text+=chunk;});
-          response.on('end',()=>{
-            let data;try{data=JSON.parse(text);}catch{
-              reject(launcherError('fixture invalid model response',{code:'INVALID_RESPONSE',source:'model_service',site:'model.test'}));return;}
-            if(response.statusCode>=400){reject(launcherError(data.error.message,{status:response.statusCode,source:'model_service',site:'model.test',remoteMessage:'Model request failed; see technical status.'}));return;}
-            resolve({ok:true});
-          });
-        });
-        request.once('error',error=>reject(launcherError('fixture connection failure',{source:'model_service',site:'model.test'},error)));
-        request.end(JSON.stringify({model:value.model}));
-      });
-    };
     context.modelFixture=state;
-    // Use the production task controller, native writer lock and diagnostics.
-    // The Python helper is isolated at its JSON contract.
+    const httpFixture=require(path.join(__dirname,'../installer/desktop/model-config')).testCustomModel;
+    context.configureRequest=state.transportError?async()=>{throw state.transportError;}:httpFixture;
+    // The production task controller, writer lock and diagnostics receive the
+    // shared configure boundary. Its double uses the existing HTTP client only
+    // to generate representative transport failures; this does not exercise or
+    // prove the shared helper's native model validation implementation.
     vm.runInContext(`operationController=createOperationController({directory:installerDirectory,
       lock:operationLock,evidence:operationEvidence,now:()=>new Date(modelFixture.now).toISOString(),
       projectResult:result=>result.value});
       runModelConfigHelper=async value=>{
-        if(value.action==='catalog')return {ok:true,providers:[{id:'custom',custom:true}]};
-        if(value.action==='test')return testModelRequest(value);
-        if(value.action==='save')modelFixture.saves++;
+        if(value.action!=='configure')throw new Error('Unexpected model helper action: '+value.action);
+        try{await configureRequest(value.baseUrl,value.key,value.model);}
+        catch(error){
+          const failure=launcherError(error.message,{source:'model_service',status:error.status,site:'model.save',code:error.code},error);
+          failure.remoteMessage='Model configuration helper failed; see technical exit status.';
+          failure.modelFailureStage='candidate';
+          throw failure;
+        }
+        modelFixture.saves++;
         return {ok:true,provider:'custom:fixture',model:value.model};
       };
       finishModelSetup=async()=>({ok:true});
@@ -403,7 +393,7 @@ test('model failure main log retains HTTP cause and keeps credentials out of dia
     const event=logs.trim().split('\n').map(JSON.parse).find(item=>item.event==='model.failed');
     assert.equal(event.error.cause?.status,status);
     assert.match(event.error.cause.message,/fixture provider rejected/);
-    assert.equal(event.error.cause.source,'model_service');assert.equal(event.error.cause.site,'model.test');
+    assert.equal(event.error.cause.source,'model_service');assert.equal(event.error.cause.site,'model.save');
     assert.equal(logs.includes(f.key),false);assert.equal(logs.includes(encodeURIComponent(f.key)),false);
     const records=JSON.stringify(await app.snapshot());assert.equal(records.includes(f.key),false);
     const packets=require('../installer/desktop/fault-packet').createFaultPackets();
@@ -505,6 +495,47 @@ test('model helper logs success, invalid protocol and timeout separately without
     if(mode==='timeout'){assert.match(text,/model.helper-timeout/);assert.match(text,/SIGTERM/);}
     else assert.match(text,/exitCode=0/);
   }
+});
+
+test('model inspection uses the read transport while configure owns its writer transport and longer budget',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-helper-transport-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
+  const script=path.join(root,'protocol.cjs');
+  fs.writeFileSync(script,"let body='';process.stdin.on('data',chunk=>body+=chunk);process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,action:JSON.parse(body).action,model:'PRIVATE_SAVED_MODEL'})));");
+  const transports=[],budgets=[],spawn=require('node:child_process').spawn;
+  const child=transport=>()=>{transports.push(transport);return spawn(process.execPath,[script],{stdio:'pipe'});};
+  const context=mainContext(root,{'node:child_process':{...require('node:child_process'),spawn:child('read')}});
+  context.ownedSpawn=child('owned');context.setTimeout=(callback,delay)=>{budgets.push(delay);return setTimeout(callback,delay);};
+  vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=ownedSpawn;',context);
+  const helper=vm.runInContext('runModelConfigHelper',context);
+  for(const action of ['inspect','configure','sync-saved-tavern','verify-runtime'])assert.equal((await helper({action})).action,action);
+  assert.deepEqual(transports,['read','owned','owned','owned']);
+  assert.deepEqual(budgets,[60000,210000,60000,60000]);
+  const logs=fs.readFileSync(vm.runInContext('diagnostics.lastFile',context),'utf8');
+  assert.doesNotMatch(logs,/PRIVATE_SAVED_MODEL/);
+});
+
+test('shared helper failures preserve native HTTP metadata through diagnostics without logging the private protocol',async t=>{
+  for(const [status,category] of [[401,'http_unauthorized'],[403,'http_forbidden'],[503,'http_error']])await t.test(String(status),async t=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-helper-http-'));
+    t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
+    const secret='fixture-native-private-key',script=path.join(root,'failure.cjs');
+    const protocol={ok:false,error:`模型验证未通过。${secret}`,httpStatus:status,source:'model_service',code:'MODEL_NATIVE_VALIDATION_FAILED',failureStage:'candidate',
+      diagnostic:{name:'ModelConfigurationFailure',message:'模型验证未通过。',code:'MODEL_NATIVE_VALIDATION_FAILED'},config:'PRIVATE_NATIVE_CONFIG'};
+    fs.writeFileSync(script,`process.stdin.resume();process.stdin.on('end',()=>{console.log(${JSON.stringify(JSON.stringify(protocol))});process.exitCode=1;});`);
+    const context=mainContext(root,{$processOutputFixture:true});
+    context.spawnFixture=()=>require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});
+    vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
+    const helper=vm.runInContext('runModelConfigHelper',context),{describeError}=require('../installer/desktop/launcher-errors');
+    await assert.rejects(helper({action:'configure',key:secret}),error=>{
+      assert.equal(error.source,'model_service');assert.equal(error.status,status);assert.equal(error.code,'MODEL_NATIVE_VALIDATION_FAILED');
+      assert.equal(error.modelFailureStage,'candidate');
+      const technical=describeError(error);assert.equal(technical.http_status,status);assert.equal(technical.error_code,category);
+      assert.equal(error.cause.name,'ModelConfigurationFailure');assert.doesNotMatch(error.message,new RegExp(secret));return true;
+    });
+    const logs=fs.readFileSync(vm.runInContext('diagnostics.lastFile',context),'utf8');
+    assert.match(logs,/model.helper-failed/);assert.doesNotMatch(logs,new RegExp(secret+'|PRIVATE_NATIVE_CONFIG'));
+  });
 });
 
 function recoveryControllerFixture(context,pending) {
@@ -651,10 +682,11 @@ test('model progress cache failure releases its task lock and preserves the prov
   const original=Object.assign(new Error('fixture provider test failure'),{code:'ECONNRESET'});
   const context=mainContext(root,{'node:fs':{...fs,renameSync(from,to){if(to===path.join(root,'installer/state.json')) throw stateError;return fs.renameSync(from,to);}}});
   context.original=original;
-  vm.runInContext('runModelConfigHelper=async value=>{if(value.action==="catalog")return {ok:true,providers:[{id:"openai-api"}]};throw original;};',context);
+  vm.runInContext('runModelConfigHelper=async()=>{throw original;};',context);
   const handler=mainCallback(context,'nora:model-save-test');
   await assert.rejects(handler({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>{
-    assert.equal(error.code,original.code);
+    assert.equal(error.userCode,'MODEL_CONFIG_PARTIAL','a lost helper response requires inspection before another save');
+    assert.equal(error.cause.code,original.code,'the original transport cause remains available');
     assert.equal(error.operation.primaryFailure.technical.system_code,original.code);
     return true;
   });
@@ -664,9 +696,10 @@ test('model progress cache failure releases its task lock and preserves the prov
 
   const secondary=mainContext(path.join(root,'secondary'));
   secondary.original=original;secondary.stateError=stateError;
-  vm.runInContext('runModelConfigHelper=async value=>{if(value.action==="catalog")return {ok:true,providers:[{id:"openai-api"}]};throw original;}; recordEvent=message=>{if(message.state==="error")throw stateError;};',secondary);
+  vm.runInContext('runModelConfigHelper=async()=>{throw original;}; recordEvent=message=>{if(message.state==="error")throw stateError;};',secondary);
   await assert.rejects(mainCallback(secondary,'nora:model-save-test')({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>{
-    assert.equal(error.code,original.code);
+    assert.equal(error.userCode,'MODEL_CONFIG_PARTIAL');
+    assert.equal(error.cause.code,original.code);
     assert.equal(error.operation.primaryFailure.technical.system_code,original.code);
     const evidence=fs.readFileSync(path.join(error.operation.primaryFailureRef,'metadata.json'),'utf8');
     assert.match(evidence,/fixture provider test failure/);
@@ -676,32 +709,42 @@ test('model progress cache failure releases its task lock and preserves the prov
   assert.equal(vm.runInContext('modelBusy',secondary),false);
 });
 
-test('successful shared-helper configuration save followed by failed JS checkpoint preserves saved facts and original cause', async t => {
+test('shared configuration commit followed by a failed Tavern sync checkpoint preserves saved facts and original cause', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-saved-checkpoint-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const home=path.join(root,'hermes');fs.mkdirSync(home);
+  const home=path.join(root,'hermes');
+  fs.mkdirSync(home,{recursive:true});
   fs.writeFileSync(path.join(home,'config.yaml'),'old model');
   const failure=Object.assign(new Error('fixture verified checkpoint denied'),{code:'EACCES'});
   const actual=require('../installer/desktop/model-config');
   const context=mainContext(root,{'./model-config':{...actual,writeVerifiedModel:()=>{throw failure;}}});
-  context.modelHome=home;
-  vm.runInContext(`runModelConfigHelper=async value=>{
-    if(value.action==='catalog')return {ok:true,providers:[{id:'openai-api',authModes:['key']}]};
-    if(value.action==='save'){
-      fs.writeFileSync(path.join(modelHome,'config.yaml'),JSON.stringify({model:value.model,provider:value.provider}));
-      fs.writeFileSync(path.join(modelHome,'.env'),'OPENAI_API_KEY='+value.key+'\\n');
+  const payload={provider:'openai-api',key:'fixture-key',model:'fixture-new-model'};
+  const helperRequests=[];
+  // The shared helper now commits both configuration and the initial model
+  // checkpoint. The remaining JS checkpoint clears pending Tavern sync; fail
+  // that real boundary after a simulated shared commit, not the removed writer.
+  context.configureFixture=async value=>{
+    helperRequests.push(value.action);
+    if(value.action==='configure'){
+      fs.writeFileSync(path.join(home,'config.yaml'),JSON.stringify({model:value.model,provider:value.provider}));
+      fs.writeFileSync(path.join(home,'.env'),`${value.keyEnv}=${value.key}\n`);
+      actual.writeVerifiedModel(root,{...value,tavernSyncPending:true});
     }
-    return {ok:true,provider:value.provider,model:value.model};
-  };`,context);
-  await assert.rejects(mainCallback(context,'nora:model-save-test')({}, {provider:'openai-api',key:'fixture-key',model:'fixture-new-model'}),error=>{
-    assert.equal(error.userCode,'MODEL_CONFIG_PARTIAL',error.message);
+    return {ok:true};
+  };
+  vm.runInContext('runModelConfigHelper=configureFixture; runBridge=async()=>({ok:true,running:true});',context);
+  await assert.rejects(mainCallback(context,'nora:model-save-test')({}, payload),error=>{
+    assert.equal(error.userCode,'MODEL_SYNC_PENDING',error.message);
     const evidence=fs.readFileSync(path.join(error.operation.primaryFailureRef,'metadata.json'),'utf8');
-    assert.match(evidence,/fixture verified checkpoint denied/);assert.match(evidence,/EACCES/);return true;
+    assert.match(evidence,/fixture verified checkpoint denied/);
+    assert.match(evidence,/EACCES/);
+    return true;
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home,'config.yaml'),'utf8')),{model:'fixture-new-model',provider:'openai-api'});
-  assert.equal(fs.readFileSync(path.join(home,'.env'),'utf8'),'OPENAI_API_KEY=fixture-key\n');
+  assert.deepEqual(fs.readFileSync(path.join(home,'.env'),'utf8').split(/\r?\n/),['OPENAI_API_KEY=fixture-key','']);
+  assert.deepEqual(helperRequests,['configure','sync-saved-tavern']);
+  assert.equal(actual.readVerifiedModel(root).tavernSyncPending,true);
   assert.equal(vm.runInContext('modelBusy',context),false);
-  assert.doesNotMatch(fs.readFileSync(path.join(root,'installer/install.log'),'utf8'),/fixture-key/);
 });
 
 test('log events remain visible and diagnostic without rewriting installer state', t => {
@@ -1153,61 +1196,4 @@ test('actual runtime extraction failure automatically produces an authorized bou
     assert.equal(last.exit_code,2);assert.equal(last.system_code,'');assert.ok(last.fault.errors.some(e=>e.relation==='child'&&e.syscall==='symlink'));
     assert.equal(last.fault.output.some(line=>line.includes('installer tool')),true,'owned installer stderr is reviewed and retained after redaction');assert.doesNotMatch(JSON.stringify(last.fault),/fixture-secret|Users\/private/);
   } finally {client?.close();fs.rmSync(root,{recursive:true,force:true});}
-});
-
-test('native authentication keeps stdin open for an explicit reply and never logs login codes', async t => {
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-auth-input-'));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
-  const script=path.join(root,'auth.cjs'),secret='private-returned-oauth-code';
-  fs.writeFileSync(script,`const lines=require('node:readline').createInterface({input:process.stdin});let started=false;
-    lines.on('line',line=>{const body=JSON.parse(line);if(!started){started=true;
-      if(body.action!=='authenticate')process.exit(2);
-      console.log(JSON.stringify({event:'auth',url:'https://login.example/authorize',promptId:'return-code',prompt:'返回确认码'}));
-    }else{if(body.promptId!=='return-code'||body.response!=='${secret}')process.exit(3);
-      console.log('PRIVATE native presentation '+body.response);
-      console.log(JSON.stringify({ok:true}));lines.close();process.stdin.destroy();}});`);
-  const context=mainContext(root,{$processOutputFixture:true});
-  context.spawnFixture=()=>require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});
-  vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
-  let respond,progress;
-  const helper=vm.runInContext('runModelConfigHelper',context);
-  assert.equal((await helper({action:'authenticate',provider:'native-oauth'},{
-    registerInput:fn=>{respond=fn;},onAuth:event=>{progress=event;respond({promptId:event.promptId,response:secret});},
-  })).ok,true);
-  assert.equal(progress.promptId,'return-code');assert.equal(progress.url,'https://login.example/authorize');
-  const logs=fs.readFileSync(vm.runInContext('diagnostics.lastFile',context),'utf8');
-  assert.match(logs,/model.helper-exit/);assert.doesNotMatch(logs,/PRIVATE|private-returned-oauth-code|return-code|login.example/);
-});
-
-test('authentication abort waits for the held child to close and cannot be reported as success', async t => {
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-auth-cancel-'));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
-  const script=path.join(root,'auth.cjs');
-  fs.writeFileSync(script,`require('node:readline').createInterface({input:process.stdin}).once('line',()=>{
-    console.log(JSON.stringify({event:'auth',message:'waiting'}));setInterval(()=>{},1000);
-  });`);
-  const context=mainContext(root,{$processOutputFixture:true});let child;
-  context.spawnFixture=()=>child=require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});
-  vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
-  const controller=new AbortController();
-  await assert.rejects(vm.runInContext('runModelConfigHelper',context)({action:'authenticate',provider:'native-oauth'},
-    {signal:controller.signal,onAuth:()=>controller.abort()}),error=>error.code==='MODEL_AUTH_CANCELLED');
-  assert.ok(child.exitCode !== null || child.signalCode !== null,'the rejected helper promise must observe child termination');
-});
-
-test('Hermes catalog reads use instance Python without requiring a maintenance writer', async t => {
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-catalog-read-'));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
-  const script=path.join(root,'catalog.cjs');
-  fs.writeFileSync(script,`process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,providers:[{id:'native-provider'}]})));`);
-  let readSpawns=0,writeSpawns=0;
-  const childProcess=require('node:child_process');
-  const context=mainContext(root,{'node:child_process':{...childProcess,spawn:()=>{readSpawns++;return childProcess.spawn(process.execPath,[script],{stdio:'pipe'});}}});
-  context.spawnWriteFixture=()=>{writeSpawns++;throw new Error('writer capability required');};
-  vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnWriteFixture;',context);
-  const helper=vm.runInContext('runModelConfigHelper',context);
-  assert.equal((await helper({action:'catalog'})).providers[0].id,'native-provider');
-  assert.equal(readSpawns,1);assert.equal(writeSpawns,0);
-  await assert.rejects(helper({action:'save'}),/writer capability/);
-  assert.equal(readSpawns,1);assert.equal(writeSpawns,1);
 });

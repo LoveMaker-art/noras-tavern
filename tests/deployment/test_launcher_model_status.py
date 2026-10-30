@@ -22,23 +22,33 @@ else:
     from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 
 class VerifiedModelStatusTests(unittest.TestCase):
-    def test_native_oauth_checkpoint_uses_hermes_without_requiring_env_key(self):
+    def test_bridge_status_preserves_native_checkpoint_and_reports_the_current_selection(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); home = root / 'hermes'; home.mkdir()
+            root = Path(temporary)
+            home = root / 'hermes'; home.mkdir()
             (root / 'installer').mkdir()
-            (home / 'config.yaml').write_text('model: {provider: openai-codex, default: native-model}')
-            (root / 'installer/model.json').write_text(json.dumps({'schema': 1, 'hermesNative': True,
-                'provider': 'openai-codex', 'model': 'native-model', 'authMode': 'oauth',
-                'tavernSyncUnsupported': True}))
-            result = SimpleNamespace(returncode=0, stdout=json.dumps({'ok': True, 'configured': True,
-                'provider': 'openai-codex', 'model': 'native-model', 'credentialMatches': True}))
-            with patch.object(launcher_bridge, 'python_command', return_value='instance-python'), \
-                    patch.object(launcher_bridge.subprocess, 'run', return_value=result) as run:
-                selected = read_verified_model(root, home)
-            self.assertEqual(selected['authMode'], 'oauth')
-            self.assertTrue(selected['tavernSyncUnsupported'])
-            self.assertFalse((home / '.env').exists())
-            self.assertEqual(json.loads(run.call_args.kwargs['input'])['action'], 'inspect')
+            (home / 'config.yaml').write_text('model: {provider: openai-codex, default: codex-model}')
+            marker = root / 'installer/model.json'
+            marker.write_text(json.dumps({'schema': 1, 'provider': 'openai-codex', 'model': 'codex-model',
+                'authMode': 'native', 'validation': 'api-response'}))
+            with patch.object(launcher_bridge, 'installed', return_value=False), \
+                 patch.object(launcher_bridge.nora_system, 'installation_state', return_value={'noraInstalled': True}), \
+                 patch.object(launcher_bridge.nora_system, 'update_recovery', return_value=None), \
+                 patch.object(launcher_bridge, 'hermes_command', return_value=None), \
+                 patch.object(launcher_bridge, 'gateway_status', return_value={'gatewayRunning': False, 'clawchatConnected': False}), \
+                 patch.object(launcher_bridge, 'clawchat_paired', return_value=False):
+                state = launcher_bridge.status_payload(root, home, root / 'tavern', 18999)
+                self.assertTrue(state['modelConfigured'])
+                self.assertEqual(state['modelProvider'], 'openai-codex')
+                self.assertEqual(state['modelState']['credentialStatus'], 'unknown')
+                self.assertEqual(state['modelState']['validation'], 'api-response')
+                (home / 'config.yaml').write_text('model: {provider: opencode-go, default: new-model}')
+                state = launcher_bridge.status_payload(root, home, root / 'tavern', 18999)
+                self.assertFalse(state['modelConfigured'])
+                self.assertTrue(state['modelState']['configured'])
+                self.assertEqual(state['modelProvider'], 'opencode-go')
+                self.assertEqual(state['modelName'], 'new-model')
+                self.assertEqual(state['modelState']['validationStatus'], 'stale')
 
     def test_first_start_reports_typed_setup_blocker_without_starting_a_service(self):
         args = SimpleNamespace(nora_home=Path('/fixture'), hermes_home=Path('/fixture/hermes'),
