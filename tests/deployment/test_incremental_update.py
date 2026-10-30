@@ -42,6 +42,19 @@ def archive(path, members):
 
 
 class IncrementalUpdateTests(unittest.TestCase):
+    def test_default_library_is_in_standalone_and_local_update_skills_with_bounded_recovery(self):
+        from ops.installer import update_recovery
+        for local in (False, True):
+            with self.subTest(local=local), tempfile.TemporaryDirectory() as temporary:
+                prepared = UPDATER.prepare_skills(ROOT, Path(temporary) / "skills", local=local)
+                skill = prepared["creative/nora-skill-library"]
+                for relative in ("SKILL.md", "scripts/library.py", "scripts/activate.py", "references/sources.json"):
+                    self.assertEqual((skill / relative).read_bytes(),
+                        (ROOT / "ops/skills/creative/nora-skill-library" / relative).read_bytes())
+                self.assertTrue(update_recovery.allowed_target("skill-creative-nora-skill-library", "hermes", "skills/creative/nora-skill-library"))
+                self.assertFalse(update_recovery.allowed_target("skill-creative-nora-skill-library", "hermes", "skills/creative/custom"))
+                self.assertFalse(update_recovery.allowed_target("skill-creative-custom", "hermes", "skills/creative/custom"))
+
     def test_backup_cleanup_preserves_unowned_and_failed_recovery_directories(self):
         with tempfile.TemporaryDirectory(prefix="nora-owned-retention-") as temporary:
             home = Path(temporary)

@@ -18,7 +18,7 @@ RECEIPT = 'nora-update-backup.json'
 MAX_TRANSACTION_BYTES = 64 * 1024 * 1024
 RECOVERABLE_STATES = ('prepared', 'recovery-failed')
 SKILLS = {'creative/tavern','creative/tavern-ops','creative/nora-cardforge',
-          'system/tavern-updater','system/model-provider-config'}
+          'system/tavern-updater','system/model-provider-config','creative/nora-skill-library'}
 RETIRED = {'tavern-world','tavern-runtime-plugins','tavern-continuity',
            'tavern-story-profile','tavern-frontend','tavern-world-visuals'}
 MANAGED = {'SOUL.md','SOUL.nora-tavern.example.md','nora-installation.json',

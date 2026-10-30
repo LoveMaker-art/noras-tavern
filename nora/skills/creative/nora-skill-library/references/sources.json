@@ -1,0 +1,11 @@
+{
+  "library": "nora-skills",
+  "catalogueUrls": [
+    "https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/skills/catalogue.json",
+    "https://noratavern.com/skills/catalogue.json"
+  ],
+  "packageBases": [
+    "https://jihulab.com/api/v4/projects/378185/packages/generic/nora-skills/",
+    "https://noratavern.com/skills/packages/"
+  ]
+}

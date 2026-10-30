@@ -25,6 +25,7 @@ test('Helper transforms coexist, are repeatable and reject an unknown save funct
     assert.throws(() => transformCharacterPersistence('unknown bundle'), /anchors/);
     assert.throws(() => transformCharacterPersistence(bundle.replace('async function Rk(e,t,n,r=!0){', 'async function Rk(e,t,n,r=!0){unknown();')), /function/);
     assert.throws(() => transformCharacterPersistence(bundle.replace('persistCharacterExtension } from', 'missingDependency } from')), /import/);
+    assert.throws(() => transformCharacterPersistence(bundle.replace('k.makeFirst(A.CHARACTER_LIST_CHANGED,noraSyncCharacterOwner);', '')), /owner synchronization/);
 });
 
 test('shipped character scope switches same-name Worlds and reloads the matching scripts', async () => {
@@ -42,7 +43,7 @@ test('shipped character scope switches same-name Worlds and reloads the matching
         nF: (_id, setup) => () => V.proxyRefs(setup()),
         iF: id => ({ scripts: structuredClone(cards[id].scripts) }),
         k: { makeFirst: (event, callback) => events.set(event, callback), on() {} },
-        A: { CHAT_CHANGED: 'chat-changed' }, $: () => ({ on() {} }),
+        A: { CHAT_CHANGED: 'chat-changed', CHARACTER_LIST_CHANGED: 'character-list-changed' }, $: () => ({ on() {} }),
         window: { fetch() { throw new Error('World switching must not write or run scripts'); } },
         _d: () => ({ ignoreUpdates: callback => callback() }),
     });
@@ -62,6 +63,26 @@ test('shipped character scope switches same-name Worlds and reloads the matching
     events.get('chat-changed')();
     await V.nextTick();
     assert.equal(store.settings.scripts[0].id, 'script-a');
+    const list = [{ name: 'Imported', avatar: 'imported.png', scripts: [] }, ...structuredClone(cards)];
+    Object.assign(context, {
+        characters: cards, this_chid: 0,
+        fetch: async () => ({ ok: true, json: async () => list }),
+        getRequestHeaders: () => ({}), DOMPurify: { sanitize: value => value },
+        isNoraProductMode: () => true, humanizedDateTime: () => 'fixture',
+        setCharacterId: id => { context.this_chid = id; context.He = id; },
+        selectCharacterById: async () => {}, event_types: context.A,
+        eventSource: { emit: async event => { assert.equal(event, context.A.CHARACTER_LIST_CHANGED, 'a library refresh must not replay chat-change listeners'); events.get(event)?.(); } },
+    });
+    const script = fs.readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
+    const getFrom = script.indexOf('export async function getCharacters()');
+    const getTo = script.indexOf('async function delChat(', getFrom);
+    assert.ok(getFrom >= 0 && getTo > getFrom);
+    vm.runInContext(script.slice(getFrom, getTo).replace('export async', 'async'), context);
+    await context.getCharacters();
+    await V.nextTick();
+    assert.equal(store.id, 1, 'refreshing the library must update the index even when the current avatar is unchanged');
+    assert.equal(store.avatar, 'a--nora-owned.png');
+    assert.equal(store.settings.scripts[0].id, 'script-a', 'an index change must keep the same character scripts');
 });
 
 function fixture() {
