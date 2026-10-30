@@ -6,8 +6,6 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 export function createReadingController({ select, getWorldId, requestHeaders, fetcher = (...args) => fetch(...args),
     scheduleFrame = callback => requestAnimationFrame(callback), timeoutMs = 30000 } = {}) {
     let worldId, target, generation = 0, defaults = {}, pending;
-    const paragraphAttribute = 'data-nora-reading-paragraph-spacing';
-    let previousParagraphAttribute = null;
     let state = { ready: false, applied: false, visualVerified: false };
     const originals = new Map();
     let restoreSequence = 0;
@@ -31,11 +29,6 @@ export function createReadingController({ select, getWorldId, requestHeaders, fe
             else target?.style.removeProperty(name);
         }
         originals.clear();
-        restoreParagraphAttribute();
-    }
-    function restoreParagraphAttribute() {
-        if (previousParagraphAttribute === null) target?.removeAttribute(paragraphAttribute);
-        else target?.setAttribute(paragraphAttribute, previousParagraphAttribute);
     }
     function apply(values) {
         if (!target) throw failure('NORA_READING_NOT_READY', 'Story reading surface is unavailable.');
@@ -60,8 +53,6 @@ export function createReadingController({ select, getWorldId, requestHeaders, fe
                 if (!originals.has(name)) originals.set(name, [element.style.getPropertyValue(name), element.style.getPropertyPriority(name)]);
                 element.style.setProperty(name, value);
             }
-            if (Object.hasOwn(values, 'paragraph_spacing')) element.setAttribute(paragraphAttribute, '');
-            else restoreParagraphAttribute();
         } finally {
             scheduleFrame(() => {
                 for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) element.removeEventListener?.(name, cancel);
@@ -87,7 +78,6 @@ export function createReadingController({ select, getWorldId, requestHeaders, fe
         if (id === worldId && element === target) return { ...state };
         ++generation; ++restoreSequence;
         restore(); target = element; worldId = id;
-        previousParagraphAttribute = target?.getAttribute(paragraphAttribute) ?? null;
         state = { ready: false, applied: false, worldId: id, visualVerified: false };
         // Never keep the preceding World's override while awaiting the next read.
         try { if (target) apply(defaults); } catch { /* load reports the unavailable renderer */ }
@@ -98,7 +88,7 @@ export function createReadingController({ select, getWorldId, requestHeaders, fe
     }
     async function execute(action, params = {}) {
         if (action === 'reading.catalog') return { fields: READING_FIELDS, builtin: READING_DEFAULTS,
-            unsetParagraphSpacing: 'existing stylesheet; no numeric override',
+            unsetParagraphSpacing: 'builtin 10px; existing global and World preferences take precedence',
             scopes: ['global', 'world'], fontActions: 'theme.catalog', crossTab: 'reload', visualVerified: false };
         const id = getWorldId() || '';
         if (params.scope === 'world' && !id) throw failure('NORA_READING_INVALID', 'An active World is required.');

@@ -130,7 +130,9 @@ CSS, web font downloads, message rewrites, model calls or user-script execution.
 
 Only ordinary story body and user messages are controlled; card-owned widgets,
 iframes, navigation and message-to-message spacing stay unchanged. Built-in
-paragraph spacing is reported as null: no override of existing stylesheet spacing.
+paragraph spacing is 10px for both story and user text; story text retains
+15.5px/1.68 and user text 14px/1.6. Existing explicit preferences take precedence;
+reset removes overrides and inherits these defaults without rewriting other Worlds.
 Numeric reading preferences live in an independent user file for older-version
 compatibility; use the interface, never hand-edit settings or World manifests.
 Malformed/unreadable preferences are reported without deleting them or blocking

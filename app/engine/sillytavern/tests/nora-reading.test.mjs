@@ -6,6 +6,7 @@ import path from 'node:path';
 import express from 'express';
 import { parse as parseCss } from '@adobe/css-tools';
 import { load as loadHtml } from 'cheerio';
+import showdown from 'showdown';
 import { READING_FIELDS, READING_SCHEMA, normalizeReadingValues, projectReading } from '../public/scripts/nora-worlds/reading-preferences.js';
 import { READING_FILE, readReadingPreferences as read, saveReadingPreferences as save } from '../src/nora-world-core/reading-preferences.js';
 import { createNoraWorldsV2Router } from '../src/endpoints/nora-worlds-v2.js';
@@ -47,7 +48,7 @@ function client(dirs, { id = 'a', fetcher, element = surface(), scheduleFrame = 
     return { controller, element, switch: id => { worldId = id; controller.render(); } };
 }
 
-test('stylesheet reading rules target prose, retain fonts/default paragraph styles and exclude card widgets/navigation', () => {
+test('stylesheet reading rules default to 10px prose gaps, retain fonts and exclude card widgets/navigation', () => {
     const css = fs.readFileSync(new URL('../../../native-extensions/nora-ui/style.css', import.meta.url), 'utf8');
     const rules = parseCss(css).stylesheet.rules.filter(rule => rule.type === 'rule'
         && rule.declarations.some(declaration => declaration.value?.includes('var(--nora-reading-')));
@@ -62,10 +63,39 @@ test('stylesheet reading rules target prose, retain fonts/default paragraph styl
     for (const id of ['widget', 'status', 'frame', 'nav']) assert.equal(matches(id, rules), false, id);
     for (const rule of rules) assert.equal(rule.declarations.some(declaration => ['font-family', 'white-space'].includes(declaration.property)), false);
     const paragraphs = rules.filter(rule => rule.declarations.some(declaration => declaration.property === 'margin-bottom'));
-    assert.equal(matches('story', paragraphs), false, 'Unset paragraph spacing leaves the existing stylesheet untouched');
+    assert.equal(matches('story', paragraphs), true, 'Unset paragraph spacing uses the built-in 10px fallback');
+    assert.ok(paragraphs.every(rule => rule.declarations.some(d => d.property === 'margin-bottom' && d.value === 'var(--nora-reading-paragraph-spacing, 10px)')));
     $('#nora-chat').attr('data-nora-reading-paragraph-spacing', '');
     assert.equal(matches('story', paragraphs), true); assert.equal(matches('last', paragraphs), false);
     assert.match(css, /margin:\s*30px auto 0 !important/);
+});
+
+test('Markdown paragraph spacing has one whitespace owner and clears every controlled paragraph top margin', () => {
+    // The production converter represents author line breaks as <br>, but also
+    // inserts HTML separator newlines. pre-wrap would display both a second time.
+    const converter = new showdown.Converter({ simpleLineBreaks: true });
+    const markup = converter.makeHtml('First line\nSecond line\n\nNext paragraph\n\nLast paragraph');
+    const $ = loadHtml(`<div id="nora-chat"><div class="mes"><div class="mes_text">${markup}</div></div></div>`);
+    assert.equal($('.mes_text > p').length, 3);
+    assert.equal($('.mes_text br').length, 1, 'Intentional line breaks remain in the renderer output');
+    const css = fs.readFileSync(new URL('../../../native-extensions/nora-ui/style.css', import.meta.url), 'utf8');
+    const rules = parseCss(css).stylesheet.rules.filter(rule => rule.type === 'rule'
+        && rule.declarations.some(d => ['white-space', 'margin-top', 'margin-bottom'].includes(d.property)));
+    const declarations = element => Object.fromEntries(rules
+        .filter(rule => rule.selectors.some(selector => selector.startsWith('#nora-chat') && element.is(selector)))
+        .flatMap(rule => rule.declarations.filter(d => d.type === 'declaration').map(d => [d.property, d.value])));
+    assert.equal(declarations($('.mes_text'))['white-space'], 'normal', 'HTML separator newlines must not create extra line boxes, even without a spacing override');
+    $('.mes').attr('is_system', 'true');
+    assert.equal(declarations($('.mes_text'))['white-space'], 'pre-wrap', 'System messages bypass Markdown and retain raw line breaks');
+    $('.mes').removeAttr('is_system');
+    $('#nora-chat').attr('data-nora-reading-paragraph-spacing', '');
+    $('.mes_text > p').each((index, node) => {
+        const styles = declarations($(node));
+        assert.equal(styles['margin-top'], '0', 'The last paragraph also needs its original top margin cleared');
+        assert.equal(styles['margin-bottom'], index < 2 ? 'var(--nora-reading-paragraph-spacing, 10px)' : '0');
+    });
+    const code = converter.makeHtml('```\nfirst\n  indented\n```');
+    assert.match(code, /<pre><code>first\n {2}indented\n<\/code><\/pre>/, 'Code newlines and indentation are preserved');
 });
 
 test('numeric policy accepts boundaries/zero, rejects coercion, off-step and CSS/prototype fields', () => {
@@ -87,6 +117,7 @@ test('persistent defaults, per-World partial patches and reset inherit without r
     for (const name of ['settings.json', 'chat.jsonl', 'USER.md', 'MEMORY.md', 'world.json']) fs.writeFileSync(path.join(dirs.root, name), `KEEP:${name}`);
     const builtIn = inspect(dirs, 'a');
     assert.equal(builtIn.effective.assistant.font_size, 15.5); assert.equal(builtIn.effective.user.font_size, 14);
+    assert.equal(builtIn.effective.assistant.paragraph_spacing, 10); assert.equal(builtIn.effective.user.paragraph_spacing, 10);
     patch(dirs, { font_size: 18, line_height: 1.8 });
     patch(dirs, { font_size: 20, paragraph_spacing: 0 }, 'a');
     patch(dirs, { paragraph_spacing: 12 }, 'b');
@@ -100,6 +131,8 @@ test('persistent defaults, per-World partial patches and reset inherit without r
     assert.equal(inspect(dirs, 'a').effective.assistant.font_size, 15.5);
     assert.equal(inspect(dirs, 'a').effective.assistant.paragraph_spacing, 0);
     assert.equal(inspect(dirs, 'b').values.paragraph_spacing, 12);
+    assert.equal(inspect(dirs).effective.assistant.paragraph_spacing, 10);
+    assert.equal(inspect(dirs).effective.user.paragraph_spacing, 10);
     assert.deepEqual(inspect(other).values, {});
     for (const name of ['settings.json', 'chat.jsonl', 'USER.md', 'MEMORY.md', 'world.json']) assert.equal(fs.readFileSync(path.join(dirs.root, name), 'utf8'), `KEEP:${name}`);
     if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dirs.root, READING_FILE)).mode & 0o777, 0o600);
@@ -238,13 +271,14 @@ test('runtime global controls need no character, model or script permission; Wor
     await assert.rejects(controls.execute(command('reading.inspect', { scope: 'world' })), { code: 'NORA_CONTROL_NO_WORLD' });
 });
 
-test('inspect rejects a switched World, failed save never claims success and empty overrides keep paragraph CSS inactive', async t => {
+test('inspect rejects a switched World, failed save never claims success and empty overrides inherit builtin paragraph spacing', async t => {
     const dirs = temporary(t); let id = 'a';
     const f = createReadingController({ select: () => surface(), getWorldId: () => id, requestHeaders: () => ({}), scheduleFrame: f => f(),
         fetcher: async () => { id = 'b'; return response(inspect(dirs, 'a')); } });
     await assert.rejects(f.execute('reading.inspect', { scope: 'world' }), { code: 'NORA_CONTROL_SCOPE_CHANGED' });
     const g = client(dirs); g.controller.render(); await g.controller.settled();
-    assert.equal(g.element.getAttribute('data-nora-reading-paragraph-spacing'), null);
+    assert.equal(g.element.style.getPropertyValue('--nora-reading-paragraph-spacing'), '');
+    assert.equal(inspect(dirs, 'a').effective.assistant.paragraph_spacing, 10);
     await assert.rejects(g.controller.execute('reading.apply', { scope: 'world', values: { font_size: 20 }, expectedRevision: 'stale' }), { code: 'NORA_READING_REVISION_CONFLICT' });
     assert.deepEqual(inspect(dirs, 'a').values, {});
     assert.equal(fs.existsSync(path.join(dirs.root, READING_FILE)), false);

@@ -433,7 +433,11 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-chat .mesIDDisplay, #nora-chat .for_checkbox, #nora-chat .del_checkbox, #nora-chat .mes_bias { display: none !important; }
 #nora-chat .mes_block { display: flex !important; width: 100% !important; min-width: 0 !important; flex: 1 !important; flex-direction: column !important; padding: 0 !important; overflow: visible !important; }
 #nora-chat .mes_text { width: 100% !important; min-width: 0 !important; padding: 0 !important; color: var(--nora-ink) !important; font-family: var(--nora-sans); font-size: 15.5px !important; line-height: 1.68 !important; overflow-wrap: anywhere; }
-#nora-chat .mes:not(.nora-rich-message) .mes_text { white-space: pre-wrap; }
+/* Markdown already encodes author line breaks as <br>. Its HTML separator
+   newlines must not add another line box between paragraphs or after <br>. */
+#nora-chat .mes:not(.nora-rich-message) .mes_text { white-space: normal; }
+/* Unformatted system messages bypass Markdown and still need their raw breaks. */
+#nora-chat .mes[is_system="true"]:not(.nora-rich-message) .mes_text { white-space: pre-wrap; }
 #nora-chat .mes.nora-rich-message .mes_text > :is(p, hr, ol, ul, blockquote, pre) {
     width: min(var(--nora-content), 100%);
     margin-right: auto;
@@ -452,8 +456,10 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
     font-size: var(--nora-reading-font-size, 14px) !important;
     line-height: var(--nora-reading-line-height, 1.6) !important;
 }
-#nora-chat[data-nora-reading-paragraph-spacing] .mes:not(.nora-rich-message) .mes_text p:not(:last-child),
-#nora-chat[data-nora-reading-paragraph-spacing] .mes.nora-rich-message .mes_text > p:not(:last-child):not(:has(style, iframe, form, button, input, select, textarea, canvas, video, audio, table, [data-nora-rich], [class*="interactive"], [class*="status"])) { margin-bottom: var(--nora-reading-paragraph-spacing); }
+#nora-chat .mes:not(.nora-rich-message) .mes_text p,
+#nora-chat .mes.nora-rich-message .mes_text > p:not(:has(style, iframe, form, button, input, select, textarea, canvas, video, audio, table, [data-nora-rich], [class*="interactive"], [class*="status"])) { margin-top: 0; }
+#nora-chat .mes:not(.nora-rich-message) .mes_text p:not(:last-child),
+#nora-chat .mes.nora-rich-message .mes_text > p:not(:last-child):not(:has(style, iframe, form, button, input, select, textarea, canvas, video, audio, table, [data-nora-rich], [class*="interactive"], [class*="status"])) { margin-bottom: var(--nora-reading-paragraph-spacing, 10px); }
 #nora-chat .mes_text > p:first-child { margin-top: 0; }
 #nora-chat .mes_text > p:last-child { margin-bottom: 0; }
 #nora-chat .mes_media_wrapper, #nora-chat .mes_file_wrapper { width: 100%; max-width: var(--nora-content); }
