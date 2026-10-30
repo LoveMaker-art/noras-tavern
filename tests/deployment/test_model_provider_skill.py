@@ -1,4 +1,8 @@
-"""Local-only model skill: real Hermes config API in disposable instances."""
+"""Local skill regression: native config, test-only probe substitution, isolated data.
+
+Provider availability is covered separately; these configuration-layer tests
+never make real model calls or present their probe substitute as live acceptance.
+"""
 import json
 import os
 from pathlib import Path
@@ -17,11 +21,42 @@ from ops.updater import update
 if __package__:
     from .launcher_test_environment import resolve_node
     from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from .test_nora_native_model import NETWORK_GUARD, LOOPBACK_NETWORK_GUARD
 else:
     from launcher_test_environment import resolve_node
     from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from test_nora_native_model import NETWORK_GUARD, LOOPBACK_NETWORK_GUARD
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / 'ops/skills/system/model-provider-config'
+LEGACY_IPC_GUARD = r'''
+import socket
+_original_ipc_connect = socket.socket.connect
+_original_ipc_create = socket.create_connection
+_original_ipc_resolve = socket.getaddrinfo
+''' + NETWORK_GUARD + r'''
+# Only unchanged shared-writer tests use their real Node lease. Its exact
+# authenticated delegate endpoint is IPC, not permission for model networking.
+if os.environ.get('NORA_FIXTURE_LEGACY_IPC') == '1':
+    import re
+    endpoint = os.environ.get('NORA_OPERATION_DELEGATE_ENDPOINT', '')
+    if re.fullmatch(r'127\.0\.0\.1:[0-9]{1,5}', endpoint):
+        allowed = ('127.0.0.1', int(endpoint.rsplit(':', 1)[1]))
+        def ipc_connect(sock, address):
+            if address != allowed:
+                return deny_network()
+            return _original_ipc_connect(sock, address)
+        def ipc_create(address, *args, **kwargs):
+            if address != allowed:
+                return deny_network()
+            return _original_ipc_create(address, *args, **kwargs)
+        def ipc_resolve(host, port, *args, **kwargs):
+            if (host, int(port)) != allowed:
+                return deny_network()
+            return _original_ipc_resolve(host, port, *args, **kwargs)
+        socket.socket.connect = ipc_connect
+        socket.create_connection = ipc_create
+        socket.getaddrinfo = ipc_resolve
+'''
 
 
 class SkillDistributionTests(unittest.TestCase):
@@ -64,8 +99,12 @@ class LocalModelSkillTests(unittest.TestCase):
         shutil.copytree(SKILL, self.entry.parent.parent)
         helper = self.tavern / 'apps/tavern-ops/installer'
         helper.mkdir(parents=True)
+        lib = self.tavern / 'apps/tavern-ops/updater'
+        lib.mkdir()
+        shutil.copy2(ROOT / 'ops/updater/runtime_lock.py', lib / 'runtime_lock.py')
         for name in ['model_config.py', 'nora_system.py', 'operation_cli.py',
-                     'operation_control.py', 'error_diagnostics.py']:
+                     'operation_control.py', 'error_diagnostics.py',
+                     'hermes_model_config.py', 'hermes_model_probe.py', 'hermes_model_state.py']:
             shutil.copy2(ROOT / 'ops/installer' / name, helper / name)
         (self.home / 'nora-instance.json').write_text(json.dumps({
             'schema': 1, 'noraHome': str(self.root), 'hermesHome': str(self.home),
@@ -78,27 +117,46 @@ class LocalModelSkillTests(unittest.TestCase):
             'mcp_servers': {'nora': {'command': 'keep'}},
             'platforms': {'clawchat': {'enabled': True}},
         }))
-        self.env = {**os.environ, 'HERMES_HOME': str(self.home), 'HOME': str(self.home),
+        guard = self.root / 'network-guard'
+        guard.mkdir()
+        self.guard_file = guard / 'sitecustomize.py'
+        self.guard_file.write_text(LEGACY_IPC_GUARD, encoding='utf-8')
+        self.network_attempts = self.root / 'network-attempts.txt'
+        self.env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': str(self.home), 'HOME': str(self.home),
                     'USERPROFILE': str(self.home), 'PYTHONNOUSERSITE': '1',
                     'PYTHONDONTWRITEBYTECODE': '1', 'XDG_CACHE_HOME': str(self.root / 'cache'),
-                    'NORA_TAVERN_HOME': str(self.root), 'TAVERN_DATA_ROOT': str(self.tavern)}
+                    'NORA_TAVERN_HOME': str(self.root), 'TAVERN_DATA_ROOT': str(self.tavern),
+                    'NO_PROXY': '*', 'no_proxy': '*',
+                    'NORA_NETWORK_ATTEMPTS': str(self.network_attempts),
+                    'NORA_FIXTURE_MODEL_PROBE': 'configuration-layer',
+                    'PYTHONPATH': os.pathsep.join((str(guard), str(agent), str(helper)))}
+        if os.environ.get('NORA_TEST_NODE'):
+            self.env['NORA_TEST_NODE'] = os.environ['NORA_TEST_NODE']
         self.marker = self.root / 'installer/model.json'
         self.request = {'provider': 'custom', 'model': 'test-model', 'api_key': 'test-only-not-valid',
-                        'base_url': 'https://example.invalid/v1'}
+                        'base_url': 'https://example.invalid/v1', 'verify_authorized': True}
 
     def owned_run(self, script, data, *args):
         node = resolve_node(required=True)
         self.fixture.closed = False
         result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
             str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
-            sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix},
+            sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix,
+                                                             'NORA_FIXTURE_LEGACY_IPC': '1'},
             input=json.dumps(data), capture_output=True, text=True, timeout=60)
         require_fixture_closure(self.fixture, result.stderr)
         return result
 
     def invoke(self, data=None):
-        result = self.owned_run(self.entry, data or self.request)
+        data = dict(self.request if data is None else data)
+        if data.get('action', 'save') == 'save':
+            data.setdefault('verify_authorized', True)
+        result = subprocess.run([sys.executable, '-B', str(self.entry)],
+                                input=json.dumps(data), env=self.env,
+                                capture_output=True, text=True, timeout=30)
         self.assertNotIn(self.request['api_key'], result.stdout + result.stderr)
+        self.assertFalse(self.network_attempts.exists(), self.network_attempts.read_text()
+                         if self.network_attempts.exists() else '')
         return result, json.loads(result.stdout.splitlines()[-1])
 
     def test_real_custom_save_updates_launcher_not_tavern_and_creates_no_backups(self):
@@ -108,7 +166,7 @@ class LocalModelSkillTests(unittest.TestCase):
         result, reply = self.invoke()
         self.assertEqual(result.returncode, 0, reply)
         self.assertEqual(reply['activation'], 'next-session')
-        self.assertEqual(reply['validation'], 'configuration-only')
+        self.assertEqual(reply['validation'], 'api-response')
         current = yaml.safe_load(self.config.read_text())
         for key in ['fallback_providers', 'mcp_servers', 'platforms']:
             self.assertEqual(current[key], before[key])
@@ -220,6 +278,8 @@ class LocalModelSkillTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         base = f'http://127.0.0.1:{server.server_port}/new/v1'
+        self.guard_file.write_text(LOOPBACK_NETWORK_GUARD, encoding='utf-8')
+        self.env['NORA_NETWORK_ALLOWED_PORT'] = str(server.server_port)
         config = yaml.safe_load(self.config.read_text())
         config['model']['provider'] = 'custom:old-relay'
         config['custom_providers'] = [{'name': 'old-relay', 'base_url': f'http://127.0.0.1:{server.server_port}/old/v1',
@@ -259,7 +319,7 @@ class LocalModelSkillTests(unittest.TestCase):
         before = self.config.read_bytes()
         requests = [
             {**self.request, 'model': ''},
-            {**self.request, 'provider': 'deepseek'},
+            {**self.request, 'provider': 'unknown-provider'},
             {**self.request, 'base_url': 'https://user:password@example.invalid/v1'},
             {**self.request, 'api_key': ''},
             {**self.request, 'api_key': 'key with spaces'},

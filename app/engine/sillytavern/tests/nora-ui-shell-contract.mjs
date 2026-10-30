@@ -28,7 +28,6 @@ const worldCreationController = fs.readFileSync(path.join(noraUiRoot, 'world-cre
 const panelController = fs.readFileSync(path.join(noraUiRoot, 'panel-controller.js'), 'utf8');
 const shellController = fs.readFileSync(path.join(noraUiRoot, 'shell-controller.js'), 'utf8');
 const startupController = fs.readFileSync(path.join(noraUiRoot, 'startup-controller.js'), 'utf8');
-const runtimeAdapter = fs.readFileSync(path.join(stRoot, 'public/scripts/nora-adapters/st-runtime-adapter.js'), 'utf8');
 const messageAdapter = fs.readFileSync(path.join(stRoot, 'public/scripts/nora-adapters/st-message-adapter.js'), 'utf8');
 const cardAdapter = fs.readFileSync(path.join(stRoot, 'public/scripts/nora-adapters/st-card-adapter.js'), 'utf8');
 const worldbookAdapter = fs.readFileSync(path.join(stRoot, 'public/scripts/nora-adapters/st-worldbook-adapter.js'), 'utf8');
@@ -364,7 +363,9 @@ for (const obsoleteSignal of ['runtime.importCharacter', 'characterController.fi
 }
 
 const characterLibrary = getNamedFunction(characterController, 'openLibrary');
-for (const signal of ['世界卡库', 'groups()', 'nora-card-waterfall', '/thumbnail?type=avatar', 'character?.shallow', 'resolveCharacter(characterId)', 'openSheet(characterId, true)']) {
+// T-07 requires full images. Controller output for all densities and the real
+// user-scoped image route are exercised in nora-library-script-ui.test.mjs.
+for (const signal of ['世界卡库', 'groups()', 'nora-card-waterfall', '/characters/', 'character?.shallow', 'resolveCharacter(characterId)', 'openSheet(characterId, true)']) {
     if (!characterLibrary.includes(signal)) throw new Error(`The character-card library must use imported card artwork: ${signal}`);
 }
 for (const blockingSignal of ['cards.resolveCharacter', 'for (let index = 0; index < characters.length', 'Promise.all']) {

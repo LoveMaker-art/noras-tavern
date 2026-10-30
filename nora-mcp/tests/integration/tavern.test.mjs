@@ -138,8 +138,19 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     const { createStoryActionDispatcher } = await importEngine('../../native-extensions/nora-ui/story-action-dispatcher.js');
     const dispatcher = createStoryActionDispatcher({ messages: { isGenerating: () => false }, getSessionKey: () => scope.sessionId });
     const globalSettings = {};
+    const { createReadingController } = await importEngine('../../native-extensions/nora-ui/reading-controller.js');
+    // Style ownership is simulated here; this is an interface test, not visual acceptance.
+    const readingStyles = new Map(), readingAttributes = new Map();
+    const readingSurface = { style: {
+        getPropertyValue: key => readingStyles.get(key) || '', getPropertyPriority: () => '',
+        setProperty: (key, value) => readingStyles.set(key, value), removeProperty: key => readingStyles.delete(key),
+    }, getAttribute: key => readingAttributes.get(key) ?? null,
+    setAttribute: (key, value) => readingAttributes.set(key, value), removeAttribute: key => readingAttributes.delete(key) };
+    const reading = createReadingController({ select: () => readingSurface,
+        getWorldId: () => context.chatMetadata.nora_world.id, requestHeaders: headers, fetcher: localFetch, scheduleFrame: fn => fn() });
     const controls = createRuntimeControls({ getContext: () => context, story: { worlds, mvu,
         settings: { uiSettings: () => globalSettings }, messages: { isGenerating: () => false } },
+        globalRef: Object.assign(Object.create(globalThis), { NoraUI: { controlReading: reading.execute } }),
         fetcher: localFetch, dispatch: () => dispatcher, assertIdle: () => {} });
     const page = startControlClient({ controls, headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'fixture-token', Cookie: 'session=fixture' }),
         fetcher: (route, options) => fetch(base + route, options), pause: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 10))) });
@@ -177,6 +188,26 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
         return { receipt, args };
     };
     const inspectWorld = async key => (await control('world.inspect', {}, key, true)).receipt.result;
+    const worldBeforeReading = await core.getWorld(scope.worldId);
+    const readingCatalog = (await control('reading.catalog', {}, 'reading:catalog', true)).receipt.result;
+    assert.equal(readingCatalog.fields.font_size.max, 32);
+    let readingState = (await control('reading.inspect', { scope: 'global' }, 'reading:global-inspect', true)).receipt.result;
+    const readingInitialRevision = readingState.revision;
+    const readingSaved = await control('reading.apply', { scope: 'global', values: { font_size: 18, line_height: 1.8, paragraph_spacing: 0 }, expectedRevision: readingState.revision }, 'reading:global-apply');
+    assert.equal(readingSaved.receipt.result.saved, true);
+    assert.equal(readingSaved.receipt.result.applied, true);
+    assert.equal(readingSaved.receipt.result.visualVerified, false);
+    assert.equal(readingStyles.get('--nora-reading-paragraph-spacing'), '0px');
+    readingState = (await control('reading.inspect', { scope: 'world' }, 'reading:world-inspect', true)).receipt.result;
+    const readingWorld = await control('reading.apply', { scope: 'world', values: { font_size: 22 }, expectedRevision: readingState.revision }, 'reading:world-apply');
+    assert.equal(readingStyles.get('--nora-reading-font-size'), '22px');
+    const readingReset = await control('reading.reset', { scope: 'world', field: 'font_size', expectedRevision: readingWorld.receipt.result.revision }, 'reading:world-reset');
+    assert.equal(readingReset.receipt.result.saved, true);
+    assert.equal(readingStyles.get('--nora-reading-font-size'), '18px');
+    const staleReading = await control('reading.apply', { scope: 'global', values: { font_size: 24 }, expectedRevision: readingInitialRevision }, 'reading:stale');
+    assert.equal(staleReading.receipt.status, 'unknown');
+    assert.equal(staleReading.receipt.result.code, 'NORA_READING_REVISION_CONFLICT');
+    assert.deepEqual(await core.getWorld(scope.worldId), worldBeforeReading, 'Typography never rewrites World or Session manifests');
     const globalBefore = (await control('theme.global.inspect', {}, 'global:inspect', true)).receipt.result;
     const beforeGlobalWorld = await core.getWorld(scope.worldId);
     const globalSaved = await control('theme.global.apply', { ui: { theme: { background: '#111', text: '#eee' } },

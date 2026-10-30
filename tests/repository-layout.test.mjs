@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { test } from 'node:test';
 import { readLayout, translatePath, deliveryEntries, projectDelivery } from '../tooling/layout.mjs';
-import { createReleaseSource, digest, assertNoraSystemArtifacts } from '../tooling/release/release-source.mjs';
+import { createReleaseSource, digest, assertNoraSystemArtifacts, collectRuntimeFiles } from '../tooling/release/release-source.mjs';
 import { RELEASE_SOURCE_ENTRY_PATHS } from '../tooling/release/embed-release-sources.mjs';
 import {captureChild, firstJsonLine, stopChild} from './deployment/launcher_test_lifecycle.cjs';
 
@@ -66,8 +66,22 @@ test('candidate projection preserves authored fingerprints and seals generated e
         if (output) assert.equal(output.beforeSha256, exported.identity.sourceFiles[source]);
     }
     for (const file of ['nora/SOUL.md', 'nora/AGENTS.md', 'nora/greeting.md', 'launcher/ui/index.html', 'launcher/ui/assets/nora-launcher-portrait.png',
-        'nora/skills/system/model-provider-config/SKILL.md', 'nora/skills/system/model-provider-config/scripts/configure_provider.py']) {
+        'nora/skills/system/model-provider-config/SKILL.md',
+        'nora/skills/system/model-provider-config/scripts/configure_provider.py',
+        ...['hermes_model_config.py','hermes_model_probe.py','hermes_model_state.py'].map(name => `deployment/shared/${name}`)]) {
         assert.ok(exported.identity.sourceFiles[file], file);
+    }
+    // Exercise the actual runtime selector; source projection alone did not
+    // catch missing helpers in the former single-script delivery allowlist.
+    for (const directory of ['app/engine/sillytavern/public/dist/nora', 'app/engine/sillytavern/dist/_webpack/output', 'nora-mcp/dist']) {
+        fs.mkdirSync(path.join(exported.stage, directory), {recursive: true});
+    }
+    const runtime = collectRuntimeFiles(exported.stage, exported.files);
+    for (const file of ['ops/skills/system/model-provider-config/scripts/configure_provider.py',
+        ...['hermes_model_config.py','hermes_model_probe.py','hermes_model_state.py'].map(name => `ops/installer/${name}`)]) {
+        assert.ok(runtime.includes(file), `Missing shipped skill helper: ${file}`);
+        assert.throws(() => assertNoraSystemArtifacts(exported.files.filter(value => value !== file)),
+            error => error.message.includes(file), `Missing helper must block delivery: ${file}`);
     }
     assert.equal(exported.files.includes('nora/SOUL.md'), false, 'No second delivery copy');
     assert.equal(receipt.schema, 'nora-embedded-release-sources/1');

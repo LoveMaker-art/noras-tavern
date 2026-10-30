@@ -23,8 +23,10 @@ import map, but it cannot claim compatibility-core readiness.
 The content-addressed HTTP asset namespace is the sole persistent browser cache
 authority. The native ESM graph may remain in the manifest where its cycle
 semantics require it, but already-built legacy and `lib-core` assets remain
-standalone and immutable. The critical manifest is high priority and has a
-550 KB Brotli contract budget.
+standalone and immutable. The critical manifest is high priority and retains a
+bounded Brotli contract budget. The initial decision used 550 KB; subsequent
+user-approved limits are maintained in the
+[current Tavern design](../product/tavern.md#interface).
 
 `nora:usable` is an outcome signal. It is emitted only when the active World,
 message view, and composer are usable.

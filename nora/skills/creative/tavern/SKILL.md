@@ -55,7 +55,7 @@ substituting the relevant file. Load a second reference only for a real second t
 | Check a named World/branch's progress, character/object state or suggest how to continue; read/send/stop/retry replies; select candidates, edit history, manage chat backups or control story compression | [chat and ledger](references/chat-ledger.md) |
 | Install/update/uninstall/configure plugins; control Helper scripts/buttons, Regex or MVU; inspect MVU error history | [plugins](references/plugins.md) |
 | Read story archives or tastes; learn a preference; request or inspect reflection | [story profile](references/story-profile.md) |
-| Switch local page light/dark/system appearance; change global or per-world backgrounds, fonts, palette or reading surface | [appearance and world visuals](references/world-visuals.md) |
+| Switch local page light/dark/system appearance; change global or per-world backgrounds, fonts, font size, line/paragraph spacing, palette or reading surface | [appearance and world visuals](references/world-visuals.md) |
 
 ## Procedure
 

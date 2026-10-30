@@ -12,6 +12,8 @@ export const LAUNCHER_CAPABILITIES=Object.freeze({operationSchema:'nora-operatio
 export const UPDATER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
 export const UPDATER_DEPENDENCY_ROOT = 'ops/updater/actor-dependencies';
 const ACTOR_DEPENDENCIES = Object.freeze({ 'fs-native-extensions': '1.5.1', semver: '7.8.5' });
+const MODEL_SKILL_SCRIPTS = ['configure_provider.py']
+    .map(name => `ops/skills/system/model-provider-config/scripts/${name}`);
 
 export const NORA_SYSTEM_REQUIRED_FILES = [
     'app/engine/sillytavern/src/nora-world-core/builtin-welcome.js',
@@ -30,7 +32,8 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
-    'ops/skills/system/model-provider-config/scripts/configure_provider.py',
+    ...MODEL_SKILL_SCRIPTS,
+    ...['hermes_model_config.py', 'hermes_model_probe.py', 'hermes_model_state.py'].map(name => `ops/installer/${name}`),
     ...['scripts/library.py', 'scripts/activate.py', 'references/sources.json']
         .map(name => `ops/skills/creative/nora-skill-library/${name}`),
     ...['references/starter-stories.md', 'scripts/starter-story.py',
@@ -323,7 +326,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
             file === `${root}SKILL.md` || file.startsWith(`${root}references/`)
             || (root.includes('nora-cardforge/') && !['tests/', 'agents/'].some(exclude => file.startsWith(root + exclude)))
             || file === 'ops/skills/system/tavern-updater/scripts/update.py'
-            || file === 'ops/skills/system/model-provider-config/scripts/configure_provider.py'
+            || MODEL_SKILL_SCRIPTS.includes(file)
             || (root.includes('nora-skill-library/') && file.startsWith(`${root}scripts/`))
         ))
     )

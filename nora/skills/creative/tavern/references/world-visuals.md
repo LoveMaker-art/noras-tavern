@@ -99,3 +99,43 @@ Keep the left world list and navigation neutral. The current implementation styl
 the story stage and right panel; iframe internals, arbitrary CSS/HTML/JS, changing
 button handlers, and reactive MVU widgets are outside these operations.
 The retired `world_theme.py`, `/api/productions` and `/api/event` are not valid paths.
+
+## Font size, line height and paragraph spacing
+
+Use the same exact online client/World/Session and generic `nora.control.*`
+tools. Read `reading.catalog` for current numeric fields, units, steps and limits;
+fonts remain `theme.catalog` presets (body and narration separately). No arbitrary
+CSS, web font downloads, message rewrites, model calls or user-script execution.
+
+1. Read `reading.inspect` with `{scope:"global"}` or `{scope:"world"}`.
+   World scope targets that client's active World. Global means this authenticated
+   Tavern user's defaults, including when no World is open.
+2. Execute `reading.apply` with `{scope,values,expectedRevision}`, authorized
+   `confirm:true` and a stable idempotency key. `values` is a partial numeric patch:
+   e.g. `{font_size:18,line_height:1.8,paragraph_spacing:12}`. Preserve other fields;
+   zero paragraph spacing is valid. Do not copy inherited effective values into
+   World overrides. `null` removes one override.
+3. Alternatively `reading.reset` with `{scope,field,expectedRevision}` removes
+   one named field or `field:"all"`. World reset inherits global, then built-in
+   defaults. Reset global preserves all World overrides. These operations do not
+   reset theme fonts, colors, images, user messages or ordinary settings.
+4. Read the receipt and inspect again. `saved:true` and `applied:true` describe
+   separate results; `appliedRevision` names what this page rendered. When
+   `superseded:true`, reread rather than claim the earlier revision is current.
+   `saved:true,applied:false` means the save succeeded but rendering/refresh did
+   not: report both results, use `reading.refresh` to retry application without
+   another save. Other open tabs read on reload; no cross-tab live-sync promise.
+   A conflict requires rereading the latest revision before a new edit. A request
+   whose outcome is unknown must be inspected rather than blindly retried.
+
+Only ordinary story body and user messages are controlled; card-owned widgets,
+iframes, navigation and message-to-message spacing stay unchanged. Built-in
+paragraph spacing is 10px for both story and user text; story text retains
+15.5px/1.68 and user text 14px/1.6. Existing explicit preferences take precedence;
+reset removes overrides and inherits these defaults without rewriting other Worlds.
+Numeric reading preferences live in an independent user file for older-version
+compatibility; use the interface, never hand-edit settings or World manifests.
+Malformed/unreadable preferences are reported without deleting them or blocking
+World startup. Saved/application receipts do not establish visual verification.
+For a request involving both font presets and numeric settings, execute their
+respective operations and report partial success honestly.

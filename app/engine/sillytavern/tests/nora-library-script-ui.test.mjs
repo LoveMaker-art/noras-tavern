@@ -1,6 +1,13 @@
 import './helpers/nora-locale-fixture.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express from 'express';
+import { load as loadHtml } from 'cheerio';
+import { parse as parseCss } from '@adobe/css-tools';
 import { createCharacterController } from '../../../native-extensions/nora-ui/character-controller.js';
 import { createExtensionController } from '../../../native-extensions/nora-ui/extension-controller.js';
 import { readCardImportPreview } from '../../../native-extensions/nora-ui/card-import-preview.js';
@@ -79,6 +86,77 @@ function cardsFixture() {
     const count = () => [...ui.current.body.matchAll(/data-library-character="\d+"/g)].length;
     return { ...ui, ui, controller, count, writes, state, get current() { return ui.current; } };
 }
+
+test('all six density/viewport lists use full encoded images, lazy loading and separate cover/caption rows', async t => {
+    let density = 'standard', narrow = false;
+    browserGlobal(t, 'localStorage', { getItem: () => density });
+    browserGlobal(t, 'matchMedia', () => ({ matches: narrow }));
+    const css = await fs.readFile(new URL('../../../native-extensions/nora-ui/style.css', import.meta.url), 'utf8');
+    const rules = parseCss(css).stylesheet.rules.filter(rule => rule.type === 'rule');
+    const cases = { compact: [18, 9], standard: [8, 4], large: [4, 2] };
+    for (const [mode, counts] of Object.entries(cases)) for (const mobile of [false, true]) {
+        density = mode; narrow = mobile;
+        const f = cardsFixture(), avatar = '角色封面 #1 & A.png';
+        f.state.characters[0].avatar = avatar;
+        const before = structuredClone(f.state);
+        await f.controller.openLibrary();
+        const $ = loadHtml(`<div class="nora-world-library-modal">${f.current.body}</div>`);
+        const images = $('.nora-card-library-open > img');
+        assert.equal($('.nora-card-waterfall').attr('data-density'), mode);
+        assert.equal(images.length, counts[Number(mobile)]);
+        assert.equal(images.first().attr('src'), `/characters/${encodeURIComponent(avatar)}`);
+        images.each((_index, image) => {
+            const img = $(image);
+            assert.ok(img.attr('src').startsWith('/characters/'));
+            assert.equal(img.attr('loading'), 'lazy');
+            assert.equal(img.next('span').find('strong').length, 1);
+            assert.ok(img.next('span').find('small').length > 0);
+        });
+        const scopedValues = (element, property) => rules.flatMap(rule =>
+            rule.selectors.some(selector => selector.startsWith('.nora-world-library-modal ') && !selector.includes('::') && $(element).is(selector))
+                ? rule.declarations.filter(item => item.property === property).map(item => item.value) : []);
+        const fit = scopedValues(images.first(), 'object-fit');
+        assert.ok(fit.length > 0); assert.ok(fit.every(value => value === 'contain'));
+        const rows = scopedValues(images.first().parent(), 'grid-template-rows');
+        assert.ok(rows.length > 0); assert.ok(rows.every(value => value === 'var(--nora-library-cover, 140px) minmax(0, 1fr)'));
+        assert.deepEqual(f.state, before); assert.deepEqual(f.writes, []);
+    }
+});
+
+test('full-image HTTP preserves original bytes, selects the current user directory and rejects traversal', async t => {
+    const { setConfigFilePath } = await import('../src/util.js');
+    setConfigFilePath(fileURLToPath(new URL('../default/config.yaml', import.meta.url)));
+    const { router } = await import('../src/workspace.js');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-card-image-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const name = '角色封面 #1 & A.png';
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=', 'base64');
+    const bytes = { a: png, b: Buffer.concat([png, Buffer.from('another stored card')]) };
+    for (const user of ['a', 'b']) {
+        await fs.mkdir(path.join(root, user, 'characters'), { recursive: true });
+        await fs.writeFile(path.join(root, user, 'characters', name), bytes[user]);
+        await fs.writeFile(path.join(root, user, 'USER.md'), `KEEP:${user}`);
+    }
+    const app = express();
+    app.use((request, _response, next) => {
+        request.user = { directories: { characters: path.join(root, request.headers['x-fixture-user'] === 'b' ? 'b' : 'a', 'characters') } };
+        next();
+    });
+    app.use(router);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+    const base = `http://127.0.0.1:${server.address().port}`;
+    for (const user of ['a', 'b']) {
+        const response = await fetch(`${base}/characters/${encodeURIComponent(name)}`, { headers: { 'x-fixture-user': user } });
+        assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /^image\/png/);
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes[user]);
+        assert.deepEqual(await fs.readFile(path.join(root, user, 'characters', name)), bytes[user]);
+        assert.equal(await fs.readFile(path.join(root, user, 'USER.md'), 'utf8'), `KEEP:${user}`);
+    }
+    assert.equal((await fetch(`${base}/characters/missing.png`)).status, 404);
+    assert.equal((await fetch(`${base}/characters/%252e%252e%252fUSER.md`)).status, 403);
+});
 
 test('page jump validates bounds and targets the correct shallow cards without writing', async () => {
     const f = cardsFixture(); await f.controller.openLibrary();
