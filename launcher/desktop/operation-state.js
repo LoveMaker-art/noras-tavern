@@ -733,6 +733,20 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       const verify=recheckers[record.kind];
       if(!verify)return dto(record);
       const proof=await verify(record,{lease,...options,conditionTarget:failureCondition(record)});
+      // A model helper may commit fully before its reply/final read fails.
+      // Only its exact, unchanged native checkpoint can close that task; a
+      // readable list or another task's success never authorizes this closure.
+      if(record.kind==='model'&&record.target.request?.mode==='configure'
+        &&['changed','unknown'].includes(record.effectState)
+        &&['succeeded','failed'].includes(proof?.completion)&&proof.verification==='confirmed'
+        &&proof.effectState==='changed'&&proof.operationId===id&&proof.planDigest===record.planDigest){
+        record.ownerEpoch=ownerEpoch;record.state=proof.completion;record.stageId='verifying';
+        record.effectState='changed';record.verification='confirmed';record.recoveryOutcome='not-required';
+        if(record.state==='succeeded')record.currentFailure=null;
+        record.result=projectResult(proof,record.kind);
+        await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence}});
+        return dto(record);
+      }
       if(proof?.changed===true&&typeof proof.fingerprint==='string'&&proof.fingerprint!==record.conditionFingerprint
         &&['untouched','restored'].includes(proof.effectState)){
         const baseline=conditionProof(proof.baseline);

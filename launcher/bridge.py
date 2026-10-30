@@ -544,67 +544,17 @@ def verify_partial_baseline(args, snapshot):
     return result
 
 
-def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] | None = None, *, allow_pending=False) -> dict:
-    def reject(reason: str) -> dict:
-        if problems is not None:
-            problems.append(reason)
-        return {}
-
-    marker = nora_home / "installer/model.json"
-    env_file = hermes_home / ".env"
-    config_file = hermes_home / "config.yaml"
-    if not marker.is_file() or not config_file.is_file():
-        return reject("未找到模型配置或验证记录")
+def model_state_module():
+    # Deployment-relative import: this bridge also runs as a direct script.
     try:
-        value = json.loads(marker.read_text(encoding="utf-8"))
-        provider = str(value.get("provider") or "").strip()
-        model = str(value.get("model") or "").strip()
-        key_env = str(value.get("keyEnv") or "").strip()
-        base_url = str(value.get("baseUrl") or "").strip().rstrip("/")
-        if value.get("schema") != 1 or not provider or not model:
-            return reject("模型验证记录格式无效")
-        is_custom = provider == "custom" or (provider.startswith("custom:") and bool(provider[7:].strip()))
-        env_values = {}
-        if env_file.is_file():
-            for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
-                match = re.match(r"^\s*([A-Z0-9_]+)\s*=\s*(.*)$", line)
-                if match:
-                    env_values[match.group(1)] = match.group(2).strip().strip("\"'")
-        if not is_custom and (not re.match(r"^[A-Z0-9_]+$", key_env) or not env_values.get(key_env)):
-            return reject("未找到供应商密钥配置")
+        from . import hermes_model_state
+    except ImportError:
+        import hermes_model_state
+    return hermes_model_state
 
-        try:
-            import yaml
-        except ImportError:
-            return reject("无法读取模型配置格式")
-        try:
-            config = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-            model_config = config.get("model")
-            if not isinstance(model_config, dict):
-                return reject("缺少模型配置")
-            if str(model_config.get("provider") or "").strip() != provider:
-                return reject("供应商与验证记录不一致")
-            configured_model = str(model_config.get("default") or model_config.get("name") or "").strip()
-            if configured_model != model:
-                return reject("模型名称与验证记录不一致")
-            if is_custom:
-                configured_base_url = str(model_config.get("base_url") or "").strip().rstrip("/")
-                configured_key = str(model_config.get("api_key") or "").strip()
-                if not base_url or configured_base_url != base_url:
-                    return reject("接口地址与验证记录不一致")
-                if not configured_key:
-                    return reject("未找到自定义模型密钥配置")
-            credential = configured_key if is_custom else env_values.get(key_env, "")
-            if value.get("credentialSha256") and hashlib.sha256(credential.encode()).hexdigest() != value["credentialSha256"]:
-                return reject("密钥已更改，需要重新验证模型")
-        except (OSError, ValueError, AttributeError, yaml.YAMLError):
-            return reject("无法读取模型配置")
-        if value.get("tavernSyncPending") and not allow_pending:
-            return reject("模型已验证，酒馆同步尚未完成")
-        return {"provider": provider, "model": model, "keyEnv": key_env, "baseUrl": base_url,
-                "authMode": value.get("authMode", "key"), "tavernSyncPending": bool(value.get("tavernSyncPending"))}
-    except (OSError, ValueError, AttributeError):
-        return reject("无法读取模型验证记录")
+
+def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] | None = None, *, allow_pending=False) -> dict:
+    return model_state_module().read_verified_model(nora_home, hermes_home, problems, allow_pending=allow_pending)
 
 
 def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
@@ -629,6 +579,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
     # the entire Hermes CLI on every five-second status poll.
     hermes_ready = bool(hermes and (hermes_home / "hermes-agent/.hermes-bootstrap-complete").is_file())
     verified_model = read_verified_model(nora_home, hermes_home, allow_pending=True)
+    model_state = model_state_module().public_model_state(nora_home, hermes_home)
     credentials_ready = bool(verified_model) and not verified_model.get("tavernSyncPending")
     connection = gateway_status(nora_home, hermes_home)
     clawchat_connected = connection["clawchatConnected"]
@@ -645,10 +596,11 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "noraInstalled": system["noraInstalled"],
             "modelConfigured": credentials_ready,
             "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
-            "modelAuthMode": verified_model.get("authMode", "key"),
-            "modelProvider": verified_model.get("provider", ""),
-            "modelName": verified_model.get("model", ""),
-            "modelBaseUrl": verified_model.get("baseUrl", ""),
+            "modelState": model_state,
+            "modelAuthMode": model_state.get("authMode", "unknown"),
+            "modelProvider": model_state.get("provider", ""),
+            "modelName": model_state.get("model", ""),
+            "modelBaseUrl": model_state.get("baseUrl", ""),
             "clawchatConnected": clawchat_connected,
             "clawchatPaired": paired,
             **connection,
@@ -677,10 +629,11 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "noraInstalled": system["noraInstalled"],
         "modelConfigured": credentials_ready,
         "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
-        "modelAuthMode": verified_model.get("authMode", "key"),
-        "modelProvider": verified_model.get("provider", ""),
-        "modelName": verified_model.get("model", ""),
-        "modelBaseUrl": verified_model.get("baseUrl", ""),
+        "modelState": model_state,
+        "modelAuthMode": model_state.get("authMode", "unknown"),
+        "modelProvider": model_state.get("provider", ""),
+        "modelName": model_state.get("model", ""),
+        "modelBaseUrl": model_state.get("baseUrl", ""),
         "clawchatConnected": clawchat_connected,
         "clawchatPaired": paired,
         **connection,

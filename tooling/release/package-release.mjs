@@ -290,7 +290,7 @@ try {
     for (const name of starterFiles) {
         copyPackageFile(path.join(stage, 'ops/installer/package', name), path.join(starterRoot, name));
     }
-    for (const name of ['launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py', 'bootstrap.py', 'update_recovery.py', 'error_diagnostics.py',
+    for (const name of ['launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py','hermes_model_config.py','hermes_model_probe.py','hermes_model_state.py', 'bootstrap.py', 'update_recovery.py', 'error_diagnostics.py',
         'first_install.py','operation_control.py','operation_cli.py','operation_node.mjs','operation_evidence.py','operation-budget.json','mcp_probe.mjs']) {
         copyPackageFile(path.join(stage, 'ops/installer', name), path.join(starterRoot, name));
     }

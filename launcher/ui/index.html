@@ -207,6 +207,49 @@
     .service-row[data-state="running"] .service-state { color:#b4d0bc; }
     .service-row[data-state="starting"] .service-state,.service-row[data-state="stopping"] .service-state { color:#d8bd8e; }
     .service-row[data-state="starting"] .service-state:before,.service-row[data-state="stopping"] .service-state:before { animation:blink 1s ease-in-out infinite; }
+    .model-list { min-height:0; flex:0 1 auto; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:#475047 transparent; padding-right:5px; }
+    .model-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px 16px; padding:14px 12px; border-bottom:1px solid #a3b5a11c; }
+    .model-row[data-selected="true"] { background:#a5bfa307; border-radius:3px; }
+    .model-description { display:contents; }
+    .model-name { grid-column:1; grid-row:1; display:flex; align-items:baseline; gap:8px; min-width:0; font-size:14px; font-weight:500; line-height:1.5; color:#e3e5dc; overflow-wrap:anywhere; }
+    .model-name:before { content:""; flex:0 0 12px; width:12px; color:#a8bfae; font-size:11px; line-height:1; }
+    .model-row[data-selected="true"] .model-name:before { content:"✓"; }
+    .model-secondary { grid-column:1 / -1; grid-row:2; min-width:0; padding-left:20px; }
+    .model-connection { display:block; min-width:0; font-size:12px; line-height:1.5; color:#849589; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .model-row-controls { grid-column:2; grid-row:1; display:flex; align-items:center; justify-content:flex-end; gap:10px; }
+    .model-state { display:inline-flex; align-items:center; padding:0; color:#a8bfae; font-size:12px; line-height:1.4; white-space:nowrap; }
+    .model-state:empty { display:none; }
+    .model-switch { min-height:26px; padding:3px 10px; border:1px solid #65756850; border-radius:3px; background:transparent; color:#bdcbbf; font-size:12px; line-height:1.4; white-space:nowrap; }
+    .model-switch:hover { border-color:#dda0ad; color:#efb8c4; background:#ffffff05; }
+    .model-row-feedback,.model-row-actions { grid-column:1 / -1; }
+    .model-details { min-width:0; font-size:12px; color:#8d9b90; line-height:1.7; }
+    .model-details summary { display:flex; align-items:center; justify-content:flex-start; gap:18px; cursor:pointer; width:fit-content; max-width:100%; min-height:24px; padding:0; color:#85978a; font-size:12px; line-height:1.5; list-style:none; }
+    .model-details summary .model-connection { flex:0 1 auto; }
+    .model-details-label { display:inline-flex; flex:0 0 auto; align-items:center; gap:7px; }
+    .model-details summary::-webkit-details-marker { display:none; }
+    .model-details-label:after { content:""; width:5px; height:5px; border-right:1px solid currentColor; border-bottom:1px solid currentColor; transform:translateY(-2px) rotate(45deg); transition:transform .15s; }
+    .model-details[open] .model-details-label:after { transform:translateY(1px) rotate(225deg); }
+    .model-details summary:hover .model-details-label { color:#efb8c4; }
+    .model-details summary:focus-visible { outline:none; }
+    .model-details summary:focus-visible .model-details-label { color:#d1dfd4; text-decoration:underline; text-decoration-color:var(--green); text-underline-offset:4px; }
+    .model-details p { margin:8px 0 0; overflow-wrap:anywhere; }
+    .model-row-feedback { margin:3px 0 0; color:#e7afbc; font-size:12px; line-height:1.7; white-space:pre-line; overflow-wrap:anywhere; }
+    .model-row-actions { display:flex; flex-wrap:wrap; gap:14px; }
+    .model-delete { font-size:12px; color:var(--muted); }
+    .model-delete-confirmation { display:flex; align-items:center; justify-content:space-between; gap:12px; flex:1; min-width:0; padding-left:20px; }
+    .model-delete-prompt { font-size:12px; line-height:1.5; color:#bbc3ba; }
+    .model-delete-buttons { display:flex; align-items:center; flex-shrink:0; gap:8px; }
+    .model-delete-buttons .model-switch { min-height:28px; padding:4px 10px; }
+    .model-delete-confirm { color:#e7afbc; border-color:#dda0ad60; }
+    .model-row-actions:empty { display:none; }
+    .model-list-footer { display:flex; align-items:center; flex:0 0 auto; padding-top:12px; }
+    #modelListProblem,.model-list-problem-actions { flex:0 0 auto; }
+    #modelListProblem { margin:8px 0 0; }
+    .model-list-problem-actions:empty { display:none; }
+    .model-add { display:inline-flex; align-items:center; justify-content:flex-start; width:auto; min-height:32px; padding:6px 10px; border:0; border-radius:0; background:transparent; color:#d0a0ac; font-size:12px; transition:color .15s; }
+    .model-add:hover { background:transparent; color:#efb8c4; }
+    main[data-model-view="list"] .edit-head button { color:#8c9d90; font-size:12px; }
+    main[data-model-view="list"] .edit-head button:hover { color:#e1d7c9; }
     .icon-action { position:relative; display:grid; place-items:center; width:36px; height:36px; border:0; border-radius:4px; background:transparent; color:#a3b3a6; font-size:12px; }
     .icon-action:hover { background:#ffffff0c; color:#efb8c4; }
     .icon-action[data-tip]:hover:after,.icon-action[data-tip]:focus-visible:after { content:attr(data-tip); position:absolute; right:0; bottom:calc(100% + 4px); padding:5px 7px; border:1px solid #536054; border-radius:3px; background:#232c25; white-space:nowrap; font-size:12px; z-index:5; }
@@ -308,6 +351,13 @@
     main[data-layout="workflow"]:not(.logs-open) .inline:has(.outcome-actions) { display:block; }
     main[data-layout="workflow"]:not(.logs-open) .recovery-details { max-height:none; overflow:visible; }
     main[data-layout="workflow"]:not(.logs-open) .inline form > .form-bottom { position:static; }
+    main[data-layout="workflow"][data-model-view="list"]:not(.logs-open) .inline { display:flex; flex-direction:column; overflow:hidden; }
+    main[data-model-view="list"] .edit-head { flex:0 0 auto; margin-top:0; margin-bottom:2px; }
+    main[data-model-view="list"] .edit-head > :first-child:empty { display:none; }
+    main[data-model-view="list"] .edit-head { justify-content:flex-end; }
+    @media (max-width:760px) {
+      .model-row { column-gap:9px; }
+    }
     @media (max-width:980px) {
       main[data-layout="workflow"]:not(.logs-open) { --workflow-indent:18px; }
     }

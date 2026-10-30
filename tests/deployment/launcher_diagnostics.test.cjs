@@ -274,17 +274,27 @@ async function modelRetryFixture(t) {
     fs.writeFileSync(target,`preserved ${file}`);
   }
   function reopen(){
-    const context=mainContext(root,state.transportError?{'./model-config':{
-      ...require('../installer/desktop/model-config'),testCustomModel:async()=>{throw state.transportError;}
-    }}:{});
+    const context=mainContext(root);
     context.modelFixture=state;
-    // Use the production task controller, native writer lock, HTTP client and
-    // diagnostics. Only the unrelated Python configuration writer is isolated.
+    const httpFixture=require(path.join(__dirname,'../installer/desktop/model-config')).testCustomModel;
+    context.configureRequest=state.transportError?async()=>{throw state.transportError;}:httpFixture;
+    // The production task controller, writer lock and diagnostics receive the
+    // shared configure boundary. Its double uses the existing HTTP client only
+    // to generate representative transport failures; this does not exercise or
+    // prove the shared helper's native model validation implementation.
     vm.runInContext(`operationController=createOperationController({directory:installerDirectory,
       lock:operationLock,evidence:operationEvidence,now:()=>new Date(modelFixture.now).toISOString(),
       projectResult:result=>result.value});
       runModelConfigHelper=async value=>{
-        if(value.action==='save')modelFixture.saves++;
+        if(value.action!=='configure')throw new Error('Unexpected model helper action: '+value.action);
+        try{await configureRequest(value.baseUrl,value.key,value.model);}
+        catch(error){
+          const failure=launcherError(error.message,{source:'model_service',status:error.status,site:'model.save',code:error.code},error);
+          failure.remoteMessage='Model configuration helper failed; see technical exit status.';
+          failure.modelFailureStage='candidate';
+          throw failure;
+        }
+        modelFixture.saves++;
         return {ok:true,provider:'custom:fixture',model:value.model};
       };
       finishModelSetup=async()=>({ok:true});
@@ -383,7 +393,7 @@ test('model failure main log retains HTTP cause and keeps credentials out of dia
     const event=logs.trim().split('\n').map(JSON.parse).find(item=>item.event==='model.failed');
     assert.equal(event.error.cause?.status,status);
     assert.match(event.error.cause.message,/fixture provider rejected/);
-    assert.equal(event.error.cause.source,'model_service');assert.equal(event.error.cause.site,'model.test');
+    assert.equal(event.error.cause.source,'model_service');assert.equal(event.error.cause.site,'model.save');
     assert.equal(logs.includes(f.key),false);assert.equal(logs.includes(encodeURIComponent(f.key)),false);
     const records=JSON.stringify(await app.snapshot());assert.equal(records.includes(f.key),false);
     const packets=require('../installer/desktop/fault-packet').createFaultPackets();
@@ -485,6 +495,47 @@ test('model helper logs success, invalid protocol and timeout separately without
     if(mode==='timeout'){assert.match(text,/model.helper-timeout/);assert.match(text,/SIGTERM/);}
     else assert.match(text,/exitCode=0/);
   }
+});
+
+test('model inspection uses the read transport while configure owns its writer transport and longer budget',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-helper-transport-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
+  const script=path.join(root,'protocol.cjs');
+  fs.writeFileSync(script,"let body='';process.stdin.on('data',chunk=>body+=chunk);process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,action:JSON.parse(body).action,model:'PRIVATE_SAVED_MODEL'})));");
+  const transports=[],budgets=[],spawn=require('node:child_process').spawn;
+  const child=transport=>()=>{transports.push(transport);return spawn(process.execPath,[script],{stdio:'pipe'});};
+  const context=mainContext(root,{'node:child_process':{...require('node:child_process'),spawn:child('read')}});
+  context.ownedSpawn=child('owned');context.setTimeout=(callback,delay)=>{budgets.push(delay);return setTimeout(callback,delay);};
+  vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=ownedSpawn;',context);
+  const helper=vm.runInContext('runModelConfigHelper',context);
+  for(const action of ['inspect','configure','sync-saved-tavern','verify-runtime'])assert.equal((await helper({action})).action,action);
+  assert.deepEqual(transports,['read','owned','owned','owned']);
+  assert.deepEqual(budgets,[60000,210000,60000,60000]);
+  const logs=fs.readFileSync(vm.runInContext('diagnostics.lastFile',context),'utf8');
+  assert.doesNotMatch(logs,/PRIVATE_SAVED_MODEL/);
+});
+
+test('shared helper failures preserve native HTTP metadata through diagnostics without logging the private protocol',async t=>{
+  for(const [status,category] of [[401,'http_unauthorized'],[403,'http_forbidden'],[503,'http_error']])await t.test(String(status),async t=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-helper-http-'));
+    t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'hermes-agent'));
+    const secret='fixture-native-private-key',script=path.join(root,'failure.cjs');
+    const protocol={ok:false,error:`模型验证未通过。${secret}`,httpStatus:status,source:'model_service',code:'MODEL_NATIVE_VALIDATION_FAILED',failureStage:'candidate',
+      diagnostic:{name:'ModelConfigurationFailure',message:'模型验证未通过。',code:'MODEL_NATIVE_VALIDATION_FAILED'},config:'PRIVATE_NATIVE_CONFIG'};
+    fs.writeFileSync(script,`process.stdin.resume();process.stdin.on('end',()=>{console.log(${JSON.stringify(JSON.stringify(protocol))});process.exitCode=1;});`);
+    const context=mainContext(root,{$processOutputFixture:true});
+    context.spawnFixture=()=>require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});
+    vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
+    const helper=vm.runInContext('runModelConfigHelper',context),{describeError}=require('../installer/desktop/launcher-errors');
+    await assert.rejects(helper({action:'configure',key:secret}),error=>{
+      assert.equal(error.source,'model_service');assert.equal(error.status,status);assert.equal(error.code,'MODEL_NATIVE_VALIDATION_FAILED');
+      assert.equal(error.modelFailureStage,'candidate');
+      const technical=describeError(error);assert.equal(technical.http_status,status);assert.equal(technical.error_code,category);
+      assert.equal(error.cause.name,'ModelConfigurationFailure');assert.doesNotMatch(error.message,new RegExp(secret));return true;
+    });
+    const logs=fs.readFileSync(vm.runInContext('diagnostics.lastFile',context),'utf8');
+    assert.match(logs,/model.helper-failed/);assert.doesNotMatch(logs,new RegExp(secret+'|PRIVATE_NATIVE_CONFIG'));
+  });
 });
 
 function recoveryControllerFixture(context,pending) {
@@ -634,7 +685,8 @@ test('model progress cache failure releases its task lock and preserves the prov
   vm.runInContext('runModelConfigHelper=async()=>{throw original;};',context);
   const handler=mainCallback(context,'nora:model-save-test');
   await assert.rejects(handler({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>{
-    assert.equal(error.code,original.code);
+    assert.equal(error.userCode,'MODEL_CONFIG_PARTIAL','a lost helper response requires inspection before another save');
+    assert.equal(error.cause.code,original.code,'the original transport cause remains available');
     assert.equal(error.operation.primaryFailure.technical.system_code,original.code);
     return true;
   });
@@ -646,7 +698,8 @@ test('model progress cache failure releases its task lock and preserves the prov
   secondary.original=original;secondary.stateError=stateError;
   vm.runInContext('runModelConfigHelper=async()=>{throw original;}; recordEvent=message=>{if(message.state==="error")throw stateError;};',secondary);
   await assert.rejects(mainCallback(secondary,'nora:model-save-test')({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>{
-    assert.equal(error.code,original.code);
+    assert.equal(error.userCode,'MODEL_CONFIG_PARTIAL');
+    assert.equal(error.cause.code,original.code);
     assert.equal(error.operation.primaryFailure.technical.system_code,original.code);
     const evidence=fs.readFileSync(path.join(error.operation.primaryFailureRef,'metadata.json'),'utf8');
     assert.match(evidence,/fixture provider test failure/);
@@ -656,66 +709,32 @@ test('model progress cache failure releases its task lock and preserves the prov
   assert.equal(vm.runInContext('modelBusy',secondary),false);
 });
 
-test('successful Python configuration save followed by failed JS checkpoint preserves saved facts and original cause', async t => {
+test('shared configuration commit followed by a failed Tavern sync checkpoint preserves saved facts and original cause', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-saved-checkpoint-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const home=path.join(root,'hermes'),agent=path.join(home,'hermes-agent','hermes_cli');
-  fs.mkdirSync(agent,{recursive:true});
-  fs.writeFileSync(path.join(agent,'__init__.py'),'');
-  fs.writeFileSync(path.join(agent,'web_server_config.py'),`import json,os\nfrom pathlib import Path\ndef _normalize_main_model_assignment(provider,model):\n return provider,model\ndef _apply_model_assignment_sync(**values):\n Path(os.environ['HERMES_HOME'],'config.yaml').write_text(json.dumps({'model':values['model'],'provider':values['provider']}))\n return {'provider':values['provider'],'model':values['model']}\n`);
-  fs.writeFileSync(path.join(agent,'credential_lifecycle.py'),`import os\nfrom pathlib import Path\ndef save_provider_env_credential(name,value):\n Path(os.environ['HERMES_HOME'],'.env').write_text(name+'='+value+'\\n')\n`);
+  const home=path.join(root,'hermes');
+  fs.mkdirSync(home,{recursive:true});
   fs.writeFileSync(path.join(home,'config.yaml'),'old model');
   const failure=Object.assign(new Error('fixture verified checkpoint denied'),{code:'EACCES'});
   const actual=require('../installer/desktop/model-config');
-  const context=mainContext(root,{'./model-config':{...actual,testProviderModel:async()=>{},writeVerifiedModel:()=>{throw failure;}}});
-  const execution=require('../installer/desktop/managed-python');
-  const probeEnv={...process.env};
-  for(const name of ['PYTHONHOME','PYTHONPATH','__PYVENV_LAUNCHER__'])delete probeEnv[name];
-  const inspectPython=(command,requirePsutil=false)=>{
-    const result=spawnSync(command,['-B','-c',`${requirePsutil?'import psutil; ':''}import sys,json; print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'basePrefix':sys.base_prefix}))`],
-      {env:probeEnv,encoding:'utf8',timeout:10000});
-    assert.equal(result.status,0,'Managed Python test fixture could not inspect its interpreter: '+(result.error?.message||result.stderr));
-    return JSON.parse(result.stdout.trim());
+  const context=mainContext(root,{'./model-config':{...actual,writeVerifiedModel:()=>{throw failure;}}});
+  const payload={provider:'openai-api',key:'fixture-key',model:'fixture-new-model'};
+  const helperRequests=[];
+  // The shared helper now commits both configuration and the initial model
+  // checkpoint. The remaining JS checkpoint clears pending Tavern sync; fail
+  // that real boundary after a simulated shared commit, not the removed writer.
+  context.configureFixture=async value=>{
+    helperRequests.push(value.action);
+    if(value.action==='configure'){
+      fs.writeFileSync(path.join(home,'config.yaml'),JSON.stringify({model:value.model,provider:value.provider}));
+      fs.writeFileSync(path.join(home,'.env'),`${value.keyEnv}=${value.key}\n`);
+      actual.writeVerifiedModel(root,{...value,tavernSyncPending:true});
+    }
+    return {ok:true};
   };
-  const samePath=(left,right)=>{const a=fs.realpathSync(left),b=fs.realpathSync(right);return process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;};
-  const supplied=process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON,suppliedRoot=process.env.NORA_TEST_MANAGED_PYTHON_ROOT;
-  let reused=false;
-  if(supplied&&fs.existsSync(supplied)){
-    try{
-      const info=inspectPython(supplied),venv=path.dirname(path.dirname(supplied));
-      // A nested venv inherits base packages, not the selected venv's psutil.
-      // Reuse its actual identity instead of rebuilding and losing that input.
-      const managedRoot=suppliedRoot||info.basePrefix;
-      if(fs.existsSync(managedRoot)&&!samePath(info.prefix,info.basePrefix)&&samePath(info.prefix,venv)&&samePath(info.basePrefix,managedRoot)){
-        execution.resolveExecution(supplied,{managedPythonRoot:managedRoot,venvHome:venv,env:probeEnv});
-        context.python=supplied;context.managedVenv=venv;context.managedPython=managedRoot;reused=true;
-      }
-    }catch{ /* An unmatched supplied runtime is not a valid managed fixture. */ }
-  }
-  if(!reused){
-    const source=supplied||process.env.NORA_PYTHON||(process.platform==='win32'?'python':'python3');
-    const info=inspectPython(source),venv=path.join(root,'managed-venv');
-    const created=spawnSync(info.executable,['-B','-m','venv','--without-pip','--system-site-packages',venv],
-      {env:probeEnv,encoding:'utf8',timeout:30000});
-    assert.equal(created.status,0,'Managed Python test fixture could not create its isolated venv: '+(created.error?.message||created.stderr));
-    context.python=path.join(venv,process.platform==='win32'?'Scripts/python.exe':'bin/python');
-    context.managedVenv=venv;context.managedPython=info.basePrefix;
-    assert.equal(path.dirname(context.managedVenv),root,'Only the temporary test directory may receive the fixture');
-  }
-  const managed=inspectPython(context.python,true);
-  assert.ok(!samePath(managed.prefix,managed.basePrefix),'The native guard case must use an actual virtual environment');
-  assert.ok(samePath(managed.prefix,context.managedVenv));assert.ok(samePath(managed.basePrefix,context.managedPython));
-  const resolved=execution.resolveExecution(context.python,{managedPythonRoot:context.managedPython,venvHome:context.managedVenv,env:probeEnv});
-  if(process.platform==='win32')assert.ok(samePath(resolved.command,path.join(context.managedPython,'python.exe')));
-  context.helper=path.resolve(__dirname,'../installer/model_config.py');
-  context.operationHelper=path.resolve(__dirname,'../installer/operation_control.py');
-  vm.runInContext(`spawnMaintenance=(command,args,options)=>activeOperationContext.lease.spawn(command,
-    ['-B','-u',operationHelper,'--delegate-exec',...args],{...options,kind:'python-maintenance',
-    managedPythonRoot:managedPython,venvHome:managedVenv});`,context);
-
-  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); findPython=()=>({command:python,args:[]}); modelConfigScript=()=>helper; launcherEnv=()=>({...process.env,HOME:root,HERMES_HOME:hermesHome(),PYTHONDONTWRITEBYTECODE:"1",NORA_TAVERN_HOME:root});',context);
-  await assert.rejects(mainCallback(context,'nora:model-save-test')({}, {provider:'openai-api',key:'fixture-key',model:'fixture-new-model'}),error=>{
-    assert.equal(error.userCode,'MODEL_CONFIG_PARTIAL',error.message);
+  vm.runInContext('runModelConfigHelper=configureFixture; runBridge=async()=>({ok:true,running:true});',context);
+  await assert.rejects(mainCallback(context,'nora:model-save-test')({}, payload),error=>{
+    assert.equal(error.userCode,'MODEL_SYNC_PENDING',error.message);
     const evidence=fs.readFileSync(path.join(error.operation.primaryFailureRef,'metadata.json'),'utf8');
     assert.match(evidence,/fixture verified checkpoint denied/);
     assert.match(evidence,/EACCES/);
@@ -723,6 +742,8 @@ test('successful Python configuration save followed by failed JS checkpoint pres
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home,'config.yaml'),'utf8')),{model:'fixture-new-model',provider:'openai-api'});
   assert.deepEqual(fs.readFileSync(path.join(home,'.env'),'utf8').split(/\r?\n/),['OPENAI_API_KEY=fixture-key','']);
+  assert.deepEqual(helperRequests,['configure','sync-saved-tavern']);
+  assert.equal(actual.readVerifiedModel(root).tavernSyncPending,true);
   assert.equal(vm.runInContext('modelBusy',context),false);
 });
 
