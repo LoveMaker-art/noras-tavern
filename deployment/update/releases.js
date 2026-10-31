@@ -68,7 +68,7 @@ function coreReference(manifest,platform,arch) {
     ||!ref.manifests||Array.isArray(ref.manifests)||!Object.keys(ref.manifests).length)
     throw new Error('不变核心的来源证明无效。');
   for(const [key,item] of Object.entries(ref.manifests)){
-    if(!['darwin-arm64','darwin-x64','win32-x64'].includes(key)||!item
+    if(!/^[a-z][a-z0-9_]{0,31}-[a-z0-9_]{1,32}$/.test(key)||!item
       ||Object.keys(item).some(name=>!['asset','sha256','size'].includes(name))
       ||item.asset!==`${key}-release-manifest.json`||!/^[a-f0-9]{64}$/.test(item.sha256||'')
       ||!Number.isSafeInteger(item.size)||item.size<1||item.size>4*1024*1024)
@@ -571,6 +571,22 @@ async function selectPlanWithMetadata({fetcher = fetch,signal,launcherVersion,pl
     {withEvidence:true,metadataCache,networkPolicy,channel,...(descriptor ? {conditionIdentity:{sha256:descriptor.sha256,size:descriptor.size}} : {})});
   if(systemManifest) validateInstallManifestText(metadata.body,systemManifest);
   validateCapabilities(metadata.value,{client,updaterCapabilities});
+  if(updater&&mode==='update'&&metadata.value.coreRelease){
+    const ref=coreReference(metadata.value);
+    if(!ref.manifests[`${platform}-${arch}`]){
+      // No desktop environment was published for this host. Resolve the
+      // independently published shared core instead of requiring a GUI bundle.
+      const corePolicy={...networkPolicy,sourceContext:createReleaseSourceContext()};
+      const anchor=await latest(fetcher,signal,channel,ref.tag,{metadataCache,networkPolicy:corePolicy,withEvidence:true});
+      const original=await requestJson(releaseManifestAsset(anchor.release,{mode:'update'}),fetcher,signal,
+        {withEvidence:true,metadataCache,networkPolicy:corePolicy,channel});
+      const value=discoveryManifest(anchor.release,original);
+      if(value.coreRelease||value.commit!==ref.commit||value.versions?.tavern!==metadata.value.versions?.tavern
+        ||publicationTag(value)!==ref.tag)throw new Error('原始核心身份与发布引用不一致。');
+      return selectPlanWithMetadata({fetcher,signal,launcherVersion,platform,arch,channel,tag:ref.tag,mode,
+        releaseEvidence:anchor,metadataCache,networkPolicy:corePolicy,client,updaterCapabilities,allowCandidate,explicitLocalRelease},original);
+    }
+  }
   const launcherManifest = updater?null:await require('./launcher-update').inspect({release,manifest:metadata.value,launcherVersion,fetcher,signal,platform,arch,metadataCache,networkPolicy,channel});
   validateUpdate(metadata.value,release,launcherManifest?.version || launcherVersion,
     {client,updaterCapabilities,allowCandidate,explicitLocalRelease,...(systemManifest ? {systemManifest,platform,arch,channel} : {})});
@@ -603,6 +619,11 @@ async function check({ installRoot, launcherVersion, fetcher = fetch, platform, 
       releasePlan = await selectPlan({releaseEvidence:lookup,launcherVersion,fetcher,platform,arch,channel,metadataCache,networkPolicy,signal,client,updaterCapabilities,allowCandidate,explicitLocalRelease});
       launcher = releasePlan.launcherManifest;
       system = releasePlan.releaseManifest;
+      if(releasePlan.tag!==release.tag_name){
+        release=releasePlan.release;
+        lookup={...lookup,checkedAt:[lookup.checkedAt,releasePlan.checkedAt].sort()[0],
+          latestConfirmed:lookup.latestConfirmed&&releasePlan.latestConfirmed};
+      }
     }
     catch (error) {
       if (error.site === 'release.request') { requestFailed = true; requestError = error.message || '尚未取得有效的发布响应，请稍后重新检查。'; }

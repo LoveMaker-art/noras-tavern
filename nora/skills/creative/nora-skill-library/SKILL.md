@@ -4,7 +4,6 @@ description: 搜索诺拉技能库，查看用途与依赖，下载并安装启�
 version: 0.3.0
 author: Nora Tavern
 license: AGPL-3.0-only
-platforms: [linux, macos, windows]
 metadata:
   hermes:
     category: creative

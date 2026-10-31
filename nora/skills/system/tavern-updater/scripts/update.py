@@ -11,14 +11,41 @@ import socket
 import subprocess
 import sys
 import re
+import runpy
+
+
+def instance_paths(home, *, query=False):
+    resolver = Path(__file__).resolve().parents[4] / 'scripts/nora-instance.py'
+    if resolver.is_symlink() or not resolver.is_file():
+        raise RuntimeError('当前核心缺少实例定位组件，未修改安装。')
+    functions = runpy.run_path(str(resolver))
+    if query:
+        return functions['query_configuration'](home)
+    binding = functions['existing_configuration'](home)
+    if binding is None:
+        # A task-state read or legacy bootstrap discovery needs no model/runtime
+        # configuration. Actual update admission still verifies the installation.
+        return {'noraHome': str(home), 'installRoot': str(Path(os.environ.get('TAVERN_DATA_ROOT') or home)),
+                'desktopManaged': False}
+    return binding
 
 
 def candidates(home):
-    if (home / 'nora-instance.json').is_file():
+    try:
+        binding = instance_paths(home)
+    except ModuleNotFoundError as error:
+        if error.name != 'yaml':raise
+        # The discovery caller may be system Python. Only each candidate's
+        # actual Hermes process parses YAML and verifies its complete binding.
+        binding = instance_paths(home,query=True)
+    if os.environ.get('NORA_PYTHON'):
+        yield Path(os.environ['NORA_PYTHON']).expanduser()
+    if binding.get('python'):
+        yield Path(binding['python'])
+    if binding['desktopManaged']:
         yield home / 'hermes-agent/venv/Scripts/python.exe'
         yield home / 'hermes-agent/venv/bin/python3'
         yield home / 'hermes-agent/venv/bin/python'
-        return
     # Ask the running gateway, rather than trusting a stale PID file or PATH.
     if hasattr(socket, 'AF_UNIX'):
         try:
@@ -43,6 +70,10 @@ def candidates(home):
             pass
     yield Path(sys.executable)
     installation = Path(os.environ.get('HERMES_INSTALL_DIR') or home / 'hermes-agent').expanduser()
+    if binding.get('hermesInstallDir'):
+        installation = Path(binding['hermesInstallDir'])
+    yield installation / '.venv/bin/python3'
+    yield installation / '.venv/bin/python'
     yield installation / 'venv/Scripts/python.exe'
     yield installation / 'venv/bin/python3'
     yield installation / 'venv/bin/python'
@@ -54,6 +85,10 @@ def candidates(home):
 def select_python(home):
     failures = []
     seen = set()
+    resolver = Path(__file__).resolve().parents[4] / 'scripts/nora-instance.py'
+    probe = ('import hermes_cli, yaml, runpy, pathlib, sys; '
+             'f=runpy.run_path(sys.argv[1]); h=pathlib.Path(sys.argv[2]); '
+             'f["verify_hermes_python"](h, f["existing_configuration"](h) or {})')
     for candidate in candidates(home):
         # Do not resolve venv symlinks: their location selects site-packages.
         path = str(candidate.absolute())
@@ -62,8 +97,8 @@ def select_python(home):
         seen.add(path)
         try:
             result = subprocess.run(
-                [path, '-B', '-c', 'import hermes_cli, yaml'],
-                capture_output=True, text=True, timeout=10,
+                [path, '-B', '-c', probe, str(resolver), str(home)],
+                capture_output=True, text=True, timeout=10, env={**os.environ,'HERMES_HOME':str(home)},
             )
             if result.returncode == 0:
                 return path
@@ -76,19 +111,7 @@ def select_python(home):
 
 
 def managed_root(home):
-    home = Path(home).expanduser().resolve()
-    instance = json.loads((home / 'nora-instance.json').read_text(encoding='utf-8'))
-    root = Path(instance['noraHome']).expanduser()
-    if instance.get('schema') != 1 or not root.is_absolute() or root.is_symlink():
-        raise RuntimeError('Invalid launcher instance')
-    root = root.resolve()
-    for key, expected in [('hermesHome', root / 'hermes'), ('installRoot', root / 'tavern')]:
-        value = Path(instance[key])
-        if not value.is_absolute() or value.is_symlink() or value.resolve() != expected:
-            raise RuntimeError('Conflicting launcher instance paths')
-    if home != root / 'hermes':
-        raise RuntimeError('HERMES_HOME differs from launcher instance')
-    return root
+    return Path(instance_paths(home, query=True)['noraHome'])
 
 
 def query_helper(ops, manifest_file, *, installed_receipt=None):
@@ -132,7 +155,7 @@ def same_absolute_path(value, expected):
 def query_entries(home, root):
     # Choose code, not task state. Prefer the current installed reader; immutable
     # snapshots are only a fallback while the installed ops tree is being swapped.
-    installs = [root / 'tavern'] if (home / 'nora-instance.json').is_file() else [Path(os.environ.get('TAVERN_DATA_ROOT') or home).expanduser()]
+    installs = [Path(instance_paths(home, query=True)['installRoot'])]
     snapshots = []
     directory = root / 'installer/update-jobs'
     jobs = sorted((entry for entry in directory.iterdir()
@@ -169,7 +192,7 @@ def task_status(home):
     desktop = desktop_transport(home, 'status')
     if desktop is not None and desktop.get('status') != 'none':
         return desktop
-    root = managed_root(home) if (home / 'nora-instance.json').is_file() else home
+    root = managed_root(home)
     unavailable = {'status': 'inspection-required', 'settled': False, 'busy': None,
                    'error': '无法核验更新任务是否结束，请保留日志，暂勿重复更新。'}
     nodes = []
@@ -210,7 +233,10 @@ def desktop_transport(home, action, confirm=False):
     """
     if not (home / 'nora-instance.json').is_file():
         return None
-    root = managed_root(home)
+    binding = instance_paths(home, query=True)
+    if not binding['desktopManaged']:
+        return None
+    root = Path(binding['noraHome'])
     if not (root / 'installer/launcher-control.json').is_file():
         return None
     nodes = [Path(os.environ['TAVERN_NODE_EXECUTABLE'])] if os.environ.get('TAVERN_NODE_EXECUTABLE') else []
@@ -257,10 +283,9 @@ def standalone_entry(home):
     # its authenticated program tree, including when this skill ran without -B.
     sys.dont_write_bytecode = True
     import yaml
-    roots = [Path(os.environ.get('TAVERN_DATA_ROOT') or home).expanduser()]
-    managed = managed_root(home) if (home / 'nora-instance.json').is_file() else None
-    if managed:
-        roots.insert(0, managed / 'tavern')
+    binding = instance_paths(home)
+    roots = [Path(binding['installRoot'])]
+    managed = Path(binding['noraHome']) if binding['desktopManaged'] else None
     config = home / 'config.yaml'
     if config.is_file():
         value = yaml.safe_load(config.read_text(encoding='utf-8')) or {}

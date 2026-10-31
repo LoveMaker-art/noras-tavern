@@ -188,7 +188,11 @@ class RefinementTests(unittest.TestCase):
         spec.loader.exec_module(module)
         system.save_json(self.args.hermes_home / 'nora-instance.json', {
             'schema': 1, 'noraHome': str(self.root), 'hermesHome': str(self.args.hermes_home),
-            'installRoot': str(self.args.install_root)})
+            'installRoot': str(self.args.install_root), 'port': self.args.port})
+        import shutil
+        scripts = self.args.hermes_home / 'scripts'
+        scripts.mkdir(exist_ok=True)
+        shutil.copy2(source.parents[2] / 'scripts/nora-instance.py', scripts / 'nora-instance.py')
         self.assertFalse(self.args.install_root.exists())
         for story in ('suzhou-rain', 'xiamen-breeze'):
             result = module.stage(self.args.hermes_home, source / 'resources/starter-stories', story, 'request-1')
@@ -202,7 +206,9 @@ class RefinementTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('refinement_instance', source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config = {'schema': 1, 'installRoot': str(self.args.install_root), 'port': 18997}
+        config = {'schema': 1, 'installRoot': str(self.args.install_root), 'port': 18997,
+                  'stateRoot': str(self.args.install_root / 'tavern-state'),
+                  'appRoot': str(self.args.install_root / 'apps/tavern-runtime'), 'desktopManaged': True}
         with patch.object(module, 'configuration', return_value=config), \
              patch.object(module.sys, 'argv', ['nora-instance.py', 'recover-existing']), \
              patch.object(module.subprocess, 'run', return_value=Mock(returncode=0, stdout='{"health":{"ok":false}}')) as run:

@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from types import SimpleNamespace
 
-from liveware_integration import atomic_json, hermes_home_for, registration_lock
+from liveware_integration import atomic_json, hermes_home_for, registration_lock, state_root
 
 
 def owner_conversation(home, user_id):
@@ -71,8 +71,8 @@ def notify_ready(home, entry, *, hermes_home=None):
     conversation = owner_conversation(hermes_home, owner["user_id"])
     if not conversation:
         return {"status": "waiting-for-conversation"}
-    path = home / "tavern-state/liveware-entry-notice.json"
-    with registration_lock(home):
+    path = state_root(home,hermes_home=hermes_home) / 'liveware-entry-notice.json'
+    with registration_lock(home,hermes_home=hermes_home):
         saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         same_target = saved.get("owner") == owner and saved.get("conversation") == conversation
         if same_target and saved.get("sent"):

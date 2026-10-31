@@ -238,7 +238,7 @@ test('real Python skill refuses an unverified raw terminal record without a quer
   const hermes = path.join(f.home, 'hermes');
   fs.mkdirSync(hermes);
   fs.writeFileSync(path.join(hermes, 'nora-instance.json'), JSON.stringify({ schema: 1,
-    noraHome: f.home, hermesHome: hermes, installRoot: path.join(f.home, 'tavern') }));
+    noraHome: f.home, hermesHome: hermes, installRoot: path.join(f.home, 'tavern'), port: 18899 }));
   const jobId=randomUUID(),operationId=randomUUID();
   const job=path.join(f.home,'installer/update-jobs',jobId),operation=path.join(f.home,'installer/operations',operationId);
   fs.mkdirSync(job,{recursive:true});fs.mkdirSync(operation,{recursive:true});

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import runpy
 import sys
 from pathlib import Path
 
@@ -19,6 +20,10 @@ RUNTIME = Path(os.environ.get(
     "TAVERN_APP_DIR", DATA_ROOT / "apps/tavern-runtime")).expanduser().resolve()
 STATE = Path(os.environ.get(
     "TAVERN_STATE_DIR", DATA_ROOT / "tavern-state")).expanduser().resolve()
+resolver = HERMES_HOME / 'scripts/nora-instance.py'
+if resolver.is_file():
+    binding = runpy.run_path(str(resolver))['configuration'](HERMES_HOME)
+    DATA_ROOT, RUNTIME, STATE = (Path(binding[key]) for key in ('installRoot','appRoot','stateRoot'))
 SEED_ACTOR = RUNTIME / "actor_self.md"
 CORE = RUNTIME / "story_profile_runtime" / "core"
 sys.path.insert(0, str(CORE))

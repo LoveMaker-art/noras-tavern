@@ -4,7 +4,6 @@ description: Operate Tavern worlds, chats, backups, models, themes and MVU; impo
 version: 1.25.2
 author: ClawChat Tavern
 license: AGPL-3.0-only
-platforms: [linux, macos, windows]
 metadata:
   hermes:
     category: creative

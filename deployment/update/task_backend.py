@@ -44,7 +44,8 @@ def read(file):
 
 
 def roots(args, update):
-    if (Path(args.hermes_home) / 'nora-instance.json').exists():
+    binding = update.instance_paths(args.hermes_home)
+    if (Path(args.hermes_home) / 'nora-instance.json').exists() and (not binding or binding['desktopManaged']):
         raise failure('受管实例必须使用原系统后端，未切换为独立更新。')
     home, root = update.resolve_update_target(args.hermes_home, args.install_root)
     nora = Path(args.nora_home).expanduser().absolute()
@@ -87,8 +88,8 @@ def installed_identity(update, root, *, verify_contents=True):
     return receipt, manifest
 
 
-def world_read(update, root):
-    app, state = root / 'apps/tavern-runtime', root / 'tavern-state'
+def world_read(update, root, home=None):
+    app, state = root / 'apps/tavern-runtime', update.bound_state_root(home, root)
     if getattr(sys, '_nora_operation_delegate', None) is not None:
         return update.verify_worlds(app, state)
     native = state / 'native'
@@ -109,7 +110,7 @@ def status(args, update, *, verify=True):
     # Admission proves ownership without requiring bytes that this transaction
     # is about to repair. Final/current/recovery verification remains strict.
     receipt, manifest = installed_identity(update, root, verify_contents=verify)
-    runtime = update.standalone_runtime(root)
+    runtime = update.standalone_runtime(root,home=home)
     runtime.verify_install()
     facts = runtime.status()
     if facts.get('inspection_error'):
@@ -117,7 +118,7 @@ def status(args, update, *, verify=True):
     running = facts.get('processes', {}).get('native') is True
     if running and (facts.get('port') != args.port or facts.get('health', {}).get('ok') is not True):
         raise failure('原酒馆进程未通过当前实例的健康与端口检查。')
-    worlds = world_read(update, root) if verify else None
+    worlds = world_read(update, root, home) if verify else None
     return {'standalone': True, 'installed': True, 'hermesInstalled': True, 'noraInstalled': True,
         'systemReady': True, 'setupCompleted': None, 'version': receipt['version'], 'commit': manifest['commit'],
         'port': args.port, 'running': running, 'gatewayRunning': None, 'clawchatConnected': None,
@@ -193,7 +194,7 @@ def verify_committed(args, update):
     if current['version'] != journal.record['version'] or current['running'] != journal.plan['before']['running']:
         raise failure('新版文件或原有服务状态尚未通过验收。')
     if journal.plan.get('worlds') is not None:
-        update.verify_preserved_worlds(root / 'apps/tavern-runtime', root / 'tavern-state',
+        update.verify_preserved_worlds(root / 'apps/tavern-runtime', update.bound_state_root(home, root),
             journal.plan.get('storyInventory', {}), journal.plan['worlds'])
     return {**current, 'updateVerified': True, 'operationVerified': True}
 

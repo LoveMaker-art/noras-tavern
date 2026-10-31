@@ -19,7 +19,7 @@ launcher/              用户打开的桌面启动器
   ui/                  正式界面、控制器、诺拉图片
   bridge.py            UI 操作到部署逻辑的桥接
 
-deployment/            安装后本地系统的生命周期
+deployment/            桌面与云端部署的安装维护生命周期
   install/             首次安装、目录选择、失败残留清理
   update/              完整系统更新与单独酒馆更新
   uninstall/           卸载与 Windows NSIS 集成

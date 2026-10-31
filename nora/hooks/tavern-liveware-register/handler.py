@@ -16,7 +16,8 @@ def handle(event_type, context):
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open('a', encoding='utf-8') as log:
         log.write('gateway:startup received; spawning tavern liveware ensure\n')
-        dedicated = (HERMES_HOME / 'nora-instance.json').is_file()
+        dedicated = ((HERMES_HOME / 'nora-instance.json').is_file()
+                     or (HERMES_HOME / 'scripts/nora-instance.py').is_file())
         command = ([str(HERMES_HOME / 'scripts/nora-instance.py'), 'recover-existing'] if dedicated else
                    [str(DATA_ROOT / 'apps/tavern-ops/updater/liveware_integration.py'),
                     '--home', str(DATA_ROOT), '--hermes-home', str(HERMES_HOME), 'startup'])

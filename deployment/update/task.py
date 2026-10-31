@@ -10,15 +10,20 @@ import subprocess
 import sys
 
 
-def installation(home, root=None):
+def path_module():
     entry = Path(__file__).with_name('bootstrap.py')
     spec = importlib.util.spec_from_file_location('nora_task_bootstrap', entry)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def installation(home, root=None):
+    module = path_module()
     home = Path(home).expanduser().resolve()
     marker = home / 'nora-instance.json'
     managed_home = None
-    if marker.is_file():
+    if marker.is_file() and json.loads(marker.read_text(encoding='utf-8')).get('deployment', 'desktop') != 'core':
         record = json.loads(marker.read_text(encoding='utf-8'))
         managed_home = Path(record['noraHome']).expanduser()
         module.managed_instance(home, managed_home)
@@ -77,7 +82,8 @@ def main():
         raise RuntimeError('测试版本必须明确指定本地验收目录。')
     home, root, owner = installation(args.hermes_home, args.install_root)
     marker = home / 'nora-instance.json'
-    port = json.loads(marker.read_text(encoding='utf-8'))['port'] if marker.is_file() else args.port
+    binding = path_module().instance_paths(home)
+    port = binding['port'] if binding else args.port
     if port is None:
         import yaml
         config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) or {}
@@ -93,11 +99,13 @@ def main():
     if not entry.is_file():
         raise RuntimeError('当前更新器缺少独立任务执行文件，未修改数据。')
     action = 'status' if args.status else 'wait' if args.wait else 'check' if args.check else 'recover' if args.recover else 'update'
+    if binding:
+        owner = Path(binding['noraHome'])
     payload = {'action': action, 'noraHome': str(owner), 'hermesHome': str(home), 'installRoot': str(root),
                'port': port, 'python': sys.executable, 'node': node_for(home), 'opsRoot': str(ops),
                'venvHome': sys.prefix, 'managedPythonRoot': sys.base_prefix,
                'channel': os.environ.get('NORA_RELEASE_CHANNEL', 'stable'),
-               'hermesInstallDir': os.environ.get('HERMES_INSTALL_DIR', str(home / 'hermes-agent'))}
+               'hermesInstallDir': (binding or {}).get('hermesInstallDir') or os.environ.get('HERMES_INSTALL_DIR', str(home / 'hermes-agent'))}
     if args.allow_candidate:
         payload['allowCandidate'] = True
     for name, value in [('requestId', args.request_id), ('operationRequestId', args.operation_request_id), ('operationId', args.operation_id),

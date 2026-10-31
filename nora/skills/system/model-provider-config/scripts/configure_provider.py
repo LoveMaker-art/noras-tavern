@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import runpy
 import sys
 
 native_config = None
@@ -22,23 +23,19 @@ def main():
     home = Path(raw).resolve()
     if not Path(__file__).resolve().is_relative_to(home / 'skills'):
         raise ValueError('技能不属于当前Nora实例。')
-    if Path(sys.prefix).resolve() != (home / 'hermes-agent/venv').resolve():
-        raise ValueError('请使用当前Nora实例的Hermes Python。')
-    instance = json.loads((home / 'nora-instance.json').read_text(encoding='utf-8'))
-    root, tavern = home.parent, Path(instance['installRoot'])
-    if (instance.get('schema') != 1 or Path(instance['hermesHome']).resolve() != home
-            or Path(instance['noraHome']).resolve() != root or not tavern.is_absolute()
-            or not tavern.resolve().is_relative_to(root) or tavern.resolve() == root
-            or tavern.resolve().is_relative_to(home)):
-        raise ValueError('Nora安装记录不匹配，未修改配置。')
-    if sys.platform not in {'darwin', 'win32'}:
-        raise ValueError('本技能当前仅面向Mac和Windows的受管本地安装。')
+    resolver = home / 'scripts/nora-instance.py'
+    if resolver.is_symlink() or not resolver.is_file() or not resolver.resolve().is_relative_to(home):
+        raise ValueError('当前核心缺少实例定位组件；原配置未修改。')
+    paths = runpy.run_path(str(resolver))
+    instance = paths['verify_hermes_python'](home, paths['configuration'](home))
+    tavern = Path(instance['installRoot'])
     shared = tavern / 'apps/tavern-ops/installer'
     for name in ('hermes_model_config.py', 'hermes_model_probe.py'):
         target = shared / name
         if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(tavern.resolve()):
             raise ValueError('当前核心缺少共用模型配置组件；原配置未修改，不需要打开启动器。')
-    sys.path.insert(0, str(home / 'hermes-agent'))
+    os.environ['HERMES_INSTALL_DIR'] = instance['hermesInstallDir']
+    sys.path.insert(0, instance['hermesInstallDir'])
     sys.path.insert(0, str(shared))
     import hermes_model_config as native_config
     if args.wizard:
@@ -48,8 +45,10 @@ def main():
         request = _body()
         native_config.remember(request.get('api_key'))
         action = request.get('action', 'save')
-        if action in {'catalog', 'inspect'}:
-            result = getattr(native_config, action)(home)
+        if action == 'inspect':
+            result = native_config.inspect(home, instance)
+        elif action == 'catalog':
+            result = native_config.catalog(home)
         elif action == 'save':
             result = native_config.configure(home, instance, request)
         elif action == 'switch':

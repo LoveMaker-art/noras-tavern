@@ -174,15 +174,26 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             self.assertEqual(result.exception.code, 0)
             self.assertEqual(invoke.call_count, 1, 'Nora must invoke the independent updater while GUI is closed')
 
-    def test_managed_installation_does_not_fall_back_to_system(self):
+    def test_corrupt_instance_cannot_select_another_interpreter(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             (home / "nora-instance.json").touch()
-            self.assertEqual(list(MODULE.candidates(home)), [
-                home / "hermes-agent/venv/Scripts/python.exe",
-                home / "hermes-agent/venv/bin/python3",
-                home / "hermes-agent/venv/bin/python",
-            ])
+            with self.assertRaises(ValueError):
+                list(MODULE.candidates(home))
+
+    def test_discovery_without_yaml_can_find_an_explicit_candidate_but_never_skips_its_probe(self):
+        def binding(home,*,query=False):
+            if not query:raise ModuleNotFoundError("No module named 'yaml'",name='yaml')
+            return {'desktopManaged':False}
+        with patch.object(MODULE,'instance_paths',side_effect=binding), \
+                patch.dict(os.environ,{'NORA_PYTHON':'/explicit/hermes/python'}):
+            self.assertEqual(next(MODULE.candidates(Path('/home'))),Path('/explicit/hermes/python'))
+        with patch.object(MODULE,'candidates',return_value=iter([Path('/explicit/hermes/python')])), \
+                patch.object(Path,'is_file',return_value=True), \
+                patch.object(MODULE.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','wrong Hermes instance')) as run:
+            with self.assertRaisesRegex(SystemExit,'wrong Hermes instance'):
+                MODULE.select_python(Path('/home'))
+            self.assertIn('verify_hermes_python',run.call_args.args[0][3])
 
     def test_skips_interpreter_without_dependencies(self):
         results = [subprocess.CompletedProcess([], 1, "", "ModuleNotFoundError: yaml"),
@@ -223,7 +234,7 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
         home = root / 'hermes'
         home.mkdir()
         (home / 'nora-instance.json').write_text(json.dumps({
-            'schema': 1, 'noraHome': str(root), 'hermesHome': str(home), 'installRoot': str(root / 'tavern')}))
+            'schema': 1, 'noraHome': str(root), 'hermesHome': str(home), 'installRoot': str(root / 'tavern'), 'port': 18899}))
         target = root / 'installer/skill-update'
         target.mkdir(parents=True)
         (target / 'endpoint.json').write_text(json.dumps({
@@ -234,9 +245,9 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home, _ = self.managed(directory)
             instance = json.loads((home / 'nora-instance.json').read_text())
-            instance['installRoot'] = str(home / 'wrong')
+            instance['hermesHome'] = str(home / 'wrong')
             (home / 'nora-instance.json').write_text(json.dumps(instance))
-            with self.assertRaisesRegex(RuntimeError, 'Conflicting'):
+            with self.assertRaisesRegex(RuntimeError, 'Invalid Nora instance'):
                 MODULE.managed_root(home)
 
     def test_status_calls_shared_query_without_a_gui_receiver_or_hermes_python(self):

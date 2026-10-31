@@ -56,6 +56,11 @@ function binding(value){
   const file=path.join(value.hermesHome,'nora-instance.json'),managed=fs.existsSync(file);
   if(managed){
     const record=JSON.parse(bytes(file));
+    if(record.deployment==='core'){
+      if(record.schema!==1||record.port!==value.port||!same(record.noraHome,value.noraHome)
+        ||!same(record.hermesHome,value.hermesHome)||!same(record.installRoot,value.installRoot))throw fail();
+      return false;
+    }
     if(record.schema!==1||record.port!==value.port||!same(record.noraHome,value.noraHome)
       ||!same(record.hermesHome,value.hermesHome)||!same(record.installRoot,value.installRoot)
       ||!same(value.hermesHome,path.join(value.noraHome,'hermes'))||!same(value.installRoot,path.join(value.noraHome,'tavern')))throw fail();
@@ -143,7 +148,7 @@ function stage(options){
 async function validate({receiptPath,currentExecutable,readOnly=false}={}){
   try{
   const value=JSON.parse(bytes(receiptPath,8*1024*1024));
-  if(value.schema!==SCHEMA||!['win32','darwin','linux'].includes(value.platform)||value.platform!==process.platform||value.arch!==process.arch
+  if(value.schema!==SCHEMA||value.platform!==process.platform||value.arch!==process.arch
     ||value.installerDirectory!==path.join(value.noraHome,'installer')||!value.resources?.['launcher_bridge.py']||!value.files
     ||!Number.isInteger(value.port)||value.port<1024||value.port>65535||!['stable','beta'].includes(value.channel))throw fail();
   const job=path.dirname(receiptPath),expected=path.join(value.installerDirectory,'update-jobs',path.basename(job));

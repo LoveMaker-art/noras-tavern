@@ -1,19 +1,18 @@
 ---
 name: model-provider-config
-description: 用户通过聊天要求配置、登录或切换本地诺拉的模型服务时使用。复用当前 Hermes 原生服务、认证与高级配置，先验证候选再切换；包括 OpenCode Go、订阅登录、云凭据和本地服务，无需打开或升级启动器。
+description: 用户通过聊天要求配置、登录或切换当前诺拉的模型服务时使用。复用当前 Hermes 原生服务、认证与高级配置，先验证候选再切换；包括 OpenCode Go、订阅登录、云凭据和本地服务，无需打开或升级启动器。
 version: 4.2.0
 author: Nora Tavern
-platforms: [macos, windows]
 metadata:
   hermes:
-    tags: [模型配置, 本地诺拉, 供应商登录, OpenCode Go]
+    tags: [模型配置, 诺拉, 供应商登录, OpenCode Go]
     category: system
     related_skills: [tavern-ops]
 ---
 
 # 配置诺拉模型
 
-配置当前受管本地实例的诺拉主模型，服务目录和协议以已安装 Hermes 为准。用户在聊天中说明目标并完成本人授权，由诺拉操作后台工具，不要求用户自己打开终端。启动器保留既有服务表单，与本技能共用核心配置执行和只读结果；其他服务仍由本技能配置。酒馆／MVU、人格、MCP、回退、其他服务和故事内容保持原样。
+配置当前实例的诺拉主模型，服务目录和协议以已安装 Hermes 为准。用户在聊天中说明目标并完成本人授权，由诺拉操作后台工具，不要求用户自己打开终端。启动器保留既有服务表单，与本技能共用核心配置执行和只读结果；其他服务仍由本技能配置。酒馆／MVU、人格、MCP、回退、其他服务和故事内容保持原样。
 
 ## 先确认目标
 
@@ -24,11 +23,11 @@ metadata:
 
 ## 调用入口
 
-从本技能实际安装位置执行 `scripts/configure_provider.py`，使用当前实例的 Python：
+从本技能实际安装位置执行 `scripts/configure_provider.py`。先核对当前 Hermes 运行进程的解释器或实例明确配置的 `nora_tavern.python`；使用能加载本实例 Hermes 程序与配置的实际 Python，不按系统名称猜虚拟环境路径。调用形式：
 
-- macOS：`"$HERMES_HOME/hermes-agent/venv/bin/python" -B "<本技能绝对路径>/scripts/configure_provider.py"`
-- Windows PowerShell：`& "$env:HERMES_HOME\hermes-agent\venv\Scripts\python.exe" -B "<本技能绝对路径>\scripts\configure_provider.py"`
+`"<已核验的当前Hermes Python绝对路径>" -B "<本技能绝对路径>/scripts/configure_provider.py"`
 
+PowerShell 使用其原生的 `&` 调用运算符；参数各自传入。解释器、程序和数据可以分开存放。路径缺失或互相冲突时，报告具体缺项，按用户授权修正绑定，保留原配置。
 JSON 请求从标准输入传入，非交互时为第一行；PTY 中的 JSON 输入自动隐藏回显。凭据不进入命令参数、shell 拼接、持久请求文件或对话回复，不从历史聊天搜 Key。
 
 入口从本实例核心组件加载共用实现，不从桌面APP加载。核心组件缺失时保留原配置并说明缺项，不要求打开新版启动器，不另复制一套执行代码。
@@ -93,4 +92,4 @@ Go 的地址、模型规范化、协议、稳定 `x-opencode-session` 与 User-A
 - 候选目录仅复制必要配置与凭据，使用本用户专有权限；子进程结束后清理，不生成额外含 Key 的持久备份。不承诺强杀、断电或磁盘故障的自动恢复；外部 CLI／服务商已完成的登录也不因清理本地候选而撤销。
 - 脚本不依赖桌面 APP、APP 收据或新版启动器命令。旧启动器对部分原生服务的显示、OAuth／云认证状态识别可能有限；不要为骗过旧检查伪造 Key、改为 custom 或复制动态令牌。配置成功不代表旧 APP 所有维护页都已兼容。
 
-本技能限具备实例记录的 Mac／Windows 受管本地安装，不扩展任意云端 Hermes。酒馆／MVU 配置继续独立保留。
+本技能用于当前已绑定的诺拉实例，包括云端与本地。通过`$HERMES_HOME/scripts/nora-instance.py`解析既有实例记录或MCP配置；非标准路径使用Hermes配置的`nora_tavern`映射，不要求桌面APP、固定父子目录或固定venv名称。使用能加载该实例Hermes程序及配置的解释器，冲突时停止相关写入并报告缺项。酒馆／MVU配置继续独立保留。
