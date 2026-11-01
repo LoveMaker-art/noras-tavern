@@ -1,4 +1,5 @@
 import { READING_FIELDS, READING_DEFAULTS, normalizeReadingValues, projectReading } from '../../engine/sillytavern/public/scripts/nora-worlds/reading-preferences.js';
+import { findReadingAnchor } from './st-message-view-adapter.js';
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
@@ -37,8 +38,7 @@ export function createReadingController({ select, getWorldId, requestHeaders, fe
         const token = ++restoreSequence;
         const atEnd = element.scrollHeight - element.clientHeight - element.scrollTop <= 32;
         const top = element.getBoundingClientRect?.().top ?? 0;
-        const visible = selector => [...(element.querySelectorAll?.(selector) || [])].find(node => node.getBoundingClientRect().bottom > top);
-        const anchor = visible('.mes_text > p') || visible('.mes');
+        const anchor = findReadingAnchor(element, top);
         const offset = anchor ? anchor.getBoundingClientRect().top - top : null;
         const scrollTop = element.scrollTop;
         let interrupted = false;

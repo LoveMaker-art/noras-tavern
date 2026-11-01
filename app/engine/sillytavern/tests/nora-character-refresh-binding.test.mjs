@@ -15,7 +15,9 @@ function fixture(product = true) {
         getRequestHeaders: () => ({}), DOMPurify: { sanitize: x => x },
         humanizedDateTime: () => 'fallback', printCharacters: async () => {},
         console, toastr: { error: () => assert.fail('unexpected missing card') },
+        emitted: [], event_types: { CHARACTER_LIST_CHANGED: 'character-list-changed' },
     };
+    scope.eventSource = { emit: async event => { scope.emitted.push(event); } };
     scope.setCharacterId = id => { scope.this_chid = id; };
     scope.fetch = async url => ({ ok: true, json: async () => url.endsWith('/all')
         ? [{ avatar: 'other.png', name: 'Other' }, { avatar: 'owned.png', name: 'Updated', shallow: true }]
@@ -33,6 +35,7 @@ test('Nora library refresh and subsequent full-card refresh preserve the active 
     assert.equal(scope.characters[1].chat, 'nora-session');
     assert.equal(scope.characters[1].name, 'Updated');
     assert.equal(scope.characters[0].chat, 'Other - fallback');
+    assert.deepEqual(scope.emitted, [scope.event_types.CHARACTER_LIST_CHANGED]);
 });
 
 test('single-card refresh preserves only the active Nora binding', async () => {

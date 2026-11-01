@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { init, parse } from 'es-module-lexer';
+import { Linter } from 'eslint';
 
 const testsRoot = path.dirname(fileURLToPath(import.meta.url));
 const moduleRoot = path.resolve(testsRoot, '../src/nora-world-core');
@@ -9,13 +10,19 @@ const files = fs.readdirSync(moduleRoot).filter(file => file.endsWith('.js')).so
 if (!files.length) throw new Error('Nora World Core source files are missing.');
 
 const forbidden = [
-    /\bwindow\b/,
-    /\bdocument\b/,
-    /\bglobalThis\b/,
-    /\bjQuery\b/,
     /from ['"][^'"]*public\//,
     /from ['"][^'"]*nora-adapters\//,
 ];
+const browserGlobals = ['window', 'document', 'globalThis', 'jQuery'];
+const linter = new Linter();
+function restrictedGlobals(source, names) {
+    return linter.verify(source, { parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+        rules: { 'no-restricted-globals': ['error', ...names] } });
+}
+// A data field or a function argument named document is not browser access.
+if (restrictedGlobals('function read(document) { return document.value; } const value = { document: 1 };', browserGlobals).length
+    || !restrictedGlobals('document.querySelector("p");', browserGlobals).length
+    || !restrictedGlobals('consume(window);', browserGlobals).length) throw new Error('Browser boundary analysis is not distinguishing data from globals.');
 
 // These modules are shared data/validation, not browser adapters. Keep one
 // implementation, but verify they cannot acquire browser/ST or I/O dependencies.
@@ -26,6 +33,7 @@ const sharedModules = [
     'nora-worlds/story-context.js',
     'nora-worlds/character-references.js',
     'nora-worlds/world-preset.js',
+    'nora-worlds/reading-preferences.js',
     'nora-worlds/preset-file.js',
     'nora-compat/mvu-compatibility.js',
     'nora-compat/mvu-protocol.js',
@@ -44,13 +52,17 @@ for (const relative of sharedModules) {
             throw new Error(`Shared compatibility module ${relative} has an unchecked dependency: ${dependency.n}`);
         }
     }
-    for (const pattern of [...forbidden, /\b(?:fetch|process|SillyTavern|localStorage)\b/]) {
+    const issues = restrictedGlobals(schema, [...browserGlobals, 'fetch', 'process', 'SillyTavern', 'localStorage']);
+    if (issues.length) throw new Error(`Shared compatibility module ${relative} must remain platform-independent: ${issues[0].message}`);
+    for (const pattern of forbidden) {
         if (pattern.test(schema)) throw new Error(`Shared compatibility module ${relative} must remain platform-independent: ${pattern}`);
     }
 }
 
 for (const file of files) {
     let source = fs.readFileSync(path.join(moduleRoot, file), 'utf8');
+    const issues = restrictedGlobals(source, browserGlobals);
+    if (issues.length) throw new Error(`${file} crosses the browser/ST compatibility seam: ${issues[0].message}`);
     for (const dependency of parse(source)[0].reverse()) {
         if (dependency.d === -1 && dependency.n?.startsWith('.')
             && sharedPaths.has(path.resolve(moduleRoot, dependency.n))) {
