@@ -85,6 +85,10 @@ test('World creation retries and UI/MCP deletion preserve isolated user data', a
                 },
                 focus() {
                 },
+                reportValidity() {
+                    return dom(raw).find('[required]').toArray().every(element =>
+                        element.attribs.type === 'file' ? wrap(element).files.length > 0 : Boolean(wrap(element).value));
+                },
                 querySelector(q) {
                     return select(q, this);
                 },
@@ -103,6 +107,7 @@ test('World creation retries and UI/MCP deletion preserve isolated user data', a
                     return this.handlers[k]?.({
                         preventDefault() {
                         },
+                        target: this,
                         currentTarget: this,
                     });
                 },
@@ -114,6 +119,9 @@ test('World creation retries and UI/MCP deletion preserve isolated user data', a
                 },
             });
             wrappers.set(raw, node);
+            if (raw.attribs?.type === 'file') node.files = [];
+            if (raw.tagName === 'form') node.elements = Object.fromEntries(dom(raw).find('[name]').toArray()
+                .map(element => [element.attribs.name, wrap(element)]));
             return node;
         };
         const select = (q, parent = modal) => wrap(dom(parent.raw).find(q).get(0));
@@ -874,7 +882,10 @@ test('World creation retries and UI/MCP deletion preserve isolated user data', a
                     const view = await uiFor(f);
                     await view.ui.select('[data-library-import]').fire('click');
                     const form = view.ui.select('[data-card-import-form]');
-                    form.elements = { file: { files: [file] } };
+                    form.elements.file.files = [file];
+                    await form.elements.file.fire('change');
+                    assert.equal(f.requests.some(request => request.path === '/api/nora-worlds-v2/library/cards/import' && request.method === 'POST'), false,
+                        'Selecting a file for preview must not import it');
                     await form.fire('submit');
                     assert.ok(f.requests.some(request => request.path === '/api/nora-worlds-v2/library/cards/import' && request.method === 'POST'));
                     assert.equal(view.ui.messages.some(notice => notice.tone === 'error'), false);
