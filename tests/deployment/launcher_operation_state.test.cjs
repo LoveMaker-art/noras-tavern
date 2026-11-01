@@ -604,7 +604,7 @@ test('metadata retry conditions retain only the official release query and bound
   const f=fixture(t,async()=>{throw Object.assign(new Error('original metadata unavailable'),{code:'ETIMEDOUT'});},
     {identifyFailureCondition:()=>target});
   const assets='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/';
-  const allowed=[base+'/latest',base+'/tags/v2.4.2',base+'/tags/v2.5.0-beta.1',base+'?per_page=100&page=5',
+  const allowed=[base+'/latest',base+'/tags/v2.4.2',base+'/tags/v2.5.0-beta.1',base+'?per_page=100&page=5',base+'?per_page=10&page=50',
     assets+'release-manifest.json',assets+'nora-system-win32-x64.json',assets+'nora-launcher-darwin-arm64.json'];
   for(const [index,url] of allowed.entries()){
     const resource={url,routeHash:'c'.repeat(64),...(/\/nora-(?:system|launcher)-/.test(url)?{expectedVersion:'2.0.2'}:{})};
@@ -614,7 +614,7 @@ test('metadata retry conditions retain only the official release query and bound
     assert.equal(JSON.stringify(result).includes('NEVER_SAVE'),false);
   }
   const rejected=[base+'/latest?token=NEVER_SAVE',base+'/latest#NEVER_SAVE',base.replace('noras-tavern','other')+'/latest',
-    base.replace('api.github.com','fixture.invalid')+'/latest',base+'/tags/not-a-version',base+'?per_page=100&page=6',base+'/latest?per_page=100',
+    base.replace('api.github.com','fixture.invalid')+'/latest',base+'/tags/not-a-version',base+'?per_page=100&page=6',base+'?per_page=10&page=51',base+'/latest?per_page=100',
     base.replace('https://','https://NEVER_SAVE@')+'/latest',assets+'nora-system-linux-x64.json',assets+'config.json',
     assets+'release-manifest.json?token=NEVER_SAVE',assets.replace('/v2.4.2/','/invalid-tag/')+'release-manifest.json'];
   for(const [index,url] of rejected.entries()){

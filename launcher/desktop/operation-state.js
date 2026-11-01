@@ -5,6 +5,7 @@ const { presentError } = require('./error-presentation');
 const {describeError}=require('./launcher-errors');
 const {failureActions}=require('./operation-result');
 const {OPERATION_BUDGET}=require('./evidence-store');
+const {releaseListRequest}=require('./release-sources');
 
 const SCHEMA = 'nora-operation/1';
 const TERMINAL = new Set(['succeeded','failed','cancelled','rolled-back','blocked']);
@@ -208,7 +209,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         const resource=target.resource,url=new URL(resource?.url),base='/repos/LoveMaker-art/noras-tavern/releases';
         let origin='https://api.github.com',expectedVersion,expectedSystemVersion;
         let allowed=url.pathname===base+'/latest'&&!url.search
-          ||url.pathname===base&&/^\?per_page=100&page=[1-5]$/.test(url.search);
+          ||Boolean(releaseListRequest(url));
         if(url.pathname.startsWith(base+'/tags/')&&!url.search){
           const encoded=url.pathname.slice((base+'/tags/').length),tag=decodeURIComponent(encoded);
           allowed=encodeURIComponent(tag)===encoded&&require('./releases').compare(tag,tag)===0;

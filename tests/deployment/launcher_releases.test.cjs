@@ -499,6 +499,31 @@ test('default Jihu beta discovery reads only its exact complete channel catalogu
     return fixtureResponse(JSON.stringify(rows),url);},undefined,'beta');
   assert.equal(value.tag_name,'v2.2.9-beta.10');assert.deepEqual(requested,[expected]);
 });
+test('Beta history larger than the metadata budget is read in bounded pages and keeps semantic ordering',async()=>{
+  const rows=Array.from({length:25},(_,i)=>({tag_name:`v2.5.8-beta.${i===24?10:2}`,prerelease:true,
+    draft:i!==0&&i!==24,body:'x'.repeat(190000)})),requests=[];
+  assert.ok(Buffer.byteLength(JSON.stringify(rows))>4*1024*1024);
+  const result=await releases.latest(async address=>{
+    const url=new URL(address),size=Number(url.searchParams.get('per_page')),page=Number(url.searchParams.get('page'));
+    requests.push({size,page});
+    return fixtureResponse(JSON.stringify(rows.slice((page-1)*size,page*size)),address);
+  },undefined,'beta',undefined,{networkPolicy:{sources:githubOnly}});
+  assert.equal(result.tag_name,'v2.5.8-beta.10');
+  assert.deepEqual(requests,[{size:10,page:1},{size:10,page:2},{size:10,page:3}]);
+  await assert.rejects(releases.latest(async url=>fixtureResponse(JSON.stringify([{...rows[0],body:'x'.repeat(4*1024*1024)}]),url),
+    undefined,'beta',undefined,{networkPolicy:{sources:githubOnly}}),error=>error.code==='RESPONSE_TOO_LARGE');
+});
+test('smaller Beta pages keep the existing five-hundred-release scan bound',async()=>{
+  const pages=[];
+  const result=await releases.latest(async address=>{
+    const url=new URL(address),page=Number(url.searchParams.get('page'));
+    assert.equal(url.searchParams.get('per_page'),'10');pages.push(page);
+    return fixtureResponse(JSON.stringify(Array.from({length:10},(_,i)=>({
+      tag_name:'v2.5.8-beta.2',prerelease:true,draft:page!==50||i!==9}))),address);
+  },undefined,'beta',undefined,{networkPolicy:{sources:githubOnly}});
+  assert.equal(result.tag_name,'v2.5.8-beta.2');
+  assert.deepEqual(pages,Array.from({length:50},(_,i)=>i+1));
+});
 test('beta download keeps release verification and rejects stable or candidate substitution', async t => {
   const f = fixture(t);
   const beta = { ...f.release, tag_name: 'v2.2.9-beta.1', prerelease: true };

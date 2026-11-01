@@ -89,7 +89,7 @@ def source_candidates(url, *, channel='stable', sources=None):
     if value.scheme == 'https' and value.hostname == 'api.github.com' and not value.fragment:
         if value.path == api+'/latest' and not value.query and channel == 'stable':
             relative = 'channels/stable.json'
-        elif value.path == api and value.query == 'per_page=100&page=1' and channel == 'beta':
+        elif value.path == api and value.query in ('per_page=10&page=1', 'per_page=100&page=1') and channel == 'beta':
             relative = 'channels/beta.json'
         elif value.path.startswith(api+'/tags/') and not value.query:
             tag = value.path[len(api+'/tags/'):]
@@ -170,7 +170,7 @@ def installed_data_root():
 
 DATA_ROOT = installed_data_root()
 CHANNEL = json.loads(INSTANCE.read_text(encoding="utf-8")).get("releaseChannel", "stable") if INSTANCE.is_file() else "stable"
-API_URL = (f"https://api.github.com/repos/{REPO}/releases?per_page=100&page=1" if CHANNEL == 'beta'
+API_URL = (f"https://api.github.com/repos/{REPO}/releases?per_page=10&page=1" if CHANNEL == 'beta'
     else f"https://api.github.com/repos/{REPO}/releases/latest")
 SOURCEFORGE_ROOT = "https://downloads.sourceforge.net/project/nora-tavern/"
 LOCAL_RELEASE_URL = os.environ.get("TAVERN_RELEASE_API_URL")
@@ -280,7 +280,13 @@ def query_bytes(source: str, timeout: float, *, limit=1024 * 1024):
 
 
 def query_release(source: str, timeout: float):
-    return json.loads(query_bytes(source, timeout))
+    value = urllib.parse.urlsplit(source)
+    catalogue = CHANNEL == 'beta' and (source in RELEASE_URLS
+        or value.hostname == 'api.github.com' and value.path == f'/repos/{REPO}/releases'
+        and re.fullmatch(r'per_page=10&page=(?:[1-9]|10)', value.query))
+    # Ten complete release descriptors share Node's existing 4 MiB bound.
+    # Individual manifests retain their 1 MiB bound.
+    return json.loads(query_bytes(source, timeout, limit=4*1024*1024 if catalogue else 1024*1024))
 
 
 def core_release_version(payload, deadline):
@@ -339,27 +345,36 @@ def core_release_version(payload, deadline):
 
 def latest_release() -> tuple[str, str]:
     deadline = time.monotonic() + 30
-    payload = None
-    for index, source in enumerate(RELEASE_URLS):
-        try:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("版本检查超时")
-            payload = query_release(source, min(15, remaining))
-            break
-        except urllib.error.HTTPError as error:
-            if index == len(RELEASE_URLS) - 1 or error.code not in {403, 404, 408, 410, 429, 500, 502, 503, 504}:
-                raise
-        except (urllib.error.URLError, OSError) as error:
-            reason = getattr(error, "reason", error)
-            if isinstance(reason, (ssl.SSLCertVerificationError, ssl.CertificateError)) or index == len(RELEASE_URLS) - 1:
-                raise
-    if payload is None:
+    def read(urls):
+        for index, source in enumerate(urls):
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("版本检查超时")
+                return query_release(source, min(15, remaining)), source
+            except urllib.error.HTTPError as error:
+                if index == len(urls) - 1 or error.code not in {403, 404, 408, 410, 429, 500, 502, 503, 504}:
+                    raise
+            except (urllib.error.URLError, OSError) as error:
+                reason = getattr(error, "reason", error)
+                if isinstance(reason, (ssl.SSLCertVerificationError, ssl.CertificateError)) or index == len(urls) - 1:
+                    raise
         raise RuntimeError("所有版本来源均不可用")
+    payload, selected = read(RELEASE_URLS)
     if CHANNEL == 'beta':
-        if not isinstance(payload, list):
-            raise RuntimeError('Beta 版本信息格式无效')
-        releases = [item for item in payload if isinstance(item, dict) and not item.get('draft')
+        candidates = []
+        for page in range(1, 11):  # Preserve the watcher's 100-release bound.
+            if not isinstance(payload, list):
+                raise RuntimeError('Beta 版本信息格式无效')
+            canonical = f'https://api.github.com/repos/{REPO}/releases?per_page=10&page={page}'
+            complete = bool(LOCAL_RELEASE_URL) or selected != canonical
+            if len(payload) > 10 and not complete:
+                raise RuntimeError('Beta 发布分页超出约定范围')
+            candidates.extend(payload)
+            if len(payload) < 10 or complete or page == 10:
+                break
+            payload, selected = read((f'https://api.github.com/repos/{REPO}/releases?per_page=10&page={page+1}',))
+        releases = [item for item in candidates if isinstance(item, dict) and not item.get('draft')
                     and item.get('prerelease') and re.fullmatch(r'v?\d+\.\d+\.\d+-beta\.\d+', item.get('tag_name', ''))]
         if not releases:
             raise RuntimeError('尚未发布 Beta 测试版本')

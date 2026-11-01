@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
-const { sourceCandidates } = require('./release-sources');
+const { sourceCandidates,releaseListUrl } = require('./release-sources');
 
 function digestFile(file){
   const digest=crypto.createHash('sha256'),buffer=Buffer.alloc(1024*1024),fd=fs.openSync(file,'r');
@@ -42,7 +42,8 @@ function createLocalRelease(directory, sourceOptions = {}) {
     for(const candidate of sourceCandidates(`${api}tags/${encodeURIComponent(item.release.tag_name)}`,sourceOptions))catalogues.set(candidate.url,item.release);
   }
   for(const candidate of sourceCandidates(`${api}latest`,sourceOptions))catalogues.set(candidate.url,core.release);
-  const lists=new Set(sourceCandidates(`${api.slice(0,-1)}?per_page=100&page=1`,sourceOptions).map(candidate=>candidate.url));
+  const lists=new Set([releaseListUrl(),`${api.slice(0,-1)}?per_page=100&page=1`]
+    .flatMap(url=>sourceCandidates(url,sourceOptions).map(candidate=>candidate.url)));
   const response = (body, url, headers) => {
     const value = new Response(body, { headers });
     Object.defineProperty(value, 'url', { value: url });

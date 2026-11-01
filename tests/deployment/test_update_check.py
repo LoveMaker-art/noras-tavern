@@ -38,6 +38,48 @@ def load_updater():
 
 
 class UpdateCheckScriptTests(unittest.TestCase):
+    def test_beta_catalogue_pages_preserve_semantic_selection_and_stay_bounded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary), LEGACY_SOURCES)
+            module.CHANNEL = 'beta'
+            module.LOCAL_RELEASE_URL = None
+            first = f'https://api.github.com/repos/{module.REPO}/releases?per_page=10&page=1'
+            module.RELEASE_URLS = (first,)
+            rows = [{'tag_name': 'v2.5.8-beta.' + ('10' if i == 24 else '2'),
+                     'draft': i not in (0, 24), 'prerelease': True, 'body': 'summary'} for i in range(25)]
+            calls = []
+            def page(url, _timeout):
+                calls.append(url)
+                index = int(url.rsplit('=', 1)[1])
+                return rows[(index-1)*10:index*10]
+            with mock.patch.object(module, 'query_release', side_effect=page), \
+                    mock.patch.object(module, 'core_release_version', side_effect=lambda item, _deadline: item['tag_name'][1:]):
+                self.assertEqual(module.latest_release(), ('2.5.8-beta.10', 'summary'))
+            self.assertEqual(calls, [first, first[:-1]+'2', first[:-1]+'3'])
+
+    def test_beta_catalogue_accepts_complete_descriptors_but_keeps_individual_manifest_and_page_limits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary), LEGACY_SOURCES)
+            module.CHANNEL = 'beta'
+            module.LOCAL_RELEASE_URL = None
+            url = f'https://api.github.com/repos/{module.REPO}/releases?per_page=10&page=1'
+            module.RELEASE_URLS = (url,)
+            body = json.dumps([{'body': 'x' * (1024*1024+1)}]).encode()
+            def response(address, payload):
+                stream = io.BytesIO(payload)
+                stream.geturl = lambda: address
+                return stream
+            with mock.patch.object(module.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.return_value = response(url, body)
+                self.assertEqual(module.query_release(url, 1)[0]['body'], 'x' * (1024*1024+1))
+                manifest = f'https://api.github.com/repos/{module.REPO}/releases/tags/v2.5.8-beta.2'
+                opener.return_value.open.return_value = response(manifest, body)
+                with self.assertRaisesRegex(RuntimeError, '大小限制'):
+                    module.query_release(manifest, 1)
+                opener.return_value.open.return_value = response(url, b'x' * (4*1024*1024+1))
+                with self.assertRaisesRegex(RuntimeError, '大小限制'):
+                    module.query_release(url, 1)
+
     def test_app_only_batch_does_not_send_a_core_notice_or_change_notice_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             module = self.checker_module(Path(temporary))
