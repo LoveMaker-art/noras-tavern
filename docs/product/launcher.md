@@ -1,6 +1,6 @@
 # 启动器产品设计
 
-产品设计版本：**1.45**。核对日期：2026-10-30。与[项目总览](README.md)共同构成现行设计。Linux云端的诺拉与酒馆按[部署边界](README.md#deployment-support)独立安装、运行和维护；本模块继续负责Windows／Mac桌面入口及现有模型管理，不扩大全服务表单，也不把桌面目录或APP变成云端核心能力前提。此次只修订文档，保留现有启动器行为与此前验收边界。
+产品设计版本：**1.45**。核对日期：2026-11-01。与[项目总览](README.md)共同构成现行设计。Linux云端的诺拉与酒馆按[部署边界](README.md#deployment-support)独立安装、运行和维护；本模块继续负责Windows／Mac桌面入口及现有模型管理，不扩大全服务表单，也不把桌面目录或APP变成云端核心能力前提。保留现有启动器行为与此前验收边界；共用核心的源码适配及审查收敛见[实施记录](../launcher-reliability-plan.md#cloud-core-review-convergence-20261101)，本地合并见[整合记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)，不表示部署或发布；L-D07／L-D08继续登记未完成范围。
 
 1.44仅在既有1.43设计上整合[N-12](nora.md#models-and-visuals)／[T-23](tavern.md#visuals)阅读控制与默认排版，启动器行为、模型管理及数据保护规则保持；实际合并范围见[本轮记录](../launcher-reliability-plan.md#reading-main-integration-20261030)。
 

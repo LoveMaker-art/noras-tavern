@@ -421,10 +421,6 @@ class FirstInstallJournal:
         for name, root in self.record['roots'].items():
             if name not in ('hermes', 'tavern', 'state') or _recovery.identity(root) != self.record['rootIdentities'].get(name):
                 raise RuntimeError('首装恢复根目录身份已变化，已保留现场')
-        if 'state' in self.record['roots']:
-            expected = _shared_paths.state_root(self.record['roots']['hermes'], self.record['roots']['tavern'])
-            if expected != Path(self.record['roots']['state']):
-                raise RuntimeError('首装数据路径与当前实例绑定不匹配。')
         if not isinstance(self.record['targets'], list) or len(self.record['targets']) > 128:
             raise RuntimeError('首装恢复目标清单无效')
         if 'backupLayout' in self.record and self.record['backupLayout'] != 'indexed-v1':
@@ -458,6 +454,19 @@ class FirstInstallJournal:
                 raise RuntimeError('首装失败程序归档路径不受信任')
             if 'untrustedCopy' in item and not re.fullmatch(r'failed-new/[0-9]+-[a-f0-9]{32}', item['untrustedCopy'].get('archive', '')):
                 raise RuntimeError('首装未知配置保留路径不受信任')
+        if 'state' in self.record['roots']:
+            config_path = None
+            item = next((item for item in self.record['targets']
+                         if item['namespace'] == 'hermes' and item['path'] == 'config.yaml'), None)
+            if item and item.get('savedIdentity') is not None:
+                config_path = self.backup_target(item)
+                if (_recovery.identity(config_path) != item['savedIdentity']
+                        or _recovery.digest(config_path) != item['digest']):
+                    raise RuntimeError('首装路径来源的配置备份已变化，未恢复文件。')
+            expected = _shared_paths.state_root(self.record['roots']['hermes'],
+                self.record['roots']['tavern'], config_path=config_path)
+            if expected != Path(self.record['roots']['state']):
+                raise RuntimeError('首装数据路径与当前实例绑定不匹配。')
         return self
 
     def prepare(self, targets, *, manifest):
@@ -1022,12 +1031,20 @@ def install_skills(home: Path, prepared: dict[str, Path], journal=None) -> list[
     return sorted(installed)
 
 
+def retained_config_paths(install_root):
+    # The verified state binding owns these files, not the program directory.
+    try:
+        paths = tuple(_recovery.safe_path(state_root(install_root), name) for name in
+                      ('nora-retained-config.yaml', 'native-runtime/config.yaml'))
+    except RuntimeError as error:
+        raise RuntimeError("保留的酒馆配置不能重定向到隔离目录外") from error
+    if any(path.exists() and not path.is_file() for path in paths):
+        raise RuntimeError('保留的酒馆配置路径不是文件，未修改现有配置。')
+    return paths
+
+
 def restore_retained_config(install_root: Path, journal=None) -> Path:
-    retained = state_root(install_root) / "nora-retained-config.yaml"
-    target = state_root(install_root) / "native-runtime/config.yaml"
-    for candidate in (retained, target):
-        if candidate.is_symlink() or not candidate.resolve().is_relative_to(install_root.resolve()):
-            raise RuntimeError("保留的酒馆配置不能重定向到隔离目录外")
+    retained, target = retained_config_paths(install_root)
     if retained.is_file():
         write = journal.apply_bytes if journal is not None else atomic
         write(target, retained.read_bytes(), mode=0o600)
@@ -1153,6 +1170,8 @@ def installation_paths(args):
         shared = module_at("first_install_shared", HERE.parent / "updater/update.py")
         hermes_home = safe(args.hermes_home) if args.hermes_home else shared.default_hermes_home()
         binding = _shared_paths.instance_paths(hermes_home)
+        if binding and binding['desktopManaged']:
+            raise RuntimeError('此实例由桌面启动器管理，请使用原安装或修复入口；未更改实例类型。')
         install_root = safe(args.install_root or (binding or {}).get('installRoot') or os.environ.get("TAVERN_DATA_ROOT") or hermes_home)
         nora_home = safe(args.nora_home or (binding or {}).get('noraHome') or hermes_home)
         if binding and (install_root != Path(binding['installRoot']) or nora_home != Path(binding['noraHome'])):
@@ -1176,6 +1195,7 @@ def _install(args, operation_id, context_ref) -> dict:
     nora_home, hermes_home, install_root, args.port = installation_paths(args)
     context_ref.update(nora_home=nora_home, install_root=install_root)
     _installation_state = _shared_paths.state_root(hermes_home, install_root)
+    retained_config_paths(install_root)  # Reject redirects before any install writes.
     os.environ["NORA_TAVERN_HOME"] = str(nora_home)
     os.environ["NORA_HERMES_HOME"] = str(hermes_home)
     os.environ["HERMES_HOME"] = str(hermes_home)

@@ -81,6 +81,29 @@ class CloudInstancePathsTests(unittest.TestCase):
             first_install.installation_paths(args)
         self.assertFalse((self.base / 'wrong').exists())
 
+    def test_invalid_external_config_target_is_rejected_before_install_configuration_writes(self):
+        from ops.installer import first_install
+        outside = self.base / 'unrelated'
+        outside.mkdir()
+        before = (self.home / 'config.yaml').read_bytes()
+        args = SimpleNamespace(apply=True, confirm=True, dedicated_nora=False,
+            hermes_home=str(self.home), nora_home=None, install_root=None, port=None)
+        target = self.state / 'native-runtime'
+        for redirected in (True, False):
+            with self.subTest(redirected=redirected):
+                if redirected:
+                    target.symlink_to(outside, target_is_directory=True)
+                else:
+                    (target / 'config.yaml').mkdir(parents=True)
+                with patch.object(first_install, 'validate_hermes') as validate:
+                    with self.assertRaisesRegex(RuntimeError, '保留的酒馆配置'):
+                        first_install.install(args)
+                validate.assert_not_called()
+                self.assertEqual((self.home / 'config.yaml').read_bytes(), before)
+                self.assertEqual(list(outside.iterdir()), [])
+                self.assertFalse((self.home / 'nora-instance.json').exists())
+                target.unlink() if redirected else shutil.rmtree(target)
+
     def test_old_desktop_record_keeps_its_owner_and_layout(self):
         self.config = {}
         self.write_config()
@@ -90,6 +113,63 @@ class CloudInstancePathsTests(unittest.TestCase):
         value = resolver().configuration(self.home)
         self.assertTrue(value['desktopManaged'])
         self.assertEqual(value['noraHome'], str(self.base))
+
+    def test_headless_install_refuses_existing_desktop_before_entering_writer(self):
+        from ops.installer import first_install
+        self.config = {}
+        self.write_config()
+        marker = self.home / 'nora-instance.json'
+        original = json.dumps({'schema': 1, 'noraHome': str(self.base),
+            'hermesHome': str(self.home), 'installRoot': str(self.root), 'port': 18899})
+        marker.write_text(original)
+        args = SimpleNamespace(dedicated_nora=False, hermes_home=str(self.home),
+                               nora_home=None, install_root=None, port=None)
+        with patch.object(first_install, '_install', side_effect=AssertionError('desktop admitted as core')) as writer:
+            with self.assertRaisesRegex(RuntimeError, '桌面|启动器'):
+                first_install.install(args)
+        writer.assert_not_called()
+        self.assertEqual(marker.read_text(), original)
+        self.assertFalse((self.base / 'installer').exists())
+
+    def test_unmarked_query_and_installed_updater_reader_share_explicit_paths(self):
+        functions = resolver()
+        self.assertEqual(functions.query_configuration(self.home)['installRoot'], str(self.root))
+        scripts = self.home / 'scripts'
+        scripts.mkdir()
+        shutil.copy2(ROOT / 'ops/scripts/nora-instance.py', scripts / 'nora-instance.py')
+        entry = self.home / 'skills/system/tavern-updater/scripts/update.py'
+        entry.parent.mkdir(parents=True)
+        shutil.copy2(ROOT / 'ops/skills/system/tavern-updater/scripts/update.py', entry)
+        spec = importlib.util.spec_from_file_location('cloud_query_skill', entry)
+        skill = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(skill)
+        inspected = []
+        with patch.object(skill, 'query_helper', side_effect=lambda ops, *_args, **_kwargs: inspected.append(ops)):
+            self.assertEqual(list(skill.query_entries(self.home, self.home)), [])
+        self.assertEqual(inspected, [self.root / 'apps/tavern-ops'])
+        self.assertFalse((self.home / 'nora-instance.json').exists())
+
+    def test_marked_query_still_works_when_yaml_and_config_are_broken(self):
+        record = {'schema': 1, 'deployment': 'core', 'noraHome': str(self.home),
+                  'hermesHome': str(self.home), 'installRoot': str(self.root), 'port': 18899}
+        (self.home / 'nora-instance.json').write_text(json.dumps(record))
+        (self.home / 'config.yaml').write_text('invalid: [')
+        with patch.dict('sys.modules', {'yaml': None}):
+            value = resolver().query_configuration(self.home)
+        self.assertEqual(value['installRoot'], str(self.root))
+        self.assertFalse(value['desktopManaged'])
+
+    def test_unbound_legacy_metadata_is_not_mistaken_for_an_invalid_explicit_binding(self):
+        (self.home / 'config.yaml').write_text('legacy unbound configuration')
+        functions = resolver()
+        self.assertIsNone(functions.existing_configuration(self.home))
+        with self.assertRaisesRegex(RuntimeError, '配置不是对象'):
+            functions.configuration(self.home)
+        (self.home / 'nora-instance.json').write_text(json.dumps({'schema': 1,
+            'deployment': 'core', 'noraHome': str(self.home), 'hermesHome': str(self.home),
+            'installRoot': str(self.root), 'port': 18899}))
+        with self.assertRaisesRegex(RuntimeError, '配置不是对象'):
+            functions.existing_configuration(self.home)
 
     def test_state_cannot_be_a_program_tree_or_an_entire_instance(self):
         for state in (self.root,self.home,self.root/'apps/tavern-runtime',self.home/'skills'):
@@ -146,6 +226,9 @@ class CloudInstancePathsTests(unittest.TestCase):
         app.mkdir(parents=True)
         (app/'native-runtime.json').write_text('{}')
         self.assertFalse((self.home/'scripts/nora-instance.py').exists())
+        warm, cold = resolver().configuration(self.home), raw.instance_paths(self.home)
+        for name in ('installRoot', 'stateRoot', 'appRoot', 'desktopManaged'):
+            self.assertEqual(cold[name], warm[name], name)
         self.assertEqual(raw.resolve_update_target(self.home,self.root),(self.home,self.root))
         self.assertEqual(raw.state_root(self.home,self.root),self.state)
         self.assertFalse((self.root/'tavern-state').exists())
@@ -175,6 +258,32 @@ class CloudInstancePathsTests(unittest.TestCase):
         first.resume_first_install(journal.file, stop=lambda: {'offline': True})
         self.assertEqual(metadata.read_text(), 'original: true\n')
         self.assertEqual(story.read_text(), 'keep original chat')
+
+    def test_external_state_first_install_resumes_after_config_exchange_gap(self):
+        from ops.installer import first_install
+        original = (self.home / 'config.yaml').read_bytes()
+        journal = first_install.FirstInstallJournal.create(self.home, self.home, self.root, state=self.state)
+        journal.prepare({'hermes': [self.home / 'config.yaml']}, manifest={})
+        replace = first_install.os.replace
+        class PowerLoss(BaseException):
+            pass
+        def exchange_then_interrupt(source, target):
+            replace(source, target)
+            if Path(source) == self.home / 'config.yaml':
+                raise PowerLoss()
+        with patch.object(first_install.os, 'replace', side_effect=exchange_then_interrupt):
+            with self.assertRaises(PowerLoss):
+                journal.apply_bytes(self.home / 'config.yaml', original + b'new_setting: true\n')
+        self.assertFalse((self.home / 'config.yaml').exists())
+        saved = journal.backup_target(journal.record['targets'][0])
+        saved.write_bytes(original + b'changed_backup: true\n')
+        with self.assertRaisesRegex(RuntimeError, '配置备份已变化'):
+            first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
+        self.assertFalse((self.home / 'config.yaml').exists())
+        saved.write_bytes(original)
+        result = first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
+        self.assertEqual(result['status'], 'restored')
+        self.assertEqual((self.home / 'config.yaml').read_bytes(), original)
 
     def test_update_journal_restores_program_and_keeps_separate_story_data(self):
         spec = importlib.util.spec_from_file_location('cloud_update', ROOT / 'ops/updater/update.py')

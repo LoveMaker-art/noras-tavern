@@ -12,12 +12,12 @@
 Linux上的诺拉＋酒馆是[正式产品设计目标](product/README.md#deployment-support)，通过诺拉对话与浏览器／ClawChat应用入口使用，核心不依赖桌面启动器。此处区分部署形态，不把Windows／Mac安装包当作Linux安装方式。
 
 - 已有云端实例先按[更新方式](update-nora-tavern.md#先选择你的安装方式)识别源码安装或已有独立部署，保留原程序位置、数据和服务绑定；不要为套用桌面步骤新建空安装。
-- 首次云端部署需要确认该平台提供的Hermes、Node／Python、持久数据目录及服务控制方式。当前独立分支已解除核心首装的桌面收据前提，仍保留授权、互斥和恢复；尚未完成完整云端首装及外部入口验收，也未发布Linux图形安装器／容器镜像。
+- 首次云端部署需要确认该平台提供的Hermes、Node／Python、持久数据目录及服务控制方式。当前源码已解除核心首装的桌面收据前提，仍保留授权、互斥和恢复；尚未完成完整云端首装及外部入口验收，也未发布Linux图形安装器／容器镜像。源码整合与实际发布分开，见[本地合并记录](launcher-reliability-plan.md#cloud-core-main-integration-20261101)。
 - `model-provider-config`与其他共用技能不再按系统过滤，云端和桌面交付同一份技能。Linux与Mac隔离实例的真实候选验证、保存、失败保留和新进程读取已通过；这不等于已经更新用户机器或覆盖所有Hermes版本。实际状态见[实施记录](launcher-reliability-plan.md#cloud-core-instance-20261031)及[N-D04](product/nora.md#differences)。
 
 ### 非默认目录怎么处理
 
-以下是本分支源码的实例映射，不是要求用户搬家或重新安装。已有有效安装记录和MCP绑定继续读取；仅在路径不同且无法从旧记录确定时，在当前Hermes的`config.yaml`中明确配置：
+以下是当前源码的实例映射，不是要求用户搬家或重新安装。已有有效安装记录和MCP绑定继续读取；仅在路径不同且无法从旧记录确定时，在当前Hermes的`config.yaml`中明确配置：
 
 ```yaml
 nora_tavern:

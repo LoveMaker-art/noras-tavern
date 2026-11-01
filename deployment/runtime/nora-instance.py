@@ -13,6 +13,14 @@ def query_configuration(home):
     home = Path(home).resolve()
     file = home / 'nora-instance.json'
     if not file.exists():
+        try:
+            binding = existing_configuration(home)
+        except ModuleNotFoundError as error:
+            if error.name != 'yaml':
+                raise
+            binding = None
+        if binding is not None:
+            return binding
         return {'hermesHome': str(home), 'noraHome': str(home),
                 'installRoot': str(Path(os.environ.get('TAVERN_DATA_ROOT') or home)), 'desktopManaged': False}
     record = json.loads(file.read_text(encoding='utf-8'))
@@ -27,7 +35,22 @@ def query_configuration(home):
     return {**record, 'desktopManaged': record.get('deployment', 'desktop') == 'desktop'}
 
 
-def configuration(home):
+def _configuration_inputs(home, config_path=None):
+    import yaml
+    home = Path(home).resolve()
+    file = Path(config_path) if config_path is not None else home / 'config.yaml'
+    config = yaml.safe_load(file.read_text(encoding='utf-8')) if file.is_file() else {}
+    record_file = home / 'nora-instance.json'
+    record = json.loads(record_file.read_text(encoding='utf-8')) if record_file.is_file() else {}
+    return home, config, record
+
+
+def configuration(home, *, config_path=None):
+    # Recovery callers authenticate a before-image before supplying its path.
+    return _configuration(*_configuration_inputs(home, config_path))
+
+
+def _configuration(home, config, record):
     """Read one binding without moving data or requiring a desktop layout.
 
     nora_tavern describes explicit nonstandard paths. Existing MCP configuration
@@ -36,6 +59,8 @@ def configuration(home):
     deployment=core rather than borrowing desktop ownership.
     """
     home = Path(home).resolve()
+    if not isinstance(config, dict):
+        raise RuntimeError('Hermes 配置不是对象，未修改实例。')
     def absolute(value, label):
         if not isinstance(value, str) or not Path(value).expanduser().is_absolute():
             raise RuntimeError(label + ' 必须是明确的绝对路径。')
@@ -44,17 +69,11 @@ def configuration(home):
             raise RuntimeError(label + ' 不能是文件系统根目录。')
         return result
 
-    import yaml
-    file = home / 'config.yaml'
-    config = yaml.safe_load(file.read_text(encoding='utf-8')) if file.is_file() else {}
-    if not isinstance(config, dict):
-        raise RuntimeError('Hermes 配置不是对象，未修改实例。')
     declared = config.get('nora_tavern') or {}
     mcp = ((config.get('mcp_servers') or {}).get('nora') or {}).get('env') or {}
     if not isinstance(declared, dict) or not isinstance(mcp, dict):
         raise RuntimeError('实例路径配置不是对象，未修改实例。')
     record_file = home / 'nora-instance.json'
-    record = json.loads(record_file.read_text(encoding='utf-8')) if record_file.is_file() else {}
     if record_file.exists() and (not isinstance(record, dict) or record.get('schema') != 1
             or absolute(record.get('hermesHome'), 'hermesHome') != home
             or record.get('deployment', 'desktop') not in ('core', 'desktop')):
@@ -120,13 +139,11 @@ def configuration(home):
 
 def existing_configuration(home):
     """No binding is distinct from a present, invalid/conflicting binding."""
-    import yaml
-    home = Path(home)
-    config = yaml.safe_load((home/'config.yaml').read_text(encoding='utf-8')) if (home/'config.yaml').is_file() else {}
+    home, config, record = _configuration_inputs(home)
     if not (home/'nora-instance.json').exists() and not (isinstance(config,dict) and (
             config.get('nora_tavern') or (config.get('mcp_servers') or {}).get('nora',{}).get('env'))):
         return None
-    return configuration(home)
+    return _configuration(home, config, record)
 
 
 def verify_hermes_python(home, binding):

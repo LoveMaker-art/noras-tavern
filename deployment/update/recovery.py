@@ -505,6 +505,40 @@ def allowed_target(name, namespace, relative):
         'clawchat/nora-greeting.json','scripts/nora-instance.py'}
 
 
+def filesystem_device(path):
+    path = _io_path(path)
+    while not path.exists():
+        path = path.parent
+    return path.stat().st_dev
+
+
+def _volume_workspace(root, backup, target, *, create=False):
+    # Naming and ownership are identical during staging, recovery and cleanup.
+    target = Path(target)
+    key = hashlib.sha256((str(backup) + '\0' + str(target)).encode()).hexdigest()[:24]
+    directory = safe_path(target.parent, '.nora-maintenance-' + key)
+    receipt = directory / 'owner.json'
+    expected = {'schema': 1, 'installRoot': str(root), 'backup': str(backup), 'target': str(target)}
+    if create and not _io_path(directory).exists():
+        _io_path(directory).mkdir(mode=0o700, parents=True)
+        atomic_json(receipt, expected)
+    if _io_path(directory).exists() and (linked(directory) or read_object(receipt) != expected):
+        raise RuntimeError('目标卷的维护目录归属无法确认，未覆盖文件。')
+    return directory
+
+
+def _stage_tree(source, staged):
+    if _io_path(staged).exists():
+        raise RuntimeError('目标卷已有未确认的暂存文件，已保留现场。')
+    _io_path(staged).parent.mkdir(parents=True, exist_ok=True)
+    if _io_path(source).is_dir():
+        shutil.copytree(_io_path(source), _io_path(staged), symlinks=True)
+    else:
+        shutil.copy2(_io_path(source), _io_path(staged), follow_symlinks=False)
+    if digest(source) != digest(staged):
+        raise RuntimeError('目标卷暂存内容校验失败，未替换原文件。')
+
+
 class Journal:
     def __init__(self,home,root,record):
         self.home=Path(home).resolve();self.root=Path(root).resolve();self.record=record
@@ -514,34 +548,12 @@ class Journal:
         self.plan=record['recoveryPlan'];self.backup=Path(record['backup'])
         self.file=self.root/'tavern-updates/transaction.json'
 
-    @staticmethod
-    def device(path):
-        path = _io_path(path)
-        while not path.exists():
-            path = path.parent
-        return path.stat().st_dev
-
-    def local_workspace(self, target, *, create=False):
-        # The journal grants no arbitrary backup path. Derive a private sibling
-        # from its authenticated installation, backup ID and whitelisted target.
-        target = Path(target)
-        key = hashlib.sha256((str(self.backup) + '\0' + str(target)).encode()).hexdigest()[:24]
-        directory = safe_path(target.parent, '.nora-maintenance-' + key)
-        receipt = directory / 'owner.json'
-        expected = {'schema': 1, 'installRoot': str(self.root), 'backup': str(self.backup), 'target': str(target)}
-        if create and not _io_path(directory).exists():
-            _io_path(directory).mkdir(mode=0o700, parents=True)
-            atomic_json(receipt, expected)
-        if _io_path(directory).exists() and (linked(directory) or read_object(receipt) != expected):
-            raise RuntimeError('目标卷的维护目录归属无法确认，未覆盖文件。')
-        return directory
-
     def tree_storage(self, item, kind='saved', *, state=False, create=False):
         if 'targetVolume' in item and item['targetVolume'] is not True:
             raise RuntimeError('目标卷恢复记录无效')
         if item.get('targetVolume'):
             target = self.state_root() if state else self.target(item)
-            return safe_path(self.local_workspace(target, create=create), kind)
+            return safe_path(_volume_workspace(self.root, self.backup, target, create=create), kind)
         relative = ('state' if state else 'trees/' + item['name']) if kind == 'saved' else (
             'failed-new/state' if state else 'failed-new/' + item['name']) if kind == 'failed' else (
             'staged-state' if state else 'staged/' + item['name'])
@@ -556,7 +568,7 @@ class Journal:
             if not item.get('targetVolume'):continue
             state = item is self.plan.get('state')
             target = self.state_root() if state else self.target(item)
-            folder = self.local_workspace(target)
+            folder = _volume_workspace(self.root, self.backup, target)
             if not _io_path(folder).exists():continue
             entries.append({'state':state,'name':item.get('name'),'namespace':item.get('namespace'),
                             'relative':item.get('relative'),'identity':identity(folder),'digest':digest(folder)})
@@ -565,18 +577,10 @@ class Journal:
 
     def staged_tree(self, source, item, *, state=False):
         target = self.state_root() if state else self.target(item)
-        if self.device(source) == self.device(target.parent):
+        if filesystem_device(source) == filesystem_device(target.parent):
             return source
         staged = self.tree_storage(item, 'staged', state=state, create=True)
-        if _io_path(staged).exists():
-            raise RuntimeError('目标卷已有未确认的暂存文件，已保留现场。')
-        _io_path(staged).parent.mkdir(parents=True, exist_ok=True)
-        if _io_path(source).is_dir():
-            shutil.copytree(_io_path(source), _io_path(staged), symlinks=True)
-        else:
-            shutil.copy2(_io_path(source), _io_path(staged), follow_symlinks=False)
-        if digest(source) != digest(staged):
-            raise RuntimeError('目标卷暂存内容校验失败，未替换原文件。')
+        _stage_tree(source, staged)
         item['newIdentity'] = identity(staged)
         self.save()  # Record the actual target-volume inode before any swap.
         return staged
@@ -589,7 +593,13 @@ class Journal:
         # Reconcile its explicit data target with this installation's binding.
         import runpy
         resolver = Path(__file__).resolve().parents[1] / 'scripts/nora-instance.py'
-        binding = runpy.run_path(str(resolver))['configuration'](self.home)
+        # Recovery must not depend on config.yaml being present between its
+        # own archive and publish renames. Use the sealed original binding.
+        host = safe_path(self.backup, 'host')
+        if digest(host) != self.plan.get('metadata', {}).get('host'):
+            raise RuntimeError('实例路径来源的配置备份已变化，未恢复文件。')
+        binding = runpy.run_path(str(resolver))['configuration'](
+            self.home, config_path=safe_path(host, 'config.yaml'))
         target = Path(value)
         if (not target.is_absolute() or target == Path(target.anchor)
                 or Path(binding['installRoot']) != self.root or target != Path(binding['stateRoot'])):
@@ -626,10 +636,10 @@ class Journal:
                            'savedDigest':None,'newIdentity':None,'phase':'pending','mode':'copy'}
         for item, target in [(item, safe_path(root if item['namespace'] == 'install' else home, item['relative'])) for item in targets] + (
                 [(plan['state'], Path(state))] if state is not None else []):
-            if _io_path(target).exists() and cls.device(target) != cls.device(target.parent):
+            if _io_path(target).exists() and filesystem_device(target) != filesystem_device(target.parent):
                 raise RuntimeError('更新目标本身是挂载点，不能原子替换：' + str(target)
                     + '；请使用挂载卷内可替换的程序／数据子目录，原文件未移动。')
-            if cls.device(target.parent) != cls.device(backup):
+            if filesystem_device(target.parent) != filesystem_device(backup):
                 item['targetVolume'] = True
         if lifecycle:
             instance=safe_path(home,'nora-instance.json')
@@ -1129,7 +1139,7 @@ class Journal:
 
     def metadata_archive(self,target,entry,*,create=False):
         if entry.get('targetVolume'):
-            return safe_path(self.local_workspace(target,create=create),'metadata-original')
+            return safe_path(_volume_workspace(self.root,self.backup,target,create=create),'metadata-original')
         return safe_path(self.backup,entry['archive'])
 
     def check_owned_metadata(self,target):
@@ -1253,7 +1263,7 @@ class Journal:
                     'currentDigest':digest(target) if _io_path(target).exists() else None,
                     'currentIdentity':identity(target),'savedDigest':digest(saved) if _io_path(saved).exists() else None,
                     'phase':'intent'}
-                if self.device(target.parent) != self.device(self.backup):
+                if filesystem_device(target.parent) != filesystem_device(self.backup):
                     entry['targetVolume'] = True
                 self.plan.setdefault('metadataRestores',{})[key]=entry;self.save()
             archive=self.metadata_archive(target,entry,create=True)
@@ -1291,7 +1301,6 @@ def retire_volume_backups(home,root,backup,state):
     value=read_object(index)
     if value.get('schema')!=1 or not isinstance(value.get('entries'),list):
         raise RuntimeError('目标卷备份索引无效，保留旧备份。')
-    journal=Journal(home,root,{'backup':str(backup),'recoveryPlan':{}})
     folders=[]
     for entry in value['entries']:
         if entry.get('state') is True:
@@ -1299,7 +1308,7 @@ def retire_volume_backups(home,root,backup,state):
         elif entry.get('state') is False and allowed_target(entry.get('name'),entry.get('namespace'),entry.get('relative')):
             target=safe_path(root if entry['namespace']=='install' else home,entry['relative'])
         else:raise RuntimeError('目标卷备份目标无法确认，保留旧备份。')
-        folder=journal.local_workspace(target)
+        folder=_volume_workspace(root,backup,target)
         if folder in folders or identity(folder)!=entry.get('identity') or digest(folder)!=entry.get('digest'):
             raise RuntimeError('目标卷备份已变化，保留旧备份。')
         folders.append(folder)

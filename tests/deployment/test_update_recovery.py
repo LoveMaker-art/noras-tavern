@@ -27,6 +27,7 @@ PRESERVED_USER_FILES = {
     'hermes/.env': b'USER_SETTING=retained\n',
     'installer/model.json': b'{"provider":"custom","model":"retained"}',
 }
+MANAGED_CONFIG = 'model: {default: fixture-old}\n'
 
 
 def load_updater():
@@ -49,7 +50,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
     (root/'tavern-updates').mkdir()
     (root/'tavern-updates/installed.json').write_text('{"version":"2.3.17"}')
     (root/'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
-    (home/'config.yaml').write_text('old config');(home/'AGENTS.md').write_text('old agents')
+    (home/'config.yaml').write_text(MANAGED_CONFIG);(home/'AGENTS.md').write_text('old agents')
     (home/'SOUL.md').write_text('old soul')
     if success:
         for relative in [*(f'skills/{skill}/SKILL.md' for skill in nora_system.SKILLS),*nora_system.MANAGED_FILES]:
@@ -127,7 +128,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         stack.enter_context(patch.object(updater,'roots_with_unmanaged_files',return_value=set()))
         stack.enter_context(patch.object(updater,'prepare_skills',return_value={}))
         stack.enter_context(patch.object(updater,'prepare_host_hook_swap',return_value=None))
-        stack.enter_context(patch.object(updater,'render_mcp',return_value=b'old config'))
+        stack.enter_context(patch.object(updater,'render_mcp',return_value=MANAGED_CONFIG.encode()))
         stack.enter_context(patch.object(updater,'managed_lifecycle',side_effect=service))
         stack.enter_context(patch.object(updater,'verify_worlds',return_value={}))
         if not resume_writes:
@@ -200,7 +201,7 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
         for relative, content in PRESERVED_USER_FILES.items():
             self.assertEqual((base/relative).read_bytes(),content,relative)
         self.assertEqual((base/'tavern/tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
-        self.assertEqual((base/'hermes/config.yaml').read_text(),'old config')
+        self.assertEqual((base/'hermes/config.yaml').read_text(),MANAGED_CONFIG)
 
     def test_real_install_allows_offline_cron_bookkeeping_and_commits_verified_version(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-cron-') as temporary:

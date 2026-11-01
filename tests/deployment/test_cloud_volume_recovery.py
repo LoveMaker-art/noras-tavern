@@ -122,7 +122,7 @@ class CloudVolumeRecoveryTests(unittest.TestCase):
         journal.snapshot_state()
         journal.swap('skill-creative-tavern')
         journal.seal_volume_backups()
-        state_workspace=journal.local_workspace(self.state)
+        state_workspace=journal.state_backup().parent
         changed=state_workspace/'user-added.txt'
         changed.write_text('keep unknown evidence')
         with self.assertRaisesRegex(RuntimeError,'已变化'):
@@ -133,3 +133,37 @@ class CloudVolumeRecoveryTests(unittest.TestCase):
         self.assertFalse(state_workspace.exists())
         self.assertEqual(self.story.read_text(),'original story')
         self.assertEqual((self.skill/'code.txt').read_text(),'new code')
+
+    def test_config_restore_resumes_after_its_own_archive_rename(self):
+        original = self.config.read_bytes()
+        journal = self.journal()
+        journal.seal_offline({'offline': True})
+        journal.snapshot_state()
+        journal.mark_metadata([self.config])
+        value = yaml.safe_load(original)
+        value['model'] = {'default': 'owned-new-model'}
+        self.config.write_text(yaml.safe_dump(value))
+        journal.finish_metadata([self.config])
+        replace = RECOVERY.os.replace
+        interrupted = False
+        def archive_then_interrupt(source, target):
+            nonlocal interrupted
+            replace(source, target)
+            if Path(source) == self.config and not interrupted:
+                interrupted = True
+                raise OSError('interrupted after owned configuration archive')
+        with patch.object(RECOVERY.os, 'replace', side_effect=archive_then_interrupt):
+            with self.assertRaisesRegex(OSError, 'owned configuration archive'):
+                self.recover()
+        self.assertTrue(interrupted)
+        self.assertFalse(self.config.exists())
+        saved = self.backup / 'host/config.yaml'
+        saved.write_bytes(original + b'changed_backup: true\n')
+        with self.assertRaisesRegex(RuntimeError, '备份.*变化'):
+            self.recover()
+        self.assertFalse(self.config.exists())
+        self.assertEqual(self.story.read_text(), 'original story')
+        saved.write_bytes(original)
+        self.assertEqual(self.recover()['status'], 'restored')
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertEqual(self.story.read_text(), 'original story')

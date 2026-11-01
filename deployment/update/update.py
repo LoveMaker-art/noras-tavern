@@ -203,7 +203,7 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
     # A stopped managed cron store may have a new run timestamp. The journal
     # seals that logical equivalent in a separate snapshot before any write.
     tasks = []
-    device = recovery_module().Journal.device
+    device = recovery_module().filesystem_device
     for _, source, target in swaps:
         if source is not None and device(source) != device(Path(target).parent):
             tasks.append({'source': source, 'destination': Path(target).parent / '.nora-space-stage',
@@ -2058,7 +2058,7 @@ def install(args):
                     active_state = state_root(install_root)
                     saved_state = backup / "state"
                     if journal is not None:
-                        if recovery_module().Journal.device(prepared_state) != recovery_module().Journal.device(active_state.parent):
+                        if recovery_module().filesystem_device(prepared_state) != recovery_module().filesystem_device(active_state.parent):
                             check_update_space([{'source': prepared_state, 'destination': active_state.parent / '.nora-space-stage',
                                                  'label': 'state-target-volume-stage', 'links': 'reject'}])
                         journal.apply_state(prepared_state)

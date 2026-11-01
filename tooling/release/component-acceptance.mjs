@@ -10,8 +10,7 @@ import { fileDigest as hashFile } from './system-release.mjs';
 
 // This harness verifies the desktop-integrated installer/environment closure.
 // Headless core archives do not require this desktop bundle on the target host.
-export const DESKTOP_COMPONENT_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
-export const COMPONENT_PLATFORMS = DESKTOP_COMPONENT_PLATFORMS;
+export const COMPONENT_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const read = file => JSON.parse(fs.readFileSync(file));
 const safe = value => { assert.match(value || '', /^[A-Za-z0-9][A-Za-z0-9._-]*$/); return value; };

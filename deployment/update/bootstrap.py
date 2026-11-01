@@ -52,59 +52,58 @@ def default_install_root():
     return Path(os.environ.get("TAVERN_DATA_ROOT") or default_hermes_home()).expanduser().resolve()
 
 
-def instance_paths(home):
+def instance_paths(home, *, config_path=None):
     """Use the shipped resolver; a raw loader can discover explicit bindings.
 
     Never fetch another unverified helper. The extracted actor includes this
     file in its manifested updater closure; an installed script is a local
     compatibility input while an old standalone loader is being upgraded.
     """
-    import yaml
-    home = Path(home)
-    config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) if (home / 'config.yaml').is_file() else {}
-    if not (home / 'nora-instance.json').exists() and not (isinstance(config, dict) and
-            (config.get('nora_tavern') or (config.get('mcp_servers') or {}).get('nora', {}).get('env'))):
-        return None
+    home = Path(home).resolve()
     candidates = [Path(__file__).resolve().parents[1] / 'scripts/nora-instance.py',
                   Path(home) / 'scripts/nora-instance.py']
     for file in candidates:
         if file.is_file() and not file.is_symlink():
             module = runpy.run_path(str(file))
             if 'verify_hermes_python' in module:
+                if config_path is not None:
+                    return module['configuration'](home, config_path=config_path)
                 return module['existing_configuration'](home)
-    declared = config.get('nora_tavern') if isinstance(config,dict) else None
+    if config_path is not None:
+        raise RuntimeError('恢复缺少已验证的实例定位组件，未修改文件。')
+    # A separately downloaded loader can precede installation of the resolver.
+    # Discover paths only; the hash-verified actor owns complete admission.
+    import yaml
+    config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) if (home / 'config.yaml').is_file() else {}
+    if not isinstance(config, dict):raise RuntimeError('Hermes 配置不是对象，未修改实例。')
+    declared = config.get('nora_tavern') or {}
     record = json.loads((home/'nora-instance.json').read_text()) if (home/'nora-instance.json').is_file() else {}
     if not isinstance(record,dict):raise RuntimeError('实例身份记录不是对象。')
     if not declared and record.get('deployment')!='core':
         return None
-    # A separately downloaded entry may precede installation of the resolver.
-    # This is read-only discovery for downloading a verified runner, not writer
-    # admission: task.py and the extracted actor use the complete resolver.
-    declared = {} if declared is None else declared
     if not isinstance(declared,dict):raise RuntimeError('实例路径映射不是对象。')
-    if record and (record.get('schema')!=1 or Path(record.get('hermesHome',''))!=home.resolve()):
+    if record and (record.get('schema')!=1 or Path(record.get('hermesHome',''))!=home):
         raise RuntimeError('实例身份记录与当前Hermes不一致。')
-    def path(value,label):
-        if not isinstance(value,str) or not Path(value).expanduser().is_absolute():
-            raise RuntimeError(label+'必须是明确的绝对路径。')
-        result=Path(value).expanduser().resolve()
-        if result==Path(result.anchor):raise RuntimeError(label+'不能是文件系统根目录。')
-        return result
     env=((config.get('mcp_servers') or {}).get('nora') or {}).get('env') or {}
-    project=path(env['NORA_MCP_PROJECT_ROOT'],'MCP.projectRoot') if env.get('NORA_MCP_PROJECT_ROOT') else None
+    project=Path(env['NORA_MCP_PROJECT_ROOT']) if env.get('NORA_MCP_PROJECT_ROOT') else None
     inferred=project.parent.parent if project is not None and project.name=='tavern-runtime' and project.parent.name=='apps' else None
-    root=path(declared.get('installRoot') or record.get('installRoot') or (str(inferred) if inferred else None),'installRoot')
-    if record.get('installRoot') and root!=path(record['installRoot'],'instance.installRoot'):
+    root=declared.get('installRoot') or record.get('installRoot') or (str(inferred) if inferred else None)
+    if not isinstance(root,str):raise RuntimeError('缺少当前实例 installRoot。')
+    paths={'installRoot':root,'stateRoot':declared.get('stateRoot') or env.get('NORA_MCP_STATE_ROOT') or str(Path(root)/'tavern-state'),
+           'appRoot':declared.get('appRoot') or (str(project) if project else None) or str(Path(root)/'apps/tavern-runtime')}
+    for name,value in paths.items():
+        if not isinstance(value,str) or not Path(value).expanduser().is_absolute() or Path(value).resolve()==Path(Path(value).anchor):
+            raise RuntimeError(name+'必须是明确的非根目录绝对路径。')
+        paths[name]=str(Path(value).expanduser().resolve())
+    if record.get('installRoot') and paths['installRoot']!=str(Path(record['installRoot']).resolve()):
         raise RuntimeError('实例程序目录冲突。')
-    return {'hermesHome':str(home.resolve()),'noraHome':str(path(record.get('noraHome',str(home.resolve())),'noraHome')),
-            'installRoot':str(root),'stateRoot':str(path(declared.get('stateRoot') or env.get('NORA_MCP_STATE_ROOT') or str(root/'tavern-state'),'stateRoot')),
-            'appRoot':str(path(declared.get('appRoot') or str(root/'apps/tavern-runtime'),'appRoot')),
+    return {**paths,'hermesHome':str(home),'noraHome':record.get('noraHome',str(home)),
             'desktopManaged':bool(record) and record.get('deployment','desktop')=='desktop',
             'port':declared.get('port') or record.get('port')}
 
 
-def state_root(home, root):
-    binding = instance_paths(home) if home else None
+def state_root(home, root, *, config_path=None):
+    binding = instance_paths(home, config_path=config_path) if home else None
     if binding:
         if Path(binding['installRoot']).resolve() != Path(root).resolve():
             raise RuntimeError('数据路径与当前程序实例冲突。')
