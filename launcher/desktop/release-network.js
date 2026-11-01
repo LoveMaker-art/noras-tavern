@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {Readable} = require('node:stream');
 const {launcherError} = require('./launcher-errors');
-const {sourceCandidates,validateSourceResponse,readSource} = require('./release-sources');
+const {sourceCandidates,validateSourceResponse,readSource,releaseListRequest} = require('./release-sources');
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const RELEASE_USER_AGENT = 'Nora-Tavern-Launcher';
 
@@ -61,7 +61,7 @@ function operationSources(url,options,context){
 async function rememberFailureResource(error,url,identity,fetcher){
   try{
     const parsed=new URL(url);
-    const list=identity==null&&parsed.origin==='https://api.github.com'&&parsed.pathname==='/repos/LoveMaker-art/noras-tavern/releases'&&/^\?per_page=100&page=[1-5]$/.test(parsed.search);
+    const list=identity==null&&Boolean(releaseListRequest(parsed));
     if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.search&&!list||parsed.hash)return;
     const route=fetcher.conditionRoute?await Promise.race([fetcher.conditionRoute(url),new Promise((_,reject)=>{
       const timer=setTimeout(()=>reject(new Error('Condition route lookup timed out')),10000);timer.unref?.();
@@ -242,7 +242,7 @@ function metadataResourceKind(value) {
   const url=new URL(value),api='/repos/LoveMaker-art/noras-tavern/releases';
   if(url.username || url.password || url.hash)return 'unknown';
   if(url.origin==='https://api.github.com') {
-    if(url.pathname===api && /^\?per_page=100&page=[1-5]$/.test(url.search))return 'release_list';
+    if(releaseListRequest(url))return 'release_list';
     if(url.search)return 'unknown';
     if(url.pathname===api+'/latest')return 'channel';
     if(/^\/repos\/LoveMaker-art\/noras-tavern\/releases\/tags\/v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(url.pathname))return 'release';

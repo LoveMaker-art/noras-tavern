@@ -4,7 +4,7 @@ const path=require('node:path');
 const fs=require('node:fs');
 const desktop=fs.existsSync(path.resolve(__dirname,'../../launcher/desktop/release-sources.js'))
   ? path.resolve(__dirname,'../../launcher/desktop') : path.resolve(__dirname,'../installer/desktop');
-const {sourceCandidates,validateSources,validateSourceResponse,readSource}=require(path.join(desktop,'release-sources'));
+const {sourceCandidates,validateSources,validateSourceResponse,readSource,releaseListUrl,releaseListRequest}=require(path.join(desktop,'release-sources'));
 const latest='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
 const asset='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.5/asset.zip';
 // Test-only project identity. The shipped configuration remains unconfigured.
@@ -12,6 +12,21 @@ const jihulab={id:'jihulab',provider:'jihulab',
   baseUrl:'https://jihulab.com/api/v4/projects/42/packages/generic/nora-tavern/',
   channelBaseUrl:'https://jihulab.com/test-owner/nora-tavern/-/raw/release-channels/'};
 const configured={schema:1,primary:'jihulab',mirrors:[jihulab]};
+
+test('bounded catalogue URLs retain old retry proofs and map only the first new page to a complete mirror',()=>{
+  const base='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases';
+  assert.equal(releaseListUrl(),base+'?per_page=10&page=1');
+  for(const [size,page] of [[10,1],[10,50],[100,1],[100,5]])
+    assert.deepEqual(releaseListRequest(base+`?per_page=${size}&page=${page}`),{size,page});
+  for(const suffix of ['?per_page=10&page=51','?per_page=100&page=6','?per_page=10&page=01','?page=1&per_page=10','?per_page=10&page=1&token=secret'])
+    assert.equal(releaseListRequest(base+suffix),null);
+  assert.equal(releaseListRequest(base.replace('noras-tavern','other')+'?per_page=10&page=1'),null);
+  const first=sourceCandidates(releaseListUrl(),{sources:configured,channel:'beta'});
+  assert.equal(first[0].url,jihulab.channelBaseUrl+'channels/beta.json');
+  assert.equal(first[0].catalogueComplete,true);
+  assert.equal(sourceCandidates(releaseListUrl(2),{sources:configured,channel:'beta'}).length,1);
+  assert.throws(()=>releaseListUrl(51));
+});
 
 test('configured JihuLab uses fixed generic versions and separate raw channel pointers',()=>{
   const channel=sourceCandidates(latest,{sources:configured});

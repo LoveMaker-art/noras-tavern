@@ -625,7 +625,7 @@ def source_candidates(url, *, channel='stable', sources=None):
     if value.scheme == 'https' and value.hostname == 'api.github.com' and not value.fragment:
         if value.path == api+'/latest' and not value.query and channel == 'stable':
             relative = 'channels/stable.json'
-        elif value.path == api and value.query == 'per_page=100&page=1' and channel == 'beta':
+        elif value.path == api and value.query in ('per_page=10&page=1', 'per_page=100&page=1') and channel == 'beta':
             relative = 'channels/beta.json'
         elif value.path.startswith(api+'/tags/') and not value.query:
             tag = value.path[len(api+'/tags/'):]

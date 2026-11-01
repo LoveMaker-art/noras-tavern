@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const semver = require('semver');
 const {metadataJson,createMetadataCache,createReleaseSourceContext,downloadAsset} = require('./release-network');
+const {releaseListUrl,RELEASE_PAGE_SIZE,RELEASE_MAX_PAGES}=require('./release-sources');
 const operationNetworkPolicy = policy => ({...policy,
   sourceContext:policy?.sourceContext || createReleaseSourceContext()});
 
@@ -249,13 +250,13 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
     release = await read(`https://api.github.com/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`);
   } else if (channel === 'beta') {
     const candidates = [];
-    for (let page = 1; page <= 5; page++) {
-      const rows = await read(`https://api.github.com/repos/${REPO}/releases?per_page=100&page=${page}`);
-      if (!Array.isArray(rows)) throw new Error('测试发布列表无效。');
+    for (let page = 1; page <= RELEASE_MAX_PAGES; page++) {
+      const rows = await read(releaseListUrl(page));
+      if (!Array.isArray(rows)||rows.length>RELEASE_PAGE_SIZE&&evidence.at(-1)?.catalogueComplete!==true) throw new Error('测试发布列表无效。');
       candidates.push(...rows.filter(item => accepts(item, channel)));
       // A build-owned static channel is a complete catalogue, not a page of
       // GitHub's list endpoint. Never fall back to API pagination after it.
-      if (rows.length < 100 || evidence.at(-1)?.catalogueComplete === true) break;
+      if (rows.length < RELEASE_PAGE_SIZE || evidence.at(-1)?.catalogueComplete === true) break;
     }
     release = candidates.sort((a, b) => compare(b.tag_name, a.tag_name))[0];
   } else {

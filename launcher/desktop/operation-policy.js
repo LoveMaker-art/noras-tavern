@@ -5,7 +5,7 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const runtime=require('./runtime-transaction');
 const {describeError}=require('./launcher-errors');
-const {sourceCandidates,validateSourceResponse}=require('./release-sources');
+const {sourceCandidates,validateSourceResponse,releaseListUrl,releaseListRequest}=require('./release-sources');
 const {fetchRead}=require('./release-network');
 const failure=(code,message)=>Object.assign(new Error(message),{code});
 const safe=new Set(['untouched','restored']);
@@ -201,7 +201,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       if(!['https://github.com','https://api.github.com'].includes(actual.origin)){
         if(actual.search)return null;
         const api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases';
-        const logical=[api+'/latest',api+'?per_page=100&page=1'];
+        const logical=[api+'/latest',releaseListUrl(),api+'?per_page=100&page=1'];
         const parts=actual.pathname.split('/').slice(-2),tag=decodeURIComponent(parts[0]||''),asset=parts[1];
         if(asset==='release.json')logical.push(api+'/tags/'+encodeURIComponent(tag));
         else if(['release-assets.json','release-manifest.json',`nora-launcher-${value(platform)}-${value(arch)}.json`,
@@ -252,7 +252,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       else if(url.pathname.startsWith(`${base}/tags/`)&&!url.search){
         tag=decodeURIComponent(url.pathname.slice(`${base}/tags/`.length));
         if(require('./releases').compare(tag,tag)!==0||url.pathname!==`${base}/tags/${encodeURIComponent(tag)}`||requested!==tag)return null;
-      }else if(url.pathname===base&&/^\?per_page=100&page=[1-5]$/.test(url.search)&&value(channel)==='beta'&&!requested)list=true;
+      }else if(releaseListRequest(url)&&value(channel)==='beta'&&!requested)list=true;
       else return null;
       return {url:url.href,routeHash:resource.routeHash,tag,list};
     }catch{return null;}

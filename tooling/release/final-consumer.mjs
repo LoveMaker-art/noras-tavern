@@ -129,9 +129,10 @@ async function consumeFinalMetadata({plan, release}) {
             const sequence=files.has('update-sequence.js')?require('./update-sequence.js'):null;
             assert.ok(sequence||require('semver').lt(pkg.version,'2.2.3'), 'Missing shipped combined-update module');
             const shippedSources=JSON.parse(files.get('release-sources.json'));
-            const {sourceCandidates} = require('./release-sources.js');
+            const {sourceCandidates,releaseListUrl} = require('./release-sources.js');
+            const betaUrl=releaseListUrl?releaseListUrl():`https://api.github.com/repos/${plan.repository}/releases?per_page=100&page=1`;
             const discoveryUrl=plan.channel==='beta'
-                ?`https://api.github.com/repos/${plan.repository}/releases?per_page=100&page=1`
+                ?betaUrl
                 :`https://api.github.com/repos/${plan.repository}/releases/latest`;
             const primarySource=sourceCandidates(discoveryUrl,{channel:plan.channel,sources:shippedSources})[0];
             const primaryPublisher=primarySource.provider || primarySource.id;
@@ -151,7 +152,7 @@ async function consumeFinalMetadata({plan, release}) {
             const api = `https://api.github.com/repos/${plan.repository}/releases`;
             const catalogueUrls = new Map();
             for (const [logical, list] of [[api + `/tags/${plan.tag}`, false],
-                ...(plan.channel === 'stable' ? [[api + '/latest', false]] : [[api + '?per_page=100&page=1', true]])])
+                ...(plan.channel === 'stable' ? [[api + '/latest', false]] : [[betaUrl, true]])])
                 for (const candidate of sourceCandidates(logical, {channel:plan.channel}))
                     catalogueUrls.set(candidate.url, list);
             const fetcher = async address => {

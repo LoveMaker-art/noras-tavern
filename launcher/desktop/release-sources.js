@@ -3,6 +3,21 @@ const {launcherError} = require('./launcher-errors');
 const repository = 'LoveMaker-art/noras-tavern';
 const tagPattern = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const assetPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RELEASE_PAGE_SIZE = 10;
+const RELEASE_MAX_PAGES = 50; // Preserve the existing 500-release discovery bound.
+function releaseListUrl(page=1) {
+  if(!Number.isInteger(page)||page<1||page>RELEASE_MAX_PAGES)throw new Error('Invalid release catalogue page');
+  return `https://api.github.com/repos/${repository}/releases?per_page=${RELEASE_PAGE_SIZE}&page=${page}`;
+}
+function releaseListRequest(value) {
+  let url;try{url=new URL(value);}catch{return null;}
+  if(url.origin!=='https://api.github.com'||url.pathname!==`/repos/${repository}/releases`
+    ||url.username||url.password||url.hash)return null;
+  const match=/^\?per_page=(10|100)&page=([1-9]\d?)$/.exec(url.search);
+  if(!match)return null;
+  const size=Number(match[1]),page=Number(match[2]);
+  return page<=(size===100?5:RELEASE_MAX_PAGES)?{size,page}:null;
+}
 
 // Build-owned roots only. Release metadata cannot introduce another host.
 function validateSources(value) {
@@ -45,7 +60,7 @@ function sourceCandidates(value,{channel='stable',sources=configuration}={}) {
   const api=`/repos/${repository}/releases`;
   if(url.origin==='https://api.github.com' && !url.hash) {
     if(url.pathname===api+'/latest' && !url.search && channel==='stable') relative='channels/stable.json';
-    else if(url.pathname===api && url.search==='?per_page=100&page=1' && ['beta','stable'].includes(channel))
+    else if(releaseListRequest(url)?.page===1 && ['beta','stable'].includes(channel))
       relative=channel==='beta'?'channels/beta.json':'channels/launcher-stable.json';
     else if(url.pathname.startsWith(api+'/tags/') && !url.search) {
       const tag=decodeURIComponent(url.pathname.slice((api+'/tags/').length));
@@ -116,4 +131,4 @@ async function readSource(fetcher,source,url,options={}) {
     {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
 }
 
-module.exports={sourceCandidates,validateSourceResponse,validateSources,readSource};
+module.exports={sourceCandidates,validateSourceResponse,validateSources,readSource,releaseListUrl,releaseListRequest,RELEASE_PAGE_SIZE,RELEASE_MAX_PAGES};
