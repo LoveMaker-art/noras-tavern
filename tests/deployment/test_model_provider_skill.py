@@ -150,7 +150,11 @@ class LocalModelSkillTests(unittest.TestCase):
             sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix,
                                                              'NORA_FIXTURE_LEGACY_IPC': '1'},
             input=json.dumps(data), capture_output=True, text=True, timeout=60)
-        require_fixture_closure(self.fixture, result.stderr)
+        try:
+            require_fixture_closure(self.fixture, result.stderr)
+        except RuntimeError:
+            print(result.stderr, file=sys.stderr)
+            raise
         return result
 
     def invoke(self, data=None):
@@ -163,6 +167,7 @@ class LocalModelSkillTests(unittest.TestCase):
         self.assertNotIn(self.request['api_key'], result.stdout + result.stderr)
         self.assertFalse(self.network_attempts.exists(), self.network_attempts.read_text()
                          if self.network_attempts.exists() else '')
+        self.assertTrue(result.stdout.strip(), f'CLI produced no JSON (exit {result.returncode}): {result.stderr}')
         return result, json.loads(result.stdout.splitlines()[-1])
 
     def test_real_custom_save_updates_launcher_not_tavern_and_creates_no_backups(self):

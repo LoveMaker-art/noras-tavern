@@ -116,7 +116,7 @@ test('one hundred real message edits keep fifty rollback copies without exhausti
         'Edited reply 99');
 });
 
-test('disk, permission and metadata backup failures do not block editing or remove any prior backup', { timeout: 15000 }, async t => {
+test('disk, permission and metadata backup failures do not block editing or remove any prior backup', async t => {
     const f = await scenario(t, 'failure-at-limit');
     for (let i = 0; i < 50; i++) {
         const saved = await f.save(i);
@@ -124,9 +124,6 @@ test('disk, permission and metadata backup failures do not block editing or remo
     }
     const prior = await f.store.list();
     assert.equal(prior.snapshots.length, 50);
-    // Exercise storage errors independently of runner scheduling. The separate
-    // stalled-storage test below still checks the real one-second deadline.
-    t.mock.timers.enable({ apis: ['setTimeout'] });
     for (const [metadataOnly, code] of [[false, 'ENOSPC'], [true, 'ENOSPC'], [false, 'EACCES']]) {
         const saved = await f.save(50);
         const open = fs.open;

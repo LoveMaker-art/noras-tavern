@@ -63,11 +63,19 @@ jobs:
       - name: Verify corrected model fixture with the real Windows interpreter
         shell: bash
         run: node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest -v tests.deployment.test_model_provider_skill
-      - name: Prepare same-lock engine dependencies for storage verification
+      - name: Prepare same-lock engine dependencies for complete test entry
+        if: always()
         run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-      - name: Verify storage faults and the unchanged real timeout on Windows
+      - name: Prepare same-lock MCP source test dependencies
+        if: always()
+        run: npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+      - name: Build the existing MCP test entry
+        if: always()
+        run: npm --prefix nora-mcp run build
+      - name: Verify the complete serial Tavern test entry on Windows
+        if: always()
         shell: bash
-        run: node "$PWD/tooling/run.mjs" node --test "$PWD/app/engine/sillytavern/tests/nora-backup-retention-safety.test.mjs"
+        run: node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run test:nora
       - name: Preserve diagnostic logs only
         if: always()
         uses: actions/upload-artifact@v4
