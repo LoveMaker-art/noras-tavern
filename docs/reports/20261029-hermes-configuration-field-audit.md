@@ -112,23 +112,23 @@
 
 ## 主要源码依据
 
-- [项目固定 Hermes revision](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/tooling/runtime/hermes-bootstrap.lock.json:1>)
-- [原生 ProviderDef 只是身份元数据](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/providers.py:100>)
-- [当前字段及元数据拼接](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/deployment/shared/hermes_models.py:94>)
-- [当前 Key 保存与模型回读](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/deployment/shared/hermes_models.py:298>)
-- [技能允许字段](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/nora/skills/system/model-provider-config/scripts/configure_provider.py:35>)
-- [启动器通用表单](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/ui/launcher-controller.js:963>)
-- [登录进度整对象覆盖](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/desktop/main.js:2374>)
-- [UI 根据当前快照隐藏登录 URL](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/ui/launcher-controller.js:1042>)
-- [原生 LM Studio 无 Key 占位](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/auth.py:2016>)
-- [原生 Qwen 只导入已有凭据](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/auth_commands.py:189>)
-- [原生 Copilot 设备码/Token 两路](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:477>)
-- [原生 MiniMax OAuth 地区](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:423>)
-- [原生 Azure endpoint/认证/协议](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows_azure.py:148>)
-- [原生 Bedrock 配置](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows_bedrock.py:150>)
-- [原生 Vertex 配置](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:707>)
-- [原生 MoA 组合选择](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:102>)
-- [当前 HTTP-only 模型记录](</Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern/launcher/desktop/model-config.js:36>)
+- [项目固定 Hermes revision](../../tooling/runtime/hermes-bootstrap.lock.json)
+- 原生 ProviderDef 只是身份元数据（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/providers.py:100`；私有副本或历史源码不在当前工作树）
+- 当前字段及元数据拼接（原归档定位：`deployment/shared/hermes_models.py:94`；私有副本或历史源码不在当前工作树）
+- 当前 Key 保存与模型回读（原归档定位：`deployment/shared/hermes_models.py:298`；私有副本或历史源码不在当前工作树）
+- [技能允许字段](../../nora/skills/system/model-provider-config/scripts/configure_provider.py)
+- [启动器通用表单](../../launcher/ui/launcher-controller.js)
+- [登录进度整对象覆盖](../../launcher/desktop/main.js)
+- [UI 根据当前快照隐藏登录 URL](../../launcher/ui/launcher-controller.js)
+- 原生 LM Studio 无 Key 占位（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/auth.py:2016`；私有副本或历史源码不在当前工作树）
+- 原生 Qwen 只导入已有凭据（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/auth_commands.py:189`；私有副本或历史源码不在当前工作树）
+- 原生 Copilot 设备码/Token 两路（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:477`；私有副本或历史源码不在当前工作树）
+- 原生 MiniMax OAuth 地区（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:423`；私有副本或历史源码不在当前工作树）
+- 原生 Azure endpoint/认证/协议（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows_azure.py:148`；私有副本或历史源码不在当前工作树）
+- 原生 Bedrock 配置（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows_bedrock.py:150`；私有副本或历史源码不在当前工作树）
+- 原生 Vertex 配置（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:707`；私有副本或历史源码不在当前工作树）
+- 原生 MoA 组合选择（原归档定位：`local-state/release-v2.5.3-20261019/local-candidate-smoke/products-smoke-opr1hf/hermes/hermes-agent/hermes_cli/model_setup_flows.py:102`；私有副本或历史源码不在当前工作树）
+- [当前 HTTP-only 模型记录](../../launcher/desktop/model-config.js)
 
 ## 未实施与未验证
 

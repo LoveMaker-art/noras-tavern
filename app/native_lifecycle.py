@@ -99,30 +99,6 @@ class RuntimeContract:
         return cls(repository, tag, commit, node_min_major, source_dir)
 
 
-def _replace_nested_config_values(source, replacements):
-    found = set()
-    output = []
-    section = ""
-    for line in source.splitlines():
-        stripped = line.lstrip()
-        indentation = line[:len(line) - len(stripped)]
-        key = stripped.split(":", 1)[0] if stripped and not stripped.startswith("#") else ""
-        if key and not indentation:
-            section = key
-        config_path = f"{section}.{key}" if indentation and key else ""
-        if config_path in replacements:
-            output.append(f"{indentation}{key}: {replacements[config_path]}")
-            found.add(config_path)
-        else:
-            output.append(line)
-    missing = set(replacements) - found
-    if missing:
-        raise NativeLifecycleError(
-            "official config is missing required keys: " + ", ".join(sorted(missing))
-        )
-    return "\n".join(output) + "\n"
-
-
 def render_native_config(source):
     """Render the config for a localhost-only runtime behind Liveware."""
     replacements = {

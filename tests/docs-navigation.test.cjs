@@ -13,6 +13,9 @@ const pages = [
   'docs/launcher-managed-files.md', 'docs/verification/launcher-uninstall.md',
   'docs/product/README.md', 'docs/product/launcher.md', 'docs/product/nora.md', 'docs/product/tavern.md',
   'docs/release-process.md', 'docs/updater-ownership-contract.md',
+  'docs/REPOSITORY.md', 'docs/launcher-unified-update.md',
+  'docs/liveware-first-greeting-order.md', 'docs/launcher-reliability-plan.md',
+  'docs/design/storage-lifecycle-refactor-plan.md',
 ];
 const source = file => fs.readFileSync(path.join(root, file), 'utf8');
 const parse = file => cheerio.load(new showdown.Converter({ tables: true, ghCompatibleHeaderId: true }).makeHtml(source(file)));

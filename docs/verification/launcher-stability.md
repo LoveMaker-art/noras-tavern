@@ -43,7 +43,7 @@ Windows 在对应源码投影中运行相同 13 个 Node suite 和 4 个 Python 
 
 失败记录同样保留：较早 Mac 门禁曾因 metadata 场景的旧快照失败；真实 native commit 丢 ACK 可重现该 CAS 症状，但原失败缺少 guard secondary，不能断言具体触发原因。新回归保留此类详情。较早 Windows 331 项运行包含失效测试 Python 路径、1 项跳过和活进程清理顺序错误，不作为最终通过证据，也不把它们归为产品故障。
 
-本机原始日志及摘要：[verification-result.json](../../artifacts/launcher-stability-20261012-1791780374036/verification-result.json)。其中绑定当前未提交源码摘要、Mac／Windows 原始日志及校验值；不将旧源码投影摘要冒充最终源码摘要。证据目录被 Git 忽略，不进入发布源码。Windows 使用官方 Node 24.21.0 和独立 Python 3.11.16，Mac 使用真实 Node 24.19.0 和独立 Python 3.12.14，测试依赖为 psutil 7.0.0／PyYAML 6.0.2；不是系统中的 Bun shim。
+本机原始日志及摘要：verification-result.json（原私有证据位置：`../../artifacts/launcher-stability-20261012-1791780374036/verification-result.json`；当前工作树未保留）。其中绑定当前未提交源码摘要、Mac／Windows 原始日志及校验值；不将旧源码投影摘要冒充最终源码摘要。证据目录被 Git 忽略，不进入发布源码。Windows 使用官方 Node 24.21.0 和独立 Python 3.11.16，Mac 使用真实 Node 24.19.0 和独立 Python 3.12.14，测试依赖为 psutil 7.0.0／PyYAML 6.0.2；不是系统中的 Bun shim。
 
 ## 放行前仍需的最终制品验收
 

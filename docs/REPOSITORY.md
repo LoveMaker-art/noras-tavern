@@ -76,14 +76,14 @@ docs/                  用户文档、当前导航、历史记录
 
 ### 更新
 
-当前重构的唯一执行方案是 [启动器可靠性交付设计与执行方案](launcher-reliability-plan.md)，包含清理范围、功能合同、验收和阶段汇报。过期方案与一次性测试产物已删除，必要验收报告独立保留，不作为活动任务入口。
+产品范围和验收要求以[现行产品基线](product/README.md)为准。[可靠性交付执行与证据导航](launcher-reliability-plan.md)登记当前任务、未完成范围及历史证据，不另立产品规则。已完成任务保留日期和原验收范围，不作为仍待执行的计划。
 
 当前重构源码边界见 [启动器安装、更新与恢复](launcher-unified-update.md)。源码已实现不表示已发布或三个目标平台均已验收。
 
 | 对象 | 唯一入口与职责 |
 | --- | --- |
 | 启动器管理的完整本地系统 | `operation-state.js` / `operation-policy.js` 统一准入、结果和恢复策略；`runtime-transaction.js`、`first_install.py`、`update.py` 各自保存受管文件事务。`system-update.js` 只负责受支持历史快照恢复。 |
-| 旧独立部署的 Tavern | `deployment/update/update.py` 管模块更新、旧数据迁移和恢复；不能替代完全版系统更新。 |
+| 无APP的云端／核心实例及旧独立部署 | 技能通过`deployment/update/task.py`交给同一核心任务；`task_backend.py`、`update.py`和`recovery.py`按实际绑定处理更新、旧数据迁移及恢复，不要求桌面APP。桌面管理实例仍走其原系统后端，不借独立入口改变归属。 |
 | Git 克隆、npm 启动的精简版 | 按精简版文档拉取源码、安装依赖和重新构建；不是启动器安装。 |
 | 桌面启动器应用本身 | `launcher-update.js` / `replace-launcher.py` 替换 APP 并验证同一操作交接；联合交付验收之前保留备份。完整安装器也可覆盖更换 APP，保留原数据目录。 |
 
