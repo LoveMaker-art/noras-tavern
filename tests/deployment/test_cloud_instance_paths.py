@@ -243,6 +243,27 @@ class CloudInstancePathsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'MCP'):
             raw.resolve_update_target(self.home,self.root)
 
+    def test_installed_and_cold_resolvers_reject_bad_config_without_exposing_credentials(self):
+        copied = self.base / 'cold-runner/updater/bootstrap.py'
+        copied.parent.mkdir(parents=True)
+        shutil.copy2(ROOT / 'ops/updater/bootstrap.py', copied)
+        spec = importlib.util.spec_from_file_location('cold_config_redaction', copied)
+        cold = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cold)
+        sentinel = 'SYNTHETIC_CONFIG_CREDENTIAL'
+        file = self.home / 'config.yaml'
+        for payload in ((f'api_key: [{sentinel}\n').encode(),
+                        (f'api_key: {sentinel}\n').encode() + b'\xff'):
+            for resolve in (resolver().configuration, cold.instance_paths):
+                with self.subTest(payload=payload[-1:], resolver=resolve.__name__):
+                    file.write_bytes(payload)
+                    with self.assertRaisesRegex(RuntimeError, '配置格式无效') as rejected:
+                        resolve(self.home)
+                    self.assertNotIn(sentinel, str(rejected.exception))
+                    self.assertEqual(file.read_bytes(), payload)
+                    self.assertFalse((self.home / 'installer').exists())
+                    self.assertFalse((self.home / 'nora-instance.json').exists())
+
     def test_first_install_journal_can_restore_bound_external_metadata(self):
         spec = importlib.util.spec_from_file_location('cloud_first_install', ROOT / 'ops/installer/first_install.py')
         first = importlib.util.module_from_spec(spec)

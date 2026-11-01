@@ -39,7 +39,12 @@ def _configuration_inputs(home, config_path=None):
     import yaml
     home = Path(home).resolve()
     file = Path(config_path) if config_path is not None else home / 'config.yaml'
-    config = yaml.safe_load(file.read_text(encoding='utf-8')) if file.is_file() else {}
+    try:
+        config = yaml.safe_load(file.read_text(encoding='utf-8')) if file.is_file() else {}
+    except (yaml.YAMLError, UnicodeError):
+        # Parser excerpts may contain credentials. Preserve refusal without
+        # leaking raw config lines or treating malformed content as missing.
+        raise RuntimeError('Hermes 配置格式无效，未修改实例。') from None
     record_file = home / 'nora-instance.json'
     record = json.loads(record_file.read_text(encoding='utf-8')) if record_file.is_file() else {}
     return home, config, record

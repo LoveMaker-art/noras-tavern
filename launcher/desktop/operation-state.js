@@ -288,6 +288,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     const serviceSafe=serviceCommand(record)&&!record.archived&&!fields.busy&&!record.handoffRef
       &&!recoveryClosurePending&&['failed','cancelled','blocked','rolled-back'].includes(record.state)
       &&['untouched','restored'].includes(record.effectState)
+      &&!['MODEL_SETUP_REQUIRED','CLAWCHAT_PAIR_REQUIRED'].includes((record.currentFailure||record.primaryFailure)?.code)
       &&!['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome);
     const retryAt=serviceSafe?serviceRetryAt(record):null;
     if(serviceSafe){

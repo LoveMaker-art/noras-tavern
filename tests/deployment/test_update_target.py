@@ -169,8 +169,10 @@ class UpdateTargetTests(unittest.TestCase):
         value = yaml.safe_load(cfg.read_text())
         value["mcp_servers"]["nora"]["env"]["NORA_MCP_USER_DATA_ROOT"] = str(self.root / "empty/tavern-state/native/default-user")
         cfg.write_text(yaml.safe_dump(value))
-        with self.assertRaisesRegex(RuntimeError, "冲突"):
+        before = {str(file): file.read_bytes() for file in self.home.rglob('*') if file.is_file()}
+        with self.assertRaisesRegex(RuntimeError, "MCP 配置"):
             self.bootstrap()
+        self.assertEqual(before, {str(file): file.read_bytes() for file in self.home.rglob('*') if file.is_file()})
 
     def test_two_existing_installations_require_repair_not_silent_selection(self):
         self.installation(self.home)
@@ -185,7 +187,7 @@ class UpdateTargetTests(unittest.TestCase):
         (self.home / "nora-instance.json").write_text("{}")
         before = {str(file.relative_to(self.home)): file.read_bytes()
                   for file in self.home.rglob('*') if file.is_file()}
-        with self.assertRaisesRegex(RuntimeError, "启动器"):
+        with self.assertRaisesRegex(RuntimeError, "Invalid Nora instance configuration"):
             BOOTSTRAP.resolve_update_target(self.home)
         self.assertEqual({str(file.relative_to(self.home)): file.read_bytes()
                           for file in self.home.rglob('*') if file.is_file()}, before)
@@ -394,19 +396,26 @@ class UpdateTargetTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'实例'):
             BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root/'other')
         (self.home / 'config.yaml').write_bytes(UPDATER.render_mcp(self.home,tavern,18898))
-        with self.assertRaisesRegex(RuntimeError,'配置'):
+        with self.assertRaisesRegex(RuntimeError,'端口.*冲突'):
             BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root)
 
     def test_managed_update_rejects_stale_mcp_binding(self):
         tavern = self.managed_installation()
-        (self.home / "config.yaml").write_bytes(UPDATER.render_mcp(self.home, self.root / "wrong-tavern", 18899))
+        # Build the damaged installed input directly: the current renderer
+        # correctly refuses to generate bindings for a different instance.
+        file = self.home / 'config.yaml'
+        config = yaml.safe_load(file.read_text())
+        config['mcp_servers']['nora']['env']['NORA_MCP_PROJECT_ROOT'] = str(self.root / 'wrong-tavern/apps/tavern-runtime')
+        file.write_text(yaml.safe_dump(config))
+        before = file.read_bytes()
         with self.assertRaisesRegex(RuntimeError, "冲突"):
             BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root)
+        self.assertEqual(file.read_bytes(), before)
 
     def test_managed_update_rejects_a_different_mcp_port(self):
         tavern = self.managed_installation()
         self.bind(tavern)
-        with self.assertRaisesRegex(RuntimeError, "配置"):
+        with self.assertRaisesRegex(RuntimeError, "端口.*冲突"):
             BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root)
 
     def test_managed_update_cannot_authorize_a_different_installation(self):

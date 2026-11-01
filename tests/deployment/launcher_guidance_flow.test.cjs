@@ -305,11 +305,14 @@ test('model partial commit uses userCode despite changed wording and prevents bl
   let submissions=0;const original=Object.assign(new Error('raw credential fixture'),{
     userCode:'MODEL_CONFIG_PARTIAL',guidance:{title:'模型已保存。',detail:'当前同步尚未确认。',next:'请重新查询状态。'},allowedActions:['recheck','logs']});
   const h=fixture({snapshot:{...ready,modelConfigured:true},api:{modelProviders:async()=>({ok:true,providers:[{id:'deepseek',label:'DeepSeek'}]}),
-    saveAndTestModel:async()=>{submissions++;throw original;},status:async()=>({...ready,modelConfigured:true})}});
+    saveAndTestModel:async()=>{submissions++;throw original;},status:async()=>({...ready,modelConfigured:true,modelSyncPending:true})}});
   await h.invoke('modelForm()');h.inline.querySelector('#key').value='secret-fixture';h.inline.querySelector('#model').value='deepseek-v4-flash';
   const form=descendants(h.inline).find(node=>node.tagName==='FORM');await form.onsubmit({preventDefault(){}});
   const submit=form.querySelectorAll('button').find(node=>node.type==='submit');assert.equal(submit.disabled,true);
   assert.ok(action(h,'重新查询状态'));assert.equal(submissions,1);assert.doesNotMatch(h.inline.textContent,/secret-fixture|raw credential/);
+  await action(h,'重新查询状态').onclick();
+  assert.equal(action(h,'继续同步'),undefined,'an error code and another pending configuration do not acknowledge this save');
+  assert.equal(submissions,1);
 });
 test('a harmless failed update does not block a separate service action or a trusted launcher recovery',async()=>{
   const original=structuredFailure();let starts=0,restores=0;
@@ -462,8 +465,12 @@ test('a model form pauses submission during a status outage and preserves input 
 });
 
 test('a successful query of partially saved model settings offers synchronization without submitting again',async()=>{
+  const saved={operationId:'22222222-2222-4222-8222-222222222222',snapshotSequence:4,kind:'model',state:'failed',
+    effectState:'changed',verification:'confirmed',recoveryOutcome:'not-required',result:{configurationSaved:true},
+    allowedActions:['resume-model','recheck','logs']};
   let submissions=0;const h=fixture({snapshot:{...ready},api:{modelProviders:async()=>({ok:true,providers:[{id:'deepseek',label:'DeepSeek'}]}),
-    saveAndTestModel:async()=>{submissions++;throw Object.assign(Error('partial save'),{userCode:'MODEL_CONFIG_PARTIAL',guidance:{title:'配置已保存。',detail:'同步未确认。'}});},
+    saveAndTestModel:async()=>{submissions++;throw Object.assign(Error('partial save'),{operation:saved,userCode:'MODEL_CONFIG_PARTIAL',guidance:{title:'配置已保存。',detail:'同步未确认。'}});},
+    operationSnapshot:async()=>saved,
     status:async()=>({...ready,modelSyncPending:true}),resumeModelSetup:async()=>({...ready})}});
   await h.invoke('modelForm()');h.inline.querySelector('#key').value='secret-fixture';h.inline.querySelector('#model').value='chosen-model';
   await descendants(h.inline).find(n=>n.tagName==='FORM').onsubmit({preventDefault(){}});

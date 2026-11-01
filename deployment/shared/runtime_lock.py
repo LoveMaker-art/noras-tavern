@@ -1,8 +1,19 @@
 """One local lock prevents two installers/runtimes from writing together."""
 from contextlib import contextmanager
 import os
+import sys
 import time
 from pathlib import Path
+
+
+def _linux_writer_record(kind):
+    # Match fs-native-extensions' Linux F_OFD_SETLK primitive. BSD flock
+    # does not conflict with the Node updater's record lock on this platform.
+    import ctypes
+    class Record(ctypes.Structure):
+        _fields_ = [('kind', ctypes.c_short), ('whence', ctypes.c_short),
+                    ('start', ctypes.c_int64), ('length', ctypes.c_int64), ('pid', ctypes.c_int)]
+    return bytes(Record(kind, os.SEEK_SET, 0, 0, 0))
 
 
 @contextmanager
@@ -30,8 +41,13 @@ def installation_lock(home, name="tavern-update.lock", *, blocking=True, descrip
                     time.sleep(0.1)
         else:
             import fcntl
+            linux_writer = sys.platform.startswith('linux') and name == '.writer.lock'
             try:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                if linux_writer:
+                    fcntl.fcntl(stream.fileno(), fcntl.F_OFD_SETLKW if blocking else fcntl.F_OFD_SETLK,
+                                _linux_writer_record(fcntl.F_WRLCK))
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             except BlockingIOError:
                 yield False
                 return
@@ -42,4 +58,7 @@ def installation_lock(home, name="tavern-update.lock", *, blocking=True, descrip
                 stream.seek(0)
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             else:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                if linux_writer:
+                    fcntl.fcntl(stream.fileno(), fcntl.F_OFD_SETLK, _linux_writer_record(fcntl.F_UNLCK))
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)

@@ -1,6 +1,6 @@
 # 诺拉酒馆产品设计：总览与共同约定
 
-产品设计版本：**1.45**。确认日期：2026-10-30；合并前核对日期：2026-11-01。用户明确要求诺拉与酒馆支持Linux及云端部署。本版将其列为正式产品目标，撤销[N-05](nora.md#model-configuration)仅限Mac／Windows受管本地安装的设计限制；以当前实例的身份、授权和实际能力为边界。Windows／Mac桌面交付、模型先验证后保存、已有内容与数据保护规则保留。设计要求、源码实现、目标环境验收及发布分别记录，当前Linux适配与验收缺口见[N-D04](nora.md#differences)。最初的[文档修订](../launcher-reliability-plan.md#linux-cloud-baseline-20261030)之后，已实施[共用核心与路径适配](../launcher-reliability-plan.md#cloud-core-instance-20261031)及审查修正；用户现授权核对后合并本地main，范围、结果与未验项见[合并记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)。源码合并不表示部署或发布。
+产品设计版本：**1.45**。确认日期：2026-10-30；合并前核对日期：2026-11-01。用户明确要求诺拉与酒馆支持Linux及云端部署。本版将其列为正式产品目标，撤销[N-05](nora.md#model-configuration)仅限Mac／Windows受管本地安装的设计限制；以当前实例的身份、授权和实际能力为边界。Windows／Mac桌面交付、模型先验证后保存、已有内容与数据保护规则保留。设计要求、源码实现、目标环境验收及发布分别记录，当前Linux适配与验收缺口见[N-D04](nora.md#differences)。最初的[文档修订](../launcher-reliability-plan.md#linux-cloud-baseline-20261030)之后，已实施[共用核心与路径适配](../launcher-reliability-plan.md#cloud-core-instance-20261031)及审查修正；范围、结果与未验项见[原合并记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)。后续生命周期、跨语言写锁和历史准入修复按用户授权整合本地main，见[增量复核](../launcher-reliability-plan.md#cloud-lifecycle-main-review-20261101)。源码合并不表示部署或发布。
 
 1.44已整合诺拉字号、行高和段距控制、普通正文排版修正及已验收的10px内置段距，本版继续保留；详细规则唯一维护在[T-23](tavern.md#visuals)及[N-12](nora.md#models-and-visuals)。历史范围与结果见[整合记录](../launcher-reliability-plan.md#reading-main-integration-20261030)，该次合并不代表正式发布。
 

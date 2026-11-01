@@ -74,7 +74,12 @@ def instance_paths(home, *, config_path=None):
     # A separately downloaded loader can precede installation of the resolver.
     # Discover paths only; the hash-verified actor owns complete admission.
     import yaml
-    config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) if (home / 'config.yaml').is_file() else {}
+    try:
+        config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) if (home / 'config.yaml').is_file() else {}
+    except (yaml.YAMLError, UnicodeError):
+        # Cold discovery has no installed resolver yet. Keep the same refusal
+        # without exposing parser excerpts from the operator's credentials.
+        raise RuntimeError('Hermes 配置格式无效，未修改实例。') from None
     if not isinstance(config, dict):raise RuntimeError('Hermes 配置不是对象，未修改实例。')
     declared = config.get('nora_tavern') or {}
     record = json.loads((home/'nora-instance.json').read_text()) if (home/'nora-instance.json').is_file() else {}

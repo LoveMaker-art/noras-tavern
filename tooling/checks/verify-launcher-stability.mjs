@@ -50,6 +50,7 @@ const python = [
     'test_updater_task_entry',
     'test_updater_skill_environment',
     'test_cloud_instance_paths',
+    'test_cloud_lifecycle_cli',
     'test_cloud_volume_recovery',
     'test_nora_system',
     'test_update_migration_contract',
