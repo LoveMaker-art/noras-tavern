@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   publish-accepted:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     concurrency:
       group: nora-sourceforge-release-channels
