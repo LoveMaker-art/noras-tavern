@@ -20,7 +20,7 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
   const sync = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'syncProvider'));
   const saved = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'savedProvider'));
   assert.ok(sync);
-  for (const [provider, snapshot, expected] of [
+  for (const [provider, snapshot, expected, catalog = {}] of [
     ['deepseek', {}, 'deepseek-v4-flash'],
     ['deepseek', { modelProvider: 'deepseek', modelName: '' }, 'deepseek-v4-flash'],
     ['deepseek', { modelProvider: 'openrouter', modelName: 'other-model' }, 'deepseek-v4-flash'],
@@ -29,17 +29,21 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
     ['custom', {}, ''],
     ['custom', { modelProvider: 'custom', modelName: 'relay-model', modelBaseUrl: 'https://example.com/v1' }, 'relay-model'],
     ['custom', { modelProvider: 'custom:local', modelName: 'local-model', modelBaseUrl: 'http://127.0.0.1:8080/v1' }, 'local-model'],
+    ['deepseek', { modelProvider: 'deepseek', modelName: 'stale-model' }, 'native-saved-model', { current: { provider: 'deepseek', model: 'native-saved-model', baseUrl: '' } }],
+    ['custom', {}, 'native-relay-model', { current: { provider: 'custom:relay', model: 'native-relay-model', baseUrl: 'https://example.com/v1' } }],
   ]) {
     const elements = new Map();
     const $ = id => {
       if (!elements.has(id)) elements.set(id, { value: '', disabled: false, replaceChildren() {} });
       return elements.get(id);
     };
-    const context = vm.createContext({ $, snapshot, authField: {}, syncAuth() {}, selected: () => ({ id: provider, custom: provider === 'custom' }) });
-    vm.runInContext(`${source.slice(saved.start, saved.end)}\n${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
+    const before = JSON.stringify({ snapshot, catalog });
+    const context = vm.createContext({ $, snapshot, catalog, authField: {}, syncAuth() {}, selected: () => ({ id: provider, custom: provider === 'custom' }) });
+    vm.runInContext(`${definition('savedModelConfiguration')}\nconst saved = savedModelConfiguration(catalog);\n${source.slice(saved.start, saved.end)}\n${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
     assert.equal($('model').value, expected, JSON.stringify({ provider, snapshot }));
     assert.equal($('model').disabled, false, 'the default remains editable');
-    assert.equal($('endpoint').value, snapshot.modelBaseUrl || '');
+    assert.equal($('endpoint').value, (catalog.current || { baseUrl: snapshot.modelBaseUrl }).baseUrl || '');
+    assert.equal(JSON.stringify({ snapshot, catalog }), before, 'provider defaults do not rewrite saved configuration');
   }
 });
 
