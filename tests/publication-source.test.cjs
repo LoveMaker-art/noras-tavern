@@ -193,7 +193,7 @@ test('actual source CLI hashes artifact ZIP bytes before extracting complete nat
   const bad = path.join(root, 'rejected'), failure = execute(bad); assert.notEqual(failure.status, 0); assert.match(failure.stderr, /digest differs/);
   assert.equal(fs.existsSync(path.join(bad, 'delivery')), false, 'Unverified ZIP bytes must not be extracted');
 });
-function fullCliFixture(t, {staged=false}={}) {
+function fullCliFixture(t, {staged=false, mutateMetadata}={}) {
   const native = nativeFixture(t), f = fixture(), root = native.root;
   const payloadBytes = fs.readFileSync(path.join(native.delivery, 'payload.json'), 'utf8');
   const system = JSON.parse(fs.readFileSync(path.join(native.delivery, 'nora-system-darwin-arm64.json')));
@@ -227,12 +227,18 @@ function fullCliFixture(t, {staged=false}={}) {
   if(staged){
     const tools=require('../tooling/release/build-stage.cjs');f.run.run_attempt=3;
     for(const platform of tools.platforms){const inputs=[];
+      // Native packaging includes metadata intentionally excluded from public assets.
+      // Same-named Mac metadata has different bytes in each platform archive.
+      members['nora-tavern-'+platform].push(
+        [`Nora-Tavern-${platform}.dmg.blockmap`, 'blockmap '+platform],
+        ['latest-mac.yml', 'update metadata '+platform],
+        ['release-notes.generated.md', 'generated notes '+platform]);
       for(const [index,phase] of tools.stages.entries()){
         const item={...f.artifacts.artifacts[0],id:100+stageArtifacts.length,name:tools.name(phase,platform)};stageArtifacts.push(item);
         const context={repository:f.options.repository,commit:f.options.commit,runId:123,attempt:index+1,platform,baseline:'EMPTY',options:{},environment:{imageOS:'fixture',imageVersion:'1',kernel:'fixture',node:'24.19.0',python:'3.11.9',platform}};
-        const [file,bytes]=members['nora-tavern-'+platform][0];
         const receipt={schema:'nora-build-stage/1',stage:phase,context,inputs:inputs.map(input=>({stage:input.stage,...input.artifact})),
-          archive:{size:10,sha256:hash('fixture stage')},delivery:phase==='package'?{[file]:{size:Buffer.byteLength(bytes),sha256:hash(bytes)}}:null};
+          archive:{size:10,sha256:hash('fixture stage')},delivery:phase==='package'?Object.fromEntries(members['nora-tavern-'+platform]
+            .map(([file,bytes])=>[file,{size:Buffer.byteLength(bytes),sha256:hash(bytes)}])):null};
         const id=200+stageJobs.length,gates=[...tools.required[phase],...(phase==='package'?[platform==='win32-x64'
           ?'Test Windows installation and managed update with legacy path limits':'Test real fresh installation and managed update before desktop packaging']:[])];
         stageJobs.push({id,run_id:123,head_sha:f.options.commit,run_attempt:index+1,name:tools.jobName(phase,platform),status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
@@ -244,6 +250,7 @@ function fullCliFixture(t, {staged=false}={}) {
       stageJobs.push({id:200+stageJobs.length,run_id:123,head_sha:f.options.commit,run_attempt:3,name:tools.jobName('build',platform),status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
     }
   }
+  if(mutateMetadata)mutateMetadata(members['nora-tavern-darwin-arm64']);
   f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], id: 8, name: 'nora-release-plan' }); f.artifacts.total_count++;
   const zipInput = path.join(root, 'zip-members.json');
   fs.writeFileSync(zipInput, JSON.stringify(f.artifacts.artifacts.map(item => members[item.name])));
@@ -270,9 +277,22 @@ test('the actual publisher CLI accepts complete staged evidence and refuses a sk
   const f=fullCliFixture(t,{staged:true}),accepted=path.join(f.root,'staged-accepted');
   const good=f.execute(accepted);assert.equal(good.status,0,good.stderr);
   const receipt=JSON.parse(fs.readFileSync(path.join(accepted,'source-receipt.json')));assert.equal(receipt.stageAcceptance.mode,'staged');assert.equal(receipt.artifacts.length,8,'intermediate archives are verified as provenance, not downloaded as product assets');
+  for(const name of ['latest-mac.yml','release-notes.generated.md','Nora-Tavern-darwin-arm64.dmg.blockmap'])
+    assert.equal(fs.existsSync(path.join(accepted,'delivery',name)),false,'Packaging metadata is verified without becoming a public asset');
   const jobs=JSON.parse(fs.readFileSync(f.jobsFile));jobs.jobs[0].steps[0].conclusion='skipped';fs.writeFileSync(f.jobsFile,JSON.stringify(jobs));
   const rejected=path.join(f.root,'staged-rejected'),bad=f.execute(rejected);assert.notEqual(bad.status,0);assert.match(bad.stderr,/Stage gate did not pass/);
   assert.equal(fs.existsSync(path.join(rejected,'source-receipt.json')),false);
+});
+test('original packaging metadata cannot be removed or changed behind valid artifact ZIP hashes',t=>{
+  for(const mode of ['missing','changed']){
+    const f=fullCliFixture(t,{staged:true,mutateMetadata:members=>{
+      const index=members.findIndex(([name])=>name.endsWith('.blockmap'));
+      if(mode==='missing')members.splice(index,1);else members[index][1]='B'+members[index][1].slice(1);
+    }}),output=path.join(f.root,'metadata-rejected'),result=f.execute(output);
+    assert.notEqual(result.status,0);
+    assert.equal(fs.existsSync(path.join(output,'source-receipt.json')),false);
+    assert.match(result.stderr,/blockmap|Published product (?:size|differs)|Missing or duplicate original/);
+  }
 });
 test('actual full source CLI forwards the release tag and preserves the independent historical gate', t => {
   const f = fullCliFixture(t), accepted = path.join(f.root, 'accepted-full');

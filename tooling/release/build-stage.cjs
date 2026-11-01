@@ -260,7 +260,8 @@ function verifyFinalJob(jobs,run,platform) {
     for(const name of gates){const selected=job.steps.filter(step=>step.name===name);assert.equal(selected.length,1,`Missing final gate: ${name}`);
         assert.equal(selected[0].status,'completed');assert.equal(selected[0].conclusion,'success',`Final gate did not pass: ${name}`);}
 }
-async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=api,readJobs=allJobs,readArtifacts=allArtifacts}={}) {
+async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=api,readJobs=allJobs,readArtifacts=allArtifacts,
+    resolveDeliveryFile=(_platform,name)=>path.join(delivery,name)}={}) {
     const jobs=readJobs(run.repository.full_name,run.id),hasStages=jobs.jobs.some(job=>platforms.some(platform=>job.name===jobName('source',platform)));
     assert.ok(jobs.total_count>0&&jobs.total_count===jobs.jobs.length,'Missing or incomplete source jobs');
     if(!hasStages){assert.equal(stageArtifacts(artifacts).length,0,'Stage artifacts have no producer');return {mode:'legacy'};}
@@ -280,7 +281,7 @@ async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=ap
         assert.deepEqual(retained.artifacts,accepted.map(item=>({id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest})),'Windows reuse source artifacts changed');
         assert.ok(retained.files&&Object.keys(retained.files).length,'Missing reused Windows product inventory');
         for(const [name,identity] of Object.entries(retained.files)){
-            assert.equal(path.basename(name),name);const target=path.join(delivery,name);
+            assert.equal(path.basename(name),name);const target=resolveDeliveryFile('win32-x64',name);
             assert.equal(fs.statSync(target).size,identity.size,'Reused Windows product size differs');
             assert.equal(await hashFile(target),identity.sha256,'Reused Windows product differs');
         }
@@ -303,7 +304,7 @@ async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=ap
         const inventory=verifyStageEvidence(proof,source,sourceArtifacts,sourceJobs,ctx.platform);
         verifyFinalJob(sourceJobs,source,ctx.platform);
         for(const [name,identity] of Object.entries(inventory)){
-            assert.equal(path.basename(name),name);const target=path.join(delivery,name);
+            assert.equal(path.basename(name),name);const target=resolveDeliveryFile(ctx.platform,name);
             assert.equal(fs.statSync(target).size,identity.size,'Published product size differs from package stage');
             assert.equal(await hashFile(target),identity.sha256,'Published product differs from package stage');
         }

@@ -442,6 +442,7 @@ async function materialize(run, artifacts, options, root, kind) {
   assert.ok(!fs.existsSync(root), 'Source directory already exists'); fs.mkdirSync(root, { recursive: true });
   const receipt = { schema: 'nora-publication-source/1', kind, sourceRun: run.id, sourceCommit: run.head_sha,
     publisherCommit: process.env.GITHUB_SHA || null, mode: options.mode || null, artifacts: [] };
+  const originalDeliveries = new Map();
   for (const item of accepted) {
     const archive = path.join(root, item.name + '.zip');
     await downloadArchive(item, options.repository, archive);
@@ -450,18 +451,33 @@ async function materialize(run, artifacts, options, root, kind) {
     const destination = kind === 'state' ? path.join(root, 'state') : path.join(root, category === 'delivery' ? 'originals' : category, item.name);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     execFileSync('python3', ['-c', extractScript, archive, destination], { stdio: 'inherit' });
-    if (category === 'delivery') flattenDelivery(destination, path.join(root, 'delivery'));
+    if (category === 'delivery') originalDeliveries.set(item.name,destination);
     receipt.artifacts.push({ id: item.id, name: item.name, size: item.size_in_bytes, digest: item.digest });
   }
   if (kind === 'state') verifyRestoredState(path.join(root, 'state'), run, {...options,stateArtifact:accepted[0]});
-  else if (options.mode === 'full') {
-    receipt.stageAcceptance = await verifyPublishedStages(path.join(root,'delivery'),path.join(root,'acceptance'),run,artifacts);
-    receipt.acceptance = await verifyNativeAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), options.commit);
-    assert.ok(options.publishedFacts && options.tag, 'Full publication requires independent published-release facts');
-    receipt.historicalAcceptance = await verifyHistoricalAcceptance(path.join(root, 'acceptance'), path.join(root, 'plan'), options.publishedFacts,
-      { ...options, targetTag: options.tag,targetDelivery:path.join(root,'delivery'),
-        targetManifest:JSON.parse(fs.readFileSync(path.join(root,'delivery/release-manifest.json'))) });
-  } else receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
+  else {
+    if (options.mode === 'full') {
+      // Verify the complete sealed package before filtering public assets.
+      // Metadata names may repeat across platform archives with different bytes.
+      receipt.stageAcceptance = await verifyPublishedStages(path.join(root,'delivery'),path.join(root,'acceptance'),run,artifacts,{
+        resolveDeliveryFile:(platform,name)=>{
+          const source=originalDeliveries.get(`nora-tavern-${platform}`);
+          assert.ok(source,`Missing original platform delivery: ${platform}`);
+          const files=reportFiles(source,name);
+          assert.equal(files.length,1,`Missing or duplicate original package file: ${platform}/${name}`);
+          return files[0];
+        },
+      });
+    }
+    for (const source of originalDeliveries.values()) flattenDelivery(source,path.join(root,'delivery'));
+    if (options.mode === 'full') {
+      receipt.acceptance = await verifyNativeAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), options.commit);
+      assert.ok(options.publishedFacts && options.tag, 'Full publication requires independent published-release facts');
+      receipt.historicalAcceptance = await verifyHistoricalAcceptance(path.join(root, 'acceptance'), path.join(root, 'plan'), options.publishedFacts,
+        { ...options, targetTag: options.tag,targetDelivery:path.join(root,'delivery'),
+          targetManifest:JSON.parse(fs.readFileSync(path.join(root,'delivery/release-manifest.json'))) });
+    } else receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
+  }
   fs.writeFileSync(path.join(root, 'source-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);
   return receipt;
