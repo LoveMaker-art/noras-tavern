@@ -449,8 +449,21 @@ test('mandatory backup workflow contracts run in preflight with finite installat
   assert.equal(nativeBackup.if, undefined);
   assert.equal(nativeBackup['continue-on-error'], undefined);
   assert.match(nativeBackup.run, /node "\$PWD\/tooling\/checks\/verify-backup-safety\.mjs"/);
-  assert.match(nativeBackup.run, /npm ci --prefix app\/engine\/sillytavern/);
   assert.match(nativeBackup.run, /npm ci --prefix nora-mcp/);
+  for (const [job, consumer] of [['source', 'Require launcher source stability before preparing runtimes'],
+    ['package', 'Verify committed installation journals before installation tests']]) {
+    const nativeSteps = staged.jobs[job].steps;
+    const recoveryDependencies = nativeSteps.findIndex(step => step.name === 'Install locked Tavern dependencies before recovery checks');
+    assert.ok(recoveryDependencies >= 0 && recoveryDependencies < nativeSteps.findIndex(step => step.name === consumer),
+      `${job}: real chat backup recovery fixtures need locked engine dependencies before their first consumer`);
+    const prerequisite = nativeSteps[recoveryDependencies];
+    assert.equal(prerequisite.if, undefined);
+    assert.equal(prerequisite['continue-on-error'], undefined);
+    assert.equal(prerequisite['timeout-minutes'], '5');
+    assert.match(prerequisite.run, /^npm ci --prefix app\/engine\/sillytavern --ignore-scripts --no-audit --no-fund\s*$/);
+    assert.equal(nativeSteps.filter(step => /npm ci --prefix app\/engine\/sillytavern/.test(step.run || '')).length, 1,
+      `${job}: install the same locked engine dependencies only once`);
+  }
 });
 
 test('test prerequisites and absolute runner entries are mandatory before native suites', () => {

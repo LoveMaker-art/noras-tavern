@@ -125,6 +125,11 @@ jobs:
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      - name: Install locked Tavern dependencies before recovery checks
+        timeout-minutes: 5
+        shell: bash
+        run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+
       - name: Verify component release contracts before preparing runtimes
         run: node --test tests/component-release.test.mjs
 
@@ -215,7 +220,6 @@ jobs:
         run: |
           set -euo pipefail
           export NORA_TEST_PYTHON="$(python -B -c 'import sys; print(sys.executable, end="")')"
-          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
           npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
           node --test tests/backup-safety-gate.test.mjs
           node "$PWD/tooling/checks/verify-backup-safety.mjs"
@@ -525,6 +529,11 @@ jobs:
       - name: Install launcher test dependencies
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install locked Tavern dependencies before recovery checks
+        timeout-minutes: 5
+        shell: bash
+        run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
 
       - name: Qualify actual Electron before native recovery tests
         timeout-minutes: 5

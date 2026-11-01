@@ -91,7 +91,13 @@ for (const workflow of ['build-integrated-launcher.yml', 'publish-component-upda
         assert.equal(gate.shell, 'bash');
         assert.equal(gate['timeout-minutes'], 10, 'The mandatory backup step retains its finite outer budget');
         assert.match(gate.run, /set -euo pipefail/);
-        assert.match(gate.run, /npm ci --prefix app\/engine\/sillytavern/);
+        const engineIndex = steps.findIndex(step => /(?:^|\n)\s*npm ci --prefix app\/engine\/sillytavern(?:\s|$)/.test(step.run || ''));
+        assert.ok(engineIndex >= 0 && engineIndex <= gateIndex, 'The backup gate must receive its locked engine dependencies');
+        const engine = steps[engineIndex];
+        assert.equal(engine.if, undefined);
+        assert.notEqual(engine['continue-on-error'], true);
+        assert.ok(engine['timeout-minutes'] > 0 && engine['timeout-minutes'] <= 10);
+        assert.ok(!/\|\|\s*true/.test(engine.run));
         assert.match(gate.run, /npm ci --prefix nora-mcp/);
         assert.ok(!/\|\|\s*true/.test(gate.run));
     });
