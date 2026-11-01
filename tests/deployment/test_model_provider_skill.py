@@ -132,6 +132,10 @@ class LocalModelSkillTests(unittest.TestCase):
                     'NORA_NETWORK_ATTEMPTS': str(self.network_attempts),
                     'NORA_FIXTURE_MODEL_PROBE': 'configuration-layer',
                     'PYTHONPATH': os.pathsep.join((str(guard), str(agent), str(helper)))}
+        # Python's Windows runtime loader still needs its system directory.
+        # Keep user homes and model networking isolated by the fixture above.
+        if os.environ.get('SystemRoot'):
+            self.env['SystemRoot'] = os.environ['SystemRoot']
         if os.environ.get('NORA_TEST_NODE'):
             self.env['NORA_TEST_NODE'] = os.environ['NORA_TEST_NODE']
         self.marker = self.root / 'installer/model.json'
