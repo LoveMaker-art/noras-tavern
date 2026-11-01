@@ -133,6 +133,8 @@ test('streaming diagnostics retain closing tags after hundreds of small chunks',
 });
 
 test('real HTTP boundary persists paired evidence privately without changing JSON reply', async t => {
+    const writes = [], appendFile = fs.appendFile;
+    t.mock.method(fs, 'appendFile', (file, data, options) => { writes.push({ file, options }); return appendFile(file, data, options); });
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mvu-http-trace-'));
     await fs.writeFile(path.join(root, '.nora-mvu-trace.json'), JSON.stringify({ expiresAt: Date.now() + 60000, chatId: 'fixture' }));
     const app = express(); app.use(express.json());
@@ -160,7 +162,10 @@ test('real HTTP boundary persists paired evidence privately without changing JSO
     assert.deepEqual(events.map(e => e.requestId), ['pair-1', 'pair-1']);
     assert.equal(events[1].stage, 'model-response');
     assert.doesNotMatch(text, /private-key|private-reasoning/);
-    assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+    assert.equal(writes.filter(item => item.file === file).length, 2);
+    assert.ok(writes.every(item => item.options.mode === 0o600), 'the real writer must request owner-only creation');
+    // Windows uses inherited ACLs; stat mode does not describe those rights.
+    if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
 });
 
 test('Helper prelude reports a schema import failure before any Zod registration', async () => {

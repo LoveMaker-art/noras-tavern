@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import vm from 'node:vm';
 import express from 'express';
@@ -12,7 +13,7 @@ import { setConfigFilePath } from '../src/util.js';
 import { NoraMvuModelConfig, NORA_MVU_MODEL_PROXY_URL } from '../src/nora-mvu-model-config.js';
 import { createMvuSettingsControls } from '../public/scripts/nora-compat/mvu-settings.js';
 
-setConfigFilePath(new URL('../default/config.yaml', import.meta.url).pathname);
+setConfigFilePath(fileURLToPath(new URL('../default/config.yaml', import.meta.url)));
 const { SECRET_KEYS, writeSecret } = await import('../src/endpoints/secrets.js');
 const { router } = await import('../src/endpoints/backends/chat-completions.js');
 

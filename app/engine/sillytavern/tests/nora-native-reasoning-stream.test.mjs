@@ -1,6 +1,6 @@
 import './helpers/nora-locale-fixture.mjs';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import { once } from 'node:events';
@@ -14,9 +14,9 @@ import { ledgerPromptPlan, ledgerPromptValid, acknowledgeLedger } from '../publi
 import {parse as yaml} from 'yaml';
 import {parse} from 'acorn';
 const root=process.env.NORA_TEST_APP||fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/, '');
-const {createStMessageViewAdapter}=await import(root+'/native-extensions/nora-ui/st-message-view-adapter.js');
+const {createStMessageViewAdapter}=await import(pathToFileURL(root+'/native-extensions/nora-ui/st-message-view-adapter.js').href);
 const nativeViewPath=root+'/engine/sillytavern/public/scripts/nora-compat/reasoning-view.js';
-const nativeView=fs.existsSync(nativeViewPath)?await import(nativeViewPath):{};
+const nativeView=fs.existsSync(nativeViewPath)?await import(pathToFileURL(nativeViewPath).href):{};
 function declarations(file,names){const source=fs.readFileSync(root+'/engine/sillytavern/public/'+file,'utf8');return parse(source,{ecmaVersion:'latest',sourceType:'module'}).body.map(n=>n.declaration||n).filter(n=>names.includes(n.id?.name)||n.declarations?.some(d=>names.includes(d.id?.name))).map(n=>source.slice(n.start,n.end)).join('\n');}
 const code=declarations('scripts/reasoning.js',['ReasoningType','ReasoningState','ReasoningHandler'])+'\n'+declarations('scripts/openai.js',['getStreamingReply'])+'\n'+declarations('script.js',['StreamingProcessor']);
 class Element {

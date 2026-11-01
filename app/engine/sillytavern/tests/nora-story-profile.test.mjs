@@ -196,7 +196,7 @@ test('personality adapter delegates to the original Python backend', () => {
     });
     assert.equal(write.status, 0, write.stderr);
     assert.equal(JSON.parse(write.stdout).content, '新人格\n');
-    assert.equal(fs.readFileSync(soul, 'utf8'), '新人格\n');
+    assert.equal(fs.readFileSync(soul, 'utf8'), `新人格${os.EOL}`);
 });
 
 test('canonical Python profile retains learning history and projects a validated four-category summary', t => {

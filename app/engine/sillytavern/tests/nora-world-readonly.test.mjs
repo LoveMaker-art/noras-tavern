@@ -96,4 +96,14 @@ test('read-only directory and file access errors stay explicit and never create 
     const before = snapshot(f.parent);
     await assert.rejects(denied.inspectList(), { code: 'NORA_WORLD_STORAGE_UNREADABLE' });
     assert.deepEqual(snapshot(f.parent), before);
+    const obstruction = path.join(f.parent, 'not-a-directory');
+    fs.writeFileSync(obstruction, 'preserve this file');
+    // Windows reports ENOENT rather than ENOTDIR below a regular file.
+    const blocked = new WorldStore({ root: path.join(obstruction, 'core'), fileSystem: {
+        ...fs.promises,
+        readdir: async () => { throw Object.assign(new Error('fixture missing path'), { code: 'ENOENT' }); },
+    } });
+    const obstructedBefore = snapshot(f.parent);
+    await assert.rejects(blocked.inspectList(), { code: 'NORA_WORLD_STORAGE_UNREADABLE' });
+    assert.deepEqual(snapshot(f.parent), obstructedBefore);
 });

@@ -132,7 +132,22 @@ export class WorldStore {
         try {
             entries = await this.#fileSystem.readdir(this.worldsDirectory, { withFileTypes: true });
         } catch (cause) {
-            if (cause.code === 'ENOENT') return [];
+            if (cause.code === 'ENOENT') {
+                // Windows also returns ENOENT below a regular file. Only an
+                // absent directory under an existing directory is a cold read.
+                let ancestor = path.dirname(this.worldsDirectory);
+                while (true) {
+                    try {
+                        if ((await this.#fileSystem.stat(ancestor)).isDirectory()) return [];
+                        break;
+                    } catch (error) {
+                        if (error.code !== 'ENOENT') { cause = error; break; }
+                    }
+                    const parent = path.dirname(ancestor);
+                    if (parent === ancestor) break;
+                    ancestor = parent;
+                }
+            }
             throw new NoraWorldCoreError('NORA_WORLD_STORAGE_UNREADABLE', 'World storage could not be read.', { cause });
         }
         const worlds = new Map();

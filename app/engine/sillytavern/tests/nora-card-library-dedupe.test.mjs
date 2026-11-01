@@ -270,10 +270,15 @@ test('modified indexed files, malformed cards and symlinks are never deleted as 
     await fs.writeFile(path.join(f.directories.characters, first.avatar), changed);
     await fs.writeFile(path.join(f.directories.characters, 'broken.png'), 'not a PNG');
     await fs.symlink(path.join(f.directories.characters, first.avatar), path.join(f.directories.characters, 'link.png'));
+    // Windows has no O_NOFOLLOW. Exercise the same boundary on every host.
+    const open = fs.open;
+    t.mock.method(fs, 'open', (file, flags, ...args) => open(file, typeof flags === 'number' ? flags & ~fsSync.constants.O_NOFOLLOW : flags, ...args));
     const result = await f.library.save({ buffer: f.bytes, format: 'png' });
     assert.notEqual(result.avatar, first.avatar);
     assert.deepEqual(result.removed, []);
     assert.equal(result.warnings.length, 2);
+    assert.deepEqual(result.warnings.map(item => item.avatar).sort(), ['broken.png', 'link.png']);
+    assert.equal((await fs.lstat(path.join(f.directories.characters, 'link.png'))).isSymbolicLink(), true);
     assert.deepEqual((await f.library.source(first.avatar)).buffer, changed);
     assert.equal((await f.library.list()).items.length, 2);
 });

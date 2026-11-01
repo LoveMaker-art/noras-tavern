@@ -7,9 +7,10 @@ import net from 'node:net';
 import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
+import { fileURLToPath } from 'node:url';
 import initPrivateRequestFilter, { getUntrustedRequestAgent } from '../src/private-request-filter.js';
 import { setConfigFilePath } from '../src/util.js';
-setConfigFilePath(new URL('../default/config.yaml', import.meta.url).pathname);
+setConfigFilePath(fileURLToPath(new URL('../default/config.yaml', import.meta.url)));
 const requests = [];
 globalThis[Symbol.for('nora.test.search.fetch')] = async (url, options) => {
     requests.push({ url, options });

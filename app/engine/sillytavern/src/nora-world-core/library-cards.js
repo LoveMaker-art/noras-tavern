@@ -16,11 +16,18 @@ const runtimeName = name => /--nora-(?:[a-f0-9]{10}|[a-f0-9]{24}|internal)\.png$
 
 async function readSafe(root, name) {
     if (typeof name !== 'string' || !name || /[/\\\0]/.test(name) || path.basename(name) !== name || name === '.' || name === '..') invalid('Invalid card filename.');
-    const handle = await fs.open(path.join(root, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const target = path.join(root, name);
+    const before = await fs.lstat(target);
+    if (!before.isFile()) invalid('Invalid card file.');
+    const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
         const stat = await handle.stat();
-        if (!stat.isFile() || stat.size > 100 * 1024 * 1024) invalid('Invalid card file.');
-        return await handle.readFile();
+        if (!stat.isFile() || stat.size > 100 * 1024 * 1024 || stat.dev !== before.dev || stat.ino !== before.ino) invalid('Invalid card file.');
+        const buffer = await handle.readFile();
+        // Windows lacks O_NOFOLLOW; reject links and replaced targets explicitly.
+        const after = await fs.lstat(target);
+        if (!after.isFile() || after.dev !== stat.dev || after.ino !== stat.ino) invalid('Invalid card file.');
+        return buffer;
     } finally { await handle.close(); }
 }
 

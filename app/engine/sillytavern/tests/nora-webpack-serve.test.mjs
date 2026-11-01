@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import path from 'node:path';
 
 import getWebpackServeMiddleware from '../src/middleware/webpack-serve.js';
 
@@ -14,7 +15,7 @@ test('bundled public libraries are served without invoking the runtime compiler'
             calls.push(options);
             return options.bundled ? makeConfig('/release') : makeConfig('/runtime');
         },
-        fileExists: file => file === '/release/lib.js',
+        fileExists: file => file === path.join('/release', 'lib.js'),
         webpack: () => assert.fail('runtime compiler must not run for a bundled release'),
     });
     let sent;
@@ -45,7 +46,7 @@ test('missing bundled libraries fall back to the data-root cache', async () => {
             calls.push(options);
             return options.bundled ? makeConfig('/release') : makeConfig('/runtime');
         },
-        fileExists: file => file === '/runtime/lib.js',
+        fileExists: file => file === path.join('/runtime', 'lib.js'),
         webpack: () => assert.fail('existing runtime cache must not be recompiled'),
     });
 
