@@ -1,371 +1,73 @@
-name: Build and accept Nora Tavern installers (no publication)
-
+name: Diagnose sealed Windows model fixture (no product build or publication)
 on:
   workflow_dispatch:
     inputs:
-      publication_tag:
-        description: Explicit component publication batch (blank keeps v<core-version>)
+      source_run:
         type: string
-        default: ''
-      compatibility_file:
-        description: Reviewed committed compatibility JSON (blank selects compatibility/v<core-version>.json)
+        default: '41332757445'
+      source_commit:
         type: string
-        default: ''
-      target:
-        description: Build installers or check an existing sealed Windows package
-        type: choice
-        default: all
-        options:
-          - all
-          - win32-x64
-          - darwin-x64
-          - darwin-arm64
-          - win32-package-check
-      package_source_run:
-        description: Diagnostic only - run whose saved Windows package is checked without rebuilding
-        type: string
-        default: ''
-      runtime_source_run:
-        description: Optional verified build run whose Hermes archives are reused for install compatibility
-        type: string
-        default: ''
-      acceptance_baseline_tag:
-        description: Published stable version used only for historical upgrade acceptance (blank uses latest stable; EMPTY requires no stable history)
-        type: string
-        default: ''
-      app_only:
-        description: APP-only publication, unchanged core; requires interactive self-hosted native-ui runners and launcher_baseline_tag
-        type: boolean
-        default: false
-      launcher_baseline_tag:
-        description: Launcher-only build using verified unchanged components from a stable tag (otherwise full build)
-        type: string
-        default: ''
-      production_mode:
-        description: Use real installation paths for replacement testing (branch artifacts only)
-        type: boolean
-        default: false
-      planning_baseline:
-        description: Change-plan base tag or commit (blank uses latest stable; EMPTY only for the first release)
-        type: string
-        default: ''
-      approve_unknown_inputs:
-        description: Explicitly approve reviewed unknown build inputs and require a conservative full build
-        type: boolean
-        default: false
-      force_full_regression:
-        description: Run complete regression for periodic qualification; cannot reduce required coverage
-        type: boolean
-        default: false
-      verified_windows_run:
-        description: Final assembly reusing fully accepted Windows delivery at this exact commit, including a cohort whose other platform failed
-        type: string
-        default: ''
-  push:
-    tags:
-      - 'v*-beta.*'
-
-concurrency:
-  group: nora-build-${{ github.sha }}-${{ inputs.target || 'all' }}
-  cancel-in-progress: false
-
+        default: '0052f295f1963c321948b9b55e581f71bad47df5'
 permissions:
   contents: read
   actions: read
-
-env:
-  NORA_APP_ONLY: ${{ inputs.app_only || false }}
-  PYTHONUTF8: '1'
-  PYTHONIOENCODING: 'utf-8'
-
 jobs:
-  preflight:
-    if: inputs.target != 'win32-package-check' && inputs.package_source_run == ''
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      acceptance_baseline_tag: ${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}
-      initial_release: ${{ steps.acceptance-baseline.outputs.initial_release }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PLANNING_BASELINE: ${{ inputs.planning_baseline }}
-      APPROVE_UNKNOWN_INPUTS: ${{ inputs.approve_unknown_inputs }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.19.0'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11.9'
-      - name: Install the workflow contract parser
-        run: python -m pip install PyYAML==6.0.2 psutil==7.0.0
-      - name: Resolve explicit component publication inputs
-        id: publication
-        env:
-          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
-          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
-        run: node tooling/release/system-release.mjs --workflow-options
-      - name: Select a published acceptance baseline independently of environment reuse
-        id: acceptance-baseline
-        shell: bash
-        env:
-          ACCEPTANCE_BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
-        run: |
-          set -euo pipefail
-          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/nora-acceptance-published-releases.json"
-          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "$NORA_PUBLICATION_TAG" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
-      - name: Plan committed changes before native builds
-        id: plan
-        shell: bash
-        run: |
-          set -euo pipefail
-          baseline="$PLANNING_BASELINE"
-          acceptance_baseline="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-baseline-selection.json")).tag')"
-          if [[ "$baseline" == EMPTY && "$acceptance_baseline" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
-          if [[ -z "$baseline" ]]; then baseline="$acceptance_baseline"; fi
-          node "$PWD/tooling/release/release-plan.mjs" --base "$baseline" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
-      - name: Require a matching build decision and explicit review of unknown inputs
-        shell: bash
-        env:
-          PLAN_MODE: ${{ steps.plan.outputs.mode }}
-          REQUIRES_REVIEW: ${{ steps.plan.outputs.requires_review }}
-          LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
-          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
-          VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
-        run: |
-          set -euo pipefail
-          if [[ "$REQUIRES_REVIEW" == true && "$APPROVE_UNKNOWN_INPUTS" != true ]]; then
-            echo 'Unknown inputs require a reviewed plan and explicit approve_unknown_inputs=true.' >&2
-            exit 1
-          fi
-          if [[ "$REQUIRES_REVIEW" == true && ( -n "$LAUNCHER_BASELINE_TAG" || -n "$RUNTIME_SOURCE_RUN" || -n "$VERIFIED_WINDOWS_RUN" ) ]]; then
-            echo 'Reviewed unknown inputs require a full build without environment or Windows package reuse.' >&2
-            exit 1
-          fi
-          if [[ "${NORA_APP_ONLY:-false}" == "true" && ( -z "$LAUNCHER_BASELINE_TAG" || "$NORA_PUBLICATION_TAG" == "v$(cat app/.tavern-release-version)" ) ]]; then echo 'APP-only needs an explicit newer publication tag and real launcher baseline.' >&2; exit 1; fi
-          case "$PLAN_MODE" in
-            full|launcher|review-required) ;;
-            components) echo 'Use the component build workflow for this plan.' >&2; exit 1 ;;
-            verification-only) echo 'No product build is required; verify tooling or publish accepted bytes separately.' >&2; exit 1 ;;
-            *) exit 1 ;;
-          esac
-      - name: Install mandatory backup workflow contract dependencies
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-          npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
-      - name: Check release tooling before preparing runtimes
-        run: |
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-impact.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/publication-providers.test.mjs tests/release-publication.test.mjs tests/backup-safety-gate.test.mjs tests/shared-assets-frozen-client.test.mjs tests/jihulab-credentials.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-transport.test.mjs tests/release-sources-embedding.test.mjs tests/docs-navigation.test.cjs tests/launcher-publish-source.test.cjs tests/component-native-acceptance.test.mjs tests/build-stage.test.cjs tests/launcher-build-shell.test.mjs
-          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
-          node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_jihulab_sources.test.cjs" "$PWD/tests/deployment/launcher_static_catalogue.test.cjs" "$PWD/tests/deployment/launcher_shared_assets.test.cjs" "$PWD/tests/deployment/launcher_telemetry.test.cjs" "$PWD/tests/deployment/launcher_error_presentation.test.cjs" "$PWD/tests/deployment/launcher_ui_feedback.test.cjs" "$PWD/tests/deployment/launcher_task_progress.test.cjs" "$PWD/tests/deployment/launcher_diagnostics_operation.test.cjs" "$PWD/tests/deployment/launcher_status_readonly.test.cjs"
-          # Publishing tools run from authored source, not the installed ops/ layout.
-          node --test "$PWD/tests/deployment/launcher_jihulab_publication.test.cjs"
-          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_updater_runtime_process_detection
-      - name: Verify historical download identities before native builds
-        if: steps.acceptance-baseline.outputs.initial_release != 'true'
-        timeout-minutes: 5
-        shell: bash
-        env:
-          ACCEPTANCE_BASELINE_TAG: ${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}
-        run: |
-          set -euo pipefail
-          for platform in darwin-arm64 darwin-x64 win32-x64; do
-            node "$PWD/tooling/release/acceptance-baseline.mjs" --tag "$ACCEPTANCE_BASELINE_TAG" --platform "$platform" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-preflight/$platform" --identity-only
-          done
-      - name: Preserve the change plan even when preflight rejects the build
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-release-plan
-          overwrite: true
-          path: |
-            ${{ runner.temp }}/release-plan.json
-            ${{ runner.temp }}/nora-acceptance-baseline-selection.json
-            ${{ runner.temp }}/nora-acceptance-published-releases.json
-          if-no-files-found: warn
-          retention-days: 90
-
-  package-check:
-    if: inputs.target == 'win32-package-check' || inputs.package_source_run != ''
+  diagnostic:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       GH_TOKEN: ${{ github.token }}
-      NORA_BUILD_TARGET: ${{ inputs.target }}
-      NORA_PACKAGE_SOURCE_RUN: ${{ inputs.package_source_run }}
-      NORA_RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
-      NORA_PUBLISH_SOURCE_RUN: ''
-      NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
-      NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
-      NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+      ACCEPTANCE_BASELINE_TAG: v2.5.7
+      SOURCE_RUN: ${{ inputs.source_run }}
+      SOURCE_SHA: ${{ inputs.source_commit }}
+      NORA_STAGE_OPTIONS: '{"target":"all","acceptance_baseline_tag":"v2.5.7","app_only":false,"production_mode":true,"planning_baseline":"v2.5.7","approve_unknown_inputs":true,"force_full_regression":false}'
     steps:
-      - name: Preserve repository bytes
-        shell: bash
-        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24.19.0'
-      - name: Reject publishing or rebuilding in package-check mode
-        run: node "$PWD/tooling/checks/restore-launcher-check-package.cjs" modes
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11.9'
-      - name: Configure the archive extractor
-        shell: pwsh
-        run: |
-          $python = python -c 'import sys; print(sys.executable)'
-          if ($LASTEXITCODE -ne 0) { throw 'Archive extractor is unavailable' }
-          "NORA_CHECK_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Verify the shared check runner before downloading packages
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'tooling/checks/launcher-installed-check.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count) { throw ($errors | Out-String) }
-          node --test tests/launcher-artifact-checks.test.cjs
-          if ($LASTEXITCODE -ne 0) { throw 'Artifact check runner tests failed' }
-      - name: Restore sealed diagnostic package with exact source and API digest checks
-        run: node "$PWD/tooling/checks/restore-launcher-check-package.cjs"
-      - name: Install the frozen package inspection dependencies
+      - name: Prepare test-only Node dependencies
+        run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Restore independently verified source and runtime checkpoints for diagnosis only
         shell: bash
         run: |
-          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
-          cd "$release_dir/nora-tavern-launcher/desktop"
-          npm ci --ignore-scripts --no-audit --no-fund
-          node -e 'const fs=require("node:fs"),path=require("node:path");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_TEST_DESKTOP_NODE_MODULES="+path.resolve("node_modules")+"\n")'
-      - name: Restore the packaged native test interpreter
+          node <<'JS'
+          const assert=require('node:assert/strict');
+          const {context,restore}=require('./tooling/release/build-stage.cjs');
+          assert.equal(process.env.SOURCE_RUN,'41332757445');
+          assert.equal(process.env.SOURCE_SHA,'0052f295f1963c321948b9b55e581f71bad47df5');
+          const diagnostic=context();
+          const original={...diagnostic,runId:Number(process.env.SOURCE_RUN),commit:process.env.SOURCE_SHA,attempt:1};
+          (async()=>{
+            await restore('source',{expected:original});
+            await restore('runtime',{expected:original});
+            console.log(JSON.stringify({diagnosticOnly:true,diagnosticCommit:diagnostic.commit,diagnosticRun:diagnostic.runId,runtimeSource:original}));
+          })().catch(e=>{console.error(e);process.exitCode=1});
+          JS
+      - name: Materialize sealed Windows interpreter and Hermes
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/hermes-runtime" "$RUNNER_TEMP"
+      - name: Configure isolated fixture actor paths
         shell: bash
         run: |
-          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
-          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$release_dir/system-assets" "$RUNNER_TEMP"
-          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-      - name: Recreate the expected native icon from the frozen source image
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
+      - name: Compare guarded startup variants without real model calls
         shell: bash
-        run: |
-          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
-          node -e 'const p=require("node:path"),desktop=p.resolve(process.argv[1],"nora-tavern-launcher/desktop"),t=require(p.join(desktop,"node_modules/app-builder-lib/out/toolsets/icons.js"));t.runIconsTool({inputFile:p.resolve(desktop,"../assets/nora-launcher-portrait.png"),outputFormat:"ico",outDir:p.join(desktop,"dist/.icon-ico")}).catch(e=>{console.error(e);process.exitCode=1})' "$release_dir"
-      - name: Verify actual lightweight update archive
-        shell: bash
-        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" replacement
-      - name: Test the actual Windows setup and installed application
-        timeout-minutes: 10
-        shell: pwsh
-        run: ./tooling/checks/launcher-installed-check.ps1
-      - name: Verify real APP production module closure and executor receipts
-        timeout-minutes: 10
-        shell: bash
-        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" app
-      - name: Verify packaged network modules in native Chromium
-        timeout-minutes: 5
-        shell: bash
-        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" network
-      - name: Verify packaged Nora images and instructions
-        shell: bash
-        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" images
-      - name: Preserve diagnostic evidence without creating release assets
+        run: node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B "$PWD/tests/deployment/diagnose_model_fixture.py"
+      - name: Preserve diagnostic logs only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nora-windows-package-check-diagnostic
-          overwrite: true
-          path: |
-            ${{ runner.temp }}/nora-package-check-source.json
-            ${{ runner.temp }}/nora-packaged-app-acceptance.json
-            ${{ runner.temp }}/nora-electron-network-acceptance.json
-            ${{ runner.temp }}/nora-installed-*-acceptance.json
-            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-package-verification-*.json
+          name: nora-windows-model-fixture-diagnostics
+          path: ${{ runner.temp }}/model-fixture-diagnostics/**
           if-no-files-found: warn
-          retention-days: 90
-
-  reuse-windows:
-    needs: preflight
-    if: inputs.verified_windows_run != '' && inputs.package_source_run == ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      GH_TOKEN: ${{ github.token }}
-      NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
-      NORA_BUILD_TARGET: ${{ inputs.target }}
-      NORA_PUBLISH_SOURCE_RUN: ''
-      NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
-      NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.19.0'
-      - name: Verify accepted Windows source and preserve its exact package bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          node -e 'require("./tooling/release/reuse-windows-build.cjs").verifyModes(process.env)'
-          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN" > source-run.json
-          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/artifacts?per_page=100" > source-artifacts.json
-          node -e 'const fs=require("node:fs"),{allJobs}=require("./tooling/release/build-stage.cjs");fs.writeFileSync("source-jobs.json",JSON.stringify(allJobs(process.env.GITHUB_REPOSITORY,process.env.NORA_VERIFIED_WINDOWS_RUN)))'
-          node --test tests/launcher-windows-reuse.test.cjs
-          node "$PWD/tooling/release/reuse-windows-build.cjs" source-run.json source-artifacts.json source-jobs.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$NORA_VERIFIED_WINDOWS_RUN" "$RUNNER_TEMP/accepted-windows"
-      - name: Preserve accepted Windows delivery without rebuilding
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-tavern-win32-x64
-          overwrite: true
-          path: ${{ runner.temp }}/accepted-windows/delivery/**
-          if-no-files-found: error
-          retention-days: 90
-          compression-level: 0
-      - name: Preserve original Windows acceptance and source provenance
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-operation-acceptance-win32-x64
-          overwrite: true
-          path: ${{ runner.temp }}/accepted-windows/acceptance/**
-          if-no-files-found: error
-          retention-days: 90
-
-  build:
-    needs: [preflight, reuse-windows]
-    if: always() && !cancelled() && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
-    strategy:
-      fail-fast: false
-      matrix:
-        # A final same-commit assembly reuses an accepted Windows package. Windows ARM lacks Liveware.
-        include: >-
-          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
-            && '[{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]'
-            || github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-x64'
-            && '[{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
-            || github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-arm64'
-            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"}]'
-            || inputs.verified_windows_run != ''
-            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
-            || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
-    uses: ./.github/workflows/launcher-platform-stages.yml
-    with:
-      runner: ${{ matrix.runner }}
-      platform: ${{ matrix.platform }}
-      arch: ${{ matrix.arch }}
-      package_script: ${{ matrix.package_script }}
-      selected_baseline: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
-      initial_release: ${{ needs.preflight.outputs.initial_release }}
-      source_options: ${{ toJSON(inputs || fromJSON('{}')) }}
-      runtime_source_run: ${{ inputs.runtime_source_run || '' }}
-      launcher_baseline_tag: ${{ inputs.launcher_baseline_tag || '' }}
-      app_only: ${{ inputs.app_only || false }}
-      production_mode: ${{ inputs.production_mode || false }}
-      publication_tag: ${{ inputs.publication_tag || '' }}
-      compatibility_file: ${{ inputs.compatibility_file || '' }}
-      force_full_regression: ${{ inputs.force_full_regression || false }}
+          retention-days: 7
