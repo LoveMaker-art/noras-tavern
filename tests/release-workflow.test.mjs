@@ -468,6 +468,10 @@ test('mandatory backup workflow contracts run in preflight with finite installat
 
 test('test prerequisites and absolute runner entries are mandatory before native suites', () => {
   const steps = full.jobs.build.steps;
+  for (const step of steps) for (const line of (step.run || '').split('\n')) {
+    if (/(?:^|\s)-m unittest tests\.deployment\./.test(line))
+      assert.match(line, /node "\$PWD\/tooling\/run\.mjs"/, 'Deployment-relative tests must execute the actual delivery projection');
+  }
   const environment = steps.findIndex(step => step.name === 'Verify native launcher test prerequisites');
   const configured = steps.findIndex(step => step.name === 'Configure actual operation actors and native lock tests');
   const native = steps.findIndex(step => step.name === 'Test release channels and update rollback');

@@ -290,7 +290,7 @@ class CloudInstancePathsTests(unittest.TestCase):
             pass
         def exchange_then_interrupt(source, target):
             replace(source, target)
-            if Path(source) == self.home / 'config.yaml':
+            if Path(source) == Path(first_install.filesystem_path(self.home / 'config.yaml')):
                 raise PowerLoss()
         with patch.object(first_install.os, 'replace', side_effect=exchange_then_interrupt):
             with self.assertRaises(PowerLoss):
