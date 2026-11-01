@@ -119,7 +119,7 @@
         "check:story-profile": "node build/sync-story-profile-runtime.mjs --check",
         "check:story-profile-source": "node build/sync-story-profile-runtime.mjs --check-source",
         "build:nora": "npm run check:story-profile && node build/build-nora.mjs && node build/generate-nora-runtime-assets.mjs && node build/build-public-lib.mjs",
-        "test:nora": "npm run check:story-profile && node --test tests/nora-*.test.mjs && node build/build-public-lib.mjs && node tests/run-nora-contracts.mjs",
+        "test:nora": "npm run check:story-profile && node --test --test-concurrency=1 tests/nora-*.test.mjs && node build/build-public-lib.mjs && node tests/run-nora-contracts.mjs",
         "test:nora:workflows": "node ../../../ops/scripts/verify-product-workflows.mjs",
         "lint": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js && npm run lint:owned",
         "lint:owned": "eslint --no-eslintrc --config ../../../ops/eslint-owned.cjs \"../../native-extensions/nora-ui/**/*.js\" \"../../../ops/scripts/*.mjs\" \"build/*.mjs\"",

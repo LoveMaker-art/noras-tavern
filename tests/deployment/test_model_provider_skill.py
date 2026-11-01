@@ -129,9 +129,14 @@ class LocalModelSkillTests(unittest.TestCase):
                     'PYTHONDONTWRITEBYTECODE': '1', 'XDG_CACHE_HOME': str(self.root / 'cache'),
                     'NORA_TAVERN_HOME': str(self.root), 'TAVERN_DATA_ROOT': str(self.tavern),
                     'NO_PROXY': '*', 'no_proxy': '*',
+                    'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8',
                     'NORA_NETWORK_ATTEMPTS': str(self.network_attempts),
                     'NORA_FIXTURE_MODEL_PROBE': 'configuration-layer',
                     'PYTHONPATH': os.pathsep.join((str(guard), str(agent), str(helper)))}
+        # Python's Windows runtime loader still needs its system directory.
+        # Keep user homes and model networking isolated by the fixture above.
+        if os.environ.get('SystemRoot'):
+            self.env['SystemRoot'] = os.environ['SystemRoot']
         if os.environ.get('NORA_TEST_NODE'):
             self.env['NORA_TEST_NODE'] = os.environ['NORA_TEST_NODE']
         self.marker = self.root / 'installer/model.json'
@@ -144,6 +149,7 @@ class LocalModelSkillTests(unittest.TestCase):
         result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
             str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
             sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix,
+                                                             'NORA_TEST_MANAGED_PYTHON_ROOT': sys.base_prefix,
                                                              'NORA_FIXTURE_LEGACY_IPC': '1'},
             input=json.dumps(data), capture_output=True, text=True, timeout=60)
         require_fixture_closure(self.fixture, result.stderr)
@@ -159,6 +165,7 @@ class LocalModelSkillTests(unittest.TestCase):
         self.assertNotIn(self.request['api_key'], result.stdout + result.stderr)
         self.assertFalse(self.network_attempts.exists(), self.network_attempts.read_text()
                          if self.network_attempts.exists() else '')
+        self.assertTrue(result.stdout.strip(), f'CLI produced no JSON (exit {result.returncode}): {result.stderr}')
         return result, json.loads(result.stdout.splitlines()[-1])
 
     def test_real_custom_save_updates_launcher_not_tavern_and_creates_no_backups(self):
