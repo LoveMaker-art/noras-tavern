@@ -22,7 +22,12 @@ function fixture(overrides = {}) {
     return {children,dataset:{},hidden:false,disabled:false,textContent:'',
       classList:{add(){},remove(){},toggle(){}},setAttribute(){},
       append(...items){children.push(...items);},prepend(...items){children.unshift(...items);},
-      querySelectorAll(selector){assert.equal(selector,'[data-retry-at]');return children.flatMap(descendants).filter(node=>node.dataset?.retryAt);},
+      querySelectorAll(selector){
+        const all=children.flatMap(descendants);
+        if(selector==='[data-retry-at]')return all.filter(node=>node.dataset?.retryAt);
+        assert.ok(['.model-mutation','.model-recheck'].includes(selector),`Unsupported fixture selector: ${selector}`);
+        return all.filter(node=>(node.className||'').split(/\s+/).includes(selector.slice(1)));
+      },
       querySelector(selector){if(!queries.has(selector))queries.set(selector,element());return queries.get(selector);}};
   }
   const $ = id => {
@@ -31,7 +36,7 @@ function fixture(overrides = {}) {
   };
   const context = vm.createContext({snapshot:{},busy:false,daily:true,running:false,stage:0,view:'daily',
     refreshing:false,statusUnknown:false,launcherRecoveryConfirmed:false,lastStatusError:'',lastStatusAt:0,versionInfo:null,alive:true,pollTimer:null,activeAction:'',activeService:'all',lastFailure:null,operationCancelled:false,
-    firstCompletionPending:false,sawIncompleteSetup:false,launchHint:element(),api:{},
+    firstCompletionPending:false,sawIncompleteSetup:false,modelSelectionUncertain:false,launchHint:element(),api:{},
     document:{createElement:element,querySelectorAll:selector=> {
       if (selector==='#management [data-action]') return [];
       const all = descendants($('inline'));
@@ -126,14 +131,20 @@ test('polling failure and recovery do not clear a model form or issue service op
     if(failed)throw new Error('fixture connection lost');return {setupCompleted,systemReady:true};
   }}});
   $('status').textContent='需要你参与';
-  $('inline').append(marker);
+  const mutation={className:'model-mutation',dataset:{},disabled:false};
+  const recheck={className:'model-recheck',dataset:{},disabled:false};
+  $('inline').append(marker,mutation,recheck);
   await vm.runInContext('poll()',context);
   assert.equal(context.view,'model');assert.equal($('inline').children[0],marker);
   assert.equal($('status').hidden,false);assert.match($('status').textContent,/无法确认/);
+  assert.equal(mutation.disabled,true,'an unknown status cannot leave a model mutation enabled');
+  assert.equal(recheck.disabled,false,'a status failure must retain its read-only recovery action');
   failed=false;await vm.runInContext('poll()',context);
   assert.equal(context.view,'model');assert.equal($('inline').children[0],marker);
   assert.equal($('status').hidden,setupCompleted);
   assert.equal($('status').textContent,'需要你参与');
+  assert.equal(mutation.disabled,false,'a confirmed status restores model editing without replacing the draft');
+  assert.equal(recheck.disabled,false);
   }
 });
 

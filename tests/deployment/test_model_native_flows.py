@@ -421,6 +421,8 @@ class NativeHermesFlowTests(unittest.TestCase):
         (self.home / "hermes-agent").symlink_to(self.source, target_is_directory=True)
         skill = self.home / "skills/system/model-provider-config"
         shutil.copytree(SKILL, skill)
+        (self.home / "scripts").mkdir()
+        shutil.copy2(ROOT / "ops/scripts/nora-instance.py", self.home / "scripts/nora-instance.py")
         entry = skill / "scripts/configure_provider.py"
         tavern = self.root / "tavern"
         lock_dir = tavern / "apps/tavern-ops/updater"
