@@ -129,6 +129,7 @@ class LocalModelSkillTests(unittest.TestCase):
                     'PYTHONDONTWRITEBYTECODE': '1', 'XDG_CACHE_HOME': str(self.root / 'cache'),
                     'NORA_TAVERN_HOME': str(self.root), 'TAVERN_DATA_ROOT': str(self.tavern),
                     'NO_PROXY': '*', 'no_proxy': '*',
+                    'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8',
                     'NORA_NETWORK_ATTEMPTS': str(self.network_attempts),
                     'NORA_FIXTURE_MODEL_PROBE': 'configuration-layer',
                     'PYTHONPATH': os.pathsep.join((str(guard), str(agent), str(helper)))}
@@ -148,6 +149,7 @@ class LocalModelSkillTests(unittest.TestCase):
         result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
             str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
             sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix,
+                                                             'NORA_TEST_MANAGED_PYTHON_ROOT': sys.base_prefix,
                                                              'NORA_FIXTURE_LEGACY_IPC': '1'},
             input=json.dumps(data), capture_output=True, text=True, timeout=60)
         try:

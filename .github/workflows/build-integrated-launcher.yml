@@ -24,6 +24,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_commit }}
       NORA_STAGE_OPTIONS: '{"target":"all","acceptance_baseline_tag":"v2.5.7","app_only":false,"production_mode":true,"planning_baseline":"v2.5.7","approve_unknown_inputs":true,"force_full_regression":false}'
     steps:
+      - name: Preserve authored line endings as in the formal source workflow
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
