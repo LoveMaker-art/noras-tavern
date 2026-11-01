@@ -35,6 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11.9'
+      - name: Prepare the formal source-test Python prerequisites
+        run: python -m pip install psutil==7.0.0 PyYAML==6.0.2
       - name: Prepare test-only Node dependencies
         run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
       - name: Restore independently verified source and runtime checkpoints for diagnosis only
