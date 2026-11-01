@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { translatePath } from '../layout.mjs';
 import { releaseModuleFor } from './release-source.mjs';
 
+// These are desktop installer builders, not eligibility rules for shared core.
 export const PLATFORMS = Object.freeze(['darwin-arm64', 'darwin-x64', 'win32-x64']);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const sorted = values => [...new Set(values)].sort();

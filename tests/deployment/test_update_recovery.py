@@ -27,6 +27,7 @@ PRESERVED_USER_FILES = {
     'hermes/.env': b'USER_SETTING=retained\n',
     'installer/model.json': b'{"provider":"custom","model":"retained"}',
 }
+MANAGED_CONFIG = 'model: {default: fixture-old}\n'
 
 
 def load_updater():
@@ -36,7 +37,7 @@ def load_updater():
     return module
 
 
-def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
+def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resume_writes=False):
     """Run the real managed transaction, substituting only release/services."""
     updater=load_updater();base=Path(base).resolve();home=base/'hermes';root=base/'tavern'
     (home/'skills').mkdir(parents=True);(root/'apps/tavern-runtime').mkdir(parents=True)
@@ -49,7 +50,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
     (root/'tavern-updates').mkdir()
     (root/'tavern-updates/installed.json').write_text('{"version":"2.3.17"}')
     (root/'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
-    (home/'config.yaml').write_text('old config');(home/'AGENTS.md').write_text('old agents')
+    (home/'config.yaml').write_text(MANAGED_CONFIG);(home/'AGENTS.md').write_text('old agents')
     (home/'SOUL.md').write_text('old soul')
     if success:
         for relative in [*(f'skills/{skill}/SKILL.md' for skill in nora_system.SKILLS),*nora_system.MANAGED_FILES]:
@@ -87,6 +88,10 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
             assert ('配置已发生变化' in message if cron_mutation=='definition' else message=='new runtime failed')
             return {'offline':True}
         if phase=='verify':return {**before,'version':manifest['versions']['tavern']}
+        if phase=='rollback' and resume_writes:
+            (root/'tavern-state/native/default-user/chats/story.jsonl').write_text('continued normal story')
+            for relative in ('native/default-user/characters/retained.json','native/worlds/retained.json'):
+                (root/'tavern-state'/relative).write_text('{"normal":"user edit"}')
         return dict(before)
     helpers=SimpleNamespace(extract_dependency_bundle=lambda *_:False,
         snapshot_targets=first_install.snapshot_targets,stop_install_runtime=lambda *_:None,
@@ -123,10 +128,11 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
         stack.enter_context(patch.object(updater,'roots_with_unmanaged_files',return_value=set()))
         stack.enter_context(patch.object(updater,'prepare_skills',return_value={}))
         stack.enter_context(patch.object(updater,'prepare_host_hook_swap',return_value=None))
-        stack.enter_context(patch.object(updater,'render_mcp',return_value=b'old config'))
+        stack.enter_context(patch.object(updater,'render_mcp',return_value=MANAGED_CONFIG.encode()))
         stack.enter_context(patch.object(updater,'managed_lifecycle',side_effect=service))
         stack.enter_context(patch.object(updater,'verify_worlds',return_value={}))
-        stack.enter_context(patch.object(updater,'verify_preserved_worlds',return_value={'status':'verified'}))
+        if not resume_writes:
+            stack.enter_context(patch.object(updater,'verify_preserved_worlds',return_value={'status':'verified'}))
         stack.enter_context(patch.object(updater,'dependency_marker',return_value={}))
         stack.enter_context(patch.object(updater,'install_update_check',return_value={'status':'installed'}))
         stack.enter_context(patch.object(updater,'install_runtime',**(
@@ -180,11 +186,22 @@ def interrupted_install_fixture():
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def test_automatic_rollback_keeps_user_edits_after_reopening_and_closes_recovery(self):
+        with tempfile.TemporaryDirectory(prefix='nora-managed-live-edits-') as temporary:
+            base=Path(temporary)
+            with self.assertRaisesRegex(RuntimeError,'recovery=restored'):
+                install_fixture(base,resume_writes=True)
+            self.assertEqual((base/'tavern/tavern-state/native/default-user/chats/story.jsonl').read_text(),'continued normal story')
+            for relative in ('tavern/tavern-state/native/default-user/characters/retained.json',
+                             'tavern/tavern-state/native/worlds/retained.json'):
+                self.assertEqual(json.loads((base/relative).read_text()),{'normal':'user edit'})
+            self.assertEqual(json.loads((base/'tavern/tavern-updates/transaction.json').read_text())['status'],'restored')
+
     def assert_preserved_user_files(self,base):
         for relative, content in PRESERVED_USER_FILES.items():
             self.assertEqual((base/relative).read_bytes(),content,relative)
         self.assertEqual((base/'tavern/tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
-        self.assertEqual((base/'hermes/config.yaml').read_text(),'old config')
+        self.assertEqual((base/'hermes/config.yaml').read_text(),MANAGED_CONFIG)
 
     def test_real_install_allows_offline_cron_bookkeeping_and_commits_verified_version(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-cron-') as temporary:
@@ -791,6 +808,161 @@ class CronMetadataClassificationTests(unittest.TestCase):
 
 
 class InterruptedRecoveryTests(unittest.TestCase):
+    def test_confirmed_recovery_does_not_freeze_normal_story_edits_in_status(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        self.run_recover();record=(self.root/'tavern-updates/transaction.json').read_bytes()
+        (self.state/'chat.txt').write_text('continued normal chat')
+        for relative in ('native/default-user/characters/edited.json','native/default-user/nora-world-core/worlds/edited/manifest.json'):
+            file=self.state/relative;file.parent.mkdir(parents=True,exist_ok=True);file.write_text('{"normal":"user edit"}')
+        original_digest=recovery.digest
+        def no_live_story_hash(path,*args,**kwargs):
+            if Path(path).is_relative_to(self.state):self.fail('normal reads must not hash active user stories')
+            return original_digest(path,*args,**kwargs)
+        with patch.object(recovery,'digest',side_effect=no_live_story_hash):
+            self.assertIsNone(nora_system.update_recovery(self.root,self.home))
+            self.assertEqual(recovery.effects(self.home,self.root)['recoveryOutcome'],'restored-and-verified')
+            self.assertFalse(recovery.assess(self.home,self.root)['canRecover'])
+            recovery.load(self.home,self.root,full=True)
+        self.assertEqual((self.root/'tavern-updates/transaction.json').read_bytes(),record)
+        self.assertEqual((self.state/'chat.txt').read_text(),'continued normal chat')
+
+    def test_resumed_service_user_writes_do_not_reopen_verified_data_recovery(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        def resumed(*_):
+            replacement=self.state/'chat-save.tmp';replacement.write_text('new chat after reopening')
+            replacement.replace(self.state/'chat.txt')
+            for relative in ('native/default-user/characters/edited.json','native/default-user/nora-world-core/worlds/edited/manifest.json'):
+                file=self.state/relative;file.parent.mkdir(parents=True,exist_ok=True);file.write_text('{"normal":"user edit"}')
+        self.assertEqual(self.run_recover(resume=resumed)['status'],'restored')
+        self.assertEqual((self.state/'chat.txt').read_text(),'new chat after reopening')
+        self.assertEqual(recovery.effects(self.home,self.root)['recoveryOutcome'],'restored-and-verified')
+
+    def test_resumed_user_edits_survive_a_restart_cut_and_legacy_checkpoint_continuation(self):
+        for legacy,untouched in ((False,False),(True,False),(False,True),(True,True)):
+            with self.subTest(legacy=legacy,untouched=untouched):
+                self.setUp();journal=self.journal(metadata_changes=not untouched);journal.snapshot_state()
+                if not untouched:journal.swap('app')
+                def cut(*_):
+                    (self.state/'chat.txt').write_text('new user story after reopening')
+                    raise KeyboardInterrupt('fixture cut after accepting new user writes')
+                with self.assertRaises(KeyboardInterrupt):self.run_recover(resume=cut)
+                if legacy:
+                    record=json.loads(journal.file.read_text());record['recoveryPlan']['state'].pop('verifiedBeforeResume')
+                    recovery.atomic_json(journal.file,record)
+                # A resumed data check must not compare against the old story.
+                result=recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
+                    verify=lambda *_:dict(self.before),verify_files=lambda *_:self.fail('data already verified before reopening'))
+                self.assertEqual(result['status'],'restored')
+                self.assertEqual((self.state/'chat.txt').read_text(),'new user story after reopening')
+                self.assertIsNone(nora_system.update_recovery(self.root,self.home))
+
+    def test_completed_recovery_keeps_edits_but_rejects_foreign_roots_and_corrupt_checkpoints(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app');self.run_recover()
+        (self.state/'chat.txt').write_text('normal edited story')
+        recovery.load(self.home,self.root,full=True)
+        record=json.loads(journal.file.read_text())
+        legacy=json.loads(json.dumps(record));legacy['recoveryPlan']['state'].pop('verifiedBeforeResume')
+        recovery.atomic_json(journal.file,legacy);recovery.load(self.home,self.root,full=True)
+        for key,value in (('inventorySha256','0'*64),('schema',True)):
+            damaged=json.loads(json.dumps(record));damaged['recoveryPlan']['state']['verifiedBeforeResume'][key]=value
+            recovery.atomic_json(journal.file,damaged)
+            self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'unknown')
+            with self.assertRaisesRegex(RuntimeError,'检查点'):recovery.load(self.home,self.root,full=True)
+        recovery.atomic_json(journal.file,record)
+        saved=self.backup/'state';self.state.rename(saved)
+        with self.assertRaisesRegex(RuntimeError,'旧文件备份'):recovery.load(self.home,self.root,full=True)
+        self.assertEqual((saved/'chat.txt').read_text(),'normal edited story')
+        saved.rename(self.state)
+        self.state.rename(self.root/'retained-user-state');self.state.mkdir();(self.state/'chat.txt').write_text('foreign state')
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'unknown')
+        self.assertEqual((self.root/'retained-user-state/chat.txt').read_text(),'normal edited story')
+
+    def rolling_chat_backup(self, mode):
+        from ops.tests.launcher_test_environment import resolve_node
+        program = r'''
+import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';
+const {createChatBackupStore}=await import(pathToFileURL(path.resolve('app/engine/sillytavern/src/chat-backup-store.js')));
+const [mode,root]=process.argv.slice(1),directories={root,chats:path.join(root,'chats'),backups:path.join(root,'backups')};
+for(const dir of Object.values(directories))await fs.mkdir(dir,{recursive:true});
+if(mode==='capture'){
+ const store=createChatBackupStore({directories,now:()=>Date.parse('2026-09-01T00:00:00Z')}),records=[];
+ for(const protect of [false,true]){
+  const filePath=path.join(directories.chats,'fixture.jsonl'),data=JSON.stringify({chat_metadata:{}})+'\n'+JSON.stringify({mes:protect?'kept':'automatic'});
+  await fs.writeFile(filePath,data);records.push(await store.capture({filePath,data,protect}));
+ }console.log(JSON.stringify(records));
+}else console.log(JSON.stringify(await createChatBackupStore({directories,now:()=>Date.parse('2026-10-27T00:00:00Z')}).maintain()));
+'''
+        result=subprocess.run([resolve_node(),'--input-type=module','-e',program,mode,
+                               str(self.state/'native/default-user')],capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        return json.loads(result.stdout)
+
+    def test_recovery_accepts_real_automatic_backup_retention_and_preserves_originals(self):
+        records=self.rolling_chat_backup('capture');automatic,kept=[item['id'] for item in records]
+        original=self.state/'native/default-user/chats/fixture.jsonl';before=original.read_bytes()
+        originals={}
+        for relative in ('characters/retained.json','nora-world-core/worlds/retained/manifest.json',
+                         'nora-story-ledger/retained.json'):
+            file=self.state/'native/default-user'/relative;file.parent.mkdir(parents=True,exist_ok=True)
+            file.write_text('{"fixture":"retained"}');originals[file]=file.read_bytes()
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        maintenance=[]
+        result=self.run_recover(resume=lambda *_:maintenance.append(self.rolling_chat_backup('maintain')))
+        self.assertEqual(result['status'],'restored');self.assert_restored()
+        self.assertEqual(maintenance[0]['deleted'],[automatic]);self.assertEqual(original.read_bytes(),before)
+        backups=self.state/'native/default-user/backups'
+        self.assertFalse((backups/f'chat_nora1_{automatic}.jsonl').exists())
+        self.assertFalse((backups/f'.nora-chat/{automatic}.json').exists())
+        self.assertTrue((backups/f'chat_nora1_{kept}.jsonl').is_file())
+        self.assertTrue((backups/f'.nora-chat/{kept}.json').is_file())
+        for file,expected in originals.items():self.assertEqual(file.read_bytes(),expected)
+
+    def test_retention_after_restart_cut_can_resume_same_recovery(self):
+        self.rolling_chat_backup('capture')
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        def cut(*_):
+            self.rolling_chat_backup('maintain');raise KeyboardInterrupt('fixture cut after backup retention')
+        with self.assertRaises(KeyboardInterrupt):self.run_recover(resume=cut)
+        self.assertEqual(self.run_recover()['status'],'restored');self.assert_restored()
+
+    def test_backup_retention_exception_never_accepts_protected_unknown_or_changed_files(self):
+        for kind in ('protected','legacy','invalid-record','changed-automatic','damaged-archive'):
+            with self.subTest(kind=kind):
+                self.setUp();records=self.rolling_chat_backup('capture')
+                automatic,kept=[item['id'] for item in records];backups=self.state/'native/default-user/backups'
+                target=backups/f'chat_nora1_{kept if kind=="protected" else automatic}.jsonl'
+                if kind=='legacy':target=backups/'legacy-user-backup.json';target.write_text('unknown original')
+                if kind=='invalid-record':
+                    metadata=backups/f'.nora-chat/{automatic}.json';value=json.loads(metadata.read_text())
+                    value['version']=True;metadata.write_text(json.dumps(value))
+                journal=self.journal();journal.snapshot_state();journal.swap('app')
+                def mutate(*_):
+                    if kind=='changed-automatic':target.write_text('changed')
+                    elif kind=='damaged-archive':
+                        self.rolling_chat_backup('maintain')
+                        archived=self.backup/'startup-chat-backups/native/default-user/backups'/f'.nora-chat/{automatic}.json'
+                        archived.write_text('{}')
+                    else:target.unlink()
+                if kind=='damaged-archive':
+                    with self.assertRaises(RuntimeError):self.run_recover(resume=mutate)
+                else:
+                    original=recovery.Journal.restore_metadata
+                    def before_reopening(current):
+                        original(current);mutate()
+                    with patch.object(recovery.Journal,'restore_metadata',before_reopening):
+                        with self.assertRaises(RuntimeError):self.run_recover()
+                    self.assertEqual(self.resume_calls,[])
+                self.assertEqual((self.old/'program.txt').read_text(),'old program')
+                self.assertEqual((self.state/'chat.txt').read_text(),'old chat')
+
+    def test_unknown_backup_metadata_is_preserved_without_becoming_a_restart_gate(self):
+        records=self.rolling_chat_backup('capture');backup_id=records[0]['id']
+        metadata=self.state/f'native/default-user/backups/.nora-chat/{backup_id}.json'
+        metadata.write_text('legacy unreadable metadata');original=metadata.read_bytes()
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        self.assertEqual(self.run_recover()['status'],'restored');self.assert_restored()
+        self.assertEqual(metadata.read_bytes(),original)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='nora-recovery-test-')
         self.addCleanup(self.temp.cleanup)
@@ -1311,16 +1483,20 @@ class InterruptedRecoveryTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):self.run_recover()
                 self.assertEqual(self.stop_calls,[])
 
-    def test_service_restart_damage_to_backups_ledgers_or_operations_is_rejected(self):
+    def test_offline_restore_damage_to_backups_ledgers_or_operations_is_rejected_before_reopening(self):
         for directory in ('backups','nora-story-ledger','nora-world-core/operations'):
             with self.subTest(directory=directory):
                 self.setUp()
                 document=self.state/'native/default-user'/directory/'saved.json'
                 document.parent.mkdir(parents=True);document.write_text('original user data')
                 journal=self.journal();journal.snapshot_state();journal.swap('app')
-                def damage(*_):document.write_text('damaged during service restart')
-                with self.assertRaisesRegex(RuntimeError,'剧情数据发生变化'):
-                    self.run_recover(resume=damage)
+                original=recovery.Journal.restore_metadata
+                def damage(current):
+                    original(current);document.write_text('damaged before verified reopening')
+                with patch.object(recovery.Journal,'restore_metadata',damage):
+                    with self.assertRaisesRegex(RuntimeError,'剧情数据发生变化'):self.run_recover()
+                self.assertEqual(self.resume_calls,[])
+                self.assertEqual(recovery.effects(self.home,self.root)['recoveryOutcome'],'recovery-required')
                 self.assertEqual(json.loads(journal.file.read_text())['status'],'recovery-failed')
                 self.assertEqual((self.old/'program.txt').read_text(),'old program')
 

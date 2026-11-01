@@ -1,6 +1,6 @@
 # 启动器产品设计
 
-产品设计版本：**1.44**。核对日期：2026-10-30。与[项目总览](README.md)共同构成现行设计。本轮按已确认范围统一现有启动器服务与技能的Hermes执行；启动器模型入口增加配置概览，不扩大全服务表单。酒馆及其他未涉及行为保持，见[实施记录](../reports/20261028-hermes-model-reuse.md#existing-provider-unification)。本轮授权仅合并本地主分支，不推送发布；结果见[整合记录](../reports/20261028-hermes-model-reuse.md#local-main-integration)。
+产品设计版本：**1.45**。核对日期：2026-11-01。与[项目总览](README.md)共同构成现行设计。Linux云端的诺拉与酒馆按[部署边界](README.md#deployment-support)独立安装、运行和维护；本模块继续负责Windows／Mac桌面入口及现有模型管理，不扩大全服务表单，也不把桌面目录或APP变成云端核心能力前提。保留现有启动器行为与此前验收边界；共用核心的源码适配及审查收敛见[实施记录](../launcher-reliability-plan.md#cloud-core-review-convergence-20261101)，本地合并见[整合记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)，不表示部署或发布；L-D07／L-D08继续登记未完成范围。
 
 1.44仅在既有1.43设计上整合[N-12](nora.md#models-and-visuals)／[T-23](tavern.md#visuals)阅读控制与默认排版，启动器行为、模型管理及数据保护规则保持；实际合并范围见[本轮记录](../launcher-reliability-plan.md#reading-main-integration-20261030)。
 
@@ -41,7 +41,7 @@
 | 核心／自身更新入口、APP 替换、恢复与卸载入口 | 核心使用[同一独立更新器](README.md#shared-update)，维护共同遵守[数据与备份规则](README.md#data-and-models) |
 | 安装信息、社区与作者、人物反馈、诊断选择 | 外部客户端和供应商账号各自管理；启动器不代替用户授权或服务商结果 |
 
-桌面交付面向 Windows x64、Mac Apple 芯片和 Mac Intel。具体系统版本支持、原生兼容及签名状态按发行证据说明；不能因系统分支有代码便宣布提供 Linux 桌面安装包。云端和源码部署仍可使用适用核心业务与更新，不依赖桌面 APP。
+桌面交付面向 Windows x64、Mac Apple 芯片和 Mac Intel。具体系统版本支持、原生兼容及签名状态按发行证据说明；不能因系统分支有代码便宣布提供 Linux 桌面安装包。Linux云端／服务器上的诺拉与酒馆是正式核心部署目标，安装、模型配置、业务使用和核心维护按[共同部署规则](README.md#deployment-support)实施，不依赖桌面APP。桌面安装包的平台范围不得被当成整个产品的系统支持范围。
 
 <a id="pages"></a>
 ## 二 页面、状态与入口全景（L-01）

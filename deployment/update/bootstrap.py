@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import runpy
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,6 +50,70 @@ def default_hermes_home():
 
 def default_install_root():
     return Path(os.environ.get("TAVERN_DATA_ROOT") or default_hermes_home()).expanduser().resolve()
+
+
+def instance_paths(home, *, config_path=None):
+    """Use the shipped resolver; a raw loader can discover explicit bindings.
+
+    Never fetch another unverified helper. The extracted actor includes this
+    file in its manifested updater closure; an installed script is a local
+    compatibility input while an old standalone loader is being upgraded.
+    """
+    home = Path(home).resolve()
+    candidates = [Path(__file__).resolve().parents[1] / 'scripts/nora-instance.py',
+                  Path(home) / 'scripts/nora-instance.py']
+    for file in candidates:
+        if file.is_file() and not file.is_symlink():
+            module = runpy.run_path(str(file))
+            if 'verify_hermes_python' in module:
+                if config_path is not None:
+                    return module['configuration'](home, config_path=config_path)
+                return module['existing_configuration'](home)
+    if config_path is not None:
+        raise RuntimeError('恢复缺少已验证的实例定位组件，未修改文件。')
+    # A separately downloaded loader can precede installation of the resolver.
+    # Discover paths only; the hash-verified actor owns complete admission.
+    import yaml
+    try:
+        config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8')) if (home / 'config.yaml').is_file() else {}
+    except (yaml.YAMLError, UnicodeError):
+        # Cold discovery has no installed resolver yet. Keep the same refusal
+        # without exposing parser excerpts from the operator's credentials.
+        raise RuntimeError('Hermes 配置格式无效，未修改实例。') from None
+    if not isinstance(config, dict):raise RuntimeError('Hermes 配置不是对象，未修改实例。')
+    declared = config.get('nora_tavern') or {}
+    record = json.loads((home/'nora-instance.json').read_text()) if (home/'nora-instance.json').is_file() else {}
+    if not isinstance(record,dict):raise RuntimeError('实例身份记录不是对象。')
+    if not declared and record.get('deployment')!='core':
+        return None
+    if not isinstance(declared,dict):raise RuntimeError('实例路径映射不是对象。')
+    if record and (record.get('schema')!=1 or Path(record.get('hermesHome',''))!=home):
+        raise RuntimeError('实例身份记录与当前Hermes不一致。')
+    env=((config.get('mcp_servers') or {}).get('nora') or {}).get('env') or {}
+    project=Path(env['NORA_MCP_PROJECT_ROOT']) if env.get('NORA_MCP_PROJECT_ROOT') else None
+    inferred=project.parent.parent if project is not None and project.name=='tavern-runtime' and project.parent.name=='apps' else None
+    root=declared.get('installRoot') or record.get('installRoot') or (str(inferred) if inferred else None)
+    if not isinstance(root,str):raise RuntimeError('缺少当前实例 installRoot。')
+    paths={'installRoot':root,'stateRoot':declared.get('stateRoot') or env.get('NORA_MCP_STATE_ROOT') or str(Path(root)/'tavern-state'),
+           'appRoot':declared.get('appRoot') or (str(project) if project else None) or str(Path(root)/'apps/tavern-runtime')}
+    for name,value in paths.items():
+        if not isinstance(value,str) or not Path(value).expanduser().is_absolute() or Path(value).resolve()==Path(Path(value).anchor):
+            raise RuntimeError(name+'必须是明确的非根目录绝对路径。')
+        paths[name]=str(Path(value).expanduser().resolve())
+    if record.get('installRoot') and paths['installRoot']!=str(Path(record['installRoot']).resolve()):
+        raise RuntimeError('实例程序目录冲突。')
+    return {**paths,'hermesHome':str(home),'noraHome':record.get('noraHome',str(home)),
+            'desktopManaged':bool(record) and record.get('deployment','desktop')=='desktop',
+            'port':declared.get('port') or record.get('port')}
+
+
+def state_root(home, root, *, config_path=None):
+    binding = instance_paths(home, config_path=config_path) if home else None
+    if binding:
+        if Path(binding['installRoot']).resolve() != Path(root).resolve():
+            raise RuntimeError('数据路径与当前程序实例冲突。')
+        return Path(binding['stateRoot'])
+    return Path(root) / 'tavern-state'
 
 
 def managed_instance(home, root):
@@ -356,9 +421,13 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
     use the same rules, without an unverified helper download.
     """
     home = Path(hermes_home).expanduser().resolve() if hermes_home else default_hermes_home()
+    binding = instance_paths(home)
+    if binding and Path(binding['appRoot']) != Path(binding['installRoot'])/'apps/tavern-runtime':
+        raise RuntimeError('当前程序入口与发布包目录不一致；installRoot 应指向包含 apps 的程序根目录。未移动数据或开始更新。')
     managed_error = "此实例由诺拉启动器管理，禁止用 Tavern 单体更新器覆盖完整 Nora 系统。请在启动器中检查版本。"
-    instance = managed_instance(home, managed_home) if managed_home else None
-    if (home / "nora-instance.json").exists() and not instance:
+    core_binding = binding is not None and not binding['desktopManaged']
+    instance = managed_instance(home, managed_home) if managed_home and not core_binding else None
+    if (home / "nora-instance.json").exists() and not instance and not core_binding:
         raise RuntimeError(managed_error)
     if not (home / "skills").is_dir():
         raise RuntimeError("无法确认 Hermes 安装目录：" + str(home))
@@ -372,6 +441,8 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
 
     if install_root:
         add("--install-root", install_root)
+    if binding:
+        add('实例绑定', binding['installRoot'])
     if instance:
         add("启动器实例", instance["installRoot"])
     if os.environ.get("TAVERN_DATA_ROOT"):
@@ -399,6 +470,18 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
             for key, suffix in suffixes.items():
                 if key not in env:
                     continue
+                if binding:
+                    expected = {
+                        'NORA_MCP_PROJECT_ROOT': Path(binding['appRoot']),
+                        'NORA_MCP_ST_ROOT': Path(binding['appRoot']) / 'engine/sillytavern',
+                        'NORA_MCP_STATE_ROOT': Path(binding['stateRoot']),
+                        'NORA_MCP_NATIVE_DATA_ROOT': Path(binding['stateRoot']) / 'native',
+                        'NORA_MCP_CONFIG_PATH': Path(binding['stateRoot']) / 'native-runtime/config.yaml',
+                        'NORA_MCP_UPLOAD_ROOT': Path(binding['stateRoot']) / 'imports',
+                    }[key]
+                    if not Path(env[key]).is_absolute() or Path(env[key]).resolve() != expected:
+                        raise ValueError('conflicting ' + key)
+                    continue
                 value = Path(env[key]).expanduser()
                 parts = Path(suffix).parts
                 if not value.is_absolute() or value.parts[-len(parts):] != parts:
@@ -406,9 +489,11 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
                 add("MCP " + key, value.parents[len(parts) - 1])
             if "NORA_MCP_USER_DATA_ROOT" in env:
                 value = Path(env["NORA_MCP_USER_DATA_ROOT"]).expanduser()
-                if not value.is_absolute() or value.parent.name != "native" or value.parent.parent.name != "tavern-state":
+                native = Path(binding['stateRoot']) / 'native' if binding else None
+                if not value.is_absolute() or (value.parent.resolve() != native if native else value.parent.name != "native" or value.parent.parent.name != "tavern-state"):
                     raise ValueError("invalid NORA_MCP_USER_DATA_ROOT")
-                add("MCP NORA_MCP_USER_DATA_ROOT", value.parents[2])
+                if not binding:
+                    add("MCP NORA_MCP_USER_DATA_ROOT", value.parents[2])
             args = server.get("args", [])
             if not isinstance(args, list):
                 raise ValueError("MCP args must be a list")
@@ -442,14 +527,15 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
             if (home == base / 'hermes' and root == base / 'tavern'
                     and ((base / 'installer/launcher-control.json').exists() or (base / 'nora-owner.json').exists())):
                 raise RuntimeError(managed_error)
-    if (root / "tavern-updates/nora-system.json").exists() and not instance:
+    if (root / "tavern-updates/nora-system.json").exists() and not instance and not core_binding:
         raise RuntimeError(managed_error)
     app = root / "apps/tavern-runtime"
     partial = validate_partial_repair(home, root, instance) if instance and validate_partial else None
     pending = not instance and pending_standalone_recovery(home, root)
-    if (not partial and not pending and not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py"))) or not (root / "tavern-state").is_dir():
+    state = Path(binding['stateRoot']) if binding else root / 'tavern-state'
+    if (not partial and not pending and not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py"))) or not state.is_dir():
         raise RuntimeError("目标不是完整的已有酒馆安装，已停止更新：" + str(root))
-    if (root / "tavern-state").is_symlink():
+    if state.is_symlink():
         raise RuntimeError("数据目录是符号链接，无法保证事务回滚，已停止更新：" + str(root / "tavern-state"))
     receipt = root / "tavern-updates/installed.json"
     if receipt.exists():
@@ -941,7 +1027,8 @@ def main():
     # The instance marker binds directories and port. It is not permission to
     # require an installed/online desktop APP for a component update.
     resolved_home = Path(home).expanduser().resolve() if home else default_hermes_home()
-    if args.managed_home is None and (resolved_home / 'nora-instance.json').is_file():
+    binding = instance_paths(resolved_home)
+    if args.managed_home is None and (resolved_home / 'nora-instance.json').is_file() and (not binding or binding['desktopManaged']):
         marker = json.loads((resolved_home / 'nora-instance.json').read_text(encoding='utf-8'))
         args.managed_home = Path(marker['noraHome'])
     hermes_home, install_root = resolve_update_target(home, args.install_root or args.data_root,

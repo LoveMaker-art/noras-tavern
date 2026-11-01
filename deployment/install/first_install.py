@@ -26,6 +26,11 @@ import uuid
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 HOST_HOOK = Path("hooks/tavern-liveware-register")
+_installation_state = None
+
+
+def state_root(root):
+    return _installation_state if _installation_state is not None else Path(root) / 'tavern-state'
 
 
 def log(message: str) -> None:
@@ -148,6 +153,7 @@ class FirstInstallJournal:
               'tavern-updates/installed-manifest.json', 'tavern-updates/nora-system.json'}
     TAVERN |= {'tavern-state/native/default-user/extensions/' + name for name in
         ('JS-Slash-Runner', 'ST-Prompt-Template', 'nora-mvu', 'nora-ui', 'nora-ledger', 'nora-shell', 'nora-character-status')}
+    STATE = {name.removeprefix('tavern-state/') for name in TAVERN if name.startswith('tavern-state/')}
     HERMES = _recovery.MANAGED | {'config.yaml', 'AGENTS.md', 'AGENTS.md.bak', 'nora-instance.json',
         'hooks/tavern-liveware-register', 'clawchat/greeting.md', 'clawchat/nora-greeting.json',
         'clawchat/greeting.nora-example.md', 'plugins/clawchat/clawchat_gateway/adapter.py',
@@ -159,10 +165,12 @@ class FirstInstallJournal:
         self.record = record
 
     @classmethod
-    def create(cls, nora_home, hermes_home, install_root, *, operation_id=None):
+    def create(cls, nora_home, hermes_home, install_root, *, operation_id=None, state=None):
         operation_id, operation = _operation_evidence.operation_directory(nora_home,
             operation_id=operation_id, install_root=install_root)
         roots = {'hermes': Path(hermes_home).resolve(), 'tavern': Path(install_root).resolve()}
+        if state is not None and Path(state).resolve() != Path(install_root).resolve() / 'tavern-state':
+            roots['state'] = Path(state).resolve()
         for root in roots.values(): Path(filesystem_path(root)).mkdir(parents=True, exist_ok=True)
         directory = operation / 'first-install'
         directory_io = Path(filesystem_path(directory))
@@ -411,7 +419,7 @@ class FirstInstallJournal:
                 or any(not isinstance(value, dict) for value in self.record['checkpoints'].values())):
             raise RuntimeError('首装检查点记录无效，已保留现场')
         for name, root in self.record['roots'].items():
-            if name not in ('hermes', 'tavern') or _recovery.identity(root) != self.record['rootIdentities'].get(name):
+            if name not in ('hermes', 'tavern', 'state') or _recovery.identity(root) != self.record['rootIdentities'].get(name):
                 raise RuntimeError('首装恢复根目录身份已变化，已保留现场')
         if not isinstance(self.record['targets'], list) or len(self.record['targets']) > 128:
             raise RuntimeError('首装恢复目标清单无效')
@@ -425,7 +433,7 @@ class FirstInstallJournal:
             elif 'backupIndex' in item:
                 raise RuntimeError('旧首装备份目标索引不受信任')
             namespace, relative = item.get('namespace'), item.get('path')
-            allowed = self.TAVERN if namespace == 'tavern' else self.HERMES if namespace == 'hermes' else set()
+            allowed = self.TAVERN if namespace == 'tavern' else self.HERMES if namespace == 'hermes' else self.STATE if namespace == 'state' else set()
             if relative not in allowed or (namespace, relative) in seen:
                 raise RuntimeError('首装恢复目标不在受管清单')
             seen.add((namespace, relative))
@@ -446,6 +454,19 @@ class FirstInstallJournal:
                 raise RuntimeError('首装失败程序归档路径不受信任')
             if 'untrustedCopy' in item and not re.fullmatch(r'failed-new/[0-9]+-[a-f0-9]{32}', item['untrustedCopy'].get('archive', '')):
                 raise RuntimeError('首装未知配置保留路径不受信任')
+        if 'state' in self.record['roots']:
+            config_path = None
+            item = next((item for item in self.record['targets']
+                         if item['namespace'] == 'hermes' and item['path'] == 'config.yaml'), None)
+            if item and item.get('savedIdentity') is not None:
+                config_path = self.backup_target(item)
+                if (_recovery.identity(config_path) != item['savedIdentity']
+                        or _recovery.digest(config_path) != item['digest']):
+                    raise RuntimeError('首装路径来源的配置备份已变化，未恢复文件。')
+            expected = _shared_paths.state_root(self.record['roots']['hermes'],
+                self.record['roots']['tavern'], config_path=config_path)
+            if expected != Path(self.record['roots']['state']):
+                raise RuntimeError('首装数据路径与当前实例绑定不匹配。')
         return self
 
     def prepare(self, targets, *, manifest):
@@ -594,6 +615,8 @@ class FirstInstallJournal:
                 artifact['phase'] = 'archive-result'; self.save()
 
     def managed_code(self, item):
+        if item['namespace'] == 'state':
+            return item['path'] != 'native-runtime/config.yaml'
         if item['namespace'] == 'tavern':
             return (item['path'].startswith('apps/') or item['path'].startswith('tavern-state/native/default-user/extensions/')
                 or item['path'] in {'tavern-state/native-runtime/runs', 'tavern-state/native-runtime/dependencies.json',
@@ -702,7 +725,8 @@ def _inspect_committed_first_install(journal):
         'tavern-state/native-runtime/ready.json'}
     for item in journal.record['targets']:
         target = journal.target(item)  # Validate every path even when its data can change.
-        if not journal.managed_code(item) or item['namespace'] == 'tavern' and item['path'] in mutable: continue
+        if (not journal.managed_code(item) or item['namespace'] == 'tavern' and item['path'] in mutable
+                or item['namespace'] == 'state' and 'tavern-state/' + item['path'] in mutable): continue
         if item['namespace'] == 'tavern' and item['path'] == 'apps/tavern-runtime':
             if (item.get('codeDigestPolicy') != 'nora-first-install-code/1'
                     or _recovery.identity(target) != item.get('codeIdentity')
@@ -909,7 +933,7 @@ def mark_bundled_dependencies(source: Path, install_root: Path, manifest: dict, 
     )
     if not lock.is_file() or not all(path.is_file() for path in required):
         raise RuntimeError("整合依赖包不完整")
-    marker = install_root / "tavern-state/native-runtime/dependencies.json"
+    marker = state_root(install_root) / "native-runtime/dependencies.json"
     write = journal.apply_bytes if journal is not None else atomic
     write(marker, (json.dumps({
         "schema": 1,
@@ -925,7 +949,7 @@ def assert_first_install_targets(install_root: Path, *, force: bool) -> None:
         install_root / "apps/tavern-runtime",
         install_root / "apps/tavern-ops",
         install_root / "apps/nora-mcp",
-        install_root / "tavern-state/native-runtime",
+        state_root(install_root) / "native-runtime",
     ]
     existing = [str(path) for path in targets if path.exists()]
     if existing and not force:
@@ -1007,12 +1031,20 @@ def install_skills(home: Path, prepared: dict[str, Path], journal=None) -> list[
     return sorted(installed)
 
 
+def retained_config_paths(install_root):
+    # The verified state binding owns these files, not the program directory.
+    try:
+        paths = tuple(_recovery.safe_path(state_root(install_root), name) for name in
+                      ('nora-retained-config.yaml', 'native-runtime/config.yaml'))
+    except RuntimeError as error:
+        raise RuntimeError("保留的酒馆配置不能重定向到隔离目录外") from error
+    if any(path.exists() and not path.is_file() for path in paths):
+        raise RuntimeError('保留的酒馆配置路径不是文件，未修改现有配置。')
+    return paths
+
+
 def restore_retained_config(install_root: Path, journal=None) -> Path:
-    retained = install_root / "tavern-state/nora-retained-config.yaml"
-    target = install_root / "tavern-state/native-runtime/config.yaml"
-    for candidate in (retained, target):
-        if candidate.is_symlink() or not candidate.resolve().is_relative_to(install_root.resolve()):
-            raise RuntimeError("保留的酒馆配置不能重定向到隔离目录外")
+    retained, target = retained_config_paths(install_root)
     if retained.is_file():
         write = journal.apply_bytes if journal is not None else atomic
         write(target, retained.read_bytes(), mode=0o600)
@@ -1100,7 +1132,7 @@ def start_tavern(hermes_home: Path, install_root: Path, port: int, journal=None,
     app = install_root / "apps/tavern-runtime"
     lifecycle = module_at("nora_tavern_native_lifecycle", app / "native_lifecycle.py")
     contract = lifecycle.RuntimeContract.from_dict(json.loads((app / "native-runtime.json").read_text(encoding="utf-8")))
-    runtime = lifecycle.NativeRuntime(install_root, app, install_root / "tavern-state", contract)
+    runtime = lifecycle.NativeRuntime(install_root, app, state_root(install_root), contract)
     runtime.install(journal=journal, allow_dependency_install=allow_dependency_install)
     return runtime.start(port=port)
 
@@ -1109,7 +1141,7 @@ def stop_install_runtime(install_root: Path) -> dict:
     app = install_root / "apps/tavern-runtime"
     lifecycle = module_at("nora_tavern_rollback_lifecycle", app / "native_lifecycle.py")
     contract = lifecycle.RuntimeContract.from_dict(json.loads((app / "native-runtime.json").read_text(encoding="utf-8")))
-    runtime = lifecycle.NativeRuntime(install_root, app, install_root / "tavern-state", contract)
+    runtime = lifecycle.NativeRuntime(install_root, app, state_root(install_root), contract)
     runtime.stop_run()
     processes = runtime.process_module()
     metadata = runtime.run_dir('production') / 'run.json'
@@ -1127,10 +1159,9 @@ def initialize_liveware(hermes_home: Path, install_root: Path, port: int) -> dic
         return {"status": "pending", "warnings": [str(error)]}
 
 
-def _install(args, operation_id, context_ref) -> dict:
-    if not (args.apply and args.confirm):
-        raise RuntimeError("首次安装必须显式传入 --apply --confirm")
+def installation_paths(args):
     dedicated = getattr(args, "dedicated_nora", False)
+    binding = None
     if dedicated:
         nora_home = safe(args.nora_home) if args.nora_home else default_nora_home()
         hermes_home = safe(args.hermes_home) if args.hermes_home else default_hermes_home(nora_home)
@@ -1138,14 +1169,40 @@ def _install(args, operation_id, context_ref) -> dict:
     else:
         shared = module_at("first_install_shared", HERE.parent / "updater/update.py")
         hermes_home = safe(args.hermes_home) if args.hermes_home else shared.default_hermes_home()
-        install_root = safe(args.install_root or os.environ.get("TAVERN_DATA_ROOT") or hermes_home)
-        nora_home = safe(args.nora_home) if args.nora_home else hermes_home
+        binding = _shared_paths.instance_paths(hermes_home)
+        if binding and binding['desktopManaged']:
+            raise RuntimeError('此实例由桌面启动器管理，请使用原安装或修复入口；未更改实例类型。')
+        install_root = safe(args.install_root or (binding or {}).get('installRoot') or os.environ.get("TAVERN_DATA_ROOT") or hermes_home)
+        nora_home = safe(args.nora_home or (binding or {}).get('noraHome') or hermes_home)
+        if binding and (install_root != Path(binding['installRoot']) or nora_home != Path(binding['noraHome'])):
+            raise RuntimeError('安装目标与当前实例绑定冲突，未修改文件。')
+        if binding and Path(binding['appRoot']) != install_root/'apps/tavern-runtime':
+            raise RuntimeError('当前程序入口与发布包目录不一致；请核对包含 apps 的 installRoot，原文件未移动。')
+    requested = getattr(args, 'port', None)
+    port = requested if requested is not None else (binding or {}).get('port', 8799)
+    if binding and port != binding['port']:
+        raise RuntimeError('安装端口与当前实例绑定冲突，未修改文件。')
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise RuntimeError('酒馆端口必须在 1024 至 65535 之间')
+    return nora_home, hermes_home, install_root, port
+
+
+def _install(args, operation_id, context_ref) -> dict:
+    global _installation_state
+    if not (args.apply and args.confirm):
+        raise RuntimeError("首次安装必须显式传入 --apply --confirm")
+    dedicated = getattr(args, "dedicated_nora", False)
+    nora_home, hermes_home, install_root, args.port = installation_paths(args)
     context_ref.update(nora_home=nora_home, install_root=install_root)
+    _installation_state = _shared_paths.state_root(hermes_home, install_root)
+    retained_config_paths(install_root)  # Reject redirects before any install writes.
     os.environ["NORA_TAVERN_HOME"] = str(nora_home)
     os.environ["NORA_HERMES_HOME"] = str(hermes_home)
     os.environ["HERMES_HOME"] = str(hermes_home)
-    os.environ["HERMES_INSTALL_DIR"] = str(hermes_home / "hermes-agent")
+    if dedicated:
+        os.environ['HERMES_INSTALL_DIR'] = str(hermes_home / 'hermes-agent')
     os.environ["TAVERN_DATA_ROOT"] = str(install_root)
+    os.environ['TAVERN_STATE_DIR'] = str(_installation_state)
     if not 1024 <= args.port <= 65535:
         raise RuntimeError("酒馆端口必须在 1024 至 65535 之间")
     nora_home.mkdir(parents=True, exist_ok=True)
@@ -1177,8 +1234,8 @@ def _install(args, operation_id, context_ref) -> dict:
             install_root / "apps/tavern-runtime",
             install_root / "apps/tavern-ops",
             install_root / "apps/nora-mcp",
-            *[install_root / ('tavern-state/native-runtime/' + name) for name in ('config.yaml', 'dependencies.json', 'ready.json', 'runs')],
-            *[install_root / relative for relative in sorted(FirstInstallJournal.TAVERN)
+            *[state_root(install_root) / ('native-runtime/' + name) for name in ('config.yaml', 'dependencies.json', 'ready.json', 'runs')],
+            *[state_root(install_root) / Path(relative).relative_to('tavern-state') for relative in sorted(FirstInstallJournal.TAVERN)
                 if relative.startswith('tavern-state/native/default-user/extensions/')],
             install_root / "tavern-updates/installed.json",
             install_root / "tavern-updates/installed-manifest.json",
@@ -1204,10 +1261,15 @@ def _install(args, operation_id, context_ref) -> dict:
             *[target for _, _, target in gateway_swaps],
             *[target for _, _, target in context_swaps],
         ]
-        journal = FirstInstallJournal.create(nora_home, hermes_home, install_root, operation_id=operation_id)
+        journal = FirstInstallJournal.create(nora_home, hermes_home, install_root, operation_id=operation_id, state=_installation_state)
         journal.record['hermesRuntimeVerified'] = dedicated
         journal.checkpoint('hermes_runtime', 'result')
-        journal.prepare({'tavern': tavern_targets, 'hermes': hermes_targets}, manifest=manifest)
+        targets = {'tavern': tavern_targets, 'hermes': hermes_targets}
+        if 'state' in journal.record['roots']:
+            targets['state'] = [_installation_state / name for name in sorted(FirstInstallJournal.STATE)]
+            targets['tavern'] = [path for path in tavern_targets if path.is_relative_to(install_root)
+                                 and not path.is_relative_to(state_root(install_root))]
+        journal.prepare(targets, manifest=manifest)
         context_ref['journal'] = journal
         runtime_attempted = False
         try:
@@ -1230,6 +1292,14 @@ def _install(args, operation_id, context_ref) -> dict:
                 system = module_at("nora_install_system", HERE / "nora_system.py")
                 system.configure_managed(hermes_home, install_root, nora_home, args.port, source,
                                          sys.executable, dict(os.environ), journal=journal, work=work)
+            else:
+                binding = {'schema': 1, 'deployment': 'core', 'noraHome': str(nora_home),
+                    'hermesHome': str(hermes_home), 'installRoot': str(install_root), 'port': args.port,
+                    'python': str(Path(sys.executable).absolute())}
+                if os.environ.get('HERMES_INSTALL_DIR'):
+                    binding['hermesInstallDir'] = str(Path(os.environ['HERMES_INSTALL_DIR']).resolve())
+                journal.apply_bytes(hermes_home / 'nora-instance.json',
+                    (json.dumps(binding, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
             update_check = install_update_check(hermes_home, source / "ops", journal, work)
             if update_check.get("status") != "installed":
                 raise RuntimeError("诺拉更新提醒任务未成功注册")
@@ -1318,7 +1388,7 @@ def _install(args, operation_id, context_ref) -> dict:
             "tavern": str(install_root / "apps/tavern-runtime"),
             "noraMcp": str(install_root / "apps/nora-mcp"),
             "ops": str(install_root / "apps/tavern-ops"),
-            "state": str(install_root / "tavern-state"),
+            "state": str(state_root(install_root)),
             "agents": agents,
             "hostHook": host_hook,
         },
@@ -1336,15 +1406,29 @@ def _install(args, operation_id, context_ref) -> dict:
 
 
 def install(args) -> dict:
+    global _installation_state
     context = {}
     operation_id = os.environ.get('NORA_OPERATION_ID') or str(uuid.uuid4())
     try:
-        return _install(args, operation_id, context)
+        guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
+                   or any(name.startswith('NORA_OPERATION_') for name in os.environ))
+        if guarded:
+            return _install(args, operation_id, context)
+        # A headless installer owns the same local writer lease; absence of an
+        # Electron receipt is not permission for concurrent installation.
+        owner, _, _, _ = installation_paths(args)
+        locks = module_at('nora_first_install_lock', ROOT / 'ops/updater/runtime_lock.py')
+        with locks.installation_lock(owner / 'installer/operations', '.writer.lock', blocking=False, descriptor=True) as lock:
+            if not lock:
+                raise RuntimeError('当前实例正在执行其他维护，未开始安装。')
+            return _install(args, operation_id, context)
     except Exception as error:
         if context and not getattr(error, 'first_install_recovery', None):
             _operation_evidence.freeze(error, nora_home=context['nora_home'], operation_id=operation_id,
                 install_root=context['install_root'], context={'stage': 'first_install'})
         raise
+    finally:
+        _installation_state = None
 
 
 def main() -> None:
@@ -1355,7 +1439,7 @@ def main() -> None:
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--source-root", type=Path)
-    parser.add_argument("--port", type=int, default=8799)
+    parser.add_argument("--port", type=int)
     parser.add_argument("--allow-candidate", action="store_true")
     parser.add_argument("--force-first-install", action="store_true")
     parser.add_argument("--replace-soul", action="store_true")
@@ -1365,7 +1449,11 @@ def main() -> None:
     parser.add_argument("--confirm", action="store_true")
     args = parser.parse_args()
     operation_cli = module_at('nora_first_install_operation_cli', _control_path.with_name('operation_cli.py'))
-    operation_cli.ensure_operation('install', nora_home=args.nora_home or os.environ.get('NORA_TAVERN_HOME'))
+    owner = args.nora_home or os.environ.get('NORA_TAVERN_HOME')
+    guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
+               or any(name.startswith('NORA_OPERATION_') for name in os.environ))
+    if guarded or args.dedicated_nora or owner and (Path(owner) / 'installer/launcher-control.json').exists():
+        operation_cli.ensure_operation('install', nora_home=owner)
     install(args)
 
 

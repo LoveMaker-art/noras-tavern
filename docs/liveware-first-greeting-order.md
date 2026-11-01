@@ -62,10 +62,10 @@ Nora no longer interprets it as a delivery acknowledgement or an App gate.
 Focused regression commands:
 
 ```sh
-python3 -B -m unittest ops.tests.test_liveware_independent_startup
-python3 -B -m unittest ops.tests.test_liveware_greeting_order
-python3 -B -m unittest ops.tests.test_launcher_shared_logic
-python3 -B -m unittest discover -s ops/tests -p 'test_liveware*.py'
+node tooling/run.mjs python3 -B -m unittest tests.deployment.test_liveware_independent_startup
+node tooling/run.mjs python3 -B -m unittest tests.deployment.test_liveware_greeting_order
+node tooling/run.mjs python3 -B -m unittest tests.deployment.test_launcher_shared_logic
+node tooling/run.mjs python3 -B -m unittest discover -s tests/deployment -p 'test_liveware*.py'
 ```
 
 Coverage includes unsent/delayed/failed greetings, registration before a

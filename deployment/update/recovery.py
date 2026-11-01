@@ -161,6 +161,22 @@ def _verify_closure_relations(value,journal,nora):
                 raise RuntimeError('历史程序目标与原程序快照不一致')
 
 
+def operation_owner(home,root):
+    home,root=Path(home).resolve(),Path(root).resolve()
+    marker=safe_path(home,'nora-instance.json')
+    if _io_path(marker).is_file():
+        value=read_object(marker)
+        owner=Path(value.get('noraHome',''))
+        if (value.get('schema')!=1 or Path(value.get('hermesHome',''))!=home
+                or Path(value.get('installRoot',''))!=root or not owner.is_absolute()
+                or owner==Path(owner.anchor)):
+            raise RuntimeError('维护历史所属实例无法确认')
+        return owner
+    # A desktop marker is the evidence for a parent owner. Directory spelling
+    # alone is not: an unmarked cloud home owns its own operations.
+    return home
+
+
 def effect_closure_refs(home,root,*,operation_id=None):
     """Preserve guard-bound opaque closure references; Node owns their proof.
 
@@ -168,7 +184,7 @@ def effect_closure_refs(home,root,*,operation_id=None):
     file SHA and fixed plan, preserved source records/runtimes, and owner are
     checked here before the unique system journal can be replaced/pruned.
     """
-    home,root=Path(home).resolve(),Path(root).resolve();nora=root.parent
+    home,root=Path(home).resolve(),Path(root).resolve();nora=operation_owner(home,root)
     references={};files=[];current=safe_path(root,'tavern-updates/transaction.json')
     if _io_path(current).exists():files.append(_history_object(current,MAX_TRANSACTION_BYTES).get('recoveryPlan',{}))
     directory=safe_path(nora,'installer/operations')
@@ -242,7 +258,7 @@ def effect_closure_refs(home,root,*,operation_id=None):
 
 def require_partial_history_before_replace(home,root,previous,refs):
     if not previous or previous.get('status')!='committed':return
-    nora=Path(root).resolve().parent;identifier=previous.get('operationId')
+    nora=operation_owner(home,root);identifier=previous.get('operationId')
     if not identifier:return
     record_file=safe_path(nora,'installer/operations/'+identifier+'/operation.json')
     runtime_file=safe_path(nora,'installer/operations/'+identifier+'/runtime-bootstrap.json')
@@ -489,6 +505,40 @@ def allowed_target(name, namespace, relative):
         'clawchat/nora-greeting.json','scripts/nora-instance.py'}
 
 
+def filesystem_device(path):
+    path = _io_path(path)
+    while not path.exists():
+        path = path.parent
+    return path.stat().st_dev
+
+
+def _volume_workspace(root, backup, target, *, create=False):
+    # Naming and ownership are identical during staging, recovery and cleanup.
+    target = Path(target)
+    key = hashlib.sha256((str(backup) + '\0' + str(target)).encode()).hexdigest()[:24]
+    directory = safe_path(target.parent, '.nora-maintenance-' + key)
+    receipt = directory / 'owner.json'
+    expected = {'schema': 1, 'installRoot': str(root), 'backup': str(backup), 'target': str(target)}
+    if create and not _io_path(directory).exists():
+        _io_path(directory).mkdir(mode=0o700, parents=True)
+        atomic_json(receipt, expected)
+    if _io_path(directory).exists() and (linked(directory) or read_object(receipt) != expected):
+        raise RuntimeError('目标卷的维护目录归属无法确认，未覆盖文件。')
+    return directory
+
+
+def _stage_tree(source, staged):
+    if _io_path(staged).exists():
+        raise RuntimeError('目标卷已有未确认的暂存文件，已保留现场。')
+    _io_path(staged).parent.mkdir(parents=True, exist_ok=True)
+    if _io_path(source).is_dir():
+        shutil.copytree(_io_path(source), _io_path(staged), symlinks=True)
+    else:
+        shutil.copy2(_io_path(source), _io_path(staged), follow_symlinks=False)
+    if digest(source) != digest(staged):
+        raise RuntimeError('目标卷暂存内容校验失败，未替换原文件。')
+
+
 class Journal:
     def __init__(self,home,root,record):
         self.home=Path(home).resolve();self.root=Path(root).resolve();self.record=record
@@ -498,8 +548,66 @@ class Journal:
         self.plan=record['recoveryPlan'];self.backup=Path(record['backup'])
         self.file=self.root/'tavern-updates/transaction.json'
 
+    def tree_storage(self, item, kind='saved', *, state=False, create=False):
+        if 'targetVolume' in item and item['targetVolume'] is not True:
+            raise RuntimeError('目标卷恢复记录无效')
+        if item.get('targetVolume'):
+            target = self.state_root() if state else self.target(item)
+            return safe_path(_volume_workspace(self.root, self.backup, target, create=create), kind)
+        relative = ('state' if state else 'trees/' + item['name']) if kind == 'saved' else (
+            'failed-new/state' if state else 'failed-new/' + item['name']) if kind == 'failed' else (
+            'staged-state' if state else 'staged/' + item['name'])
+        return safe_path(self.backup, relative)
+
+    def state_backup(self):
+        return self.tree_storage(self.plan['state'] or {}, state=True)
+
+    def seal_volume_backups(self):
+        entries=[]
+        for item in self.plan['targets'] + ([self.plan['state']] if self.plan.get('state') else []):
+            if not item.get('targetVolume'):continue
+            state = item is self.plan.get('state')
+            target = self.state_root() if state else self.target(item)
+            folder = _volume_workspace(self.root, self.backup, target)
+            if not _io_path(folder).exists():continue
+            entries.append({'state':state,'name':item.get('name'),'namespace':item.get('namespace'),
+                            'relative':item.get('relative'),'identity':identity(folder),'digest':digest(folder)})
+        if entries:
+            atomic_json(self.backup/'target-volume-backups.json',{'schema':1,'entries':entries})
+
+    def staged_tree(self, source, item, *, state=False):
+        target = self.state_root() if state else self.target(item)
+        if filesystem_device(source) == filesystem_device(target.parent):
+            return source
+        staged = self.tree_storage(item, 'staged', state=state, create=True)
+        _stage_tree(source, staged)
+        item['newIdentity'] = identity(staged)
+        self.save()  # Record the actual target-volume inode before any swap.
+        return staged
+
+    def state_root(self):
+        value = self.plan.get('stateRoot')
+        if value is None:
+            return safe_path(self.root, 'tavern-state')
+        # A journal must not grant authority over an arbitrary saved path.
+        # Reconcile its explicit data target with this installation's binding.
+        import runpy
+        resolver = Path(__file__).resolve().parents[1] / 'scripts/nora-instance.py'
+        # Recovery must not depend on config.yaml being present between its
+        # own archive and publish renames. Use the sealed original binding.
+        host = safe_path(self.backup, 'host')
+        if digest(host) != self.plan.get('metadata', {}).get('host'):
+            raise RuntimeError('实例路径来源的配置备份已变化，未恢复文件。')
+        binding = runpy.run_path(str(resolver))['configuration'](
+            self.home, config_path=safe_path(host, 'config.yaml'))
+        target = Path(value)
+        if (not target.is_absolute() or target == Path(target.anchor)
+                or Path(binding['installRoot']) != self.root or target != Path(binding['stateRoot'])):
+            raise RuntimeError('剧情状态恢复路径与当前实例绑定不匹配')
+        return safe_path(target, 'native-runtime').parent
+
     @classmethod
-    def create(cls,home,root,backup,swaps,*,version,before,state=None,lifecycle=None):
+    def create(cls,home,root,backup,swaps,*,version,before,state=None,lifecycle=None,data_root=None):
         home,root,backup=map(lambda p:Path(p).resolve(),(home,root,backup))
         targets=[]
         for name,source,target in swaps:
@@ -519,10 +627,20 @@ class Journal:
               'before':dict(before),'lifecycle':lifecycle,'targets':targets,'metadata':metadata,
               'phase':'prepared','metadataPhase':'pending','metadataIntents':[],
               'metadataWrites':{},'state':None}
+        if data_root is not None and Path(data_root).resolve() != root/'tavern-state':
+            plan['stateRoot'] = str(Path(data_root).resolve())
         if state is not None:
-            if Path(state).resolve()!=root/'tavern-state':raise RuntimeError('剧情状态恢复路径不匹配')
+            if Path(state).resolve()!=root/'tavern-state':
+                plan['stateRoot'] = str(Path(state).resolve())
             plan['state']={'oldIdentity':identity(state),'oldDigest':None,'savedIdentity':None,
                            'savedDigest':None,'newIdentity':None,'phase':'pending','mode':'copy'}
+        for item, target in [(item, safe_path(root if item['namespace'] == 'install' else home, item['relative'])) for item in targets] + (
+                [(plan['state'], Path(state))] if state is not None else []):
+            if _io_path(target).exists() and filesystem_device(target) != filesystem_device(target.parent):
+                raise RuntimeError('更新目标本身是挂载点，不能原子替换：' + str(target)
+                    + '；请使用挂载卷内可替换的程序／数据子目录，原文件未移动。')
+            if filesystem_device(target.parent) != filesystem_device(backup):
+                item['targetVolume'] = True
         if lifecycle:
             instance=safe_path(home,'nora-instance.json')
             plan['instanceDigest']=digest(instance)
@@ -572,8 +690,10 @@ class Journal:
         if not isinstance(before,dict) or not isinstance(before.get('version'),str) or not before['version']:
             raise RuntimeError('恢复计划缺少旧版本身份')
         standalone = before.get('scope') == 'standalone-tavern'
-        if standalone and (self.plan.get('lifecycle') is not None or (self.home/'nora-instance.json').exists()
-                           or (self.root/'tavern-updates/nora-system.json').exists()):
+        instance_file = self.home / 'nora-instance.json'
+        core = instance_file.is_file() and read_object(instance_file).get('deployment') == 'core'
+        if standalone and (self.plan.get('lifecycle') is not None or (instance_file.exists() and not core)
+                           or (self.root/'tavern-updates/nora-system.json').exists() and not core):
             raise RuntimeError('独立恢复计划不能接管启动器管理的实例')
         service_keys = ('running',) if standalone else ('running','gatewayRunning','clawchatConnected')
         if any(type(before.get(key)) is not bool for key in service_keys):
@@ -648,17 +768,19 @@ class Journal:
             pair=(item['namespace'],item['relative'])
             if item['name'] in names or pair in paths:raise RuntimeError('恢复计划包含重复目标')
             names.add(item['name']);paths.add(pair)
-            self.check_tree(item,self.target(item),safe_path(self.backup,'trees/'+item['name']),full=full)
+            self.check_tree(item,self.target(item),self.tree_storage(item),full=full)
         state=self.plan.get('state')
         if state is not None and not isinstance(state,dict):raise RuntimeError('剧情状态恢复计划格式无效')
         if state:
-            active=safe_path(self.root,'tavern-state');saved=safe_path(self.backup,'state')
+            if state.get('verifiedBeforeResume') is not None:self.story_writes_released()
+            active=self.state_root();saved=self.state_backup()
             if state.get('phase') in ('pending','copying','untouched'):
                 if identity(active)!=state.get('oldIdentity'):raise RuntimeError('未完成状态备份且原数据身份已变化')
             else:self.check_tree(state,active,saved,state=True,full=full)
         return self
 
     def check_tree(self,item,target,saved,*,state=False,full=True):
+        verify_current=full and not (state and self.story_writes_released())
         old=item.get('savedIdentity') if state and item.get('mode')=='copy' else item.get('oldIdentity')
         expected=item.get('savedDigest') if state and item.get('mode')=='copy' else item.get('oldDigest')
         saved_id=identity(saved);current_id=identity(target)
@@ -668,15 +790,112 @@ class Journal:
             if current_id is not None and current_id not in accepted:raise RuntimeError('当前目标身份未知，未覆盖文件')
         elif old is not None:
             if current_id!=old:raise RuntimeError('旧备份缺失且原目标尚未安全恢复')
-            if full and state and item.get('phase')=='restored':
-                for relative,expected_file in item.get('storyInventory',{}).items():
-                    current=safe_path(target,relative)
-                    if not _io_path(current).exists() and self.startup_backup(relative,expected_file) is not None:
-                        continue  # Verified archive remains recoverable after a restart cut.
-                    if not _io_path(current).is_file() or digest(current)!=expected_file:raise RuntimeError('恢复后原有剧情数据发生变化')
-            elif full and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
+            if verify_current and state and item.get('phase')=='restored':
+                self.verify_story_inventory(target)
+            elif verify_current and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
         elif current_id is not None and current_id!=item.get('newIdentity'):
             raise RuntimeError('新建目标身份未知，未覆盖文件')
+
+    def story_checkpoint(self):
+        state=self.plan.get('state')
+        if not state or state.get('phase') not in ('restored','untouched'):return None
+        inventory=json.dumps(state.get('storyInventory',{}),sort_keys=True,separators=(',',':')).encode()
+        copied=state.get('phase')=='restored' and state.get('mode')=='copy'
+        return {'schema':1,'phase':state['phase'],'identity':state.get('savedIdentity') if copied else state.get('oldIdentity'),
+                'digest':state.get('savedDigest') if copied else state.get('oldDigest'),
+                'inventorySha256':hashlib.sha256(inventory).hexdigest()}
+
+    def story_writes_released(self):
+        state=self.plan.get('state') or {};checkpoint=state.get('verifiedBeforeResume')
+        if checkpoint is not None:
+            identity_value=checkpoint.get('identity') if isinstance(checkpoint,dict) else None
+            if (not isinstance(checkpoint,dict) or type(checkpoint.get('schema')) is not int
+                    or identity_value is not None and (not isinstance(identity_value,list) or len(identity_value)!=2
+                        or any(type(value) is not int for value in identity_value))
+                    or checkpoint!=self.story_checkpoint()):
+                raise RuntimeError('恢复数据验收检查点与原来源不一致')
+            return True
+        # Older writers also validated offline before these durable phases.
+        # Preserve that boundary when continuing an interrupted service restart.
+        return (state.get('phase') in ('restored','untouched') and self.plan.get('metadataPhase')=='restored'
+                and all(item.get('phase') in ('pending','restored') for item in self.plan.get('targets',[]))
+                and (self.plan.get('phase')=='restored' and self.record.get('status')=='restored'
+                     or self.plan.get('phase')=='resuming-services' and self.record.get('status') in RECOVERABLE_STATES))
+
+    def mark_story_verified(self):
+        checkpoint=self.story_checkpoint()
+        if checkpoint is not None:self.plan['state']['verifiedBeforeResume']=checkpoint
+
+    def verify_story_inventory(self,target):
+        for relative,expected in (self.plan.get('state') or {}).get('storyInventory',{}).items():
+            current=safe_path(target,relative)
+            if _io_path(current).is_file() and digest(current)==expected:continue
+            if not _io_path(current).exists() and self.startup_backup(relative,expected) is not None:
+                continue  # A verified maintenance archive retains the rotating copy.
+            kind='changed' if _io_path(current).exists() else 'missing'
+            error=RuntimeError('恢复后原有剧情数据发生变化 '
+                               f'[relative={relative}; reason={kind}; expected={expected}]')
+            error.code='RECOVERY_DATA_UNCONFIRMED';error.relative_path=relative
+            raise error
+
+    def automatic_chat_backup(self,relative,expected,*,prepare=False):
+        """Recognize committed v1 automatic pairs, without duplicating retention.
+
+        The chat store owns expiration/count/byte decisions. Retain exact original
+        bytes here before resuming it; protected, legacy and unknown files never
+        acquire this exception merely by living under a backups directory.
+        """
+        parts=Path(relative).parts
+        if len(parts)<4 or parts[0]!='native' or parts[2]!='backups':return None
+        match=(re.fullmatch(r'chat_nora1_([a-f0-9-]{36})\.jsonl',parts[3]) if len(parts)==4
+               else re.fullmatch(r'([a-f0-9-]{36})\.json',parts[4])
+               if len(parts)==5 and parts[3]=='.nora-chat' else None)
+        if match is None:return None
+        backup_id=match[1];base=Path('native')/parts[1]/'backups'
+        pair=[(base/f'chat_nora1_{backup_id}.jsonl').as_posix(),(base/'.nora-chat'/f'{backup_id}.json').as_posix()]
+        inventory=(self.plan.get('state') or {}).get('storyInventory',{})
+        if inventory.get(relative)!=expected or any(name not in inventory for name in pair):return None
+        archive=safe_path(self.backup,'startup-chat-backups')
+
+        def verified(root):
+            data,metadata=[safe_path(root,name) for name in pair]
+            if any(not _io_path(file).is_file() for file in (data,metadata)):return False
+            if any(digest(file)!=inventory[name] for name,file in zip(pair,(data,metadata))):return False
+            try:value=read_object(metadata,max_bytes=65536)
+            except (OSError,ValueError,RuntimeError):return False
+            if (type(value.get('version')) is not int or value['version']!=1
+                    or value.get('id')!=backup_id or value.get('protected') is not False
+                    or not re.fullmatch('[a-f0-9]{64}',str(value.get('sha256','')))
+                    or not re.fullmatch('[a-f0-9]{64}',str(value.get('sessionKey','')))
+                    or any(type(value.get(key)) is not int or value[key]<minimum or value[key]>2**53-1
+                           for key,minimum in (('bytes',0),('createdAt',0),('sequence',1)))
+                    or value['bytes']>256*1024*1024 or value['bytes']!=_io_path(data).stat().st_size
+                    or value.get('consistency')!='chat-only'
+                    or (value.get('mvuState') if value.get('mvuState') is not None else 'unverified')
+                        not in ('unverified','pending','incomplete','confirmed')
+                    or any(key not in value or value[key] is not None and not isinstance(value[key],str)
+                           for key in ('worldId','sessionId'))):return False
+            actual=hashlib.sha256()
+            with _io_path(data).open('rb') as stream:
+                for chunk in iter(lambda:stream.read(1024*1024),b''):actual.update(chunk)
+            return actual.hexdigest()==value['sha256']
+
+        present=[_io_path(safe_path(archive,name)).exists() for name in pair]
+        if any(present):
+            for name,exists in zip(pair,present):
+                if exists and digest(safe_path(archive,name))!=inventory[name]:
+                    raise RuntimeError('启动前封存的聊天备份已变化，已保留现场')
+            if all(present):
+                if not verified(archive):raise RuntimeError('启动前封存的聊天备份无法核验，已保留现场')
+                return safe_path(archive,relative)
+        if not prepare:return None
+        for root in (self.state_root(),self.state_backup(),self.tree_storage(self.plan['state'], 'failed', state=True)):
+            if not verified(root):continue
+            for name,exists in zip(pair,present):
+                if not exists:copy_startup_backup(safe_path(root,name),safe_path(archive,name),inventory[name])
+            if not verified(archive):raise RuntimeError('启动前封存的聊天备份无法核验，未启动旧版本')
+            return safe_path(archive,relative)
+        return None
 
     def startup_backup(self,relative,expected,*,prepare=False):
         parts=Path(relative).parts
@@ -684,14 +903,14 @@ class Journal:
         # startup. Preserve their bytes, rather than weakening story checks.
         if (len(parts)!=4 or parts[0]!='native' or parts[2]!='backups'
                 or re.fullmatch('settings_'+re.escape(parts[1])+r'_[0-9]{8}-[0-9]{6}\.json',parts[3]) is None):
-            return None
+            return self.automatic_chat_backup(relative,expected,prepare=prepare)
         archive=safe_path(self.backup,'startup-settings-backups/'+Path(relative).as_posix())
         if _io_path(archive).exists():
             if not _io_path(archive).is_file() or digest(archive)!=expected:
                 raise RuntimeError('启动前封存的设置备份已变化，已保留现场')
             return archive
         if not prepare:return None
-        for root in (self.root/'tavern-state',self.backup/'state',self.backup/'failed-new/state'):
+        for root in (self.state_root(),self.state_backup(),self.tree_storage(self.plan['state'], 'failed', state=True)):
             source=safe_path(root,Path(relative).as_posix())
             if _io_path(source).is_file() and digest(source)==expected:
                 copy_startup_backup(source,archive,expected)
@@ -702,13 +921,16 @@ class Journal:
         for relative,expected in (self.plan.get('state') or {}).get('storyInventory',{}).items():
             saved=self.startup_backup(relative,expected,prepare=not restore)
             if saved is None or not restore:continue
-            target=safe_path(self.root/'tavern-state',Path(relative).as_posix())
+            if saved.relative_to(self.backup).parts[0]=='startup-chat-backups':
+                continue  # Keep normal retention in effect; recovery evidence stays archived.
+            target=safe_path(self.state_root(),Path(relative).as_posix())
             if not _io_path(target).exists():
                 copy_startup_backup(saved,target,expected)
 
     def swap(self,name):
         item=next(i for i in self.plan['targets'] if i['name']==name)
-        source=self._sources[name];target=self.target(item);saved=safe_path(self.backup,'trees/'+name)
+        source=self._sources[name];target=self.target(item);saved=self.tree_storage(item, create=True)
+        if source is not None:source=self.staged_tree(source,item)
         # A context/script swap can also replace a metadata-snapshotted file.
         # Record it once before its write so later metadata checks do not
         # mistake our own replacement for an external configuration change.
@@ -727,13 +949,15 @@ class Journal:
         return self
 
     def metadata_key(self,target):
+        if self.plan.get('stateRoot') and target == self.state_root() / 'native-runtime/dependencies.json':
+            return 'state:native-runtime/dependencies.json'
         owner=self.root if target.is_relative_to(self.root) else self.home
         return ('install:' if owner==self.root else 'hermes:')+target.relative_to(owner).as_posix()
 
     def metadata_role(self,target):
         key=self.metadata_key(target)
         if key=='hermes:cron/jobs.json':return 'hermes-cron','task-definitions-and-runtime-state'
-        if key.startswith('install:'):return 'nora-updater','installation-receipt'
+        if key.startswith(('install:', 'state:')):return 'nora-updater','installation-receipt'
         if key in ('hermes:config.yaml','hermes:AGENTS.md','hermes:AGENTS.md.bak'):
             return 'user','user-configuration'
         return 'nora-updater-and-user','managed-configuration'
@@ -890,7 +1114,8 @@ class Journal:
     def metadata_restore_entry(self,target,saved):
         entry=self.plan.get('metadataRestores',{}).get(self.metadata_key(target))
         if entry is None:return None,False
-        if (not isinstance(entry,dict) or set(entry)!={'archive','currentDigest','currentIdentity','savedDigest','phase'}
+        if (not isinstance(entry,dict) or set(entry)-{'targetVolume'}!={'archive','currentDigest','currentIdentity','savedDigest','phase'}
+                or 'targetVolume' in entry and entry['targetVolume'] is not True
                 or not isinstance(entry['archive'],str)
                 or not re.fullmatch(r'failed-new/metadata/[a-f0-9]{32}/(?:0|[1-9][0-9]*)',entry['archive'])
                 or entry['phase'] not in ('intent','archived','restored')
@@ -903,7 +1128,7 @@ class Journal:
         saved=self.metadata_saved(target,saved)
         if entry['savedDigest']!=(digest(saved) if _io_path(saved).exists() else None):
             raise RuntimeError('配置恢复快照与检查点不一致')
-        archive=safe_path(self.backup,entry['archive']);archived=_io_path(archive).exists()
+        archive=self.metadata_archive(target,entry);archived=_io_path(archive).exists()
         if archived:
             if (entry['currentDigest'] is None or identity(archive)!=entry['currentIdentity']
                     or digest(archive)!=entry['currentDigest']):
@@ -911,6 +1136,11 @@ class Journal:
         elif entry['currentDigest'] is not None and (entry['phase']!='intent' or not _io_path(target).exists()):
             raise RuntimeError('配置恢复归档缺失，已保留现场。')
         return entry,archived
+
+    def metadata_archive(self,target,entry,*,create=False):
+        if entry.get('targetVolume'):
+            return safe_path(_volume_workspace(self.root,self.backup,target,create=create),'metadata-original')
+        return safe_path(self.backup,entry['archive'])
 
     def check_owned_metadata(self,target):
         key=self.metadata_key(target)
@@ -951,7 +1181,7 @@ class Journal:
     def snapshot_state(self):
         item=self.plan['state']
         if item is None:return
-        source=safe_path(self.root,'tavern-state');saved=safe_path(self.backup,'state')
+        source=self.state_root();saved=self.tree_storage(item, state=True, create=True)
         reject_links(source)
         item['oldDigest']=digest(source);item['phase']='copying';self.save()
         shutil.copytree(_io_path(source),_io_path(saved),symlinks=True)
@@ -961,7 +1191,8 @@ class Journal:
         item['phase']='saved';self.save()
 
     def apply_state(self,source):
-        item=self.plan['state'];target=safe_path(self.root,'tavern-state');saved=safe_path(self.backup,'state')
+        item=self.plan['state'];target=self.state_root();saved=self.tree_storage(item, state=True, create=True)
+        source=self.staged_tree(source,item,state=True)
         item.update(mode='move',oldDigest=digest(target),newIdentity=identity(source),phase='moving-old')
         self.save();os.replace(_io_path(target),_io_path(saved))
         item.update(savedIdentity=identity(saved),savedDigest=digest(saved),storyInventory=story_inventory(saved),phase='installing-new')
@@ -990,7 +1221,7 @@ class Journal:
             target=safe_path(owner,relative);saved=safe_path(self.backup,snapshot)
             items.append((target,saved))
         add('hermes','config.yaml','host/config.yaml')
-        add('install','tavern-state/native-runtime/dependencies.json','host/native-runtime/dependencies.json')
+        items.append((self.state_root() / 'native-runtime/dependencies.json', safe_path(self.backup,'host/native-runtime/dependencies.json')))
         for name in ('installed.json','installed-manifest.json','nora-system.json'):
             add('install','tavern-updates/'+name,'host/update-receipts/'+name)
         for name in ('AGENTS.md','AGENTS.md.bak'):add('hermes',name,'agents-rollback/'+name)
@@ -1032,8 +1263,10 @@ class Journal:
                     'currentDigest':digest(target) if _io_path(target).exists() else None,
                     'currentIdentity':identity(target),'savedDigest':digest(saved) if _io_path(saved).exists() else None,
                     'phase':'intent'}
+                if filesystem_device(target.parent) != filesystem_device(self.backup):
+                    entry['targetVolume'] = True
                 self.plan.setdefault('metadataRestores',{})[key]=entry;self.save()
-            archive=safe_path(self.backup,entry['archive'])
+            archive=self.metadata_archive(target,entry,create=True)
             if _io_path(target).exists():
                 self.check_owned_metadata(target)
                 if archived:raise RuntimeError('配置恢复目标与归档同时存在，当前配置已保留。')
@@ -1055,6 +1288,31 @@ class Journal:
                 or receipt.get('installRoot')!=str(self.root) or receipt.get('backupId')!=self.backup.name):
             raise RuntimeError('恢复备份归属无法确认，未改写记录')
         receipt['status']=status;atomic_json(path,receipt)
+
+
+def retire_volume_backups(home,root,backup,state):
+    """Prune only unchanged committed sidecars bound to current managed targets.
+
+    Changed/missing evidence retains the backup; it never blocks an update.
+    """
+    home,root,backup,state=map(Path,(home,root,backup,state))
+    index=safe_path(backup,'target-volume-backups.json')
+    if not _io_path(index).exists():return
+    value=read_object(index)
+    if value.get('schema')!=1 or not isinstance(value.get('entries'),list):
+        raise RuntimeError('目标卷备份索引无效，保留旧备份。')
+    folders=[]
+    for entry in value['entries']:
+        if entry.get('state') is True:
+            target=state
+        elif entry.get('state') is False and allowed_target(entry.get('name'),entry.get('namespace'),entry.get('relative')):
+            target=safe_path(root if entry['namespace']=='install' else home,entry['relative'])
+        else:raise RuntimeError('目标卷备份目标无法确认，保留旧备份。')
+        folder=_volume_workspace(root,backup,target)
+        if folder in folders or identity(folder)!=entry.get('identity') or digest(folder)!=entry.get('digest'):
+            raise RuntimeError('目标卷备份已变化，保留旧备份。')
+        folders.append(folder)
+    for folder in folders:shutil.rmtree(_io_path(folder))
 
 
 def load(home,root,*,full=True):
@@ -1091,12 +1349,12 @@ def effects(home,root):
             saved=safe_path(journal.backup,name);reject_links(saved)
             if digest(saved)!=expected:raise RuntimeError('配置恢复备份已变化')
         for item in plan['targets']:
-            saved=safe_path(journal.backup,'trees/'+item['name'])
+            saved=journal.tree_storage(item)
             if identity(saved) is not None and digest(saved)!=item.get('oldDigest'):
                 raise RuntimeError('旧程序恢复备份已变化')
         state=plan.get('state')
         if state and state.get('savedDigest'):
-            saved=safe_path(journal.backup,'state')
+            saved=journal.state_backup()
             if identity(saved) is not None and digest(saved)!=state['savedDigest']:
                 raise RuntimeError('剧情状态恢复备份已变化')
         phases=[item.get('phase') for item in plan['targets']]
@@ -1114,7 +1372,10 @@ def effects(home,root):
         elif metadata=='restored' and all(value in ('pending','restored') for value in phases) and state_phase in ('pending','copying','untouched','restored'):
             effect='restored'
         else: effect='changed'
-        outcome='not-required' if effect=='untouched' else 'restored-and-verified' if journal.record.get('status')=='restored' else 'files-restored-start-failed' if effect=='restored' else 'recovery-required'
+        data_pending=state and state.get('phase')=='restored' and not journal.story_writes_released()
+        outcome=('not-required' if effect=='untouched' else 'recovery-required' if data_pending
+                 else 'restored-and-verified' if journal.record.get('status')=='restored'
+                 else 'files-restored-start-failed' if effect=='restored' else 'recovery-required')
         return {'effectState':effect,'recoveryOutcome':outcome,'reason':'',
                 'canRecover':journal.record.get('status') in RECOVERABLE_STATES,
                 'status':journal.record.get('status'),'operationId':journal.record.get('operationId')}
@@ -1122,16 +1383,18 @@ def effects(home,root):
         return {'effectState':'unknown','recoveryOutcome':'recovery-required','canRecover':False,'reason':str(error)}
 
 
-def recover(home,root,*,stop,resume,verify):
+def recover(home,root,*,stop,resume,verify,verify_files=None):
     journal=load(home,root);plan=journal.plan;backup=journal.backup
     gate=getattr(sys,'_nora_operation_delegate',None)
     if gate is not None:
         gate.assert_active()
         if journal.record.get('operationId') and journal.record['operationId']!=gate.operation_id:
             raise RuntimeError('更新事务属于另一次操作，未覆盖当前文件。请从原操作恢复入口继续。')
-    original_effect=effects(home,root)['effectState']
     reason=recovery_block_reason(journal.record.get('status'))
     if reason:raise RuntimeError(reason)
+    original_effect=effects(home,root)['effectState']
+    data_released=journal.story_writes_released()
+    if data_released:journal.mark_story_verified()
     try:
         plan['phase']='stopping';journal.save('recovery-failed')
         stopped=stop(plan,backup)
@@ -1139,11 +1402,11 @@ def recover(home,root,*,stop,resume,verify):
             raise RuntimeError('未确认服务停止状态，未恢复文件。请重新检查状态并保留备份。')
         plan['phase']='restoring-files';journal.save()
         for item in reversed(plan['targets']) if original_effect!='untouched' else []:
-            journal.restore_tree(item,journal.target(item),safe_path(backup,'trees/'+item['name']),
-                                 safe_path(backup,'failed-new/'+item['name']))
+            journal.restore_tree(item,journal.target(item),journal.tree_storage(item),
+                                 journal.tree_storage(item,'failed',create=True))
         if plan.get('state') and original_effect!='untouched':
-            journal.restore_tree(plan['state'],safe_path(journal.root,'tavern-state'),safe_path(backup,'state'),
-                                 safe_path(backup,'failed-new/state'),state=True)
+            journal.restore_tree(plan['state'],journal.state_root(),journal.state_backup(),
+                                 journal.tree_storage(plan['state'],'failed',state=True,create=True),state=True)
         elif plan.get('state'):
             plan['state']['phase']='untouched';journal.save()
         plan['phase']='restoring-metadata';journal.save();journal.restore_metadata()
@@ -1151,7 +1414,9 @@ def recover(home,root,*,stop,resume,verify):
         # Authoritative backup and managed bytes are checked while services are
         # offline. Running code may legitimately create cache/generated files.
         journal.validate()
+        if verify_files is not None and not data_released:verify_files(plan,backup)
         journal.preserve_startup_backups()
+        journal.mark_story_verified()
         plan['phase']='resuming-services';journal.save();resume(plan,backup)
         journal.preserve_startup_backups(restore=True)
         proof=verify(plan,backup)
@@ -1167,12 +1432,6 @@ def recover(home,root,*,stop,resume,verify):
             raise RuntimeError('未恢复原服务状态：clawchatConnected')
         # Identity remains strict after start, without whole-tree byte checks.
         journal.validate(full=False)
-        state=plan.get('state')
-        if state and state.get('phase')=='restored':
-            for relative,expected in state.get('storyInventory',{}).items():
-                current=safe_path(journal.root/'tavern-state',relative)
-                if not _io_path(current).is_file() or digest(current)!=expected:
-                    raise RuntimeError('恢复后原有剧情数据发生变化')
         plan['phase']='restored';journal.record['recovery']='restored';journal.record.pop('error',None)
         journal.save('restored')
         journal.receipt_status('restored')

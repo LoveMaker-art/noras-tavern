@@ -56,6 +56,11 @@ function binding(value){
   const file=path.join(value.hermesHome,'nora-instance.json'),managed=fs.existsSync(file);
   if(managed){
     const record=JSON.parse(bytes(file));
+    if(record.deployment==='core'){
+      if(record.schema!==1||record.port!==value.port||!same(record.noraHome,value.noraHome)
+        ||!same(record.hermesHome,value.hermesHome)||!same(record.installRoot,value.installRoot))throw fail();
+      return false;
+    }
     if(record.schema!==1||record.port!==value.port||!same(record.noraHome,value.noraHome)
       ||!same(record.hermesHome,value.hermesHome)||!same(record.installRoot,value.installRoot)
       ||!same(value.hermesHome,path.join(value.noraHome,'hermes'))||!same(value.installRoot,path.join(value.noraHome,'tavern')))throw fail();

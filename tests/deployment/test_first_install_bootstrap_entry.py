@@ -96,13 +96,23 @@ class FirstBootstrapEntry(unittest.TestCase):
                     self.assertRaises(AssertionError):
                 self.assert_managed_installer_command([sys.executable, '-u', '-c', str(expected)], expected)
 
-    def test_standalone_entry_reaches_verified_existing_guard_before_any_install_write(self):
+    def test_desktop_install_requires_existing_guard_before_any_install_write(self):
+        command = self.command
+        self.command = lambda: command() + ['--dedicated-nora']
         result = self.execute()
         self.assertEqual(result.returncode, 1)
         self.assertIn('无法核验已安装的新版启动器', result.stderr)
         self.assertNotIn('No such file', result.stderr)
         self.assertNotIn('real installer must never execute', result.stderr)
         self.assertFalse(self.home.exists())
+
+    def test_headless_entry_executes_only_verified_installer_without_desktop_receipt(self):
+        self.files['ops/installer/first_install.py'] = b'import json; print(json.dumps({"verifiedHeadlessInstaller": True}))\n'
+        self.seal()
+        result = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)['verifiedHeadlessInstaller'])
+        self.assertFalse(self.home.exists(), 'dispatcher test must not create a user installation')
 
     def test_unverified_operation_module_is_rejected_before_importing_guard(self):
         self.seal(bad_member=True)

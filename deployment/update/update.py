@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from managed_context import agents_document, install_agents, snapshot_agents, restore_agents
 # These defaults are also the updater module's public compatibility interface.
-from bootstrap import default_hermes_home, default_install_root, resolve_update_target, managed_instance, filesystem_path, validate_partial_repair, verify_metadata, publication_tag, TAG_PATTERN
+from bootstrap import default_hermes_home, default_install_root, resolve_update_target, managed_instance, filesystem_path, validate_partial_repair, verify_metadata, publication_tag, TAG_PATTERN, instance_paths, state_root as bound_state_root
 
 UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
@@ -180,7 +180,7 @@ def check_update_space(copies, *, disk_usage=None, volume_identity=None):
 
 def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
                        runtime_changed, migration, restore_only=False, journal=None,
-                       service_snapshot=None):
+                       service_snapshot=None, swaps=()):
     """Match the actual backup copies and possible metadata restore temporaries.
 
     Program and original-state rollback use same-volume rename. Candidates have
@@ -193,7 +193,7 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
               for name in ('AGENTS.md', 'AGENTS.md.bak')]
     pairs += [(install_root / 'tavern-updates' / name, backup / 'host/update-receipts' / name)
               for name in ('installed.json', 'installed-manifest.json', 'nora-system.json')]
-    pairs.append((install_root / 'tavern-state/native-runtime/dependencies.json',
+    pairs.append((state_root(install_root) / 'native-runtime/dependencies.json',
                   backup / 'host/native-runtime/dependencies.json'))
     if managed:
         pairs += [(hermes_home / name, backup / 'managed/targets' / name)
@@ -203,6 +203,11 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
     # A stopped managed cron store may have a new run timestamp. The journal
     # seals that logical equivalent in a separate snapshot before any write.
     tasks = []
+    device = recovery_module().filesystem_device
+    for _, source, target in swaps:
+        if source is not None and device(source) != device(Path(target).parent):
+            tasks.append({'source': source, 'destination': Path(target).parent / '.nora-space-stage',
+                          'label': 'target-volume-stage', 'links': 'preserve'})
     if managed and not restore_only:
         tasks.append({'source': hermes_home / 'cron/jobs.json',
                       'destination': backup / 'runtime-state/cron-jobs.json',
@@ -232,14 +237,15 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
                       'destination': service_file.parent / '.nora-space-service',
                       'label': 'service-restore'})
     if runtime_changed:
-        state = install_root / 'tavern-state'
+        state = state_root(install_root)
         if migration:
             tasks += [{'source': state, 'destination': work / relative,
                        'label': label, 'links': 'reject'} for relative, label in (
                            ('prepared/state', 'legacy-preparation'),
                            ('prepared-fallback/state', 'legacy-fallback'))]
         else:
-            tasks.append({'source': state, 'destination': backup / 'state',
+            destination = state.parent / '.nora-space-state' if device(state.parent) != device(backup) else backup / 'state'
+            tasks.append({'source': state, 'destination': destination,
                           'label': 'state-snapshot', 'links': 'reject'})
     return tasks
 
@@ -290,6 +296,12 @@ _operation_evidence = module_at('nora_update_operation_evidence', _evidence_path
 _standalone_execution = None
 
 
+def state_root(root):
+    """Use this actor's verified binding, without adopting another process's env."""
+    home = _standalone_execution.get('home') if _standalone_execution else None
+    return bound_state_root(home, root)
+
+
 @contextmanager
 def guarded_standalone_execution(home, root):
     """Use the same standalone transaction under the shared task's live guard."""
@@ -299,7 +311,8 @@ def guarded_standalone_execution(home, root):
     if _standalone_execution is not None:
         raise RuntimeError('已有独立更新上下文，禁止创建第二个执行者。')
     verified = resolve_update_target(home, root)
-    if (verified[0] / 'nora-instance.json').exists():
+    binding = instance_paths(verified[0])
+    if (verified[0] / 'nora-instance.json').exists() and (not binding or binding['desktopManaged']):
         raise RuntimeError('受管实例必须使用已有系统更新后端，未改为独立更新。')
     _standalone_execution = {'home': verified[0], 'root': verified[1], 'lock': None, 'guarded': True}
     try:
@@ -387,7 +400,7 @@ def backup_receipt(home, backup):
         return None
 
 
-def prune_backup_history(home, keep):
+def prune_backup_history(home, keep, *, hermes_home=None):
     home = Path(home).absolute()
     primary = home / "tavern-backups"
     keep = Path(keep).absolute()
@@ -400,16 +413,19 @@ def prune_backup_history(home, keep):
     # Retiring the last physical source requires the guard-bound closure. A
     # failed metadata read retains backups; it is never a cleanup permission.
     try:
-        helper=recovery_module();references=helper.effect_closure_refs(home.parent/'hermes',home)
+        helper=recovery_module()
+        history_home=Path(hermes_home) if hermes_home is not None else home.parent/'hermes'
+        owner=helper.operation_owner(history_home,home) if hermes_home is not None else home.parent
+        references=helper.effect_closure_refs(history_home,home)
         closed=set()
         for ref in references:
-            proof=helper.read_object(helper.safe_path(home.parent,ref['path']),max_bytes=helper.MAX_TRANSACTION_BYTES)
+            proof=helper.read_object(helper.safe_path(owner,ref['path']),max_bytes=helper.MAX_TRANSACTION_BYTES)
             closed.update(item['record']['operationId'] for item in proof['closed'])
-        operations=home.parent/'installer/operations'
+        operations=owner/'installer/operations'
         if operations.exists():
             for directory in operations.iterdir():
                 if not re.fullmatch('[a-f0-9-]{36}',directory.name,re.I):continue
-                file=helper.safe_path(home.parent,'installer/operations/'+directory.name+'/runtime-bootstrap.json')
+                file=helper.safe_path(owner,'installer/operations/'+directory.name+'/runtime-bootstrap.json')
                 if not helper._io_path(file).exists():continue
                 runtime=helper.read_object(file,max_bytes=4*1024*1024)
                 if runtime.get('status')=='rolled-back' and runtime.get('originalPartial') and directory.name not in closed:
@@ -429,6 +445,14 @@ def prune_backup_history(home, keep):
             before = candidate.stat()
             if backup_receipt(home, candidate) != receipt or candidate.is_symlink() or candidate.stat() != before:
                 retained.append({"path": str(candidate), "reason": "changed-during-check"})
+                continue
+            try:
+                if (candidate/'target-volume-backups.json').exists():
+                    if hermes_home is None:
+                        raise RuntimeError('missing current Hermes binding')
+                    helper.retire_volume_backups(hermes_home,home,candidate,bound_state_root(hermes_home,home))
+            except (OSError,ValueError,TypeError,KeyError,RuntimeError):
+                retained.append({'path':str(candidate),'reason':'target-volume-evidence-unconfirmed'})
                 continue
             remove(candidate)
             removed.append(str(candidate))
@@ -792,7 +816,7 @@ def verify_partial_configuration(home, root, snapshot):
     if not snapshot:
         return
     for name, file in (('config', Path(home) / 'config.yaml'),
-                       ('nativeConfig', Path(root) / 'tavern-state/native-runtime/config.yaml')):
+                       ('nativeConfig', state_root(Path(root)) / 'native-runtime/config.yaml')):
         expected = snapshot['bindings'][name]
         # A missing native config can be initialized by the normal runtime.
         if expected is not None and (file.is_symlink() or not file.is_file() or file_sha(file) != expected):
@@ -817,9 +841,9 @@ def verify_partial_baseline(home, root, plan, snapshot, recovery):
             or not isinstance(baseline.get('storyInventory'), dict)
             or baseline.get('worlds') is not None and baseline['worlds'] != plan.get('worlds')):
         raise RuntimeError('部分安装的原数据或只读验收基线未封存，未确认恢复完成。')
-    if recovery.digest(Path(root) / 'tavern-state') != baseline['stateDigest']:
+    if recovery.digest(state_root(Path(root))) != baseline['stateDigest']:
         raise RuntimeError('部分安装恢复后的原数据不一致，未确认恢复完成。')
-    verify_story_inventory(Path(root) / 'tavern-state', baseline['storyInventory'], exact=True)
+    verify_story_inventory(state_root(Path(root)), baseline['storyInventory'], exact=True)
 
 
 def package_dependency_manifests(root):
@@ -872,7 +896,7 @@ def standalone_dependencies(source, target, lock_name, required):
     """
     state = _standalone_execution
     lease = state.get('lock') if state else None
-    if not sys.platform.startswith('linux') or lease is None or lease.closed:
+    if lease is None or lease.closed:
         raise resource_incomplete('独立更新尚未取得安装目录锁，未准备依赖或停止服务。')
     source, target = Path(source), Path(target)
     staging = state['root'] / 'tavern-updates'
@@ -890,7 +914,7 @@ def standalone_dependencies(source, target, lock_name, required):
     npm = shutil.which('npm')
     if not npm:
         raise resource_incomplete('独立更新需要现有 Node.js 对应的 npm，尚未停止服务或修改安装。')
-    log('在临时目录准备锁定的 Linux 依赖，原服务继续运行')
+    log('在临时目录准备当前系统的锁定依赖，原服务继续运行')
     standalone_run([npm, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
         '--userconfig', os.devnull, '--cache', str(source.parent / 'npm-cache')],
         cwd=target, timeout=300, check=True, text=True)
@@ -905,7 +929,7 @@ def component_dependencies(source, target, current, lock_name, required):
         return reuse_dependencies(target, current, lock_name, required)
     except RuntimeError as error:
         if (getattr(error, 'code', None) != 'RESOURCE_INCOMPLETE'
-                or _standalone_execution is None or not sys.platform.startswith('linux')):
+                or _standalone_execution is None):
             raise
         return standalone_dependencies(source, target, lock_name, required)
 
@@ -1004,7 +1028,7 @@ def legacy_model(home):
 
 
 def migration_copy(hermes_home, install_root, source, work, layout):
-    old_state = install_root / "tavern-state"
+    old_state = state_root(install_root)
     prepared = work / "prepared/state"
     if old_state.is_dir():
         shutil.copytree(old_state, prepared, symlinks=False)
@@ -1035,7 +1059,7 @@ def migration_copy(hermes_home, install_root, source, work, layout):
 
 
 def fallback_python_state(install_root, work, reason):
-    old = install_root / "tavern-state"
+    old = state_root(install_root)
     prepared = work / "prepared-fallback/state"
     if old.is_dir():
         # An unsupported legacy record must not turn into lost configuration.
@@ -1077,14 +1101,15 @@ def render_mcp(hermes_home, install_root, port=8799):
     servers = value.setdefault("mcp_servers", {})
     current = servers.get("nora") if isinstance(servers.get("nora"), dict) else {}
     env = current.get("env") if isinstance(current.get("env"), dict) else {}
+    active_state = bound_state_root(hermes_home, install_root)
     env.update({
         "NORA_MCP_PROJECT_ROOT": str(install_root / "apps/tavern-runtime"),
         "NORA_MCP_ST_ROOT": str(install_root / "apps/tavern-runtime/engine/sillytavern"),
-        "NORA_MCP_STATE_ROOT": str(install_root / "tavern-state"),
-        "NORA_MCP_NATIVE_DATA_ROOT": str(install_root / "tavern-state/native"),
-        "NORA_MCP_USER_DATA_ROOT": str(install_root / "tavern-state/native/default-user"),
-        "NORA_MCP_CONFIG_PATH": str(install_root / "tavern-state/native-runtime/config.yaml"),
-        "NORA_MCP_UPLOAD_ROOT": str(install_root / "tavern-state/imports"),
+        "NORA_MCP_STATE_ROOT": str(active_state),
+        "NORA_MCP_NATIVE_DATA_ROOT": str(active_state / "native"),
+        "NORA_MCP_USER_DATA_ROOT": str(active_state / "native/default-user"),
+        "NORA_MCP_CONFIG_PATH": str(active_state / "native-runtime/config.yaml"),
+        "NORA_MCP_UPLOAD_ROOT": str(active_state / "imports"),
         "NORA_MCP_BASE_URL": f"http://127.0.0.1:{port}",
         "NORA_MCP_MODE": "operator",
     })
@@ -1187,7 +1212,7 @@ def copy_host_backup(hermes_home, install_root, backup, service_snapshot):
         source = hermes_home / name
         if source.is_file():
             shutil.copy2(source, host / name)
-    marker = install_root / "tavern-state/native-runtime/dependencies.json"
+    marker = state_root(install_root) / "native-runtime/dependencies.json"
     if marker.is_file():
         (host / "native-runtime").mkdir()
         shutil.copy2(marker, host / "native-runtime/dependencies.json")
@@ -1210,7 +1235,7 @@ def restore_host(hermes_home, install_root, backup):
             shutil.copy2(saved, target)
         else:
             target.unlink(missing_ok=True)
-    marker = install_root / "tavern-state/native-runtime/dependencies.json"
+    marker = state_root(install_root) / "native-runtime/dependencies.json"
     saved_marker = host / "native-runtime/dependencies.json"
     if saved_marker.is_file():
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -1287,6 +1312,11 @@ def start_old(hermes_home, install_root, service, snapshot):
 
 def standalone_port(home, root):
     """Read this instance's configured port; never probe a different Tavern."""
+    binding = instance_paths(home)
+    if binding:
+        if Path(binding['installRoot']) != Path(root).resolve():
+            raise RuntimeError('酒馆端口所属实例与当前程序不一致。')
+        return binding['port']
     import urllib.parse
     import yaml
     config = Path(home) / 'config.yaml'
@@ -1304,11 +1334,12 @@ def standalone_port(home, root):
     return parsed.port
 
 
-def standalone_runtime(root):
+def standalone_runtime(root, *, home=None):
     app = Path(root) / 'apps/tavern-runtime'
     module = module_at('standalone_native_lifecycle', app / 'native_lifecycle.py')
     contract = module.RuntimeContract.from_dict(json.loads((app / 'native-runtime.json').read_text(encoding='utf-8')))
-    return module.NativeRuntime(root, app, Path(root) / 'tavern-state', contract)
+    data = bound_state_root(home,root) if home is not None else state_root(Path(root))
+    return module.NativeRuntime(root, app, data, contract)
 
 
 def standalone_snapshot(root):
@@ -1357,11 +1388,12 @@ def recover_standalone(home, root, *, helper=None):
         runtime = standalone_runtime(root)
         if before['running'] and runtime.status().get('health', {}).get('ok') is not True:
             raise RuntimeError('旧版文件已恢复，但服务健康检查未通过。')
-        if journal.plan.get('worlds') is not None:
-            verify_preserved_worlds(Path(root) / 'apps/tavern-runtime', Path(root) / 'tavern-state',
-                                   journal.plan.get('storyInventory', {}), journal.plan['worlds'])
         return result
-    return helper.recover(home, root, stop=stop, resume=resume, verify=verify)
+    def verify_files(_plan, _backup):
+        if journal.plan.get('worlds') is not None:
+            verify_preserved_worlds(Path(root) / 'apps/tavern-runtime', state_root(Path(root)),
+                                   journal.plan.get('storyInventory', {}), journal.plan['worlds'])
+    return helper.recover(home, root, stop=stop, resume=resume, verify=verify, verify_files=verify_files)
 
 
 @contextmanager
@@ -1395,7 +1427,7 @@ def install_runtime(hermes_home, install_root, *, skip_content_check=False, port
     app = install_root / "apps/tavern-runtime"
     module = module_at("installed_native_lifecycle", app / "native_lifecycle.py")
     contract = module.RuntimeContract.from_dict(json.loads((app / "native-runtime.json").read_text(encoding="utf-8")))
-    runtime = module.NativeRuntime(install_root, app, install_root / "tavern-state", contract)
+    runtime = module.NativeRuntime(install_root, app, state_root(install_root), contract)
     runtime.install()
     service = runtime.managed_service()
     if service:
@@ -1714,8 +1746,13 @@ def install(args):
     port = instance["port"] if instance else standalone_port(hermes_home, install_root)
     os.environ["HERMES_HOME"] = str(hermes_home)
     os.environ["NORA_HERMES_HOME"] = str(hermes_home)
-    os.environ["HERMES_INSTALL_DIR"] = str(hermes_home / "hermes-agent")
+    binding = instance_paths(hermes_home)
+    if binding and binding.get('hermesInstallDir'):
+        os.environ['HERMES_INSTALL_DIR'] = binding['hermesInstallDir']
+    elif instance:
+        os.environ['HERMES_INSTALL_DIR'] = str(hermes_home / 'hermes-agent')
     os.environ["TAVERN_DATA_ROOT"] = str(install_root)
+    os.environ['TAVERN_STATE_DIR'] = str(bound_state_root(hermes_home,install_root))
     if not (hermes_home / "skills").is_dir():
         raise RuntimeError("目标目录不是 Hermes 安装目录：" + str(hermes_home))
     from bundle import extract_bundle, installed_roots, read_bundle
@@ -1862,7 +1899,7 @@ def install(args):
             check_update_space(update_space_tasks(
                 hermes_home, install_root, backup, work, managed=bool(managed),
                 runtime_changed=runtime_changed, migration=bool(layout),
-                service_snapshot=service_snapshot))
+                service_snapshot=service_snapshot, swaps=swaps))
             Path(filesystem_path(backup)).mkdir(parents=True)
             record_backup(install_root, backup, "prepared")
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
@@ -1888,7 +1925,8 @@ def install(args):
                 journal = recovery_helper.Journal.create(
                     hermes_home, install_root, backup, swaps, version=version,
                     before=before_state,
-                    state=install_root / "tavern-state" if runtime_changed else None,
+                    state=state_root(install_root) if runtime_changed else None,
+                    data_root=state_root(install_root),
                     lifecycle=json.loads(os.environ["NORA_UPDATE_LIFECYCLE"]) if managed else None,
                 )
                 transaction = journal.record
@@ -1968,9 +2006,10 @@ def install(args):
                         if journal is not None:
                             journal.snapshot_state()
                         else:
-                            shutil.copytree(filesystem_path(install_root / "tavern-state"), filesystem_path(backup / "state"))
+                            shutil.copytree(filesystem_path(state_root(install_root)), filesystem_path(backup / "state"))
                         state_snapshot = True
-                        story_inventory = world_data_inventory(backup / "state", full=bool(partial))
+                        state_backup = journal.state_backup() if journal is not None else backup / 'state'
+                        story_inventory = world_data_inventory(state_backup, full=bool(partial))
                         if partial:
                             journal.plan['partialBaseline'] = {
                                 'schema': 'nora-managed-partial-repair-baseline/1', 'partialRepair': partial,
@@ -1982,7 +2021,7 @@ def install(args):
                         # The missing old program is not a usable parser. Only
                         # the hash-verified candidate reads the original backup.
                         baseline_reader = source / 'app' if partial else old_app
-                        story_worlds = verify_worlds(baseline_reader, backup / "state")
+                        story_worlds = verify_worlds(baseline_reader, state_backup)
                         if journal is not None:
                             journal.plan["worlds"] = story_worlds
                             if standalone_journal:
@@ -1992,7 +2031,7 @@ def install(args):
                                 journal.plan['partialBaseline']['worlds'] = story_worlds
                             journal.save()
                         candidate_app = source / "app" if app_changed else old_app
-                        verify_preserved_worlds(candidate_app, backup / "state", story_inventory, story_worlds,
+                        verify_preserved_worlds(candidate_app, state_backup, story_inventory, story_worlds,
                                                 exact=bool(partial))
                 else:
                     log("应用非运行时更新，Tavern 保持运行")
@@ -2016,9 +2055,12 @@ def install(args):
                 if gateway_swaps:
                     gateway_report = {**gateway_report, "status": "installed"}
                 if prepared_state is not None:
-                    active_state = install_root / "tavern-state"
+                    active_state = state_root(install_root)
                     saved_state = backup / "state"
                     if journal is not None:
+                        if recovery_module().filesystem_device(prepared_state) != recovery_module().filesystem_device(active_state.parent):
+                            check_update_space([{'source': prepared_state, 'destination': active_state.parent / '.nora-space-stage',
+                                                 'label': 'state-target-volume-stage', 'links': 'reject'}])
                         journal.apply_state(prepared_state)
                     else:
                         os.replace(active_state, saved_state)
@@ -2054,12 +2096,12 @@ def install(args):
                     managed.record_files_ready(hermes_home)
                     journal.finish_metadata([hermes_home/'nora-installation.json'])
                 if app_changed:
-                    if journal is not None:journal.mark_metadata([install_root/'tavern-state/native-runtime/dependencies.json'])
+                    if journal is not None:journal.mark_metadata([state_root(install_root) / 'native-runtime/dependencies.json'])
                     json_write(
-                        install_root / "tavern-state/native-runtime/dependencies.json",
+                        state_root(install_root) / "native-runtime/dependencies.json",
                         dependency_marker(install_root / "apps/tavern-runtime"),
                     )
-                    if journal is not None:journal.finish_metadata([install_root/'tavern-state/native-runtime/dependencies.json'])
+                    if journal is not None:journal.finish_metadata([state_root(install_root) / 'native-runtime/dependencies.json'])
                 if runtime_changed:
                     log("启动新版 Tavern")
                     if standalone_journal:journal.preserve_startup_backups()
@@ -2078,7 +2120,7 @@ def install(args):
                 resolve(validate_partial=False)
                 verify_partial_configuration(hermes_home, install_root, partial)
                 world_verification = verify_preserved_worlds(
-                    install_root / "apps/tavern-runtime", install_root / "tavern-state",
+                    install_root / "apps/tavern-runtime", state_root(install_root),
                     story_inventory, story_worlds, exact=bool(partial),
                 ) if state_snapshot else {"status": "not-required"}
                 liveware_needed = not managed and (app_changed or ops_changed or host_hook is not None)
@@ -2087,7 +2129,7 @@ def install(args):
                     with reconcile_probe_configuration(journal, hermes_home):
                         proof = managed.verify_runtime(hermes_home, install_root, port, sys.executable, dict(os.environ))
                     world_verification = verify_preserved_worlds(
-                        install_root / "apps/tavern-runtime", install_root / "tavern-state",
+                        install_root / "apps/tavern-runtime", state_root(install_root),
                         story_inventory, story_worlds, exact=bool(partial))
                     journal.mark_metadata([update_root/'nora-system.json'])
                     managed.record_initialization(hermes_home, install_root, manifest, proof)
@@ -2130,20 +2172,21 @@ def install(args):
                 verify_partial_configuration(hermes_home, install_root, partial)
                 if managed and state_snapshot:
                     verify_preserved_worlds(install_root / "apps/tavern-runtime",
-                                           install_root / "tavern-state", story_inventory, story_worlds,
+                                           state_root(install_root), story_inventory, story_worlds,
                                            exact=bool(partial))
                 if standalone_journal and not before_state['running'] and runtime_changed:
                     # Acceptance above proves the replacement can run. Leave a
                     # previously stopped installation stopped before committing.
                     restore_standalone_running_state(install_root, before_state)
                 if journal is not None:
+                    journal.seal_volume_backups()
                     journal.save("committed")
                 else:
                     json_write(transaction_file, {**transaction, "status": "committed"})
                 committed = True
                 try:
                     record_backup(install_root, backup, "committed")
-                    backup_retention = prune_backup_history(install_root, backup)
+                    backup_retention = prune_backup_history(install_root, backup, hermes_home=hermes_home)
                     log(f"受管回退包保留最新 1 份，清理 {len(backup_retention['removed'])} 份；未归属或恢复现场继续保留。")
                 except Exception as retention_error:
                     backup_retention = {
@@ -2207,11 +2250,12 @@ def install(args):
                         state = managed_lifecycle("recover-verify", hermes_home, install_root, version)
                         if partial:
                             verify_partial_baseline(hermes_home, install_root, plan, partial, recovery_helper)
-                        elif plan.get("worlds") is not None:
-                            verify_preserved_worlds(install_root / 'apps/tavern-runtime',
-                                                   install_root / "tavern-state", story_inventory, plan["worlds"])
                         verify_partial_configuration(hermes_home, install_root, partial)
                         return state
+                    def verify_restored_files(plan, _backup):
+                        if not partial and plan.get('worlds') is not None:
+                            verify_preserved_worlds(install_root / 'apps/tavern-runtime',
+                                                   state_root(install_root), story_inventory, plan['worlds'])
                     try:
                         # install already holds tavern-installer.lock. Both the
                         # automatic rollback and the desktop's later retry use
@@ -2221,6 +2265,7 @@ def install(args):
                             stop=lambda *_: managed_lifecycle("recover-stop", hermes_home, install_root, version),
                             resume=lambda *_: managed_lifecycle("rollback", hermes_home, install_root, version),
                             verify=verify_restored,
+                            verify_files=verify_restored_files,
                         )
                     except BaseException as recovery_error:
                         _operation_evidence.freeze(recovery_error, nora_home=managed_home or os.environ.get('NORA_TAVERN_HOME') or install_root.parent,
@@ -2248,7 +2293,7 @@ def install(args):
                     for name, target, saved in reversed(applied):
                         restore_tree(target, saved, failed_root / name)
                     if state_swapped or state_snapshot:
-                        active_state = install_root / "tavern-state"
+                        active_state = state_root(install_root)
                         if active_state.exists():
                             failed_root.mkdir(parents=True, exist_ok=True)
                             os.replace(active_state, failed_root / "state")

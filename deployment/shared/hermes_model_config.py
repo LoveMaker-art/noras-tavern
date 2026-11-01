@@ -73,6 +73,14 @@ def remember_credentials(home):
         pass
 
 def _regular(root, file):
+    if isinstance(root, tuple):
+        # Configuration and operation metadata may belong to separate roots.
+        # Callers supply the two already resolved instance bindings, never an
+        # arbitrary parent selected from the file being inspected.
+        for allowed in root:
+            if Path(file).absolute().is_relative_to(Path(allowed).resolve()):
+                return _regular(allowed, file)
+        raise ValueError('配置路径不属于当前实例。')
     root, file = Path(root).resolve(), Path(file)
     try:
         parts = file.relative_to(root).parts
@@ -132,7 +140,7 @@ def _writer(instance):
         gate.assert_active()
         return
     library = Path(instance["installRoot"]).resolve() / "apps/tavern-ops/updater/runtime_lock.py"
-    _regular(root, library)
+    _regular(Path(instance['installRoot']), library)
     if not library.is_file():
         raise ValueError("未找到当前实例的配置互斥组件，未修改配置。")
     spec = importlib.util.spec_from_file_location("nora_model_lock", library)
@@ -243,9 +251,9 @@ def catalog(home):
     return {"ok": True, "providers": rows, "scope": "native-hermes"}
 
 
-def inspect(home):
+def inspect(home, instance=None):
     from hermes_model_state import public_model_state
-    value = public_model_state(Path(home).parent, Path(home))
+    value = public_model_state(Path(instance['noraHome']) if instance else Path(home).parent, Path(home))
     if value.get('configurationStatus') == 'unknown':
         raise ValueError(value.get('validationProblem') or '模型配置暂时无法读取。')
     return {'ok': True, **value}
@@ -383,6 +391,18 @@ def switch(home, instance, profile_id, *, verify_authorized=False, tavern_sync_p
                      tavern_sync_pending=tavern_sync_pending)
 
 
+def _assign_main_model(current, provider, model, base, key):
+    # Hermes split its web configuration module without changing this native
+    # operation. Resolve by installed API capability, never by host OS/version.
+    try:
+        from hermes_cli.web_server_config import _apply_main_model_assignment
+    except ModuleNotFoundError as error:
+        if error.name != 'hermes_cli.web_server_config':
+            raise
+        from hermes_cli.web_server import _apply_main_model_assignment
+    return _apply_main_model_assignment(current, provider, model, base, key)
+
+
 def apply_selection(home, body):
     """Apply only inside a candidate; native APIs own credential/protocol semantics."""
     cfg = _config(home)
@@ -390,7 +410,6 @@ def apply_selection(home, body):
     from hermes_cli.models import normalize_provider, opencode_provider_family, normalize_opencode_model_id, opencode_model_api_mode
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.credential_lifecycle import save_provider_env_credential
-    from hermes_cli.web_server_config import _apply_main_model_assignment
     patch = body.get("native_config", {})
     if not isinstance(patch, dict):
         raise ValueError("原生配置必须是对象。")
@@ -481,7 +500,7 @@ def apply_selection(home, body):
             cfg = _config(home)
         # No explicit URL means native credential/region routing owns the
         # endpoint. A static catalog default can override a plan-specific URL.
-    cfg["model"] = _apply_main_model_assignment(cfg.get("model"), provider, model, base, key if provider.startswith("custom:") else "")
+    cfg["model"] = _assign_main_model(cfg.get("model"), provider, model, base, key if provider.startswith("custom:") else "")
     if opencode_provider_family(provider):
         cfg["model"]["default"] = normalize_opencode_model_id(provider, model)
         cfg["model"]["api_mode"] = opencode_model_api_mode(provider, cfg["model"]["default"])
@@ -586,7 +605,11 @@ def _run_candidate(home, body, wizard=False, region=""):
     if body.get("verify_authorized") is True:
         args.append("--verify-authorized")
     original_home = Path(os.environ["HERMES_HOME"]).resolve()
-    agent = (original_home / "hermes-agent").resolve()
+    import hermes_cli
+    agent = Path(hermes_cli.__file__).resolve().parent.parent
+    declared = os.environ.get('HERMES_INSTALL_DIR')
+    if declared and Path(declared).resolve() != agent:
+        raise ValueError('候选验证的 Hermes 程序与本实例不一致。')
     env = {**os.environ, "HERMES_HOME": str(home), "NORA_MODEL_CANDIDATE": str(home),
            "NORA_MODEL_AGENT_ROOT": str(agent), "HERMES_INSTALL_DIR": str(agent),
            "NORA_MODEL_ORIGINAL_HOME": str(original_home)}
@@ -656,7 +679,7 @@ def inspect_outcome(home, root, operation_id):
     home, root = Path(home).resolve(), Path(root).resolve()
     unknown = {'ok': True, 'confirmed': False}
     marker = root / 'installer/model.json'
-    checkpoint = _snapshot(root, [marker])[marker]
+    checkpoint = _snapshot((root, home), [marker])[marker]
     try:
         saved = json.loads(checkpoint[0] or b'{}')
         record = saved.get('lastModelOperation') if isinstance(saved, dict) else None
@@ -667,7 +690,7 @@ def inspect_outcome(home, root, operation_id):
                 or record.get('action') not in {'configure', 'switch', 'delete'}
                 or not isinstance(record.get('files'), dict) or set(record['files']) != names):
             return unknown
-        before = _snapshot(root, [home / name for name in names] + [marker])
+        before = _snapshot((root, home), [home / name for name in names] + [marker])
         if before[marker] != checkpoint:
             return unknown
         for name, digest in record['files'].items():
@@ -682,7 +705,7 @@ def inspect_outcome(home, root, operation_id):
         if (record['action'] == 'delete' and present or record['action'] != 'delete'
                 and record.get('profileId') != current['selectedId']):
             return unknown
-        if _snapshot(root, list(before)) != before:
+        if _snapshot((root, home), list(before)) != before:
             return unknown
         return {'ok': True, 'confirmed': True, 'operationId': operation_id,
                 'action': record['action'], 'profileId': record['profileId'], 'current': current}
@@ -728,7 +751,7 @@ def _configure(home, instance, body, *, wizard, region, tavern_sync_pending, pha
     marker = root / "installer/model.json"
     paths = [home / name for name in FILES] + [marker]
     with _writer(instance) as directory:
-        before = _snapshot(root, paths)
+        before = _snapshot((root, home), paths)
         import yaml
         original = yaml.safe_load(before[home / "config.yaml"][0])
         with tempfile.TemporaryDirectory(prefix=".model-candidate-", dir=directory) as temporary:
@@ -759,7 +782,7 @@ def _configure(home, instance, body, *, wizard, region, tavern_sync_pending, pha
             previous_id, selected_id = _save_profiles(original, selected, result, candidate)
             if previous_id == selected_id:
                 previous_id = ""
-            if _snapshot(root, paths) != before:
+            if _snapshot((root, home), paths) != before:
                 raise ValueError("配置在验证期间发生变化，未覆盖其他操作的结果。")
             import yaml
             contents = {home / "config.yaml": yaml.safe_dump(selected, allow_unicode=True, sort_keys=False).encode("utf-8")}
@@ -810,7 +833,7 @@ def _configure(home, instance, body, *, wizard, region, tavern_sync_pending, pha
                             _atomic(file, value)
                     except (OSError, ValueError):
                         failures.append(file.name)
-                if failures or any(_snapshot(root, [file])[file][0] != value for file, (value, _) in before.items()):
+                if failures or any(_snapshot((root, home), [file])[file][0] != value for file, (value, _) in before.items()):
                     raise RuntimeError("配置提交失败，原配置未能完整恢复，请保留日志并重新查询。") from cause
                 restored = ModelConfigurationFailure('配置未完成，原模型配置已恢复。', code='MODEL_CONFIG_RESTORED')
                 restored.failure_phase = 'restored'
@@ -1033,7 +1056,7 @@ def _delete(home, instance, profile_id):
     names = (*FILES, "provider_models_cache.json")
     paths = [home / name for name in names] + [marker]
     with _writer(instance) as directory:
-        before = _snapshot(root, paths)
+        before = _snapshot((root, home), paths)
         import yaml
         original = yaml.safe_load(before[home / "config.yaml"][0])
         sessions = _session_bindings(home)
@@ -1059,7 +1082,7 @@ def _delete(home, instance, profile_id):
             _delete_plan(original, profile_id, fresh_sessions)
             if fresh_sessions != sessions:
                 raise ModelConfigurationFailure("删除期间会话模型配置发生变化，请重新查询后再删除。", code='MODEL_DELETE_REFUSED')
-            if _snapshot(root, paths) != before:
+            if _snapshot((root, home), paths) != before:
                 raise ModelConfigurationFailure("删除期间配置发生变化，未覆盖其他操作的结果。", code='MODEL_DELETE_REFUSED')
             for name in names:
                 _regular(candidate, candidate / name)
@@ -1072,7 +1095,7 @@ def _delete(home, instance, profile_id):
             contents[marker] = (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode()
             try:
                 for file, value in contents.items():
-                    _regular(root, file)
+                    _regular((root, home), file)
                     if value is None:
                         file.unlink(missing_ok=True)
                     else:
@@ -1084,7 +1107,7 @@ def _delete(home, instance, profile_id):
                 failures = []
                 for file, (value, _) in before.items():
                     try:
-                        _regular(root, file)
+                        _regular((root, home), file)
                         if value is None:
                             file.unlink(missing_ok=True)
                         else:
@@ -1092,15 +1115,19 @@ def _delete(home, instance, profile_id):
                     except (OSError, ValueError):
                         failures.append(file.name)
                 try:
-                    if failures or any(_snapshot(root, [file])[file][0] != value for file, (value, _) in before.items()):
+                    if failures or any(_snapshot((root, home), [file])[file][0] != value for file, (value, _) in before.items()):
                         raise OSError()
                 except (OSError, ValueError):
                     recovery = Path(tempfile.mkdtemp(prefix='.model-delete-recovery-', dir=directory))
                     try:
                         _private(recovery)
-                        _write_marker(recovery / 'originals.json', {'schema': 1, 'files': {
-                            str(file.relative_to(root)): None if value is None else base64.b64encode(value).decode('ascii')
-                            for file, (value, _) in before.items()}})
+                        nested = all(file.is_relative_to(root) for file in before)
+                        originals = {'schema': 1 if nested else 2, 'files': {
+                            str(file.relative_to(root)) if nested else str(file):
+                                None if value is None else base64.b64encode(value).decode('ascii')
+                            for file, (value, _) in before.items()}}
+                        if not nested:originals['roots'] = {'owner': str(root), 'hermes': str(home)}
+                        _write_marker(recovery / 'originals.json', originals)
                     except Exception:
                         raise _DeleteUnconfirmed("删除失败，配置未完整恢复且恢复副本未写成，请保留日志。") from None
                     raise _DeleteUnconfirmed("删除失败，配置恢复尚未确认。原配置副本已保留：" + str(recovery)) from None

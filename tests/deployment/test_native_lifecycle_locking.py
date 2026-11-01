@@ -72,6 +72,11 @@ class FakeRuntime:
             raise AssertionError(name)
         return types.SimpleNamespace(installation_lock=self.lock.installation_lock)
 
+    @contextmanager
+    def cli_operation(self, args):
+        self.admission('native', nora_home=os.environ.get('NORA_TAVERN_HOME'))
+        yield
+
     def start(self, run_id="production", port=8799, data_root=None, *, assets_prepared=False):
         with self.lock.installation_lock(self.data_root):
             return self._start(run_id, port, data_root, assets_prepared=assets_prepared)

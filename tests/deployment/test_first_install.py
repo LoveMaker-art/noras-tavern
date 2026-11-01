@@ -21,6 +21,65 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FirstInstallSnapshotTests(unittest.TestCase):
+    def test_headless_external_state_install_and_failure_keep_original_data(self):
+        import yaml
+        for fail in (False, True):
+            with self.subTest(runtime_failure=fail), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                home, root, state, source = [base / name for name in ('hermes', 'programs', 'stories', 'release')]
+                for folder in (home, state, source / 'app', source / 'nora-mcp'):
+                    folder.mkdir(parents=True)
+                original = yaml.safe_dump({'nora_tavern': {'installRoot': str(root),
+                    'stateRoot': str(state), 'port': 18899}, 'model': {'default': 'preserve-model'}})
+                (home / 'config.yaml').write_text(original)
+                retained = state / 'nora-retained-config.yaml'
+                retained.write_bytes(b'custom_setting: preserved\n')
+                for name in ('chat.jsonl', 'character.json', 'world.json', 'preferences.json'):
+                    (state / name).write_bytes(b'original user content')
+                for name in ('ops/updater/managed_context.py', 'ops/updater/clawchat_greeting_patch.py',
+                             'ops/skills/agents-tavern.md', 'ops/installer/templates/SOUL.md',
+                             'ops/installer/templates/greeting.md', 'ops/scripts/nora-instance.py'):
+                    target = source / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(ROOT / name, target)
+                args = SimpleNamespace(apply=True, confirm=True, nora_home=None, hermes_home=str(home),
+                    install_root=None, port=None, dedicated_nora=False, force_first_install=False,
+                    replace_soul=False, skip_liveware=True)
+                def start(_home, _root, port, *_args):
+                    self.assertEqual(MODULE.state_root(root), state)
+                    self.assertEqual(port, 18899)
+                    self.assertEqual((state / 'native-runtime/config.yaml').read_bytes(), retained.read_bytes())
+                    self.assertEqual(json.loads((home / 'nora-instance.json').read_text())['deployment'], 'core')
+                    if fail:
+                        raise RuntimeError('runtime acceptance failed')
+                    return {'health': {'ok': True}}
+                with patch.dict(os.environ, {'HERMES_HOME': str(home)}, clear=True), \
+                     patch.object(MODULE, 'validate_hermes', return_value={}), \
+                     patch.object(MODULE, 'source_from_release', return_value=(source, {'commit': 'a' * 40,
+                         'versions': {'tavern': '2.5.7'}})), \
+                     patch.object(MODULE, 'prepare_runtime_source', return_value=source / 'app'), \
+                     patch.object(MODULE, 'prepare_skills', return_value={}), \
+                     patch.object(MODULE, 'install_host_hook', return_value=None), \
+                     patch.object(MODULE, 'install_update_check', return_value={'status': 'installed'}), \
+                     patch.object(MODULE, 'start_tavern', side_effect=start) as started, \
+                     patch.object(MODULE, 'stop_install_runtime', return_value={'offline': True}), \
+                     patch.object(MODULE, 'event'), patch.object(MODULE, 'log'), patch('builtins.print'):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, 'runtime acceptance failed') as caught:
+                            MODULE.install(args)
+                        self.assertEqual(caught.exception.first_install_recovery['status'], 'restored')
+                        self.assertEqual((home / 'config.yaml').read_text(), original)
+                        self.assertTrue(retained.is_file())
+                        self.assertFalse((home / 'nora-instance.json').exists())
+                    else:
+                        self.assertEqual(MODULE.install(args)['status'], 'installed')
+                        self.assertFalse(retained.exists())
+                        self.assertEqual((state / 'native-runtime/config.yaml').read_bytes(), b'custom_setting: preserved\n')
+                    started.assert_called_once()
+                for name in ('chat.jsonl', 'character.json', 'world.json', 'preferences.json'):
+                    self.assertEqual((state / name).read_bytes(), b'original user content')
+                self.assertFalse((root / 'tavern-state').exists())
+
     def test_retained_tavern_config_is_restored_without_consuming_backup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

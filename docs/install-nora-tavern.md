@@ -2,9 +2,38 @@
 
 [返回项目首页](../README.md) · [下载启动器](../README.md#下载安装包) · [只安装酒馆](install-tavern.md)
 
-完全版包含诺拉酒馆本体，以及帮你管理酒馆、可以互动的诺拉。以下步骤适用于 Windows x64、Mac Apple 芯片和 Mac Intel。
+完全版包含诺拉酒馆本体，以及帮你管理酒馆、可以互动的诺拉。下方启动器步骤适用于 Windows x64、Mac Apple 芯片和 Mac Intel；Linux云端的设计范围及当前入口见[Linux云端部署](#linux-cloud-installation)。
 
-**准备好网络和自己的模型 API Key。** Hermes、Python、Node.js 及必要依赖由整合包提供，不需要先手动安装。
+**桌面版准备好网络和自己的模型 API Key。** Hermes、Python、Node.js 及必要依赖由桌面整合包提供，不需要先手动安装；这不表示任意云端环境已包含这些依赖。
+
+<a id="linux-cloud-installation"></a>
+## Linux云端部署与当前状态
+
+Linux上的诺拉＋酒馆是[正式产品设计目标](product/README.md#deployment-support)，通过诺拉对话与浏览器／ClawChat应用入口使用，核心不依赖桌面启动器。此处区分部署形态，不把Windows／Mac安装包当作Linux安装方式。
+
+- 已有云端实例先按[更新方式](update-nora-tavern.md#先选择你的安装方式)识别源码安装或已有独立部署，保留原程序位置、数据和服务绑定；不要为套用桌面步骤新建空安装。
+- 首次云端部署需要确认该平台提供的Hermes、Node／Python、持久数据目录及服务控制方式。当前源码已解除核心首装的桌面收据前提，仍保留授权、互斥和恢复；尚未完成完整云端首装及外部入口验收，也未发布Linux图形安装器／容器镜像。源码整合与实际发布分开，见[本地合并记录](launcher-reliability-plan.md#cloud-core-main-integration-20261101)。
+- `model-provider-config`与其他共用技能不再按系统过滤，云端和桌面交付同一份技能。Linux与Mac隔离实例的真实候选验证、保存、失败保留和新进程读取已通过；这不等于已经更新用户机器或覆盖所有Hermes版本。实际状态见[实施记录](launcher-reliability-plan.md#cloud-core-instance-20261031)及[N-D04](product/nora.md#differences)。
+
+### 非默认目录怎么处理
+
+以下是当前源码的实例映射，不是要求用户搬家或重新安装。已有有效安装记录和MCP绑定继续读取；仅在路径不同且无法从旧记录确定时，在当前Hermes的`config.yaml`中明确配置：
+
+```yaml
+nora_tavern:
+  installRoot: /srv/nora-programs
+  stateRoot: /mnt/stories/nora-state
+  hermesInstallDir: /opt/hermes
+  python: /opt/hermes/.venv/bin/python
+  port: 8799
+  serviceOwner: external
+```
+
+`HERMES_HOME`仍是实际配置与诺拉内容目录，例如`/opt/data`；Hermes程序、解释器及故事数据无需位于它下面。`installRoot`指包含发布包`apps/`的程序根目录，包内`apps/tavern-runtime`、`apps/tavern-ops`、`apps/nora-mcp`结构继续用于校验程序归属；这不是按Windows／Mac目录判断资格。`stateRoot`指已有故事数据目录，MCP中的对应路径、端口必须与它一致。不会自动迁移数据、重写其他实例绑定或接管外部supervisor／systemd。
+
+更新按目标磁盘暂存并核验后替换；跨磁盘的程序与数据回退副本在目标旁的私有维护目录中保存，并与事务关联，不能只拷走主备份目录。完整性或归属无法核对时保留副本，不为清理它们阻断新更新。直接将可替换的程序目录或整份故事目录设为挂载点无法原子重命名，应在挂载卷内使用子目录；如果已有数据就在挂载根，先由部署方安排可回退的数据目录迁移，工具不自动搬动。数据目录不能与受管程序目录重叠。以上是具体文件能力与归属要求，不排除任何操作系统。
+
+以下继续说明桌面启动器安装流程。
 
 ## 第一步：下载并打开
 

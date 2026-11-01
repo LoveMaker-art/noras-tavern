@@ -388,6 +388,7 @@ const NORA_ENGINE_FILES = new Set([
 // Incremental bootstrap extracts only the updater module into its cold runner.
 // Keep both Python imports and delegated Node resources in that same archive.
 const UPDATER_RUNTIME_FILES = new Set([
+    'ops/scripts/nora-instance.py',
     'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py',
     'ops/installer/operation_control.py', 'ops/installer/operation_cli.py',
     'ops/installer/operation_evidence.py', 'ops/installer/operation-budget.json',

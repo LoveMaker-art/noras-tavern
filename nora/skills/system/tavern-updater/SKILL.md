@@ -4,7 +4,6 @@ description: Check Nora Tavern versions, perform owner-authorized updates, and i
 version: 3.5.0
 author: Tavern Project
 license: AGPL-3.0-only
-platforms: [linux, macos, windows]
 metadata:
   hermes:
     category: system
@@ -19,9 +18,12 @@ Use when the owner asks to check or update the installed version.
 
 Resolve the active HERMES_HOME and this skill's absolute directory first.
 Run `scripts/update.py --check-environment` from this skill with an available
-Python interpreter. This read-only probe uses only the standard library to
-discover and validate Hermes Python. Read its JSON `python`, `hermesHome` and
-`managed` fields. On Windows use the launcher's isolated Python to run the probe.
+Python interpreter. The discovery caller can use the standard library; the
+selected candidate must load Hermes and YAML and verify its own program/home
+binding. Read its JSON `python`, `hermesHome` and `managed` fields. An explicitly
+known interpreter can be supplied through `NORA_PYTHON`; it is still verified.
+On desktop installations the launcher's isolated Python is one possible source,
+not a requirement for Windows or any other host.
 If discovery fails, report the checked paths and missing module and stop.
 
 Use the returned absolute Python path, quoted as one argument, for every later

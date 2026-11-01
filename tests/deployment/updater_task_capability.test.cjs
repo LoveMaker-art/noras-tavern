@@ -29,6 +29,8 @@ async function template(){
       }
     };
     for(const name of ['installer','updater'])copy(path.join(projection,'ops',name),path.join(templateDirectory,'ops',name));
+    fs.mkdirSync(path.join(templateDirectory,'ops/scripts'),{recursive:true});
+    fs.copyFileSync(path.join(projection,'ops/scripts/nora-instance.py'),path.join(templateDirectory,'ops/scripts/nora-instance.py'));
     for(const name of ['ops/updater/task_backend.py','ops/installer/desktop/updater-policy.js']){
       assert.equal(fs.statSync(path.join(templateDirectory,name)).isFile(),true,'The real actor closure must be present: '+name);
     }

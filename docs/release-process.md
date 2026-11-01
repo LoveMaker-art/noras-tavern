@@ -10,10 +10,10 @@
 
 ## 1. 先确定必须改变的交付内容
 
-对最近正式稳定版本与拟交付的固定提交生成计划：
+核验本次最近正式稳定标签，并将其赋给`NORA_RELEASE_BASE`；历史报告中的旧标签不作为默认值。对该标签与拟交付的固定提交生成计划：
 
 ```sh
-node tooling/release/release-plan.mjs --base v2.4.3 --head HEAD --output /tmp/nora-release-plan.json
+node tooling/release/release-plan.mjs --base "$NORA_RELEASE_BASE" --head HEAD --output /tmp/nora-release-plan.json
 ```
 
 计划绑定前后提交和源码摘要，并逐项记录改变的模块、启动器、平台环境及判断理由。输出文件必须不存在。首次没有任何历史发布时显式使用 `--base EMPTY`，不能用它绕过一个已有的兼容性基线。

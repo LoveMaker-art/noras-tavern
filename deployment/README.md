@@ -29,6 +29,8 @@
 
 ## 执行与兼容
 
+Linux云端及桌面的产品要求统一见[部署平台与实例边界](../docs/product/README.md#deployment-support)。共用技能、模型管理、安装／更新与外部入口状态使用同一实例定位，按实际Hermes、解释器、酒馆／数据及服务控制关系工作，不以操作系统、桌面收据或固定父子目录作为核心资格。非默认路径配置见[实例映射](../docs/install-nora-tavern.md#非默认目录怎么处理)；源码、原生实测、未验范围和发布分别记录于[N-D04](../docs/product/nora.md#differences)及[实施记录](../docs/launcher-reliability-plan.md#cloud-core-instance-20261031)。桌面APP自身及桌面集成环境的三平台构建矩阵继续保留，不能拿它代替核心业务的支持范围。
+
 源码已按职责归类，发布布局维持已有 `ops/` 和 `apps/tavern-ops/` 协议。部署内部相对导入按交付布局解析；开发时通过 `node tooling/run.mjs ...` 执行，不能直接运行被移动的内部模块。
 
 独立酒馆更新和整套系统更新在事务范围上不同，但共享适用的实例、配置和内容管控实现。不要把一个修复分别复制进两条流程。

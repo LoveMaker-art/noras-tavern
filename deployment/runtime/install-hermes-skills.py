@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the official Tavern skills and optional local launcher skills."""
+"""Prepare the official Nora/Tavern skills independently of desktop delivery."""
 import argparse
 import json
 from pathlib import Path
@@ -11,8 +11,10 @@ SKILLS = (
     "system/tavern-updater",
     "creative/nora-cardforge",
     "creative/nora-skill-library",
+    "system/model-provider-config",
 )
-LOCAL_SKILLS = ("system/model-provider-config",)
+# Retain the callable preparation contract for old desktop adapters.
+LOCAL_SKILLS = ()
 RETIRED = (
     "tavern-world",
     "tavern-runtime-plugins",

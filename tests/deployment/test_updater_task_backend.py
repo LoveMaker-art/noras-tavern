@@ -116,7 +116,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
             self.assertEqual(effects['recoveryOutcome'], 'not-required')
             self.assertFalse(effects['canResume'])
             self.assertEqual(transaction.read_bytes(), saved)
-            worlds.assert_called_once()
+            worlds.assert_not_called()
             (app / 'program.js').write_text('damaged but healthy process')
             with self.assertRaisesRegex(RuntimeError, '程序文件'):
                 self.backend.effects(self.args, self.update)
@@ -138,12 +138,49 @@ class UpdaterTaskBackendTests(unittest.TestCase):
                 self.assertEqual(effects['effectState'], 'unknown')
                 self.assertEqual(effects['recoveryOutcome'], 'recovery-required')
 
+    def test_closed_prior_task_uses_current_program_not_obsolete_backup_or_story_checksums(self):
+        app, metadata = self.identity()
+        runtime = SimpleNamespace(verify_install=lambda: None,
+            status=lambda: {'port': 18999, 'processes': {'native': False}, 'health': {'ok': False}})
+        record = {'schema': 1, 'status': 'committed', 'version': '2.4.2',
+            'operationId': 'b2dd5218-6375-453a-bc40-e20e20312344', 'backup': str(self.root / 'removed-backup'),
+            'recoveryPlan': {'schema': 1, 'hermesHome': str(self.home), 'installRoot': str(self.root),
+                'before': {'scope': 'standalone-tavern', 'version': '2.4.2', 'running': True}}}
+        file = metadata / 'transaction.json'
+        with patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
+                patch.object(self.update, 'standalone_runtime', return_value=runtime), \
+                patch.object(self.backend, 'world_read', side_effect=AssertionError('story data is not history admission')):
+            for state in ('committed', 'restored'):
+                file.write_text(json.dumps({**record, 'status': state}))
+                before = file.read_bytes()
+                effects = self.backend.effects(self.args, self.update)
+                self.assertEqual(effects['effectState'], 'untouched')
+                self.assertEqual(effects['recoveryOutcome'], 'not-required')
+                self.assertEqual(file.read_bytes(), before)
+            (app / 'program.js').write_text('wrong current program')
+            with self.assertRaisesRegex(RuntimeError, '程序文件'):
+                self.backend.effects(self.args, self.update)
+
+    def test_own_or_foreign_incomplete_history_cannot_borrow_closed_prior_task_admission(self):
+        _, metadata = self.identity()
+        record = {'schema': 1, 'status': 'committed', 'version': '2.4.2',
+            'operationId': self.args.operation_id, 'backup': str(self.root / 'missing'),
+            'recoveryPlan': {'schema': 1, 'hermesHome': str(self.home), 'installRoot': str(self.root),
+                'before': {'scope': 'standalone-tavern', 'version': '2.4.2'}}}
+        for previous in (record, {**record, 'status': 'prepared', 'operationId': 'other'},
+                         {**record, 'operationId': 'other', 'recoveryPlan': {**record['recoveryPlan'], 'installRoot': '/other'}}):
+            with self.subTest(previous=previous), \
+                    patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
+                    patch.object(self.backend, 'status', side_effect=AssertionError('strict recovery remains required')):
+                (metadata / 'transaction.json').write_text(json.dumps(previous))
+                self.assertEqual(self.backend.effects(self.args, self.update)['effectState'], 'unknown')
+
     def test_legacy_journal_change_during_read_only_verification_is_rejected(self):
         _, metadata = self.identity()
         transaction = metadata / 'transaction.json'
         legacy = {'schema': 1, 'status': 'committed', 'version': '2.4.2', 'backup': str(self.root / 'old/backup')}
         transaction.write_text(json.dumps(legacy))
-        def changed(*_args):
+        def changed(*_args, **_kwargs):
             transaction.write_text(json.dumps({**legacy, 'status': 'prepared'}))
             return {'version': '2.4.2'}
         with patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \

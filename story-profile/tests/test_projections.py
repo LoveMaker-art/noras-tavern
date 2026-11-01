@@ -52,7 +52,6 @@ class Projections(unittest.TestCase):
         self.assertEqual(preview['memory'], '')
         self.assertFalse((self.memories/'MEMORY.md').exists())
         self.assertNotIn('事件', preview['user'])
-        self.assertEqual(profile._bounded_markdown(['abc', 'too long', 'later'], 6), 'abc')
 
     def test_legacy_values_and_original_plot_sentences_are_not_silently_truncated(self):
         profile.set_taste_profile(self.state, self.seed, {

@@ -17,6 +17,7 @@ import platform
 from pathlib import Path
 from pathlib import PurePosixPath
 import sys
+import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -370,12 +371,15 @@ def download_asset(release, name, target, *, expected_sha256=None):
     download(asset['browser_download_url'], target, expected_sha256=asset['digest'][7:] if asset.get('digest') else expected_sha256, expected_size=asset['size'])
 
 
-def download_release(directory: Path, tag=None) -> dict:
+def download_release(directory: Path, tag=None, *, desktop=False, expected_core=None) -> dict:
     release = select_release(tag)
     for name in ASSETS[:2]:
         download_asset(release, name, directory / name)
     manifest = json.loads((directory / "release-manifest.json").read_text(encoding="utf-8"))
     validate_shared_manifest(release, manifest)
+    if expected_core is not None and (manifest.get('coreRelease') or manifest.get('commit') != expected_core['commit']
+            or publication_tag(manifest) != expected_core['tag']):
+        raise RuntimeError('原始核心身份与发布引用不一致，未开始安装。')
     physical = {}
     if 'coreRelease' in manifest:
         # APP-only publications carry a new runner, not a new core. Resolve the
@@ -389,8 +393,16 @@ def download_release(directory: Path, tag=None) -> dict:
                 or not isinstance(ref.get('manifests'), dict)
                 or release_version_key(ref['tag']) >= release_version_key(release['tag_name'])):
             raise RuntimeError('不变核心的来源证明无效，未开始安装。')
+        if not desktop:
+            # Core-only hosts consume the original shared archives, not a
+            # platform-specific desktop environment or Electron installer.
+            original = download_release(directory, ref['tag'], expected_core=ref)
+            core = json.loads((directory / 'release-manifest.json').read_text(encoding='utf-8'))
+            if core.get('versions', {}).get('tavern') != manifest.get('versions', {}).get('tavern'):
+                raise RuntimeError('原始核心版本与发布引用不一致，未开始安装。')
+            return original
         bound = ref['manifests'].get(target)
-        if target not in ('darwin-arm64', 'darwin-x64', 'win32-x64') or not isinstance(bound, dict):
+        if not isinstance(bound, dict):
             raise RuntimeError('此仅启动器发布未提供当前平台的核心安装资源，未修改现有安装。')
         if (set(bound) != {'asset', 'sha256', 'size'} or bound.get('asset') != target+'-release-manifest.json'
                 or not re.fullmatch(r'[a-f0-9]{64}', str(bound.get('sha256', '')))
@@ -508,7 +520,7 @@ def main() -> None:
     parser.add_argument("--hermes-home", "--data-root", dest="hermes_home")
     parser.add_argument("--nora-home")
     parser.add_argument("--install-root")
-    parser.add_argument("--port", type=int, default=8799)
+    parser.add_argument("--port", type=int)
     parser.add_argument("--replace-soul", action="store_true")
     parser.add_argument("--dedicated-nora", action="store_true")
     parser.add_argument("--skip-liveware", action="store_true")
@@ -527,7 +539,7 @@ def main() -> None:
         if release_dir is None:
             release_dir = work / "release"
             release_dir.mkdir()
-            download_release(release_dir, args.tag)
+            download_release(release_dir, args.tag, desktop=args.dedicated_nora)
         manifest_sha = verify_release(release_dir, allow_candidate=args.allow_candidate)
         installer = extract_ops_runner(release_dir, work / "runner")
         # A downloaded standalone entry has no adjacent operation modules.
@@ -538,14 +550,20 @@ def main() -> None:
         spec = importlib.util.spec_from_file_location('nora_first_bootstrap_operation_cli', cli_path)
         cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cli)
-        cli.ensure_operation('install', nora_home=args.nora_home or os.environ.get('NORA_TAVERN_HOME'))
+        owner = args.nora_home or os.environ.get('NORA_TAVERN_HOME')
+        guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
+                   or any(name.startswith('NORA_OPERATION_') for name in os.environ))
+        desktop = args.dedicated_nora or bool(owner and (Path(owner) / 'installer/launcher-control.json').exists())
+        if guarded or desktop:
+            cli.ensure_operation('install', nora_home=owner)
         command = [
             sys.executable, "-u", "-B", str(installer),
             "--release-dir", str(Path(release_dir).resolve()),
             "--manifest-sha256", manifest_sha,
-            "--port", str(args.port),
             "--apply", "--confirm",
         ]
+        if args.port is not None:
+            command += ['--port', str(args.port)]
         if args.hermes_home:
             command += ["--hermes-home", args.hermes_home]
         if args.nora_home:
@@ -562,7 +580,7 @@ def main() -> None:
             command.append("--force-first-install")
         if args.allow_candidate:
             command.append("--allow-candidate")
-        result = cli._control().managed_run(command)
+        result = cli._control().managed_run(command) if guarded or desktop else subprocess.run(command)
         raise SystemExit(result.returncode)
 
 

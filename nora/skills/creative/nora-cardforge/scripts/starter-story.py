@@ -11,20 +11,9 @@ import tempfile
 
 def stage(home, resources, story, request_id):
     home = Path(home).resolve()
-    if not (home / 'nora-instance.json').is_file():
-        configuration = runpy.run_path(str(home / 'scripts/nora-instance.py'))['configuration']
-        instance = configuration(home)
-        root = Path(instance['installRoot']).resolve()
-        if root != home:
-            raise ValueError('独立安装的样例必须位于当前 Hermes 目录内')
-    else:
-        instance = json.loads((home / 'nora-instance.json').read_text(encoding='utf-8'))
-        root = Path(instance['installRoot']).resolve()
-        parent = Path(instance['noraHome']).resolve()
-        if (instance.get('schema') != 1 or Path(instance['hermesHome']).resolve() != home
-                or not home.is_relative_to(parent) or home == parent
-                or not root.is_relative_to(parent) or root == parent or root == home):
-            raise ValueError('样例必须在本次隔离安装中加载')
+    configuration = runpy.run_path(str(home / 'scripts/nora-instance.py'))['configuration']
+    instance = configuration(home)
+    root = Path(instance['stateRoot']).resolve()
     manifest = json.loads((resources / 'manifest.json').read_text(encoding='utf-8'))
     item = next((item for item in manifest['stories'] if item['id'] == story), None)
     if not item or not request_id or len(request_id) > 256:
@@ -38,7 +27,7 @@ def stage(home, resources, story, request_id):
     card = json.loads(content)
     if card.get('spec') != 'chara_card_v2' or card.get('data', {}).get('name') != item['name']:
         raise ValueError('样例内容不匹配')
-    destination = root / 'tavern-state/imports'
+    destination = root / 'imports'
     if not destination.resolve().is_relative_to(root):
         raise ValueError('上传目录越界')
     destination.mkdir(parents=True, exist_ok=True)

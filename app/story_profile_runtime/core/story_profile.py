@@ -783,21 +783,6 @@ def _replace_block(text: str, start: str, end: str, body: str) -> str:
     return block + ("\n\n" + text if text else "\n")
 
 
-def _bounded_markdown(lines: list[str], max_chars: int) -> str:
-    """Keep complete Markdown lines within a bounded projection."""
-    kept = []
-    size = 0
-    for line in lines:
-        addition = len(line) + (1 if kept else 0)
-        if kept and size + addition > max_chars:
-            break
-        if not kept and len(line) > max_chars:
-            return line[:max_chars].rstrip()
-        kept.append(line)
-        size += addition
-    return "\n".join(kept).rstrip()
-
-
 def _projection_marker(profile: dict) -> str:
     revision = max(0, int(profile.get("revision") or 0))
     return f"{PROJECTION_REVISION_PREFIX}{revision} -->"

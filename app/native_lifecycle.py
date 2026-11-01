@@ -9,6 +9,7 @@ Nora extensions, and runs the bundled engine as one Node process.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import importlib.util
@@ -96,30 +97,6 @@ class RuntimeContract:
         ):
             raise NativeLifecycleError("native runtime contract is incomplete")
         return cls(repository, tag, commit, node_min_major, source_dir)
-
-
-def _replace_nested_config_values(source, replacements):
-    found = set()
-    output = []
-    section = ""
-    for line in source.splitlines():
-        stripped = line.lstrip()
-        indentation = line[:len(line) - len(stripped)]
-        key = stripped.split(":", 1)[0] if stripped and not stripped.startswith("#") else ""
-        if key and not indentation:
-            section = key
-        config_path = f"{section}.{key}" if indentation and key else ""
-        if config_path in replacements:
-            output.append(f"{indentation}{key}: {replacements[config_path]}")
-            found.add(config_path)
-        else:
-            output.append(line)
-    missing = set(replacements) - found
-    if missing:
-        raise NativeLifecycleError(
-            "official config is missing required keys: " + ", ".join(sorted(missing))
-        )
-    return "\n".join(output) + "\n"
 
 
 def render_native_config(source):
@@ -756,6 +733,68 @@ class NativeRuntime:
         if getattr(sys, '_nora_operation_delegate', None) is not None or os.environ.get('NORA_OPERATION_DELEGATE_ENDPOINT'):
             self.operations_module('operation_control').require_operation().assert_active()
 
+    @contextmanager
+    def cli_operation(self, args):
+        """Share the instance writer with updates; never downgrade a lost guard."""
+        cli = self.operations_module('operation_cli')
+        guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
+                   or any(name.startswith('NORA_OPERATION_') for name in os.environ))
+        if guarded:
+            cli.ensure_operation('native', nora_home=os.environ.get('NORA_TAVERN_HOME'))
+            yield
+            return
+        home = Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes').resolve()
+        paths = self.operations_module('bootstrap')
+        binding = paths.instance_paths(home)
+        if (not binding or binding['desktopManaged'] or args.command not in ('start', 'stop', 'restart')
+                or (Path(binding['noraHome']) / 'installer/launcher-control.json').exists()):
+            # Desktop/internal maintenance continues to require its real owner.
+            cli.ensure_operation('native', nora_home=os.environ.get('NORA_TAVERN_HOME'))
+            yield
+            return
+        expected = {'installRoot': self.data_root, 'appRoot': self.app_root, 'stateRoot': self.state_root}
+        if (any(Path(binding[name]).resolve() != value for name, value in expected.items())
+                or Path(__file__).resolve() != self.app_root / 'native_lifecycle.py'
+                or args.run_id != 'production' or getattr(args, 'native_data_root', None) is not None
+                or getattr(args, 'port', binding['port']) != binding['port']
+                or os.environ.get('NORA_TAVERN_HOME') and
+                   Path(os.environ['NORA_TAVERN_HOME']).resolve() != Path(binding['noraHome']).resolve()):
+            raise NativeLifecycleError('启停目标与当前实例绑定不一致，未修改文件或进程。', code='CONDITIONS_CHANGED')
+        owner = Path(binding['noraHome']).resolve()
+        file = owner / 'installer/operations/.writer.lock'
+        journal = self.data_root / 'tavern-updates/transaction.json'
+        for target in (file, journal):
+            if any(part.is_symlink() for part in (target, *target.parents)):
+                raise NativeLifecycleError('维护路径包含链接，未执行启停。', code='CONDITIONS_CHANGED')
+        locks = self.operations_module('runtime_lock')
+        with locks.installation_lock(file.parent, file.name, blocking=False, descriptor=True) as lease:
+            if not lease:
+                raise NativeLifecycleError('当前实例正在维护，请结束后重试启停。', code='OPERATION_BUSY')
+            opened, current = os.fstat(lease.fileno()), file.stat()
+            if ((opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+                    or paths.instance_paths(home) != binding):
+                raise NativeLifecycleError('实例或维护锁已变化，未执行启停。', code='CONDITIONS_CHANGED')
+            if journal.exists():
+                # Completed history is not a user-data checksum requirement.
+                # Unfinished program writes still need the updater's recovery.
+                try:
+                    if journal.stat().st_size > 64 * 1024 * 1024:
+                        raise ValueError('oversized maintenance record')
+                    record = json.loads(journal.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    raise NativeLifecycleError('无法读取程序维护记录，请保留日志并恢复原任务。', code='RECOVERY_REQUIRED') from None
+                if not isinstance(record, dict) or record.get('status') not in ('committed', 'restored'):
+                    plan = record.get('recoveryPlan', {}) if isinstance(record, dict) else {}
+                    targets = plan.get('targets') if isinstance(plan, dict) else None
+                    # Inspect only this instance's program-swap intent. Story
+                    # data/backups and personal metadata are not start criteria.
+                    if (not isinstance(plan, dict) or plan.get('schema') != 1 or plan.get('hermesHome') != str(home)
+                            or plan.get('installRoot') != str(self.data_root) or not isinstance(targets, list)
+                            or not targets or any(not isinstance(target, dict)
+                                or target.get('phase') not in ('pending', 'restored') for target in targets)):
+                        raise NativeLifecycleError('存在尚未恢复的程序维护，请先恢复原任务。', code='RECOVERY_REQUIRED')
+            yield
+
     def service_module(self):
         return self.operations_module('service_manager')
 
@@ -1128,9 +1167,9 @@ def main(argv=None):
     if args.command == 'status':
         print(json.dumps(runtime.status(args.run_id), ensure_ascii=False, indent=2))
         return
-    runtime.operations_module('operation_cli').ensure_operation('native', nora_home=os.environ.get('NORA_TAVERN_HOME'))
-    with runtime.operations_module('runtime_lock').installation_lock(runtime.data_root):
-        result = execute(runtime, args)
+    with runtime.cli_operation(args):
+        with runtime.operations_module('runtime_lock').installation_lock(runtime.data_root):
+            result = execute(runtime, args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

@@ -48,7 +48,8 @@ class InstanceTests(unittest.TestCase):
         module = load("nora_legacy_updater_test", ROOT / "ops/updater/update.py")
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
-            (home / "nora-instance.json").write_text("{}")
+            (home / "nora-instance.json").write_text(json.dumps({'schema':1,'noraHome':str(home.parent),
+                'hermesHome':str(home),'installRoot':str(home/'tavern'),'port':8799}))
             with self.assertRaisesRegex(RuntimeError, "禁止"):
                 module.install(SimpleNamespace(home=str(home), install_root=str(home / "tavern")))
             self.assertEqual(sorted(file.name for file in home.iterdir()), ["nora-instance.json"])
@@ -67,6 +68,7 @@ class InstanceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {"ok": True, "port": 18899})
             config["installRoot"] = str(root.parent / "other")
+            config["hermesHome"] = str(root / "wrong-instance")
             (home / "nora-instance.json").write_text(json.dumps(config))
             module = load("nora_instance", ROOT / "ops/scripts/nora-instance.py")
             with self.assertRaises(RuntimeError):

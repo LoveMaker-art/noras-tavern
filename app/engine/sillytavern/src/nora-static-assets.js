@@ -342,34 +342,6 @@ export function computeBrowserAssetManifest({
 }
 
 /**
- * Creates a deterministic release id from the files the browser can execute.
- * Kept for narrow callers and tests; browser startup uses computeBrowserAssetManifest.
- * @param {object} options
- * @param {{label: string, path: string}[]} options.roots
- * @param {{label: string, path: string}[]} [options.files]
- * @param {string[]} [options.excludedPaths]
- * @param {number} [options.length]
- * @returns {string}
- */
-export function computeStaticAssetRelease({ roots, files = [], excludedPaths = [], length = NORA_ASSET_HASH_LENGTH }) {
-    const collected = Object.create(null);
-    const exclusions = excludedPaths.map(normalizeRelativePath);
-    for (const root of [...roots].sort((left, right) => left.label.localeCompare(right.label))) {
-        const rootFiles = Object.create(null);
-        collectRegularFiles(root.path, rootFiles);
-        for (const [relativePath, sourcePath] of Object.entries(rootFiles)) {
-            const labeledPath = `${root.label}/${relativePath}`;
-            if (exclusions.some(excluded => labeledPath === excluded || labeledPath.startsWith(`${excluded}/`))) continue;
-            collected[labeledPath] = sourcePath;
-        }
-    }
-    for (const file of files) {
-        if (fs.existsSync(file.path)) collected[file.label] = file.path;
-    }
-    return buildNamespace('static', collected, length).release;
-}
-
-/**
  * Creates one shell identity from independently cacheable asset namespaces.
  * @param {string[]} releases
  * @param {number} [length]
@@ -600,34 +572,6 @@ export function createVersionedExtensionRouteHandler(cacheDirectory) {
         } catch {
             return response.sendStatus(404);
         }
-    };
-}
-
-/**
- * Serves build-time Brotli/Gzip companions for unversioned compatibility assets.
- * @param {string} rootDirectory
- * @returns {import('express').RequestHandler}
- */
-export function createPrecompressedAssetMiddleware(rootDirectory) {
-    const resolvedRoot = path.resolve(rootDirectory);
-    return (request, response, next) => {
-        if (!['GET', 'HEAD'].includes(request.method)) return next();
-        let relativePath;
-        try {
-            relativePath = decodeURIComponent(request.path).replace(/^\/+/, '');
-        } catch {
-            return next();
-        }
-        const sourcePath = path.resolve(resolvedRoot, relativePath);
-        if (!relativePath || !isPathWithinRoot(resolvedRoot, sourcePath) || !fs.existsSync(sourcePath)) return next();
-        const encoding = request.acceptsEncodings('br', 'gzip');
-        const suffix = encoding === 'br' ? '.br' : encoding === 'gzip' ? '.gz' : '';
-        if (!suffix || !fs.existsSync(`${sourcePath}${suffix}`)) return next();
-        response.type(path.extname(sourcePath));
-        response.setHeader('Content-Encoding', encoding);
-        response.setHeader('Cache-Control', IMMUTABLE_ASSET_CACHE_CONTROL);
-        response.vary('Accept-Encoding');
-        return response.sendFile(`${sourcePath}${suffix}`, { etag: true, lastModified: true });
     };
 }
 

@@ -8,6 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fileDigest as hashFile } from './system-release.mjs';
 
+// This harness verifies the desktop-integrated installer/environment closure.
+// Headless core archives do not require this desktop bundle on the target host.
 export const COMPONENT_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const read = file => JSON.parse(fs.readFileSync(file));

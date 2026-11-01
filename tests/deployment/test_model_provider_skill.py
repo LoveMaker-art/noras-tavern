@@ -60,11 +60,11 @@ if os.environ.get('NORA_FIXTURE_LEGACY_IPC') == '1':
 
 
 class SkillDistributionTests(unittest.TestCase):
-    def test_frontmatter_and_local_only_distribution(self):
+    def test_frontmatter_and_shared_distribution(self):
         text = (SKILL / 'SKILL.md').read_text(encoding='utf-8')
         meta = yaml.safe_load(text.split('---', 2)[1])
         self.assertEqual(meta['name'], 'model-provider-config')
-        self.assertEqual(meta['platforms'], ['macos', 'windows'])
+        self.assertNotIn('platforms', meta, 'shared skill must not filter by host OS')
         self.assertIn('hermes', meta['metadata'])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -73,7 +73,7 @@ class SkillDistributionTests(unittest.TestCase):
             local = update.prepare_skills(ROOT, root / 'local', local=True)
             self.assertIn('system/model-provider-config', fresh)
             self.assertIn('system/model-provider-config', local)
-            self.assertNotIn('system/model-provider-config', cloud)
+            self.assertIn('system/model-provider-config', cloud)
 
     def test_entrypoint_refuses_missing_home_without_writes(self):
         env = {**os.environ, 'HERMES_HOME': '', 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -97,6 +97,8 @@ class LocalModelSkillTests(unittest.TestCase):
         (self.home / 'hermes-agent').symlink_to(agent, target_is_directory=True)
         self.entry = self.home / 'skills/system/model-provider-config/scripts/configure_provider.py'
         shutil.copytree(SKILL, self.entry.parent.parent)
+        (self.home / 'scripts').mkdir()
+        shutil.copy2(ROOT / 'ops/scripts/nora-instance.py', self.home / 'scripts/nora-instance.py')
         helper = self.tavern / 'apps/tavern-ops/installer'
         helper.mkdir(parents=True)
         lib = self.tavern / 'apps/tavern-ops/updater'
@@ -184,6 +186,26 @@ class LocalModelSkillTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, reply)
         self.assertEqual(reply['model'], 'deepseek-v4-flash')
         self.assertEqual(bridge.read_verified_model(self.root, self.home)['provider'], 'deepseek')
+
+    def test_headless_separate_program_root_saves_with_same_candidate_and_writer(self):
+        (self.home / 'nora-instance.json').unlink()
+        current = yaml.safe_load(self.config.read_text())
+        current['nora_tavern'] = {'installRoot': str(self.tavern), 'port': 18999,
+                                  'hermesInstallDir': os.environ['NORA_TEST_HERMES'],
+                                  'python': sys.executable}
+        self.config.write_text(yaml.safe_dump(current))
+        self.env.pop('NORA_TAVERN_HOME')
+        result, reply = self.invoke()
+        self.assertEqual(result.returncode, 0, reply)
+        self.assertEqual(reply['validation'], 'api-response')
+        self.assertEqual(yaml.safe_load(self.config.read_text())['model']['default'], 'test-model')
+        self.assertTrue((self.home / 'installer/model.json').is_file())
+        self.assertFalse((self.root / 'installer/model.json').exists())
+        self.assertFalse((self.home / 'nora-instance.json').exists())
+        inspected, current = self.invoke({'action':'inspect'})
+        self.assertEqual(inspected.returncode,0,current)
+        self.assertEqual(current['model'],'test-model')
+        self.assertEqual(current['validation'],'api-response')
 
     def test_named_custom_replacement_changes_the_real_runtime_not_just_the_file(self):
         config = yaml.safe_load(self.config.read_text())

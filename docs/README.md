@@ -19,6 +19,7 @@
 
 - [下载启动器](../README.md#下载安装包)
 - [安装 Nora + Tavern](install-nora-tavern.md)
+- [Linux云端部署范围与当前状态](install-nora-tavern.md#linux-cloud-installation)
 - [只安装 Tavern（源码方式）](install-tavern.md)
 - [选择更新方式](update-nora-tavern.md#先选择你的安装方式)
 - [卸载与保留数据](launcher-uninstall.md)

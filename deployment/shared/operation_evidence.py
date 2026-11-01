@@ -29,7 +29,9 @@ def operation_directory(nora_home, *, operation_id=None, installer_directory=Non
     if not isinstance(value, str) or not re.fullmatch(r'[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}', value):
         raise ValueError('操作标识不是有效 UUID')
     root = Path(installer_directory or os.environ.get('NORA_INSTALLER_DIRECTORY') or Path(nora_home) / 'installer').absolute()
-    if install_root is not None and root.resolve().is_relative_to(Path(install_root).resolve()):
+    if (install_root is not None and root.resolve().is_relative_to(Path(install_root).resolve())
+            and not (Path(install_root).resolve() == Path(nora_home).resolve()
+                     and root.resolve() == Path(nora_home).resolve() / 'installer')):
         raise ValueError('操作记录必须位于安装恢复目录之外')
     target = root / 'operations' / value
     current = root

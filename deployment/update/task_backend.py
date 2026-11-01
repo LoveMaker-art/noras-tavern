@@ -44,7 +44,8 @@ def read(file):
 
 
 def roots(args, update):
-    if (Path(args.hermes_home) / 'nora-instance.json').exists():
+    binding = update.instance_paths(args.hermes_home)
+    if (Path(args.hermes_home) / 'nora-instance.json').exists() and (not binding or binding['desktopManaged']):
         raise failure('受管实例必须使用原系统后端，未切换为独立更新。')
     home, root = update.resolve_update_target(args.hermes_home, args.install_root)
     nora = Path(args.nora_home).expanduser().absolute()
@@ -87,8 +88,8 @@ def installed_identity(update, root, *, verify_contents=True):
     return receipt, manifest
 
 
-def world_read(update, root):
-    app, state = root / 'apps/tavern-runtime', root / 'tavern-state'
+def world_read(update, root, home=None):
+    app, state = root / 'apps/tavern-runtime', update.bound_state_root(home, root)
     if getattr(sys, '_nora_operation_delegate', None) is not None:
         return update.verify_worlds(app, state)
     native = state / 'native'
@@ -109,7 +110,7 @@ def status(args, update, *, verify=True):
     # Admission proves ownership without requiring bytes that this transaction
     # is about to repair. Final/current/recovery verification remains strict.
     receipt, manifest = installed_identity(update, root, verify_contents=verify)
-    runtime = update.standalone_runtime(root)
+    runtime = update.standalone_runtime(root,home=home)
     runtime.verify_install()
     facts = runtime.status()
     if facts.get('inspection_error'):
@@ -117,12 +118,22 @@ def status(args, update, *, verify=True):
     running = facts.get('processes', {}).get('native') is True
     if running and (facts.get('port') != args.port or facts.get('health', {}).get('ok') is not True):
         raise failure('原酒馆进程未通过当前实例的健康与端口检查。')
-    worlds = world_read(update, root) if verify else None
+    worlds = world_read(update, root, home) if verify else None
     return {'standalone': True, 'installed': True, 'hermesInstalled': True, 'noraInstalled': True,
         'systemReady': True, 'setupCompleted': None, 'version': receipt['version'], 'commit': manifest['commit'],
         'port': args.port, 'running': running, 'gatewayRunning': None, 'clawchatConnected': None,
         'gatewayManaged': False, 'noraHome': str(nora), 'hermesHome': str(home), 'installRoot': str(root),
         'worldVerification': {'status': 'verified', 'worlds': sum(len(value) for value in worlds.values())} if worlds is not None else None}
+
+
+def verify_closed_history(args, update, root, file, previous, expected_version):
+    # A completed old task does not own the operator's data or backups. Verify
+    # today's actual program, receipt and service instead of its discarded inputs.
+    current = status(args, update, verify=False)
+    receipt, _ = installed_identity(update, root)
+    if (current['version'] != expected_version or current['version'] != receipt['version']
+            or current.get('commit') != receipt['commit'] or read(file) != previous):
+        raise failure('历史事务与当前真实安装不一致，未修改文件。')
 
 
 def effects(args, update):
@@ -138,12 +149,21 @@ def effects(args, update):
     if (set(previous) == {'schema', 'status', 'version', 'backup'}
             and previous['schema'] == 1 and previous['status'] == 'committed'
             and isinstance(previous['backup'], str) and Path(previous['backup']).is_absolute()):
-        current = status(args, update)
-        if current['version'] != previous['version'] or read(file) != previous:
-            raise failure('历史事务与当前真实安装不一致，未修改文件。')
+        verify_closed_history(args, update, root, file, previous, previous['version'])
         return {'effectState': 'untouched', 'recoveryOutcome': 'not-required', 'canRecover': False,
             'canResume': False, 'status': 'committed', 'operationId': None,
             'reason': 'legacy_committed_verified'}
+    plan = previous.get('recoveryPlan')
+    if (args.operation_id is not None and previous.get('operationId') != args.operation_id
+            and previous.get('schema') == 1 and previous.get('status') in ('committed', 'restored')
+            and isinstance(plan, dict) and plan.get('schema') == 1
+            and plan.get('hermesHome') == str(home) and plan.get('installRoot') == str(root)
+            and isinstance(plan.get('before'), dict) and plan['before'].get('scope') == 'standalone-tavern'):
+        expected = previous.get('version') if previous['status'] == 'committed' else plan['before'].get('version')
+        verify_closed_history(args, update, root, file, previous, expected)
+        return {'effectState': 'untouched', 'recoveryOutcome': 'not-required', 'canRecover': False,
+            'canResume': False, 'status': previous['status'], 'operationId': previous.get('operationId'),
+            'reason': 'prior_transaction_verified'}
     helper = update.recovery_module()
     observed = helper.effects(home, root)
     if observed.get('effectState') == 'unknown':
@@ -154,14 +174,6 @@ def effects(args, update):
             'canResume': False, 'reason': 'transaction_scope_mismatch'}
     same_operation = args.operation_id is None or journal.record.get('operationId') == args.operation_id
     if not same_operation:
-        if journal.record.get('status') in ('committed', 'restored'):
-            current = status(args, update)
-            expected = journal.record['version'] if journal.record['status'] == 'committed' else journal.plan['before']['version']
-            if current['version'] != expected or journal.record['status'] == 'restored' and current['running'] != journal.plan['before']['running']:
-                raise failure('历史事务与当前真实安装或服务状态不一致。')
-            return {'effectState': 'untouched', 'recoveryOutcome': 'not-required', 'canRecover': False,
-                'canResume': False, 'status': journal.record['status'], 'operationId': journal.record.get('operationId'),
-                'reason': 'prior_transaction_verified'}
         return {**observed, 'canRecover': False, 'canResume': False, 'reason': 'other_operation'}
     if journal.record.get('status') == 'committed':
         current = status(args, update)
@@ -193,7 +205,7 @@ def verify_committed(args, update):
     if current['version'] != journal.record['version'] or current['running'] != journal.plan['before']['running']:
         raise failure('新版文件或原有服务状态尚未通过验收。')
     if journal.plan.get('worlds') is not None:
-        update.verify_preserved_worlds(root / 'apps/tavern-runtime', root / 'tavern-state',
+        update.verify_preserved_worlds(root / 'apps/tavern-runtime', update.bound_state_root(home, root),
             journal.plan.get('storyInventory', {}), journal.plan['worlds'])
     return {**current, 'updateVerified': True, 'operationVerified': True}
 

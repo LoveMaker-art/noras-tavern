@@ -145,6 +145,24 @@ LOOPBACK_NETWORK_GUARD += CONFIGURATION_ONLY_PROBE
 
 
 class NativeModelDistributionTests(unittest.TestCase):
+    def test_native_model_assignment_uses_installed_module_capability(self):
+        import types
+        spec = importlib.util.spec_from_file_location('assignment_compat', ROOT / 'ops/installer/hermes_model_config.py')
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+        package = types.ModuleType('hermes_cli')
+        package.__path__ = []
+        for selected in ('web_server_config', 'web_server'):
+            with self.subTest(module=selected):
+                native = types.ModuleType('hermes_cli.' + selected)
+                handler = unittest.mock.Mock(return_value={'provider': 'native'})
+                native._apply_main_model_assignment = handler
+                modules = {'hermes_cli': package, 'hermes_cli.web_server_config': None,
+                           'hermes_cli.web_server': None, 'hermes_cli.' + selected: native}
+                with patch.dict(sys.modules, modules):
+                    self.assertEqual(core._assign_main_model({}, 'native', 'm', '', ''), {'provider': 'native'})
+                handler.assert_called_once_with({}, 'native', 'm', '', '')
+
     def test_skill_uses_one_entry_and_shared_core_without_new_app_dependency(self):
         scripts = SKILL / "scripts"
         self.assertEqual({file.name for file in scripts.glob("*.py")}, {"configure_provider.py"})
@@ -176,6 +194,8 @@ class NativeModelIntegrationTests(unittest.TestCase):
         (self.home / "hermes-agent").symlink_to(self.source, target_is_directory=True)
         self.entry = self.home / "skills/system/model-provider-config/scripts/configure_provider.py"
         shutil.copytree(SKILL, self.entry.parent.parent)
+        (self.home / 'scripts').mkdir()
+        shutil.copy2(ROOT / 'ops/scripts/nora-instance.py', self.home / 'scripts/nora-instance.py')
         # Core configuration components and the existing writer lock suffice.
         # No APP, receipt, operation_cli or launcher adapter is installed.
         self.core = self.tavern / "apps/tavern-ops/installer"
@@ -281,6 +301,18 @@ class NativeModelIntegrationTests(unittest.TestCase):
         lines = result.stdout.strip().splitlines()
         self.assertTrue(lines, result.stderr)
         return result, json.loads(lines[-1])
+
+    def test_instance_identity_probe_does_not_initialize_native_home(self):
+        before = sorted(str(path.relative_to(self.home)) for path in self.home.rglob('*'))
+        result = self.run_python('''
+            import os, runpy
+            from pathlib import Path
+            home=Path(os.environ['HERMES_HOME'])
+            functions=runpy.run_path(str(home/'scripts/nora-instance.py'))
+            functions['verify_hermes_python'](home,functions['configuration'](home))
+        ''')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(sorted(str(path.relative_to(self.home)) for path in self.home.rglob('*')),before)
 
     def native_runtime(self):
         result = self.run_python("""

@@ -43,13 +43,13 @@ export function releasePublicationTag(identity) {
 // exact reference may bind an unchanged, separately sealed core payload.
 export function coreReleaseIdentity(product,platform) {
     if(!Object.hasOwn(product,'coreRelease'))return null;
-    const value=product.coreRelease,platforms=['darwin-arm64','darwin-x64','win32-x64'];
+    const value=product.coreRelease,target=/^[a-z][a-z0-9_]{0,31}-[a-z0-9_]{1,32}$/;
     const exact=(item,keys)=>item&&typeof item==='object'&&!Array.isArray(item)
         &&Object.keys(item).sort().join(',')===[...keys].sort().join(',');
     if(!product.publication||!exact(value,['schema','tag','commit','manifests'])||value.schema!=='nora-core-reference/1'
         ||!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value.tag||'')
         ||!/^[a-f0-9]{40}$/.test(value.commit||'')||!value.manifests||Array.isArray(value.manifests)
-        ||!Object.keys(value.manifests).length||Object.keys(value.manifests).some(name=>!platforms.includes(name)))
+        ||!Object.keys(value.manifests).length||Object.keys(value.manifests).some(name=>!target.test(name)))
         throw new Error('Invalid explicit core release reference');
     const publication=releasePublicationTag(product),before=value.tag.slice(1).split('.').map(Number),after=publication.slice(1).split('-')[0].split('.').map(Number);
     const difference=before.findIndex((number,index)=>number!==after[index]);

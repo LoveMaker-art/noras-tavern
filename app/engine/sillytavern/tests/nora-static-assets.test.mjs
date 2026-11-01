@@ -10,9 +10,7 @@ import {
     computeBrowserAssetManifest,
     computeCompositeAssetRelease,
     computeExtensionAssetManifest,
-    computeStaticAssetRelease,
     createAssetAllowlistMiddleware,
-    createPrecompressedAssetMiddleware,
     createVersionedAssetRouteHandler,
     materializeBrowserAssetManifest,
     renderNoraIndex,
@@ -35,68 +33,40 @@ function makeFixture() {
         legacy: 'dist/nora/legacy.js',
     }));
     fs.writeFileSync(path.join(extensionsDirectory, 'index.js'), 'export default {};');
-    return { fixture, publicDirectory, extensionsDirectory };
+    const bundledLibPath = path.join(fixture, 'lib.js');
+    fs.writeFileSync(bundledLibPath, 'lib-fixture');
+    const options = { publicDirectory, bundledLibPath, globalExtensionDirectory: extensionsDirectory,
+        userExtensionDirectory: path.join(fixture, 'user-extensions') };
+    return { fixture, publicDirectory, extensionsDirectory, options };
 }
 
-test('static release is stable for identical content and changes with executable content', () => {
-    const { fixture, publicDirectory, extensionsDirectory } = makeFixture();
-    const options = {
-        roots: [
-            { label: 'public', path: publicDirectory },
-            { label: 'extensions', path: extensionsDirectory },
-        ],
-    };
-
+test('browser release is stable for identical content and changes with executable content', () => {
+    const { fixture, publicDirectory, options } = makeFixture();
     try {
-        const initial = computeStaticAssetRelease(options);
-        const unchanged = computeStaticAssetRelease(options);
-        assert.equal(initial, unchanged);
+        const initial = computeBrowserAssetManifest(options).release;
+        assert.equal(computeBrowserAssetManifest(options).release, initial);
         assert.match(initial, /^[a-f0-9]{32}$/);
-
-        fs.writeFileSync(path.join(extensionsDirectory, 'index.js'), 'export default { changed: true };');
-        assert.notEqual(computeStaticAssetRelease(options), initial);
-    } finally {
-        fs.rmSync(fixture, { recursive: true, force: true });
-    }
+        fs.writeFileSync(path.join(publicDirectory, 'script.js'), 'export const version = 2;');
+        assert.notEqual(computeBrowserAssetManifest(options).release, initial);
+    } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });
 
-test('excluded mutable files do not invalidate the static release', () => {
-    const { fixture, publicDirectory } = makeFixture();
-    const mutableFile = path.join(publicDirectory, 'user.css');
-    fs.writeFileSync(mutableFile, 'body { color: red; }');
-    const options = {
-        roots: [{ label: 'public', path: publicDirectory }],
-        excludedPaths: ['public/user.css'],
-    };
-
+test('user CSS and third-party extension directories do not invalidate browser release', () => {
+    const { fixture, publicDirectory, options } = makeFixture();
+    const css = path.join(publicDirectory, 'css', 'user.css');
+    const extension = path.join(publicDirectory, 'scripts', 'extensions', 'third-party', 'custom.js');
+    fs.mkdirSync(path.dirname(css), { recursive: true });
+    fs.mkdirSync(path.dirname(extension), { recursive: true });
     try {
-        const initial = computeStaticAssetRelease(options);
-        fs.writeFileSync(mutableFile, 'body { color: blue; }');
-        assert.equal(computeStaticAssetRelease(options), initial);
-    } finally {
-        fs.rmSync(fixture, { recursive: true, force: true });
-    }
+        fs.writeFileSync(css, 'body { color: red; }');
+        fs.writeFileSync(extension, 'export const version = 1;');
+        const initial = computeBrowserAssetManifest(options).release;
+        fs.writeFileSync(css, 'body { color: blue; }');
+        assert.equal(computeBrowserAssetManifest(options).release, initial);
+        fs.writeFileSync(extension, 'export const version = 2;');
+        assert.equal(computeBrowserAssetManifest(options).release, initial);
+    } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });
-
-test('excluded directories do not invalidate the static release', () => {
-    const { fixture, publicDirectory } = makeFixture();
-    const extensionDirectory = path.join(publicDirectory, 'scripts', 'extensions', 'third-party');
-    fs.mkdirSync(extensionDirectory, { recursive: true });
-    fs.writeFileSync(path.join(extensionDirectory, 'extension.js'), 'export const version = 1;');
-    const options = {
-        roots: [{ label: 'public', path: publicDirectory }],
-        excludedPaths: ['public/scripts/extensions/third-party'],
-    };
-
-    try {
-        const initial = computeStaticAssetRelease(options);
-        fs.writeFileSync(path.join(extensionDirectory, 'extension.js'), 'export const version = 2;');
-        assert.equal(computeStaticAssetRelease(options), initial);
-    } finally {
-        fs.rmSync(fixture, { recursive: true, force: true });
-    }
-});
-
 test('composite release changes only when one namespace changes', () => {
     const initial = computeCompositeAssetRelease(['0123456789abcdef', 'fedcba9876543210']);
     assert.equal(initial, computeCompositeAssetRelease(['0123456789abcdef', 'fedcba9876543210']));
@@ -191,37 +161,20 @@ test('managed MVU documentation and build files do not invalidate browser assets
     }
 });
 
-test('asset identity follows canonical bytes and verifies compressed companions', () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-static-vendor-'));
-    const sourcePath = path.join(fixture, 'runtime.js');
-    const brotliPath = `${sourcePath}.br`;
-    const options = {
-        roots: [],
-        files: [
-            { label: 'runtime.js', path: sourcePath },
-            { label: 'runtime.js.br', path: brotliPath },
-        ],
-    };
-
+test('browser identity follows canonical bytes and verifies compressed companions', () => {
+    const { fixture, publicDirectory, options } = makeFixture();
+    const sourcePath = path.join(publicDirectory, 'scripts', 'runtime.js');
+    const brotliPath = sourcePath + '.br';
     try {
-        const source = Buffer.from('export const ready = true;');
-        fs.writeFileSync(sourcePath, source);
-        fs.writeFileSync(brotliPath, zlib.brotliCompressSync(source, {
-            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 },
-        }));
-        const initial = computeStaticAssetRelease(options);
-        fs.writeFileSync(brotliPath, zlib.brotliCompressSync(source, {
-            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 8 },
-        }));
-        assert.equal(computeStaticAssetRelease(options), initial);
-
+        const source = fs.readFileSync(sourcePath);
+        fs.writeFileSync(brotliPath, zlib.brotliCompressSync(source, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } }));
+        const initial = computeBrowserAssetManifest(options).release;
+        fs.writeFileSync(brotliPath, zlib.brotliCompressSync(source, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 8 } }));
+        assert.equal(computeBrowserAssetManifest(options).release, initial);
         fs.writeFileSync(brotliPath, zlib.brotliCompressSync(Buffer.from('different')));
-        assert.throws(() => computeStaticAssetRelease(options), /does not match runtime\.js/i);
-    } finally {
-        fs.rmSync(fixture, { recursive: true, force: true });
-    }
+        assert.throws(() => computeBrowserAssetManifest(options), /does not match scripts\/runtime\.js/i);
+    } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });
-
 test('index rendering injects independently addressable asset namespaces', () => {
     const namespace = name => ({ name, release: '1'.repeat(32), fullDigest: '1'.repeat(64), files: {} });
     const namespaces = Object.fromEntries(Object.values(NORA_ASSET_NAMESPACE).map(name => [name, namespace(name)]));
@@ -419,38 +372,32 @@ test('asset cache rebuilds missing bytes but retains unknown hash-shaped folders
     }
 });
 
-test('versioned assets prefer a precompressed representation', () => {
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-precompressed-assets-'));
-    const sourcePath = path.join(fixture, 'runtime.js');
-    fs.writeFileSync(sourcePath, 'export const ready = true;');
-    fs.writeFileSync(`${sourcePath}.br`, 'brotli-payload');
+test('versioned production route prefers a verified precompressed representation', () => {
+    const { fixture, publicDirectory, options } = makeFixture();
+    const sourcePath = path.join(publicDirectory, 'scripts', 'runtime.js');
+    fs.writeFileSync(sourcePath + '.br', zlib.brotliCompressSync(fs.readFileSync(sourcePath)));
+    const cacheDirectory = path.join(fixture, 'cache');
     const headers = new Map();
     let sentFile = '';
-    const middleware = createPrecompressedAssetMiddleware(fixture);
-
     try {
-        middleware({
-            method: 'GET',
-            path: '/runtime.js',
-            acceptsEncodings: (...encodings) => encodings.includes('br') ? 'br' : false,
-        }, {
+        const manifest = computeBrowserAssetManifest(options);
+        materializeBrowserAssetManifest({ manifest, cacheDirectory });
+        const namespace = Object.values(manifest.namespaces).find(value => value.files['scripts/runtime.js']);
+        const handler = createVersionedAssetRouteHandler(cacheDirectory);
+        handler({ params: { namespace: namespace.name, release: namespace.release, 0: 'scripts/runtime.js' },
+            acceptsEncodings: () => 'br' }, {
             type: value => headers.set('Content-Type', value),
-            setHeader: (name, value) => headers.set(name, value),
-            vary: value => headers.set('Vary', value),
-            sendFile: value => {
-                sentFile = value;
-            },
-        }, () => assert.fail('precompressed asset should be handled'));
-
-        assert.equal(sentFile, `${sourcePath}.br`);
+            setHeader: (key, value) => headers.set(key, value),
+            sendFile: (value, settings) => { sentFile = value; headers.set('Cache-Control', settings.headers['Cache-Control']); },
+            sendStatus: () => assert.fail('verified compressed asset must be served'),
+        });
+        assert.ok(sentFile.endsWith('runtime.js.br'));
+        assert.deepEqual(zlib.brotliDecompressSync(fs.readFileSync(sentFile)), fs.readFileSync(sourcePath));
         assert.equal(headers.get('Content-Encoding'), 'br');
         assert.equal(headers.get('Vary'), 'Accept-Encoding');
         assert.equal(headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
-    } finally {
-        fs.rmSync(fixture, { recursive: true, force: true });
-    }
+    } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });
-
 test('an independently hashed asset namespace serves only files included in its release', () => {
     const middleware = createAssetAllowlistMiddleware([
         'dist/nora/lib-core.js',

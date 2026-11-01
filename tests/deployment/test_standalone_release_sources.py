@@ -97,13 +97,42 @@ class StandaloneReleaseSources(unittest.TestCase):
                 patch.object(module, 'download_asset', side_effect=download), patch.object(module.sys, 'platform', 'darwin'), \
                 patch.object(module.platform, 'machine', return_value='arm64'):
             directory = Path(temporary)
-            module.download_release(directory)
+            module.download_release(directory, desktop=True)
             self.assertEqual((directory/'release-manifest.json').read_bytes(), payload['release-manifest.json'])
             self.assertEqual(module.verify_release(directory), digest(payload['release-manifest.json']))
             self.assertEqual(json.loads((directory/'release-manifest.json').read_text())['commit'], COMMIT)
             physical['darwin-arm64-release-manifest.json'] += b' '
             with self.assertRaises(AssertionError):
-                module.download_release(directory)
+                module.download_release(directory, desktop=True)
+
+    def test_headless_install_follows_core_anchor_without_requesting_a_desktop_platform(self):
+        module = module_at('ops/installer/bootstrap.py', JIHULAB)
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        core = {'schema': 'tavern-release/v2', 'candidate': False, 'commit': COMMIT,
+                'versions': {'tavern': '2.4.2'}, 'archives': {}}
+        archives = {name: name.encode() for name in module.ASSETS[2:]}
+        for name, raw in archives.items():
+            core['archives'][name] = {'name': name, 'sha256': digest(raw), 'size': len(raw)}
+        original_files = {**archives, 'release-manifest.json': json.dumps(core).encode()}
+        original_files['SHA256SUMS'] = '\n'.join(digest(raw) + '  ' + name for name, raw in original_files.items()).encode()
+        product = {**core, 'commit': 'b' * 40, 'publication': {'schema': 'nora-component-publication/1', 'tag': TAG},
+            'coreRelease': {'schema': 'nora-core-reference/1', 'tag': 'v2.4.2', 'commit': COMMIT, 'manifests': {}}}
+        published = {'release-manifest.json': json.dumps(product).encode(), 'SHA256SUMS': b'new publication'}
+        current, original = self.catalogue(published), self.catalogue(original_files)
+        original['tag_name'] = 'v2.4.2'
+        for release in (current, original):
+            release['asset_index'] = {item['name']: item for item in release['assets']}
+        requests = []
+        def select(tag=None):
+            return original if tag == 'v2.4.2' else current
+        def download(release, name, target, **_):
+            requests.append(name)
+            target.write_bytes((original_files if release is original else published)[name])
+        with tempfile.TemporaryDirectory() as directory, patch.object(module, 'select_release', side_effect=select), \
+                patch.object(module, 'download_asset', side_effect=download), patch.object(module.sys, 'platform', 'linux'):
+            self.assertEqual(module.download_release(Path(directory))['tag_name'], 'v2.4.2')
+            self.assertEqual(module.verify_release(Path(directory)), digest(original_files['release-manifest.json']))
+            self.assertFalse(any(name.startswith('nora-system-') for name in requests))
 
     def test_first_installer_accepts_component_publication_and_keeps_fixed_batch_checks(self):
         module=module_at('ops/installer/bootstrap.py',JIHULAB)

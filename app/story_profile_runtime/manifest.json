@@ -1,12 +1,12 @@
 {
   "schema": "nora-story-profile-runtime/v1",
   "source": "repository-project",
-  "sourceRevision": "sha256:e42a44830bb4cfddf7b98df32ca43cffa2bc6ffafcd926d468f3ff8da65117e0",
+  "sourceRevision": "sha256:61dd8d0cf8be01c568d7789e6fb6e60f21104f03959dad6e0e014ac621b20dd7",
   "files": {
     "story_profile_runtime/core/story_profile.py": {
       "source": "story-profile/core/story_profile.py",
-      "sourceSha256": "492cc2d2b6f979d83729b4ca62d522bb49cd40be186b3d828b03d2e843bf22b5",
-      "sha256": "492cc2d2b6f979d83729b4ca62d522bb49cd40be186b3d828b03d2e843bf22b5"
+      "sourceSha256": "1d42899040c70e633e7c5a75d8b17540aa9f3eb146318464dfc188b7fbc757d8",
+      "sha256": "1d42899040c70e633e7c5a75d8b17540aa9f3eb146318464dfc188b7fbc757d8"
     },
     "story_profile_runtime/core/reflection.py": {
       "source": "story-profile/core/reflection.py",

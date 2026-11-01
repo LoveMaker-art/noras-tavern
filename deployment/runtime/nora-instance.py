@@ -1,4 +1,4 @@
-"""Operate only the explicitly configured Nora instance, on Windows and macOS."""
+"""Resolve and operate the explicitly configured Nora instance on its host."""
 import argparse
 import json
 import os
@@ -8,27 +8,168 @@ import sys
 from urllib.parse import urlparse
 
 
-def configuration(home):
+def query_configuration(home):
+    """Find only the operation reader, even when Hermes dependencies are broken."""
     home = Path(home).resolve()
-    if not (home / "nora-instance.json").is_file():
-        # Existing standalone installations keep their reviewed MCP binding.
-        import yaml
-        config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
-        mcp = config["mcp_servers"]["nora"]["env"]
-        url = urlparse(mcp["NORA_MCP_BASE_URL"])
-        state = Path(mcp["NORA_MCP_STATE_ROOT"]).resolve()
-        if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or state.name != "tavern-state":
-            raise RuntimeError("Legacy Nora instance requires an explicit local MCP binding")
-        return {"schema": 0, "hermesHome": str(home), "installRoot": str(state.parent), "port": url.port}
-    value = json.loads((home / "nora-instance.json").read_text(encoding="utf-8"))
-    root = Path(value["installRoot"]).resolve()
-    parent = Path(value["noraHome"]).resolve()
-    if (value.get("schema") != 1 or Path(value["hermesHome"]).resolve() != home
-            or root == home or root == parent or home == parent
-            or not root.is_relative_to(parent) or not home.is_relative_to(parent)
-            or type(value.get("port")) is not int or not 1024 <= value["port"] <= 65535):
-        raise RuntimeError("Invalid Nora instance configuration")
-    return value
+    file = home / 'nora-instance.json'
+    if not file.exists():
+        try:
+            binding = existing_configuration(home)
+        except ModuleNotFoundError as error:
+            if error.name != 'yaml':
+                raise
+            binding = None
+        if binding is not None:
+            return binding
+        return {'hermesHome': str(home), 'noraHome': str(home),
+                'installRoot': str(Path(os.environ.get('TAVERN_DATA_ROOT') or home)), 'desktopManaged': False}
+    record = json.loads(file.read_text(encoding='utf-8'))
+    if not isinstance(record, dict) or record.get('schema') != 1:
+        raise RuntimeError('Invalid Nora instance configuration')
+    for name in ('hermesHome', 'noraHome', 'installRoot'):
+        value = record.get(name)
+        if not isinstance(value, str) or not Path(value).is_absolute() or Path(value) == Path(Path(value).anchor):
+            raise RuntimeError('Invalid Nora instance configuration')
+    if Path(record['hermesHome']).resolve() != home:
+        raise RuntimeError('Invalid Nora instance configuration')
+    return {**record, 'desktopManaged': record.get('deployment', 'desktop') == 'desktop'}
+
+
+def _configuration_inputs(home, config_path=None):
+    import yaml
+    home = Path(home).resolve()
+    file = Path(config_path) if config_path is not None else home / 'config.yaml'
+    try:
+        config = yaml.safe_load(file.read_text(encoding='utf-8')) if file.is_file() else {}
+    except (yaml.YAMLError, UnicodeError):
+        # Parser excerpts may contain credentials. Preserve refusal without
+        # leaking raw config lines or treating malformed content as missing.
+        raise RuntimeError('Hermes 配置格式无效，未修改实例。') from None
+    record_file = home / 'nora-instance.json'
+    record = json.loads(record_file.read_text(encoding='utf-8')) if record_file.is_file() else {}
+    return home, config, record
+
+
+def configuration(home, *, config_path=None):
+    # Recovery callers authenticate a before-image before supplying its path.
+    return _configuration(*_configuration_inputs(home, config_path))
+
+
+def _configuration(home, config, record):
+    """Read one binding without moving data or requiring a desktop layout.
+
+    nora_tavern describes explicit nonstandard paths. Existing MCP configuration
+    and schema-1 instance records remain valid inputs; disagreement is an error.
+    A legacy desktop record retains its service owner. New core records declare
+    deployment=core rather than borrowing desktop ownership.
+    """
+    home = Path(home).resolve()
+    if not isinstance(config, dict):
+        raise RuntimeError('Hermes 配置不是对象，未修改实例。')
+    def absolute(value, label):
+        if not isinstance(value, str) or not Path(value).expanduser().is_absolute():
+            raise RuntimeError(label + ' 必须是明确的绝对路径。')
+        result = Path(value).expanduser().resolve()
+        if result == Path(result.anchor):
+            raise RuntimeError(label + ' 不能是文件系统根目录。')
+        return result
+
+    declared = config.get('nora_tavern') or {}
+    mcp = ((config.get('mcp_servers') or {}).get('nora') or {}).get('env') or {}
+    if not isinstance(declared, dict) or not isinstance(mcp, dict):
+        raise RuntimeError('实例路径配置不是对象，未修改实例。')
+    record_file = home / 'nora-instance.json'
+    if record_file.exists() and (not isinstance(record, dict) or record.get('schema') != 1
+            or absolute(record.get('hermesHome'), 'hermesHome') != home
+            or record.get('deployment', 'desktop') not in ('core', 'desktop')):
+        raise RuntimeError('Invalid Nora instance configuration')
+    roots = {}
+    def add(label, value):
+        if value is not None:
+            roots[label] = absolute(value, label)
+    add('instance.installRoot', record.get('installRoot'))
+    add('nora_tavern.installRoot', declared.get('installRoot'))
+    project = mcp.get('NORA_MCP_PROJECT_ROOT')
+    if project:
+        app = absolute(project, 'NORA_MCP_PROJECT_ROOT')
+        if app.name == 'tavern-runtime' and app.parent.name == 'apps':
+            add('MCP.installRoot', str(app.parent.parent))
+    if not roots and os.environ.get('TAVERN_DATA_ROOT'):
+        add('TAVERN_DATA_ROOT', os.environ['TAVERN_DATA_ROOT'])
+    state_value = declared.get('stateRoot') or mcp.get('NORA_MCP_STATE_ROOT')
+    if not roots and state_value and Path(state_value).name == 'tavern-state':
+        add('MCP.stateParent', str(absolute(state_value, 'stateRoot').parent))
+    if not roots:
+        raise RuntimeError('缺少当前实例 installRoot；请核对已有 MCP 或 nora_tavern 路径配置。')
+    if len(set(roots.values())) != 1:
+        raise RuntimeError('实例程序目录冲突，未修改任何文件：' + ', '.join(roots))
+    root = next(iter(roots.values()))
+    state = absolute(str(state_value or root / 'tavern-state'), 'stateRoot')
+    if (state in (root, home) or root.is_relative_to(state) or home.is_relative_to(state)
+            or any(state.is_relative_to(directory) for directory in
+                   (root/'apps',home/'skills',home/'scripts',home/'hooks',home/'plugins'))):
+        raise RuntimeError('数据目录与受管程序重叠；请将 stateRoot 指向独立的数据目录，原文件未移动。')
+    if declared.get('stateRoot') and mcp.get('NORA_MCP_STATE_ROOT') and state != absolute(mcp['NORA_MCP_STATE_ROOT'], 'MCP.stateRoot'):
+        raise RuntimeError('实例数据目录冲突，未修改任何文件。')
+    app = absolute(str(declared.get('appRoot') or project or root / 'apps/tavern-runtime'), 'appRoot')
+    if declared.get('appRoot') and project and app != absolute(project, 'MCP.appRoot'):
+        raise RuntimeError('实例程序入口冲突，未修改任何文件。')
+    ports = []
+    if 'port' in record:
+        ports.append(record['port'])
+    if 'port' in declared:
+        ports.append(declared['port'])
+    if mcp.get('NORA_MCP_BASE_URL'):
+        url = urlparse(mcp['NORA_MCP_BASE_URL'])
+        if (url.scheme != 'http' or url.hostname not in ('127.0.0.1', 'localhost', '::1')
+                or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment):
+            raise RuntimeError('MCP 必须绑定当前主机明确的酒馆端口。')
+        ports.append(url.port)
+    if not ports or any(type(port) is not int or not 1024 <= port <= 65535 for port in ports) or len(set(ports)) != 1:
+        raise RuntimeError('实例端口缺失或冲突，未修改任何文件。')
+    desktop = bool(record) and record.get('deployment', 'desktop') == 'desktop'
+    owner = absolute(record.get('noraHome', str(home)), 'noraHome')
+    if record and os.environ.get('NORA_TAVERN_HOME') and owner != absolute(os.environ['NORA_TAVERN_HOME'], 'NORA_TAVERN_HOME'):
+        raise RuntimeError('实例操作目录冲突，未修改任何文件。')
+    result = {**record, 'schema': 1 if record else 0, 'noraHome': str(owner), 'hermesHome': str(home),
+              'installRoot': str(root), 'stateRoot': str(state), 'appRoot': str(app),
+              'port': ports[0], 'desktopManaged': desktop,
+              'serviceOwner': 'desktop' if desktop else declared.get('serviceOwner', 'external')}
+    for key in ('hermesInstallDir', 'python'):
+        value = declared.get(key) or record.get(key)
+        if value:
+            result[key] = str(absolute(value, key))
+    return result
+
+
+def existing_configuration(home):
+    """No binding is distinct from a present, invalid/conflicting binding."""
+    home, config, record = _configuration_inputs(home)
+    if not (home/'nora-instance.json').exists() and not (isinstance(config,dict) and (
+            config.get('nora_tavern') or (config.get('mcp_servers') or {}).get('nora',{}).get('env'))):
+        return None
+    return _configuration(home, config, record)
+
+
+def verify_hermes_python(home, binding):
+    """Verify loaded Hermes code/config, not a venv's directory spelling."""
+    import hermes_cli
+    from hermes_constants import get_hermes_home
+    actual = Path(hermes_cli.__file__).resolve().parent.parent
+    requested = binding.get('hermesInstallDir') or os.environ.get('HERMES_INSTALL_DIR')
+    legacy = Path(home) / 'hermes-agent'
+    if not requested and legacy.is_dir():
+        requested = str(legacy)
+    if requested and Path(requested).resolve() != actual:
+        raise RuntimeError('Hermes Python 加载的程序与本实例绑定不一致。')
+    # Native config.get_config_path is get_hermes_home()/config.yaml. Loading
+    # the complete config module just to locate it can initialize native home
+    # directories; identity verification itself must remain read-only.
+    if Path(get_hermes_home()).resolve() != Path(home).resolve():
+        raise RuntimeError('Hermes Python 加载的配置不属于本实例。')
+    if binding.get('python') and Path(binding['python']).resolve() != Path(sys.executable).resolve():
+        raise RuntimeError('请使用实例明确配置的 Hermes Python。')
+    return {**binding, 'hermesInstallDir': str(actual), 'python': str(Path(sys.executable).absolute())}
 
 
 def main():
@@ -41,7 +182,8 @@ def main():
     if args.operation == "check":
         print(json.dumps({"ok": True, "port": port}))
         return 0
-    env = {**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(root)}
+    env = {**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(root),
+           "TAVERN_STATE_DIR": config['stateRoot'], "TAVERN_APP_DIR": config['appRoot']}
     if args.operation == "app-link":
         import importlib.util
         script = root / "apps/tavern-ops/updater/liveware_integration.py"
@@ -59,11 +201,11 @@ def main():
         script = root / "apps/tavern-ops/updater/liveware_integration.py"
         command = [str(script), "--home", str(root), "--hermes-home", str(home),
                    "--port", str(port)]
-        if config["schema"] == 1:
+        if config['desktopManaged']:
             command.append("--no-start-runtime")
         command.append("startup")
     else:
-        command = [str(root / "apps/tavern-runtime/native_lifecycle.py"), args.operation]
+        command = [str(Path(config['appRoot']) / 'native_lifecycle.py'), args.operation]
         if args.operation != "stop":
             command += ["--port", str(port)]
     return subprocess.run([sys.executable, "-B", *command], env=env, check=False).returncode

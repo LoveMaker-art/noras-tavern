@@ -39,11 +39,16 @@ def hermes_home_for(home, hermes_home=None):
                 or os.environ.get("HERMES_HOME") or home).expanduser().resolve()
 
 
+def state_root(home, *, hermes_home=None):
+    from bootstrap import state_root as bound_state_root
+    return bound_state_root(hermes_home_for(home,hermes_home),Path(home).resolve())
+
+
 @contextmanager
-def registration_lock(home, worker=False):
+def registration_lock(home, worker=False, *, hermes_home=None):
     from runtime_lock import installation_lock
     name = "liveware-worker.lock" if worker else "liveware-registration.lock"
-    with installation_lock(Path(home) / "tavern-state", name, blocking=not worker) as acquired:
+    with installation_lock(state_root(home,hermes_home=hermes_home), name, blocking=not worker) as acquired:
         yield acquired
 
 
@@ -125,7 +130,8 @@ def binary(home, *, hermes_home=None):
 def environment(home, *, hermes_home=None):
     hermes_home = hermes_home_for(home, hermes_home)
     env = {**os.environ, "HOME": str(hermes_home), "USERPROFILE": str(hermes_home),
-           "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(home)}
+           "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(home),
+           'TAVERN_STATE_DIR': str(state_root(home,hermes_home=hermes_home))}
     for key in ("LIVEWARE_TOKEN", "LIVEWARE_INSTANCE_ID", "LIVEWARE_API_URL"):
         env.pop(key, None)
     saved = hermes_home / ".clawling/liveware.json"
@@ -233,7 +239,7 @@ def resolve_identity(home, document, role, title, available, *, create_missing, 
     if role in pending:
         raise RuntimeError(title + " 上次创建结果不确定，等待平台列表确认；不会重复创建")
     pending[role] = {"started_at": int(time.time())}
-    atomic_json(Path(home) / "tavern-state/apps.json", document)
+    atomic_json(state_root(home,hermes_home=hermes_home) / 'apps.json', document)
     output = cli(home, "app", "create", title, "--agent-type", "hermes", hermes_home=hermes_home)
     identity = created_identity(output, title)
     if identity:
@@ -309,8 +315,8 @@ def bind_with_retry(home, app_id, target, attempts=5, *, hermes_home=None):
 
 
 def reconcile(home, port=8799, *, create_missing=False, hermes_home=None):
-    with registration_lock(home):
-        ready_path = Path(home) / "tavern-state/liveware-ready.json"
+    with registration_lock(home,hermes_home=hermes_home):
+        ready_path = state_root(home,hermes_home=hermes_home) / 'liveware-ready.json'
         atomic_json(ready_path, {"status": "pending"})
         try:
             # Do not revive a tunnel daemon after the launcher has stopped Tavern.
@@ -329,7 +335,7 @@ def reconcile(home, port=8799, *, create_missing=False, hermes_home=None):
 
 def _reconcile(home, port=8799, *, create_missing=False, owner, hermes_home=None):
     home = Path(home)
-    path = home / "tavern-state/apps.json"
+    path = state_root(home,hermes_home=hermes_home) / 'apps.json'
     if not path.is_file() and not create_missing:
         return {"status": "not-configured", "warnings": ["未找到既有 Liveware App；需要首次初始化"]}
     document = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
@@ -451,14 +457,14 @@ def ensure(home, port=8799, *, hermes_home=None, start_local=True):
 
 
 def verified_entry(home, port=8799, *, hermes_home=None):
-    with registration_lock(home):
+    with registration_lock(home,hermes_home=hermes_home):
         try:
             release = runtime_asset_release(port)
             owner = authenticate(home, hermes_home=hermes_home)
-            document = json.loads((Path(home) / "tavern-state/apps.json").read_text(encoding="utf-8"))
+            document = json.loads((state_root(home,hermes_home=hermes_home) / 'apps.json').read_text(encoding="utf-8"))
             if document.get("_owner") != owner:
                 raise RuntimeError("Entry ownership has not been verified for this instance")
-            ready = json.loads((Path(home) / "tavern-state/liveware-ready.json").read_text(encoding="utf-8"))
+            ready = json.loads((state_root(home,hermes_home=hermes_home) / 'liveware-ready.json').read_text(encoding="utf-8"))
             if ready != {"status": "ready", "owner": owner, "host": socket.gethostname(), "port": port, "assetRelease": release}:
                 raise RuntimeError("This instance has not completed tunnel and launcher reconciliation")
             available, rows = active_apps(home, hermes_home=hermes_home), listed_apps(home, hermes_home=hermes_home)
@@ -479,7 +485,7 @@ def verified_entry(home, port=8799, *, hermes_home=None):
 
 
 def startup(home, port=8799, *, hermes_home=None, start_local=True):
-    with registration_lock(home, worker=True) as acquired:
+    with registration_lock(home, worker=True,hermes_home=hermes_home) as acquired:
         if not acquired:
             return {"status": "already-running"}
         # Local availability must not depend on activation or message delivery.
