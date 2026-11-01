@@ -4,6 +4,12 @@ import { createMvuTransactionView } from './mvu-transaction-view.js';
 import { initializeReasoningView } from '../../engine/sillytavern/public/scripts/nora-compat/reasoning-view.js';
 import { ledgerAllowsEdit, subscribeLedger } from '../../engine/sillytavern/public/scripts/nora-story-ledger/client.js';
 
+export function findReadingAnchor(element, top) {
+    const visible = selector => [...(element.querySelectorAll?.(selector) || [])]
+        .find(node => node.getBoundingClientRect().bottom > top);
+    return visible('.mes_text > p') || visible('.mes');
+}
+
 export function createStMessageViewAdapter({ select, selectAll, icons, documentRef = document, MutationObserverImpl = MutationObserver }) {
     let observer = null;
     let latestModels = [];
