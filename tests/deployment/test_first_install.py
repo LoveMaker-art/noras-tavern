@@ -224,7 +224,7 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                              {p.relative_to(original).as_posix(): p.read_bytes() for p in original.rglob("*") if p.is_file()})
             probe = '''
 import json,sys
-from pathlib import Path
+from pathlib import Path,PureWindowsPath
 from unittest.mock import patch
 sys.path.insert(0,sys.argv[1])
 from agent.prompt_builder import build_skills_system_prompt
@@ -235,7 +235,11 @@ assert _validate_frontmatter(text,new_skill=True) is None
 assert "nora-skill-library" in build_skills_system_prompt(skills_dir_override=Path.cwd()/"skills")
 with patch("subprocess.run",side_effect=AssertionError("loading cannot execute commands")):
  view=json.loads(skill_view("nora-skill-library",preprocess=False))
- assert view["success"] and "scripts/library.py" in view["linked_files"]["scripts"]
+ assert view["success"], view.get("error")
+ for linked in (view["linked_files"]["scripts"], [str(PureWindowsPath(p)) for p in view["linked_files"]["scripts"]]):
+  assert "scripts/library.py" in [PureWindowsPath(p).as_posix() for p in linked], linked
+ resource=json.loads(skill_view("nora-skill-library",file_path="scripts/library.py",preprocess=False))
+ assert resource["success"], resource.get("error")
 assert "nora-skill-library" in Path("AGENTS.md").read_text()
 '''
             result = subprocess.run([str(python), "-B", "-c", probe, str(hermes)], cwd=home,
