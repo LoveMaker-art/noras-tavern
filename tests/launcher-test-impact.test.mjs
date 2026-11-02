@@ -14,6 +14,16 @@ function fixture(paths) {
     return { baseline, current, plan };
 }
 
+test('focused headless qualification does not schedule desktop-only fixtures',()=>{
+    const impact=selectTestImpact(fixture(['nora/greeting.md'])),calls=[];
+    runFocusedRegression({impact,platform:'linux',checkEnvironment:()=>({environment:process.env}),
+        run:(command,args)=>{calls.push(args);return {status:0};}});
+    assert.ok(!calls[0].some(value=>value.endsWith('launcher_uninstall.test.cjs')));
+    assert.ok(calls[0].some(value=>value.endsWith('cloud_core_release.test.cjs')));
+    assert.ok(calls[1].includes('tests.deployment.test_update_operation_safety'));
+    assert.ok(calls[1].includes('tests.deployment.test_standalone_update_recovery'));
+});
+
 test('known UI and content changes select their union and retain the mandatory maintenance floor', () => {
     const value = selectTestImpact(fixture(['launcher/ui/launcher-controller.js', 'nora/greeting.md',
         'app/engine/sillytavern/public/scripts/nora-home.js']));
@@ -57,6 +67,17 @@ test('changed tests and release tooling do not inherit a narrow UI-only qualific
     const docs = fixture(['docs/install.md']); docs.plan.mode = 'verification-only';
     assert.equal(selectTestImpact(docs).full, false);
     assert.equal(selectTestImpact(docs).productBuild, false);
+});
+
+test('ordinary creative skill text selects content checks while executable and maintenance skills remain complete',()=>{
+    for (const file of ['nora/skills/creative/nora-skill-library/SKILL.md',
+        'nora/skills/creative/nora-card-design/references/examples.md']) {
+        const value=selectTestImpact(fixture([file]));
+        assert.equal(value.full,false,file); assert.equal(value.content,true,file);
+    }
+    for (const file of ['nora/skills/creative/nora-skill-library/scripts/library.py',
+        'nora/skills/system/tavern-updater/SKILL.md','nora/AGENTS.md'])
+        assert.equal(selectTestImpact(fixture([file])).full,true,file);
 });
 
 test('focused execution uses whole existing files once, stops on failure and refuses a full selection', () => {

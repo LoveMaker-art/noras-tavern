@@ -190,6 +190,22 @@ export async function executePublication(publication, {stage = 'seal', providers
     const prepareOrder = ['sourceforge', 'jihulab', 'github'].filter(source => selected.includes(source));
     const promoteOrder = ['github', 'sourceforge', 'jihulab'].filter(source => selected.includes(source));
     const save = () => { state.updatedAt = new Date().toISOString(); atomic(path.join(stateDir, 'publication-state.json'), state); };
+    // Cumulative operation observations are advisory, never publication proof.
+    // A completed body size is observable here; TCP/multipart/failed-body bytes
+    // are not. Legacy checkpoints begin observing only on their next execution.
+    state.observations ||= {schema:'nora-publication-observations/1',startedAt:new Date().toISOString(),wireBytes:null,sources:{}};
+    const measure=async(source,phase,object,operation)=>{
+        const phases=state.observations.sources[source] ||= {};
+        const metric=phases[phase] ||= {calls:0,succeeded:0,failed:0,elapsedMs:0,completedObjectBytes:0,matched:0};
+        const started=performance.now();metric.calls++;
+        try {
+            const result=await operation();metric.succeeded++;
+            if(phase==='upload')metric.completedObjectBytes+=object.size;
+            if(phase==='inspect'&&result==='matching')metric.matched++;
+            return result;
+        }catch(error){metric.failed++;throw error;}
+        finally{metric.elapsedMs+=performance.now()-started;save();}
+    };
     if (publisherCommit && !state.publishers.includes(publisherCommit)) state.publishers.push(publisherCommit);
     save();
     // Re-run against the sealed objects on every entry, including resumed
@@ -233,19 +249,19 @@ export async function executePublication(publication, {stage = 'seal', providers
             const results = await Promise.allSettled(prepareOrder.map(async source => {
                 const provider = providers[source], checkpoint = state.sources[source];checkpoint.ready=false;save();
                 try {
-                progress(source, 'begin'); await provider.begin(publication);
+                progress(source, 'begin'); await measure(source,'begin',null,()=>provider.begin(publication));
                 const objects = plan.objects.filter(item => item.phase !== 'channel' && (source !== 'github' || item.phase === 'asset'));
                 for (const object of objects) {
                     progress(source, 'inspect', object);
                     const receipt = checkpoint.objects[object.key];
-                    const existing = await provider.inspect(object, receipt, publication);
+                    const existing = await measure(source,'inspect',object,()=>provider.inspect(object, receipt, publication));
                     assert.ok(['missing', 'matching'].includes(existing), 'Invalid remote inspection result');
                     if (existing === 'missing') {
                         assert.ok(source!=='jihulab'||!Object.hasOwn(checkpoint.uploadIntents||{},object.key),
                             'Unresolved JihuLab upload intent: remote object is still missing; refusing automatic re-PUT');
                         assert.ok(!object.reference, 'Referenced immutable asset is missing; never create it under an old tag');
-                        progress(source, 'upload', object); await provider.upload(object, publication);
-                        progress(source, 'verify', object); await provider.verify(object, publication);
+                        progress(source, 'upload', object); await measure(source,'upload',object,()=>provider.upload(object, publication));
+                        progress(source, 'verify', object); await measure(source,'verify',object,()=>provider.verify(object, publication));
                     }
                     checkpoint.objects[object.key] = {sha256: object.sha256, size: object.size, verifiedAt: new Date().toISOString()};
                     // A resumed intent reaches this point only after the real
@@ -254,7 +270,7 @@ export async function executePublication(publication, {stage = 'seal', providers
                     save();
                     log(`${source} verified ${object.key} sha256=${object.sha256}`);
                 }
-                progress(source, 'ready-check'); await provider.assertReady(publication);
+                progress(source, 'ready-check'); await measure(source,'ready-check',null,()=>provider.assertReady(publication));
                 checkpoint.ready = true;delete state.activeSources[source];save();
                 } catch(error){error.publicationPhase=state.activeSources[source];throw error;}
             }));
@@ -266,8 +282,8 @@ export async function executePublication(publication, {stage = 'seal', providers
             assert.ok(selected.every(source => state.sources[source].ready), selected.length === 2
                 ? 'Both sources must be prepared before promotion' : 'Selected sources must be prepared before promotion');
             for (const source of promoteOrder) {
-                progress(source, 'ready-check'); await providers[source].assertReady(publication);
-                progress(source, 'promotion-check'); await providers[source].checkPromotion(publication);
+                progress(source, 'ready-check'); await measure(source,'ready-check',null,()=>providers[source].assertReady(publication));
+                progress(source, 'promotion-check'); await measure(source,'promotion-check',null,()=>providers[source].checkPromotion(publication));
             }
             state.status = 'promoting'; save();
             // Cross-site promotion cannot be atomic. Promote the domestic
@@ -275,10 +291,10 @@ export async function executePublication(publication, {stage = 'seal', providers
             // A later failure resumes the same sealed publication.
             for (const source of promoteOrder) {
                 if (!state.sources[source].promoted) {
-                    progress(source, 'promote'); await providers[source].promote(publication);
-                    progress(source, 'verify-promotion'); await providers[source].verifyPromotion(publication);
+                    progress(source, 'promote'); await measure(source,'promote',null,()=>providers[source].promote(publication));
+                    progress(source, 'verify-promotion'); await measure(source,'verify-promotion',null,()=>providers[source].verifyPromotion(publication));
                     state.sources[source].promoted = true; save();
-                } else await providers[source].verifyPromotion(publication);
+                } else await measure(source,'verify-promotion',null,()=>providers[source].verifyPromotion(publication));
             }
             state.status = 'published'; delete state.active;delete state.activeSources; delete state.failure; save();
         }

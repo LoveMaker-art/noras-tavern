@@ -6,13 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createReleasePlan, readGitSnapshot } from '../release/release-plan.mjs';
 import { checkLauncherTestEnvironment } from './launcher-test-environment.mjs';
+import { sourceTestGroups } from './verify-launcher-stability.mjs';
 
 const rootPath = fileURLToPath(new URL('../../', import.meta.url));
-const minimum = {
-    javascript: ['launcher_operation_result.test.cjs', 'launcher_runtime.test.cjs',
-        'launcher_update_executor.test.cjs', 'launcher_uninstall.test.cjs'],
-    python: ['test_first_install', 'test_update_target', 'test_update_operation_safety'],
-};
+const minimum = sourceTestGroups('darwin', { focused: true });
 const withoutVersion = value => { const copy=structuredClone(value || {});delete copy.version;return copy; };
 
 export function selectTestImpact({ baseline, current, plan }) {
@@ -45,7 +42,8 @@ export function selectTestImpact({ baseline, current, plan }) {
         if (['launcher/ui/index.html','launcher/ui/launcher-controller.js'].includes(file) || file.startsWith('launcher/ui/assets/')) {
             flags.ui=true;reasons.push({path:file,reason:'Launcher presentation and existing interaction contracts'});continue;
         }
-        if (['nora/SOUL.md','nora/greeting.md'].includes(file)) {
+        if (['nora/SOUL.md','nora/greeting.md'].includes(file)
+            || /^nora\/skills\/creative\/[^/]+\/(?:SKILL\.md|references\/[\w./-]+\.md)$/.test(file)) {
             flags.content=true;reasons.push({path:file,reason:'Managed Nora content, template installation and customization'});continue;
         }
         if (file.startsWith('app/engine/sillytavern/public/') || file.startsWith('app/native-extensions/nora-ui/')) {
@@ -59,12 +57,13 @@ export function selectTestImpact({ baseline, current, plan }) {
         acceptanceReuse:'Only the existing accepted-artifact consumers may establish reusable acceptance; exclusion is not a passed test'};
 }
 
-export function runFocusedRegression({ root=rootPath, impact, run=spawnSync, checkEnvironment=checkLauncherTestEnvironment }={}) {
+export function runFocusedRegression({ root=rootPath, impact, platform=process.platform, run=spawnSync, checkEnvironment=checkLauncherTestEnvironment }={}) {
     assert.equal(impact.full,false,'A complete regression cannot be replaced by focused checks');
     assert.equal(impact.productBuild,true,'Verification-only changes do not require product regression');
     const {environment}=checkEnvironment({root,profile:'source'});
-    const javascript=[...minimum.javascript,...(impact.ui?['launcher_guidance_flow.test.cjs','launcher_recovery_route.test.cjs']:[])];
-    const python=[...minimum.python,...(impact.content?['test_greeting_template','test_nora_profile','test_nora_system']:[])];
+    const selected = sourceTestGroups(platform, { focused: true });
+    const javascript=[...selected.javascript,...(impact.ui && platform !== 'linux'?['launcher_guidance_flow.test.cjs','launcher_recovery_route.test.cjs']:[])];
+    const python=[...selected.python,...(impact.content?['test_greeting_template','test_nora_profile','test_nora_system']:[])];
     const jsTimeout=process.platform==='win32'||process.platform==='darwin'&&process.arch==='x64'?900000:240000;
     const pyTimeout=process.platform==='win32'?480000:240000;
     for (const [args,timeout] of [

@@ -15,7 +15,7 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const sorted = values => [...new Set(values)].sort();
 const configPaths = ['tooling/source-layout.json', 'launcher/desktop/package.json', '.github/workflows/build-integrated-launcher.yml',
     '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml', 'launcher/desktop/package-lock.json',
-    '.github/workflows/launcher-platform-stages.yml'];
+    '.github/workflows/launcher-platform-stages.yml', '.github/workflows/component-platform-stages.yml'];
 // Full normalized step bodies audited against 65a2a7a and 78f122e on 2026-10-21.
 // Only these component-job verification bodies are exempt, never their titles.
 // The historical inventory receipt is classified as verification, not accepted
@@ -104,7 +104,7 @@ export function workflowInputs(text = '', job = 'build') {
     while (end < lines.length && !/^ {2}[\w-]+:\s*$/.test(lines[end])) end++;
     const body = lines.slice(start + 1, end);
     const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line) && !/^\s*-\s+name\s*:/.test(line))
-        .map(line => line.trim().replace(/\s+#.*$/, '')).join('\n');
+        .map(line => line.trim().replace(/\s+#.*$/, '').replace("needs.preflight.outputs.plan_mode != 'verification-only' && ",'' )).join('\n');
     const environment = body.filter(line => /\b(?:runs-on|runner|node-version|python-version)\s*:/.test(line)
         || /"(?:runner|platform|arch|package_script)"\s*:/.test(line));
     const packaging = [], unknown = [];
@@ -125,6 +125,7 @@ export function workflowInputs(text = '', job = 'build') {
             && !(/^(?:- )?run: node --test(?: tests\/[A-Za-z0-9_./*-]+)+$/.test(value)
                 && value.split(/\s+/).filter(token => token.startsWith('tests/'))
                     .every(file => file.split('/').every(part => part && part !== '.' && part !== '..')))
+            && !/^(?:- )?run: node tooling\/checks\/release-fixtures\.mjs$/.test(value)
             && !/^(?:- )?uses:\s*actions\/(?:checkout|upload-artifact|download-artifact)@/m.test(value)) unknown.push(value);
         block = [];
     };
@@ -164,6 +165,7 @@ function configuration(contents) {
     }
     return { layout: layout?.rules || null, launcher: parse(configPaths[1]), launcherLock: parse(configPaths[5]), workflow,
         componentWorkflow: workflowInputs(component, /^ {2}build-components:\s*$/m.test(component) ? 'build-components' : 'publish'),
+        componentValidationHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update|package-component-update)|\bnpm\s+run\s+(?:build|pack:)|\belectron-builder\b)/.test(contents[configPaths[7]] || ''),
         publicationWorkflowHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update)|\bnpm\s+(?:ci|install|run\s+(?:build|pack:))|\belectron-builder\b)/.test(contents[configPaths[4]] || '') };
 }
 
@@ -312,7 +314,8 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
             reason('components','Reviewed compatibility declaration changes release metadata, not runtime construction'); metadata=true;
         } else if (fullTools.has(name)) full('Shared packaging/projection/archive input affects product and environment construction');
         else if (name.startsWith('.github/')) {
-            if (name === configPaths[4] && !current.configuration?.publicationWorkflowHasBuild) reason('verification-only', 'Audited accepted-artifact publication workflow does not construct product bytes');
+            if(name===configPaths[7]&&!current.configuration?.componentValidationHasBuild) reason('verification-only','Component qualification consumes immutable product artifacts; it does not construct product bytes');
+            else if (name === configPaths[4] && !current.configuration?.publicationWorkflowHasBuild) reason('verification-only', 'Audited accepted-artifact publication workflow does not construct product bytes');
             else if (name !== configPaths[2] && name !== configPaths[3] && name !== configPaths[6]) { review.push(`Unclassified changed CI configuration: ${name}`); full('Other workflow/build automation has not been audited for product inputs'); }
             else {
                 const key = name === configPaths[3] ? 'componentWorkflow' : 'workflow';

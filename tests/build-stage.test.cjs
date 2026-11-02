@@ -189,3 +189,42 @@ test('publication requires all three platform stage chains and rejects changed d
  fs.mkdirSync(path.join(acceptance,'win32-x64'));fs.writeFileSync(path.join(acceptance,'win32-x64/nora-build-stages.json'),JSON.stringify(stagedOriginal.proof));
  assert.equal((await stage.verifyPublishedStages(delivery,acceptance,run,artifacts,mixed)).mode,'staged');
 });
+
+test('component source qualification restores independently after failed native acceptance and stays distinct from installer proof',async t=>{
+ const f=fixture(t);f.expected.options={pipeline:'components',force_full_regression:false};f.expected.baseline='v2.6.0';
+ const impact={schema:'nora-test-impact/1',source:{commit:f.expected.commit},planDigest:'a'.repeat(64),full:false,ui:false,content:true,tavern:false};
+ fs.writeFileSync(path.join(f.temp,'test-impact.json'),JSON.stringify(impact));
+ const output=path.join(f.home,'component-source'),r=await stage.seal('source',output,f);
+ assert.equal(r.context.options.pipeline,'components');
+ const zip=path.join(f.home,'component-source.zip');execFileSync(process.env.NORA_STAGE_TEST_PYTHON||'python3',['-I','-B','-c',
+ 'import pathlib,zipfile,sys\np=pathlib.Path(sys.argv[1])\nwith zipfile.ZipFile(sys.argv[2],"w") as z:\n for f in p.iterdir():z.write(f,f.name)',output,zip]);
+ const item={id:91,name:stage.name('source',f.expected.platform,'components'),expired:false,size_in_bytes:fs.statSync(zip).size,digest:'sha256:'+hash(fs.readFileSync(zip)),workflow_run:{id:7,head_sha:f.expected.commit,repository_id:9,head_repository_id:9}};
+ assert.notEqual(item.name,stage.name('source',f.expected.platform));
+ const producer={...job(f),name:stage.jobName('source',f.expected.platform,'components'),steps:stage.componentSourceGates.map(name=>({name,status:'completed',conclusion:'success'}))};
+ const io={query:endpoint=>endpoint.includes('/attempts/')?{total_count:1,jobs:[producer]}:{id:7,head_sha:f.expected.commit,repository:{id:9,full_name:'owner/repo'},head_repository:{id:9},path:'.github/workflows/publish-component-update.yml'},pages:()=>[{artifacts:[item]}],download:async(_a,_r,target)=>fs.copyFileSync(zip,target)};
+ for(const attempt of [2,3]){
+  const temp=path.join(f.home,'acceptance-'+attempt);fs.mkdirSync(temp);
+  const proof=await stage.restore('source',{...f,temp,expected:{...f.expected,attempt},...io});
+  assert.equal(proof.artifact.id,91);assert.deepEqual(JSON.parse(fs.readFileSync(path.join(temp,'test-impact.json'))),impact);
+ }
+ const temp=path.join(f.home,'wrong-producer');fs.mkdirSync(temp);
+ await assert.rejects(stage.restore('source',{...f,temp,...io,query:endpoint=>endpoint.includes('/attempts/')?{total_count:1,jobs:[job(f)]}:io.query(endpoint)}),/producer/i);
+});
+
+test('publication rechecks component source API identity, attempt, baseline and all source gates',t=>{
+ const f=fixture(t);f.expected.options={pipeline:'components'};f.expected.baseline='v2.6.0';
+ const r=receipt(f),item={id:91,name:stage.name('source',f.expected.platform,'components'),expired:false,size_in_bytes:45,digest:'sha256:'+'b'.repeat(64),workflow_run:{id:7,head_sha:f.expected.commit,repository_id:9,head_repository_id:9}};
+ const input={schema:'nora-stage-input/1',stage:'source',artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt:r,producer:{id:20,attempt:2}};
+ const run={id:7,run_attempt:3,head_sha:f.expected.commit,repository:{id:9,full_name:'owner/repo'}},artifacts={artifacts:[item]};
+ const producer={...job(f),name:stage.jobName('source',f.expected.platform,'components'),steps:stage.componentSourceGates.map(name=>({name,status:'completed',conclusion:'success'}))};
+ const jobs={total_count:1,jobs:[producer]};
+ const check=(proof=input,j=jobs,a=artifacts,b='v2.6.0')=>stage.verifyComponentSourceProof(proof,run,a,j,'win32-x64',b);
+ assert.equal(check().artifactId,91);
+ for(const change of [x=>x.receipt.context.commit='c'.repeat(40),x=>x.producer.attempt=1,x=>x.producer.id=999,x=>x.artifact.digest='sha256:'+'c'.repeat(64),x=>x.receipt.context.options.pipeline='installer']){
+  const altered=structuredClone(input);change(altered);assert.throws(()=>check(altered));
+ }
+ assert.throws(()=>check(input,jobs,artifacts,'v2.5.9'));
+ for(const change of [x=>x.jobs[0].conclusion='failure',x=>x.jobs[0].steps.pop(),x=>x.jobs[0].steps[0].conclusion='skipped']){
+  const altered=structuredClone(jobs);change(altered);assert.throws(()=>check(input,altered));
+ }
+});

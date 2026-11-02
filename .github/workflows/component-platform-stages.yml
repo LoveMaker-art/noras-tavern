@@ -1,0 +1,174 @@
+name: Native component qualification and acceptance (no publication)
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      platform:
+        required: true
+        type: string
+      baseline_tag:
+        required: true
+        type: string
+      force_full_regression:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  BASELINE_TAG: ${{ inputs.baseline_tag }}
+  ACCEPTANCE_BASELINE_TAG: ${{ inputs.baseline_tag }}
+  NORA_STAGE_OPTIONS: ${{ format('{{"pipeline":"components","force_full_regression":{0}}}', inputs.force_full_regression || false) }}
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+jobs:
+  source:
+    name: source (${{ inputs.platform }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 40
+    steps:
+      - name: Preserve frozen source bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: nora-component-delivery
+          path: ${{ runner.temp }}/component-delivery
+      - name: Pin the native verification tool interpreter
+        id: stage-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+      - name: Pin stage verification interpreter
+        shell: bash
+        env:
+          VERIFIER_PYTHON: ${{ steps.stage-python.outputs.python-path }}
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV,"NORA_STAGE_PYTHON="+process.env.VERIFIER_PYTHON+"\n")'
+      - name: Install the native harness lockfile dependencies
+        shell: bash
+        run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Materialize the same frozen component payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/release/component-acceptance.mjs prepare "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-payload" "${{ inputs.platform }}" "$GITHUB_SHA"
+      - name: Restore the verified frozen runtime for native harness prerequisites
+        timeout-minutes: 10
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP"
+      - name: Configure actual native operation actors
+        shell: bash
+        run: |
+          set -euo pipefail
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == Windows ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          test -f "$py"
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
+      - name: Require real native harness prerequisites
+        shell: bash
+        run: node tooling/checks/launcher-test-environment.mjs native
+      - name: Install locked Tavern dependencies before recovery checks
+        timeout-minutes: 5
+        shell: bash
+        run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+      - name: Qualify native maintenance changes before actual component acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json"
+          selection="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/test-impact.json")).full')"
+          case "$selection" in
+            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs"; node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_update_recovery ;;
+            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
+            *) echo 'Missing verified native test selection' >&2; exit 1 ;;
+          esac
+      - name: Seal reusable component source qualification
+        shell: bash
+        run: node tooling/release/build-stage.cjs seal source "$RUNNER_TEMP/component-source-checkpoint"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-stage-source-${{ inputs.platform }}
+          path: ${{ runner.temp }}/component-source-checkpoint
+          if-no-files-found: error
+          retention-days: 90
+
+  acceptance:
+    name: acceptance (${{ inputs.platform }})
+    needs: source
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 40
+    steps:
+      - name: Preserve frozen source bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: nora-component-delivery
+          path: ${{ runner.temp }}/component-delivery
+      - name: Pin the native verification tool interpreter
+        id: stage-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+      - name: Pin stage verification interpreter
+        shell: bash
+        env:
+          VERIFIER_PYTHON: ${{ steps.stage-python.outputs.python-path }}
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV,"NORA_STAGE_PYTHON="+process.env.VERIFIER_PYTHON+"\n")'
+      - name: Restore successful source qualification without running it again
+        shell: bash
+        run: node tooling/release/build-stage.cjs restore source
+      - name: Install the native harness lockfile dependencies
+        shell: bash
+        run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Materialize the same frozen component payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/release/component-acceptance.mjs prepare "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-payload" "${{ inputs.platform }}" "$GITHUB_SHA"
+      - name: Authenticate the published baseline for actual native upgrades
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_commit="$(git rev-parse "$BASELINE_TAG^{commit}")"
+          node tooling/release/acceptance-baseline.mjs --tag "$BASELINE_TAG" --platform "${{ inputs.platform }}" --expected-commit "$baseline_commit" --output "$RUNNER_TEMP/component-baseline"
+      - name: Test fresh target installation and both native upgrade states with retained user data
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_commit="$(git rev-parse "$BASELINE_TAG^{commit}")"
+          # The harness restores its own isolated runtime; no source runtime
+          # is copied into this fresh acceptance worker.
+          node "$PWD/tooling/release/component-acceptance.mjs" run "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP/component-baseline" "$RUNNER_TEMP/component-native-reports" "$RUNNER_TEMP/component-native-scratch" "$GITHUB_SHA" "$BASELINE_TAG" "$baseline_commit"
+      - name: Preserve raw native component evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-native-${{ inputs.platform }}
+          path: |
+            ${{ runner.temp }}/component-native-reports/**
+            ${{ runner.temp }}/test-impact.json
+            ${{ runner.temp }}/nora-stage-input-source.json
+          if-no-files-found: error
+          retention-days: 90

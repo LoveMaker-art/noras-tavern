@@ -9,9 +9,18 @@ const stages = ['source', 'runtime', 'package'];
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
-const name = (stage, platform) => {assert.ok(stages.includes(stage) && platforms.includes(platform));return `nora-stage-${stage}-${platform}`;};
+const name = (stage, platform, pipeline='installer') => {
+    assert.ok(stages.includes(stage) && platforms.includes(platform));
+    assert.ok(['installer','components'].includes(pipeline));
+    assert.ok(pipeline!=='components'||stage==='source','Components only share the source checkpoint');
+    return `${pipeline==='components'?'nora-component-stage':'nora-stage'}-${stage}-${platform}`;
+};
+const pipeline = expected => expected.options?.pipeline || 'installer';
 const labels={'darwin-arm64':'macos-15, darwin, arm64, pack:mac:arm64','darwin-x64':'macos-15-intel, darwin, x64, pack:mac:x64','win32-x64':'windows-latest, win32, x64, pack:win:x64'};
-const jobName = (stage, platform) => `build (${labels[platform]}) / ${stage==='build'?'acceptance':stage} (${platform})`;
+const componentLabels={'darwin-arm64':'macos-15, darwin-arm64','darwin-x64':'macos-15-intel, darwin-x64','win32-x64':'windows-latest, win32-x64'};
+const jobName = (stage, platform, kind='installer') => kind==='components'
+    ? `native-components (${componentLabels[platform]}) / ${stage} (${platform})`
+    : `build (${labels[platform]}) / ${stage==='build'?'acceptance':stage} (${platform})`;
 const previous = stage => stages.slice(0,stages.indexOf(stage));
 const checked = (command, args, options = {}) => execFileSync(command, args,
     {encoding:'utf8', timeout:120000, maxBuffer:32*1024*1024, ...options}).trim();
@@ -51,7 +60,7 @@ function verifyContext(receipt, expected, stage) {
 }
 function verifyArtifact(item, expected, stage, repositoryId) {
     assert.ok(Number.isSafeInteger(repositoryId)&&repositoryId>0,'Missing repository identity');
-    assert.equal(item.name,name(stage,expected.platform));assert.equal(item.expired,false);
+    assert.equal(item.name,name(stage,expected.platform,pipeline(expected)));assert.equal(item.expired,false);
     assert.ok(Number.isSafeInteger(item.id)&&item.id>0);assert.match(item.digest||'',/^sha256:[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(item.size_in_bytes)&&item.size_in_bytes>0);
     const run=item.workflow_run;assert.equal(run.id,expected.runId);assert.equal(run.head_sha,expected.commit);
@@ -64,13 +73,14 @@ const required = {
     package:['Test release channels and update rollback','Test installation diagnostics on the target platform',
         'Verify actual lightweight update archive','Assemble full installers from the same verified payload'],
 };
+const componentSourceGates=['Require real native harness prerequisites','Qualify native maintenance changes before actual component acceptance','Seal reusable component source qualification'];
 function verifyJob(job, expected, stage) {
-    assert.ok(job,'Missing producer job');assert.equal(job.name,jobName(stage,expected.platform));
+    assert.ok(job,'Missing producer job');assert.equal(job.name,jobName(stage,expected.platform,pipeline(expected)));
     assert.ok(Number.isSafeInteger(job.id)&&job.id>0,'Invalid producer job identity');
     assert.equal(job.run_id,expected.runId);assert.equal(job.head_sha,expected.commit);
     assert.equal(job.status,'completed');assert.equal(job.conclusion,'success','Producer did not succeed');
     assert.ok(Array.isArray(job.steps)&&job.steps.every(step=>!['failure','cancelled','timed_out','action_required'].includes(step.conclusion)),'Failed producer step');
-    const gates=[...required[stage]];
+    const gates=[...(pipeline(expected)==='components'?componentSourceGates:required[stage])];
     if(stage==='package')gates.push(expected.platform==='win32-x64'
         ?'Test Windows installation and managed update with legacy path limits':'Test real fresh installation and managed update before desktop packaging');
     for(const gate of gates){const matches=job.steps.filter(step=>step.name===gate);assert.equal(matches.length,1,`Missing or duplicate stage gate: ${gate}`);
@@ -80,7 +90,7 @@ const api = endpoint => JSON.parse(checked('gh',['api',endpoint]));
 function producerJobs(receipt, expected, query=api) {
     const pages=query(`repos/${expected.repository}/actions/runs/${expected.runId}/attempts/${receipt.context.attempt}/jobs?per_page=100`);
     assert.equal(pages.total_count,pages.jobs.length,'Incomplete producer jobs');
-    const jobs=pages.jobs.filter(job=>job.name===jobName(receipt.stage,expected.platform));assert.equal(jobs.length,1,'Ambiguous producer job');
+    const jobs=pages.jobs.filter(job=>job.name===jobName(receipt.stage,expected.platform,pipeline(expected)));assert.equal(jobs.length,1,'Ambiguous producer job');
     assert.equal(jobs[0].run_attempt,receipt.context.attempt,'Producer attempt differs');
     verifyJob(jobs[0],expected,receipt.stage);return jobs[0];
 }
@@ -187,9 +197,9 @@ async function restore(stage,{root=process.cwd(),temp=process.env.RUNNER_TEMP,ex
     assert.ok(stages.includes(stage));const scratch=fs.mkdtempSync(path.join(temp,`nora-stage-${stage}-`));
     const run=query(`repos/${expected.repository}/actions/runs/${expected.runId}`);
     assert.equal(run.id,expected.runId);assert.equal(run.head_sha,expected.commit);assert.equal(run.repository.full_name,expected.repository);
-    assert.equal(run.head_repository.id,run.repository.id);assert.equal(run.path,'.github/workflows/build-integrated-launcher.yml');
+    assert.equal(run.head_repository.id,run.repository.id);assert.equal(run.path,`.github/workflows/${pipeline(expected)==='components'?'publish-component-update':'build-integrated-launcher'}.yml`);
     const inventory=pages(expected);assert.ok(Array.isArray(inventory)&&inventory.every(page=>Array.isArray(page.artifacts)));
-    const items=inventory.flatMap(page=>page.artifacts).filter(item=>item.name===name(stage,expected.platform));assert.equal(items.length,1,'Missing or ambiguous stage artifact');
+    const items=inventory.flatMap(page=>page.artifacts).filter(item=>item.name===name(stage,expected.platform,pipeline(expected)));assert.equal(items.length,1,'Missing or ambiguous stage artifact');
     const item=items[0];verifyArtifact(item,expected,stage,run.repository.id);
     const {downloadArchive,verifyArchive,extractScript}=require('./reuse-windows-build.cjs');
     const zip=path.join(scratch,'stage.zip');await (download||downloadArchive)(item,expected.repository,zip);await verifyArchive(zip,item);
@@ -219,6 +229,26 @@ async function provenance(temp=process.env.RUNNER_TEMP,root=process.cwd(),enviro
     assert.deepEqual(await deliveryFiles(root),inputs[2].receipt.delivery,'Accepted product differs from sealed package');
     const value={schema:'nora-build-stages/1',inputs,acceptanceEnvironment:environment};
     fs.writeFileSync(path.join(temp,'nora-build-stages.json'),JSON.stringify(value,null,2)+'\n',{flag:'wx'});return value;
+}
+function componentStageArtifacts(artifacts) {
+    return artifacts.artifacts.filter(item=>/^nora-component-stage-source-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name));
+}
+function verifyComponentSourceProof(input,run,artifacts,jobs,platform,baseline) {
+    assert.equal(input.schema,'nora-stage-input/1');assert.equal(input.stage,'source');
+    const expected={...input.receipt.context,attempt:run.run_attempt};
+    assert.equal(pipeline(expected),'components');assert.equal(expected.platform,platform);assert.equal(expected.baseline,baseline);
+    assert.equal(expected.repository,run.repository.full_name);assert.equal(expected.commit,run.head_sha);assert.equal(expected.runId,run.id);
+    assert.equal(jobs.total_count,jobs.jobs.length,'Incomplete component job listing');
+    verifyContext(input.receipt,expected,'source');
+    const matches=componentStageArtifacts(artifacts).filter(item=>item.id===input.artifact.id);
+    assert.equal(matches.length,1,'Missing original component source artifact');
+    const item=matches[0];verifyArtifact(item,expected,'source',run.repository.id);
+    assert.deepEqual(input.artifact,{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest});
+    const producers=jobs.jobs.filter(job=>job.name===jobName('source',platform,'components')&&job.run_attempt===input.receipt.context.attempt);
+    assert.equal(producers.length,1,'Missing or ambiguous component source producer');
+    assert.equal(input.producer.id,producers[0].id);assert.equal(input.producer.attempt,input.receipt.context.attempt);
+    verifyJob(producers[0],expected,'source');
+    return {artifactId:item.id,producerId:producers[0].id,attempt:input.producer.attempt};
 }
 function stageArtifacts(artifacts) {return artifacts.artifacts.filter(item=>/^nora-stage-(?:source|runtime|package)-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name));}
 function verifyStageEvidence(value,run,artifacts,jobs,platform) {
@@ -312,7 +342,7 @@ async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=ap
     assert.deepEqual([...seen].sort(),[...platforms].sort(),'Every platform requires successful original acceptance');
     return {mode:'staged',platforms:[...seen].sort()};
 }
-module.exports={stages,platforms,name,jobName,context,verifyContext,verifyArtifact,verifyJob,producerJobs,hashFile,tarScript,entries,seal,restore,provenance,deliveryFiles,required,stageArtifacts,verifyStageEvidence,verifyPublishedStages,verifyFinalJob,allJobs};
+module.exports={componentStageArtifacts,verifyComponentSourceProof,componentSourceGates,stages,platforms,name,jobName,context,verifyContext,verifyArtifact,verifyJob,producerJobs,hashFile,tarScript,entries,seal,restore,provenance,deliveryFiles,required,stageArtifacts,verifyStageEvidence,verifyPublishedStages,verifyFinalJob,allJobs};
 if(require.main===module){
     const [command,stage,output]=process.argv.slice(2);
     Promise.resolve().then(()=>command==='seal'?seal(stage,output):command==='restore'?restore(stage):command==='provenance'?provenance():assert.fail('Use seal, restore or provenance'))

@@ -84,6 +84,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
+      plan_mode: ${{ steps.plan.outputs.mode }}
       acceptance_baseline_tag: ${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}
       initial_release: ${{ steps.acceptance-baseline.outputs.initial_release }}
     env:
@@ -109,24 +110,20 @@ jobs:
           BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
           BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
         run: node tooling/release/system-release.mjs --workflow-options
-      - name: Select a published acceptance baseline independently of environment reuse
-        id: acceptance-baseline
+      - name: Read published facts before separating planning and upgrade baselines
         shell: bash
-        env:
-          ACCEPTANCE_BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
         run: |
           set -euo pipefail
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/nora-acceptance-published-releases.json"
-          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "$NORA_PUBLICATION_TAG" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
       - name: Plan committed changes before native builds
         id: plan
         shell: bash
         run: |
           set -euo pipefail
           baseline="$PLANNING_BASELINE"
-          acceptance_baseline="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-baseline-selection.json")).tag')"
-          if [[ "$baseline" == EMPTY && "$acceptance_baseline" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
-          if [[ -z "$baseline" ]]; then baseline="$acceptance_baseline"; fi
+          planning_default="$(node -p 'require("./tooling/release/publication-source.cjs").selectPlanningBaseline(JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-published-releases.json")))')"
+          if [[ "$baseline" == EMPTY && "$planning_default" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
+          if [[ -z "$baseline" ]]; then baseline="$planning_default"; fi
           node "$PWD/tooling/release/release-plan.mjs" --base "$baseline" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
       - name: Require a matching build decision and explicit review of unknown inputs
         shell: bash
@@ -150,7 +147,9 @@ jobs:
           case "$PLAN_MODE" in
             full|launcher|review-required) ;;
             components) echo 'Use the component build workflow for this plan.' >&2; exit 1 ;;
-            verification-only) echo 'No product build is required; verify tooling or publish accepted bytes separately.' >&2; exit 1 ;;
+            verification-only)
+              if [[ -n "$LAUNCHER_BASELINE_TAG$RUNTIME_SOURCE_RUN$VERIFIED_WINDOWS_RUN" ]]; then echo 'Verification-only runs cannot accept product reuse inputs.' >&2; exit 1; fi
+              echo 'Verification-only: run tooling checks, without building product packages.' ;;
             *) exit 1 ;;
           esac
       - name: Install mandatory backup workflow contract dependencies
@@ -160,6 +159,8 @@ jobs:
           set -euo pipefail
           npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
           npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Audit release fixture entries before product preparation
+        run: node tooling/checks/release-fixtures.mjs
       - name: Check release tooling before preparing runtimes
         run: |
           node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-impact.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/publication-providers.test.mjs tests/release-publication.test.mjs tests/backup-safety-gate.test.mjs tests/shared-assets-frozen-client.test.mjs tests/jihulab-credentials.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-transport.test.mjs tests/release-sources-embedding.test.mjs tests/docs-navigation.test.cjs tests/launcher-publish-source.test.cjs tests/component-native-acceptance.test.mjs tests/build-stage.test.cjs tests/launcher-build-shell.test.mjs
@@ -168,8 +169,17 @@ jobs:
           # Publishing tools run from authored source, not the installed ops/ layout.
           node --test "$PWD/tests/deployment/launcher_jihulab_publication.test.cjs"
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_updater_runtime_process_detection
+      - name: Select a published acceptance baseline independently of environment reuse
+        id: acceptance-baseline
+        if: steps.plan.outputs.mode != 'verification-only'
+        shell: bash
+        env:
+          ACCEPTANCE_BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "$NORA_PUBLICATION_TAG" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
       - name: Verify historical download identities before native builds
-        if: steps.acceptance-baseline.outputs.initial_release != 'true'
+        if: steps.plan.outputs.mode != 'verification-only' && steps.acceptance-baseline.outputs.initial_release != 'true'
         timeout-minutes: 5
         shell: bash
         env:
@@ -291,7 +301,7 @@ jobs:
 
   reuse-windows:
     needs: preflight
-    if: inputs.verified_windows_run != '' && inputs.package_source_run == ''
+    if: needs.preflight.outputs.plan_mode != 'verification-only' && inputs.verified_windows_run != '' && inputs.package_source_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -338,7 +348,7 @@ jobs:
 
   build:
     needs: [preflight, reuse-windows]
-    if: always() && !cancelled() && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
+    if: always() && !cancelled() && needs.preflight.outputs.plan_mode != 'verification-only' && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
     strategy:
       fail-fast: false
       matrix:

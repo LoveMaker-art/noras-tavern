@@ -4,9 +4,20 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
-const fixtureGate = options => verifyLauncherStability({ checkEnvironment: () => ({ environment: process.env }), ...options });
+const fixtureGate = options => verifyLauncherStability({ platform: 'darwin', checkEnvironment: () => ({ environment: process.env }), ...options });
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const deploymentTest = name => path.join(repositoryRoot, 'tests/deployment', `${name}.test.cjs`);
+
+test('Linux source qualification never invokes desktop APP replacement or uninstall fixtures', () => {
+    const calls=[];
+    fixtureGate({platform:'linux',run:(command,args)=>{calls.push(args);return {status:0};}});
+    assert.ok(calls[0].includes(deploymentTest('cloud_core_release')));
+    for(const name of ['launcher_uninstall','launcher_managed_partial_repair','launcher_runtime_transaction'])
+        assert.ok(!calls[0].includes(deploymentTest(name)),name);
+    for(const name of ['test_update_dependency_materialization','test_standalone_update_recovery','test_updater_task_backend','test_native_startup_evidence'])
+        assert.ok(calls[1].includes(`tests.deployment.${name}`),name);
+    assert.ok(!calls[1].includes('tests.deployment.test_first_install'),'Desktop first-install fixtures stay on native desktop actors');
+});
 
 test('a failed, killed or timed-out source check cannot pass the launcher stability gate', () => {
     for (const failure of [{ status: 1 }, { status: null, signal: 'SIGKILL' },

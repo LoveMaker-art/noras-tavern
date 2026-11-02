@@ -175,22 +175,25 @@ test('actual build workflow routes package diagnostics independently, gates nati
   ['darwin-x64','','123','branch',false,['darwin-x64']],['darwin-arm64','','123','branch',false,['darwin-arm64']],
   ['unknown-target','','','branch',false,all],
  ]) {
-  const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success'},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
+  const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success',outputs:{plan_mode:'full'}},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
   assert.equal(Boolean(evaluate(condition('package-check'),inputs,github,needs)),target==='win32-package-check'||packageSource!=='');
   assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),reuse!==''&&packageSource==='');
   assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);
   assert.deepEqual(JSON.parse(evaluate(matrixExpression,inputs,github)),expectedTargets.map(target=>tuples[target]));
   for(const result of ['failure','cancelled']) {needs.preflight.result=result;assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);}
   needs.preflight.result='success';assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs,true)),false);
+  needs.preflight.outputs.plan_mode='verification-only';
+  assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);
+  assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),false);
  }
  for(const target of ['all','win32-x64','darwin-x64','darwin-arm64']) {
   const inputs={target,verified_windows_run:'123',package_source_run:''},github={event_name:'workflow_dispatch',ref_type:'branch'};
   for(const result of ['failure','cancelled']) {
-   const needs={preflight:{result:'success'},'reuse-windows':{result}};
+   const needs={preflight:{result:'success',outputs:{plan_mode:'full'}},'reuse-windows':{result}};
    assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);
   }
  }
- const betaInputs={target:'',verified_windows_run:'',package_source_run:''},beta={event_name:'push',ref_type:'tag'},needs={preflight:{result:'success'},'reuse-windows':{result:'skipped'}};
+ const betaInputs={target:'',verified_windows_run:'',package_source_run:''},beta={event_name:'push',ref_type:'tag'},needs={preflight:{result:'success',outputs:{plan_mode:'full'}},'reuse-windows':{result:'skipped'}};
  assert.equal(Boolean(evaluate(condition('build'),betaInputs,beta,needs)),true);
  assert.deepEqual(JSON.parse(evaluate(matrixExpression,betaInputs,beta)),all.map(target=>tuples[target]));
 });

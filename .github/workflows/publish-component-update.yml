@@ -27,6 +27,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build-components:
@@ -78,6 +79,8 @@ jobs:
       - name: Select regression from the fixed component baseline
         id: test-impact
         run: node tooling/checks/launcher-test-impact.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json" --github-output "$GITHUB_OUTPUT"
+      - name: Audit release fixture entries before product preparation
+        run: node tooling/checks/release-fixtures.mjs
       - name: Verify release contracts and update preservation
         shell: bash
         run: |
@@ -167,98 +170,12 @@ jobs:
             platform: darwin-x64
           - runner: windows-latest
             platform: win32-x64
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      BASELINE_TAG: ${{ inputs.baseline_tag }}
-      PYTHONUTF8: '1'
-    steps:
-      - name: Preserve frozen source bytes
-        shell: bash
-        run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/download-artifact@v4
-        with:
-          name: nora-component-delivery
-          path: ${{ runner.temp }}/component-delivery
-      - name: Pin the native verification tool interpreter
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install the native harness lockfile dependencies
-        shell: bash
-        run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
-      - name: Materialize the same frozen component payload
-        shell: bash
-        run: |
-          set -euo pipefail
-          node tooling/release/component-acceptance.mjs prepare "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-payload" "${{ matrix.platform }}" "$GITHUB_SHA"
-      - name: Authenticate the published baseline for actual native upgrades
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          baseline_commit="$(git rev-parse "$BASELINE_TAG^{commit}")"
-          node tooling/release/acceptance-baseline.mjs --tag "$BASELINE_TAG" --platform "${{ matrix.platform }}" --expected-commit "$baseline_commit" --output "$RUNNER_TEMP/component-baseline"
-      - name: Restore the verified frozen runtime for native harness prerequisites
-        timeout-minutes: 10
-        shell: bash
-        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP"
-      - name: Configure actual native operation actors
-        shell: bash
-        run: |
-          set -euo pipefail
-          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == Windows ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
-          test -f "$py"
-          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
-          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
-      - name: Require real native harness prerequisites
-        shell: bash
-        run: node tooling/checks/launcher-test-environment.mjs native
-      - name: Install locked Tavern dependencies before recovery checks
-        timeout-minutes: 5
-        shell: bash
-        run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-      - name: Qualify native maintenance changes before actual component acceptance
-        shell: bash
-        run: |
-          set -euo pipefail
-          node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/native-test-impact.json"
-          selection="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/native-test-impact.json")).full')"
-          case "$selection" in
-            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs"; node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_update_recovery ;;
-            false) echo 'Unchanged native maintenance contracts; actual component acceptance remains mandatory' ;;
-            *) echo 'Missing verified native test selection' >&2; exit 1 ;;
-          esac
-      - name: Test fresh target installation and both native upgrade states with retained user data
-        timeout-minutes: 25
-        shell: bash
-        run: |
-          set -euo pipefail
-          baseline_commit="$(git rev-parse "$BASELINE_TAG^{commit}")"
-          # The harness restores its own isolated runtime. Hide the prerequisite
-          # checkout so a test cannot silently use it as the installed product.
-          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-          node "$PWD/tooling/release/component-acceptance.mjs" run "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP/component-baseline" "$RUNNER_TEMP/component-native-reports" "$RUNNER_TEMP/component-native-scratch" "$GITHUB_SHA" "$BASELINE_TAG" "$baseline_commit"
-      - name: Preserve raw native component evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-component-native-${{ matrix.platform }}
-          path: |
-            ${{ runner.temp }}/component-native-reports/**
-            ${{ runner.temp }}/native-test-impact.json
-          if-no-files-found: error
-          retention-days: 90
+    uses: ./.github/workflows/component-platform-stages.yml
+    with:
+      runner: ${{ matrix.runner }}
+      platform: ${{ matrix.platform }}
+      baseline_tag: ${{ inputs.baseline_tag }}
+      force_full_regression: ${{ inputs.force_full_regression || false }}
 
   accept-components:
     needs: [build-components, native-components]

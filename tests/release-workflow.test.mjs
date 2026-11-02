@@ -8,11 +8,14 @@ import { createRequire } from 'node:module';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
 import { verifyBackupSafety } from '../tooling/checks/verify-backup-safety.mjs';
 import { runFocusedRegression } from '../tooling/checks/launcher-test-impact.mjs';
+import { auditReleaseFixtures, missingPythonTests, assertFixturePrerequisites } from '../tooling/checks/release-fixtures.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || 'python3', ['-c',
   'import sys,json,yaml\nprint(json.dumps(yaml.load(open(sys.argv[1]),Loader=yaml.BaseLoader)))',
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
+const componentStages=load('component-platform-stages.yml');
+const componentNative={steps:['source','acceptance'].flatMap(stage=>componentStages.jobs[stage].steps)};
 const caller = load('build-integrated-launcher.yml'), staged=load('launcher-platform-stages.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 // Existing gate assertions inspect the ordered native path across the real jobs.
 // The stage-specific DAG and transfer contracts are checked separately below.
@@ -69,57 +72,19 @@ test('fresh package workers qualify real Chromium before native recovery tests',
   assert.equal(steps[qualify].if,undefined,'qualify the locked Electron on every native platform');
 });
 
-function pythonTestReferences(references) {
-  // Inspect syntax only: native test imports can start fixtures or require an
-  // installed runtime. A renamed class/method must fail before reaching them.
-  const program = `import ast,json,pathlib,sys
-root=pathlib.Path(sys.argv[1]);missing=[]
-for reference in json.load(sys.stdin):
- parts=reference.split('.');path=root.joinpath(*parts[:3]).with_suffix('.py')
- try: node=ast.parse(path.read_text(encoding='utf-8'))
- except (OSError,SyntaxError) as error:
-  missing.append({'reference':reference,'reason':type(error).__name__});continue
- for member in parts[3:]:
-  found=next((value for value in node.body if isinstance(value,(ast.ClassDef,ast.FunctionDef,ast.AsyncFunctionDef)) and value.name==member),None)
-  if found is None:
-   missing.append({'reference':reference,'reason':'missing member '+member});break
-  node=found
-print(json.dumps(missing))
-`;
-  return JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || process.env.NORA_TEST_PYTHON || 'python3',
-    ['-B', '-c', program, root], { input: JSON.stringify([...references]), encoding: 'utf8' }));
-}
+const pythonTestReferences = references => missingPythonTests(references, root);
 
 test('release workflows and source gates reference existing authored test files and Python members', () => {
-  const paths = new Set(), references = new Set();
-  for (const workflow of [full, staged, components, publisher]) {
-    const source = scripts(workflow).replaceAll('$PWD/', '');
-    for (const match of source.matchAll(/(?<![\w./])(?:app\/engine\/sillytavern\/tests|nora-mcp\/tests|story-profile\/tests|tests)\/[\w./-]+\.(?:mjs|cjs|js|py)/g)) paths.add(match[0]);
-    for (const match of source.matchAll(/\btests\.deployment\.[A-Za-z_][\w.]*/g)) references.add(match[0]);
-  }
-  verifyLauncherStability({ root, checkEnvironment: () => ({ environment: process.env }), run: (_command, args) => {
-    for (const argument of args) {
-      if (argument.endsWith('.test.cjs')) paths.add(path.relative(root, argument));
-      if (argument.startsWith('tests.deployment.')) references.add(argument);
-    }
-    return { status: 0 };
-  } });
-  verifyBackupSafety({ root, run: (_command, args, options) => {
-    for (const argument of args.filter(value => value.startsWith('tests/'))) paths.add(path.relative(root, path.resolve(options.cwd, argument)));
-    return { status: 0 };
-  } });
-  runFocusedRegression({ root, impact:{full:false,productBuild:true,ui:true,content:true},
-    checkEnvironment:()=>({environment:process.env}),run:(_command,args)=>{
-      for(const argument of args){
-        if(argument.endsWith('.test.cjs'))paths.add(path.relative(root,argument));
-        if(argument.startsWith('tests.deployment.'))references.add(argument);
-      }
-      return {status:0};
-    }});
-  assert.ok(paths.size > 0 && references.size > 0, 'An empty audit cannot confirm release entry points');
-  const missing = [...paths].filter(file => !fs.statSync(path.join(root, file), { throwIfNoEntry: false })?.isFile());
-  assert.deepEqual(missing, [], 'Release test files were moved or deleted; update their real callers');
-  assert.deepEqual(pythonTestReferences(references), [], 'Release Python modules/classes/methods were renamed or removed');
+  const report=auditReleaseFixtures({root,loaded:[['build',caller],['stages',staged],['components',components],['publisher',publisher]]
+    .map(([name,workflow])=>({name,workflow}))});
+  assert.ok(report.files.length>0&&report.python.length>0);
+});
+
+test('fixture prerequisite audit rejects wrong-platform recovery and dependencies installed after consumption',()=>{
+  assert.throws(()=>assertFixturePrerequisites({jobs:{core:{'runs-on':'ubuntu-24.04',steps:[{run:'python -m unittest tests.deployment.test_launcher_update_recovery'}]}}}),/desktop recovery/);
+  const steps=[{run:'node tooling/checks/verify-launcher-stability.mjs'},{run:'npm ci --prefix app/engine/sillytavern --ignore-scripts'}];
+  assert.throws(()=>assertFixturePrerequisites({jobs:{source:{'runs-on':'macos-15',steps}}}),/precede/);
+  assertFixturePrerequisites({jobs:{source:{'runs-on':'macos-15',steps:[...steps].reverse()}}});
 });
 
 test('the release reference audit detects a missing Python module or named native test without importing it', () => {
@@ -141,7 +106,8 @@ test('component delivery requires all three native platforms before the final pu
   ]);
   assert.deepEqual(accepted.needs, ['build-components', 'native-components']);
   assert.equal(accepted.if, undefined, 'A failed or skipped native matrix must not produce an accepted receipt');
-  const nativeSteps = native.steps, downloaded = nativeSteps.find(step => step.uses === 'actions/download-artifact@v4');
+  assert.equal(native.uses,'./.github/workflows/component-platform-stages.yml');
+  const nativeSteps = componentNative.steps, downloaded = nativeSteps.find(step => step.uses === 'actions/download-artifact@v4');
   assert.equal(downloaded.with.name, 'nora-component-delivery');
   const prepare = nativeSteps.findIndex(step => step.name === 'Materialize the same frozen component payload');
   const run = nativeSteps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data');
@@ -149,12 +115,12 @@ test('component delivery requires all three native platforms before the final pu
   assert.match(nativeSteps[prepare].run, /component-acceptance\.mjs prepare.*component-delivery.*component-payload.*GITHUB_SHA/);
   assert.match(nativeSteps[run].run, /component-acceptance\.mjs" run.*component-payload.*component-baseline.*GITHUB_SHA.*BASELINE_TAG.*baseline_commit/);
   assert.equal(nativeSteps[run]['continue-on-error'], undefined);
-  assert.equal(nativeSteps.find(step => step.name === 'Pin the native verification tool interpreter').with['python-version'], '3.11');
+  assert.equal(nativeSteps.find(step => step.name === 'Pin the native verification tool interpreter').with['python-version'], '3.11.9');
   const baseline = nativeSteps.find(step => step.name === 'Authenticate the published baseline for actual native upgrades');
   assert.match(baseline.run, /acceptance-baseline\.mjs.*--expected-commit/);
   assert.match(nativeSteps.find(step => step.name === 'Restore the verified frozen runtime for native harness prerequisites').run, /restore-launcher-runtime\.cjs.*component-payload/);
-  const archive = nativeSteps.find(step => step.uses === 'actions/upload-artifact@v4');
-  assert.equal(archive.if, 'always()'); assert.equal(archive.with.name, 'nora-component-native-${{ matrix.platform }}');
+  const archive = componentStages.jobs.acceptance.steps.find(step => step.uses === 'actions/upload-artifact@v4');
+  assert.equal(archive.if, 'always()'); assert.equal(archive.with.name, 'nora-component-native-${{ inputs.platform }}');
   assert.equal(archive.with['if-no-files-found'], 'error');
   assert.ok(!components.jobs['build-components'].steps.some(step => step.with?.name === 'nora-component-acceptance'),
     'Source-only Ubuntu checks must not publish the final native receipt');
@@ -318,7 +284,7 @@ test('the full profile retains complete source coverage and focused profiles lea
   const componentSelection=component.findIndex(step=>step.id==='test-impact');
   const componentGate=component.findIndex(step=>step.name==='Require the selected component source regression');
   assert.ok(componentSelection>=0&&componentGate>componentSelection);
-  assert.match(components.jobs['native-components'].steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance').run,/true\) node "\$PWD\/tooling\/checks\/verify-launcher-stability\.mjs"/);
+  assert.match(componentNative.steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance').run,/true\) node "\$PWD\/tooling\/checks\/verify-launcher-stability\.mjs"/);
   assert.match(component[componentGate].run,/--run-focused/);
   assert.match(component[componentGate].run,/Missing verified test selection.*exit 1/);
   assert.doesNotMatch(scripts(publisher),/verify-launcher-stability|--run-focused|launcher-installed-check/,
@@ -479,17 +445,17 @@ test('component Linux preparation exercises headless updates while full desktop 
     assert.ok(linux.run.includes(`tests.deployment.${name}`), `actual Linux maintenance path: ${name}`);
   const native = components.jobs['native-components'];
   assert.deepEqual(native.strategy.matrix.include.map(item => item.platform).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
-  const gate = native.steps.find(step => step.name === 'Qualify native maintenance changes before actual component acceptance');
+  const gate = componentNative.steps.find(step => step.name === 'Qualify native maintenance changes before actual component acceptance');
   assert.match(gate.run, /true\) node "\$PWD\/tooling\/checks\/verify-launcher-stability\.mjs"/);
   assert.match(gate.run, /tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_launcher_update_recovery/);
   assert.ok(gate.run.indexOf('verify-launcher-stability.mjs') < gate.run.indexOf('test_launcher_update_recovery'));
   assert.equal(gate['continue-on-error'], undefined);
-  assert.ok(native.steps.indexOf(gate) < native.steps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data'));
+  assert.ok(componentNative.steps.indexOf(gate) < componentNative.steps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data'));
 });
 
 test('native component maintenance wrappers satisfy the real Windows offline process census', () => {
   const { windowsProcesses } = createRequire(import.meta.url)('../deployment/uninstall/uninstall-offline-check.js');
-  const native = components.jobs['native-components'];
+  const native = componentNative;
   for (const name of ['Qualify native maintenance changes before actual component acceptance',
     'Test fresh target installation and both native upgrade states with retained user data']) {
     const body = native.steps.find(step => step.name === name).run;
@@ -509,7 +475,7 @@ test('native component maintenance wrappers satisfy the real Windows offline pro
 test('component workers prepare locked engine dependencies before real recovery consumers', () => {
   for (const [job, consumer] of [['build-components', 'Require the selected component source regression'],
     ['native-components', 'Qualify native maintenance changes before actual component acceptance']]) {
-    const steps = components.jobs[job].steps;
+    const steps = job==='native-components'?componentStages.jobs.source.steps:components.jobs[job].steps;
     const installations = steps.map((step, index) => /npm ci --prefix app\/engine\/sillytavern/.test(step.run || '') ? index : -1).filter(index => index >= 0);
     assert.equal(installations.length, 1, `${job}: one locked engine install per fresh worker`);
     assert.ok(installations[0] < steps.findIndex(step => step.name === consumer), `${job}: engine dependencies must precede recovery`);
@@ -554,7 +520,9 @@ test('whole machine deletion proofs cannot overlap another suite\'s unclassifiab
 test('historical acceptance selects published history and runs independently from runtime reuse', () => {
   assert.ok(full.on.workflow_dispatch.inputs.acceptance_baseline_tag);
   const selection = full.jobs.preflight.steps.find(step => step.id === 'acceptance-baseline');
-  assert.match(selection.run, /--paginate --slurp/); assert.match(selection.run, /baseline-selection/);
+  const facts=full.jobs.preflight.steps.find(step=>step.name==='Read published facts before separating planning and upgrade baselines');
+  assert.match(facts.run,/--paginate --slurp/);assert.match(selection.run,/baseline-selection/);
+  assert.equal(selection.if,"steps.plan.outputs.mode != 'verification-only'");
   const historical = full.jobs.build.steps.find(step => step.name?.startsWith('Freeze verified historical'));
   const download = full.jobs.build.steps.find(step => step.name?.startsWith('Download the official historical'));
   assert.equal(historical.if, "inputs.initial_release != 'true' && !inputs.app_only");
@@ -563,7 +531,7 @@ test('historical acceptance selects published history and runs independently fro
   assert.equal(full.permissions.contents, 'read'); assert.equal(full.permissions.actions, 'read');
   const early = full.jobs.preflight.steps.find(step => step.name === 'Verify historical download identities before native builds');
   assert.equal(full.jobs.preflight.env.GH_TOKEN, '${{ github.token }}');
-  assert.equal(early.if, "steps.acceptance-baseline.outputs.initial_release != 'true'");
+  assert.equal(early.if, "steps.plan.outputs.mode != 'verification-only' && steps.acceptance-baseline.outputs.initial_release != 'true'");
   assert.equal(early.env.ACCEPTANCE_BASELINE_TAG, '${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}');
   assert.equal(early['timeout-minutes'], '5');
   assert.match(early.run, /for platform in darwin-arm64 darwin-x64 win32-x64/);
@@ -730,4 +698,35 @@ test('APP-only builds retain ordinary core gates and require real interactive hi
  assert.match(steps[native].run,/--baseline-launcher/);assert.doesNotMatch(steps[native].run,/\|\|\s*true|--skip|manual/);
  const proof=steps.find(s=>s.with?.name==='nora-operation-acceptance-${{ inputs.platform }}-${{ inputs.arch }}');
  for(const name of ['checkpoint.json','observed.json','finished-status.json'])assert.ok(proof.with.path.includes(name));
+});
+
+test('component acceptance retries restore the complete passed source stage and never build products',()=>{
+  const source=componentStages.jobs.source,acceptance=componentStages.jobs.acceptance;
+  assert.equal(acceptance.needs,'source');assert.equal(acceptance.if,undefined);
+  assert.equal(components.permissions.actions,'read');
+  assert.match(acceptance.steps.find(step=>step.name==='Restore successful source qualification without running it again').run,/build-stage\.cjs restore source/);
+  assert.ok(!acceptance.steps.some(step=>/verify-launcher-stability|package-component-update|package-release|npm run/.test(step.run||'')));
+  const gate=source.steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance');
+  assert.match(gate.run,/false\) node .*launcher-test-impact\.mjs.*--run-focused/,'focused desktop minimum remains mandatory after moving Linux away from desktop fixtures');
+  const seal=source.steps.findIndex(step=>step.name==='Seal reusable component source qualification');
+  const upload=source.steps.findIndex(step=>step.with?.name==='nora-component-stage-source-${{ inputs.platform }}');
+  assert.ok(seal>source.steps.indexOf(gate)&&upload>seal);assert.equal(source.steps[upload].if,undefined);
+  const raw=acceptance.steps.find(step=>step.with?.name==='nora-component-native-${{ inputs.platform }}');
+  assert.ok(raw.with.path.includes('nora-stage-input-source.json'));
+  for(const job of [source,acceptance]){
+    assert.equal(job.steps.find(step=>step.uses==='actions/setup-node@v4').with['node-version'],'24.19.0');
+    assert.equal(job.steps.find(step=>step.uses==='actions/setup-python@v5').with['python-version'],'3.11.9');
+  }
+});
+
+test('verification-only dispatches check tooling without historical payloads or product builds',()=>{
+ const preflight=caller.jobs.preflight;
+ assert.equal(preflight.outputs.plan_mode,'${{ steps.plan.outputs.mode }}');
+ assert.match(preflight.steps.find(step=>step.id==='plan').run,/selectPlanningBaseline/);
+ assert.match(caller.jobs.build.if,/needs\.preflight\.outputs\.plan_mode != 'verification-only'/);
+ assert.match(caller.jobs['reuse-windows'].if,/needs\.preflight\.outputs\.plan_mode != 'verification-only'/);
+ const gate=preflight.steps.find(step=>step.name?.startsWith('Require a matching build decision'));
+ const start=gate.run.indexOf('verification-only)');assert.ok(start>=0);
+ assert.doesNotMatch(gate.run.slice(start).split(';;')[0],/No product build.*exit 1/);
+ assert.ok(preflight.steps.some(step=>step.run?.includes('release-fixtures.mjs')));
 });

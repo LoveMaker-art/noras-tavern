@@ -264,3 +264,23 @@ test('ordinary Beta keeps its one sealed array pointer',async t=>{
     assert.deepEqual(value.objects.filter(item=>item.phase==='channel').map(item=>item.key),['channels/beta.json']);
     assert.deepEqual(JSON.parse(fs.readFileSync(value.objects.at(-1).file)),[release]);
 });
+
+test('observations count completed object bytes and retries without inventing wire traffic or changing the sealed plan',async t=>{
+ const f=await fixture(t,{destinations:['github']}),failed='releases/v2.4.4/two.zip',providers={github:f.providers.github};
+ const original=fs.readFileSync(path.join(f.stateDir,'publication-plan.json'));
+ f.setFailure('github:'+failed);
+ await assert.rejects(executePublication(f.publication,{stage:'prepare',providers,log:()=>{}}));
+ const first=structuredClone(f.publication.state.observations);
+ assert.equal(first.wireBytes,null);assert.equal(first.sources.github.upload.failed,1);
+ const one=f.publication.plan.objects.find(item=>item.key.endsWith('/one.zip'));
+ assert.equal(first.sources.github.upload.completedObjectBytes,one.size);
+ const resumed=await f.reload();f.setFailure(null);
+ await executePublication(resumed,{stage:'prepare',providers,log:()=>{}});
+ const m=resumed.state.observations;
+ const assets=f.publication.plan.objects.filter(item=>item.phase==='asset');
+ assert.equal(m.sources.github.upload.succeeded,2);assert.equal(m.sources.github.upload.failed,1);
+ assert.equal(m.sources.github.upload.completedObjectBytes,assets.reduce((n,item)=>n+item.size,0));
+ assert.ok(m.sources.github.inspect.matched>=1);assert.ok(m.sources.github.upload.elapsedMs>=0);
+ assert.equal(m.wireBytes,null);assert.deepEqual(fs.readFileSync(path.join(f.stateDir,'publication-plan.json')),original);
+ assert.equal(f.events.filter(item=>item==='github:upload:'+one.key).length,1);
+});

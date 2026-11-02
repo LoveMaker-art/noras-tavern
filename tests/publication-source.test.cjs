@@ -232,7 +232,9 @@ for(const requalify of [false,true])test(`actual source CLI hashes ZIPs and veri
     const bytes = fs.readFileSync(zip); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
   }
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-  writeGhFixture(bin, `const id=process.argv.at(-1).split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`);
+  writeGhFixture(bin, `const endpoint=process.argv.at(-1),fs=require('node:fs');if(endpoint.includes('/jobs?'))process.stdout.write(fs.readFileSync(process.env.FIXTURE_ZIP_ROOT+'/api-jobs.json'));else{const id=endpoint.split('/').at(-2);process.stdout.write(fs.readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));}\n`);
+  const apiJobs=requalify?f.options.qualificationJobs:qualificationFixture().options.qualificationJobs;
+  fs.writeFileSync(path.join(root,'api-jobs.json'),JSON.stringify([apiJobs]));
   const runFile = path.join(root, 'run.json'), artifactsFile = path.join(root, 'artifacts.json'); fs.writeFileSync(runFile, JSON.stringify(f.run));
   const jobsFile=path.join(root,'jobs.json');if(requalify)fs.writeFileSync(jobsFile,JSON.stringify(f.options.qualificationJobs));
   const execute = output => spawnSync(process.execPath, [path.resolve(__dirname, '../tooling/release/publication-source.cjs'),
@@ -630,3 +632,27 @@ for(const [name,mutate]of [
  ['changed raw core inventory',f=>fs.appendFileSync(path.join(f.reports,'historical-0/checkpoint.json'),' ')],
  ['missing full core inventory digest',f=>{delete f.proof.cases.running.coreFilesSha256;f.save();}],
 ])test(`APP-only native publication refuses ${name}`,async t=>{const f=launcherHistoricalFixture(t);mutate(f);await assert.rejects(f.execute());});
+
+test('tooling changes plan against the latest stable product, independently of its older upgrade baseline',()=>{
+ const {selectPlanningBaseline}=require('../tooling/release/publication-source.cjs');
+ const pages=[[stableRelease('v2.6.0'),stableRelease('v2.6.4'),{...stableRelease('v2.6.5'),prerelease:true}]];
+ assert.equal(selectPlanningBaseline(pages),'v2.6.4');
+ assert.equal(selectAcceptanceBaseline(pages,{repository:'owner/tavern',targetTag:'v2.6.4'}).tag,'v2.6.0');
+ assert.equal(selectPlanningBaseline([[]]),'EMPTY');
+ assert.throws(()=>selectPlanningBaseline([[stableRelease('v2.6.4')],[stableRelease('v2.6.4')]]));
+});
+
+test('failed component aggregation can preserve complete split source and native producers, never their failed stages',()=>{
+ const {jobName,componentSourceGates}=require('../tooling/release/build-stage.cjs');
+ const f=qualificationFixture(),listing=f.options.qualificationJobs;
+ listing.jobs=listing.jobs.filter(job=>!job.name.startsWith('native-components'));
+ for(const platform of ['darwin-arm64','darwin-x64','win32-x64'])for(const stage of ['source','acceptance']){
+  const gates=stage==='source'?componentSourceGates:['Restore successful source qualification without running it again',
+    'Test fresh target installation and both native upgrade states with retained user data','Preserve raw native component evidence'];
+  listing.jobs.push({id:100+listing.jobs.length,run_id:f.run.id,run_attempt:1,head_sha:f.run.head_sha,name:jobName(stage,platform,'components'),
+    status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
+ }
+ listing.total_count=listing.jobs.length;
+ assert.equal(componentQualification(f.run,f.options).producerJobIds.length,7);
+ listing.jobs[2].steps[0].conclusion='skipped';assert.throws(()=>componentQualification(f.run,f.options));
+});

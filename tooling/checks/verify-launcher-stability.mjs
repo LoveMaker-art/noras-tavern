@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { checkLauncherTestEnvironment } from './launcher-test-environment.mjs';
+import assert from 'node:assert/strict';
 
 const sourceRoot = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -62,9 +63,27 @@ const python = [
     'test_update_error_diagnostics',
 ];
 
+export function sourceTestGroups(platform = process.platform, { focused = false } = {}) {
+    assert.ok(['darwin', 'win32', 'linux'].includes(platform), 'Unknown verification worker platform');
+    if (platform === 'linux') return {
+        javascript: ['cloud_core_release.test.cjs'],
+        python: focused ? ['test_update_operation_safety', 'test_updater_task_backend', 'test_standalone_update_recovery']
+            : ['test_update_dependency_materialization', 'test_update_operation_safety', 'test_updater_task_backend',
+                'test_standalone_update_recovery', 'test_update_download_sources', 'test_incremental_update',
+                'test_update_check', 'test_managed_update', 'test_native_startup_evidence', 'test_native_cli_diagnostics',
+                'test_cloud_instance_paths', 'test_cloud_lifecycle_cli', 'test_cloud_volume_recovery'],
+    };
+    return focused ? {
+        javascript: ['launcher_operation_result.test.cjs', 'launcher_runtime.test.cjs',
+            'launcher_update_executor.test.cjs', 'launcher_uninstall.test.cjs'],
+        python: ['test_first_install', 'test_update_target', 'test_update_operation_safety'],
+    } : { javascript: [...javascript], python: [...python] };
+}
+
 export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment,
     platform = process.platform, arch = process.arch } = {}) {
     const { environment } = checkEnvironment({ root, profile: 'source' });
+    const selected = sourceTestGroups(platform);
     // Run 38546128125 cut the still-progressing Windows JS group at its
     // 585s internal limit. The same complete groups passed on native Windows
     // in 201.542s / 63.909s; 394 matched cases were median 2.76x slower on CI.
@@ -81,9 +100,9 @@ export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, ch
     const pythonTimeout = platform === 'win32' ? 480000 : 240000;
     for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',
-            ...javascript.map(name => path.join(root, 'tests/deployment', name))], javascriptTimeout],
+            ...selected.javascript.map(name => path.join(root, 'tests/deployment', name))], javascriptTimeout],
         ['installation and system transaction recovery', ['python', '-B', '-m', 'unittest',
-            ...python.map(name => `tests.deployment.${name}`)], pythonTimeout],
+            ...selected.python.map(name => `tests.deployment.${name}`)], pythonTimeout],
     ]) {
         const result = run(process.execPath, [path.join(root, 'tooling/run.mjs'), '--timeout-ms', String(timeout - 15000), ...args], {
             // Windows TERM kills the wrapper itself. The earlier internal

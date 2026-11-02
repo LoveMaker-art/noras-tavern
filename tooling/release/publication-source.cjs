@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { verifyArchive, extractScript } = require('./reuse-windows-build.cjs');
-const {stageArtifacts,verifyPublishedStages} = require('./build-stage.cjs');
+const {stageArtifacts,verifyPublishedStages,componentStageArtifacts,verifyComponentSourceProof,allJobs,jobName:stageJobName,componentSourceGates} = require('./build-stage.cjs');
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const fullNames = ['nora-tavern-shared', ...platforms.map(p => `nora-tavern-${p}`),
   ...platforms.map(p => `nora-operation-acceptance-${p}`)];
@@ -18,6 +18,14 @@ const diagnostics = ['nora-windows-failed-packaging-diagnostic'];
 const digestBytes = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function versionParts(tag) { assert.match(tag, /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/); return tag.slice(1).split('-')[0].split('.').map(Number); }
 function compareVersions(left, right) { const a = versionParts(left), b = versionParts(right); for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1; return 0; }
+// Change planning compares the latest published product, including an equal
+// current version. Upgrade acceptance separately requires a strictly older one.
+function selectPlanningBaseline(pages) {
+  assert.ok(Array.isArray(pages)&&pages.every(Array.isArray),'Incomplete published release facts');
+  const stable=pages.flat().filter(value=>value.draft===false&&value.prerelease===false&&/^v\d+\.\d+\.\d+$/.test(value.tag_name));
+  assert.equal(new Set(stable.map(value=>value.tag_name)).size,stable.length,'Duplicate published stable tag');
+  return stable.sort((a,b)=>compareVersions(b.tag_name,a.tag_name))[0]?.tag_name || 'EMPTY';
+}
 function selectAcceptanceBaseline(pages, { repository, targetTag, requestedTag = '', publication = false }) {
   versionParts(targetTag); assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
   assert.ok(Array.isArray(pages)); const releases = pages.flat(); assert.ok(releases.every(value => value && typeof value === 'object'));
@@ -333,15 +341,20 @@ function componentQualification(run, options) {
   assert.equal(run.conclusion, 'failure');
   const listing=options.qualificationJobs;
   assert.ok(listing && Array.isArray(listing.jobs));
-  assert.equal(listing.total_count, listing.jobs.length); assert.equal(listing.jobs.length, 5);
-  assert.equal(new Set(listing.jobs.map(job=>job.id)).size, 5);
+  assert.equal(listing.total_count, listing.jobs.length);
+  const staged=listing.jobs.some(job=>platforms.some(platform=>job.name===stageJobName('source',platform,'components')));
+  const count=staged?8:5;assert.equal(listing.jobs.length,count);
+  assert.equal(new Set(listing.jobs.map(job=>job.id)).size,count);
   const expected=new Map([
     ['build-components', ['Verify release contracts and update preservation', 'Require chat backup safety tests',
       'Require the selected component source regression', 'Build only shared application and updater components',
       'Reuse verified environments and seal three system manifests', 'Verify the frozen component delivery before native acceptance', 'Preserve accepted component delivery']],
-    ...[['macos-15','darwin-arm64'],['macos-15-intel','darwin-x64'],['windows-latest','win32-x64']].map(([runner,platform])=>
-      [`native-components (${runner}, ${platform})`, ['Qualify native maintenance changes before actual component acceptance',
-        'Test fresh target installation and both native upgrade states with retained user data', 'Preserve raw native component evidence']]),
+    ...[['macos-15','darwin-arm64'],['macos-15-intel','darwin-x64'],['windows-latest','win32-x64']].flatMap(([runner,platform])=>staged?
+      [[stageJobName('source',platform,'components'),componentSourceGates],
+        [stageJobName('acceptance',platform,'components'),['Restore successful source qualification without running it again',
+          'Test fresh target installation and both native upgrade states with retained user data','Preserve raw native component evidence']]]:
+      [[`native-components (${runner}, ${platform})`, ['Qualify native maintenance changes before actual component acceptance',
+        'Test fresh target installation and both native upgrade states with retained user data', 'Preserve raw native component evidence']]]),
     ['accept-components', null],
   ]);
   for(const job of listing.jobs){
@@ -369,7 +382,7 @@ function verifyDelivery(run, artifacts, options) {
   const qualification=options.qualificationJobs?componentQualification(run,options):null;
   const full = options.mode === 'full';
   assert.equal(run.path, `.github/workflows/${full ? 'build-integrated-launcher' : 'publish-component-update'}.yml`);
-  const intermediate = full ? new Set(stageArtifacts(artifacts).map(item=>item.name)) : new Set();
+  const intermediate = new Set((full?stageArtifacts(artifacts):componentStageArtifacts(artifacts)).map(item=>item.name));
   const names = artifacts.artifacts.filter(item=>!intermediate.has(item.name)).map(item => item.name).sort();
   const expected = full ? fullNames : componentNames.filter(name=>!qualification||name!=='nora-component-acceptance');
   assert.deepEqual(names.filter(name => name !== 'nora-release-plan' && !(full && diagnostics.includes(name))), expected.filter(name => name !== 'nora-release-plan').sort(), 'Incomplete accepted delivery or unexpected artifact');
@@ -522,13 +535,26 @@ async function materialize(run, artifacts, options, root, kind) {
     } else {
       if(receipt.qualification) await requalifyComponentAcceptance(path.join(root,'delivery'),path.join(root,'acceptance'),path.join(root,'plan'),options.commit,options.tag);
       receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
+      const stages=componentStageArtifacts(artifacts);
+      const proofs=reportFiles(path.join(root,'acceptance'),'nora-stage-input-source.json');
+      const jobs=allJobs(options.repository,run.id);
+      const staged=jobs.jobs.some(job=>platforms.some(platform=>job.name===stageJobName('source',platform,'components')));
+      if(staged||stages.length||proofs.length){
+        assert.equal(stages.length,3,'Every platform requires its component source stage');assert.equal(proofs.length,3);
+        const source={};
+        for(const platform of platforms){
+          const file=proofs.filter(file=>file.split(path.sep).includes(`nora-component-native-${platform}`));assert.equal(file.length,1);
+          source[platform]=verifyComponentSourceProof(JSON.parse(fs.readFileSync(file[0])),run,artifacts,jobs,platform,oneReport(path.join(root,'plan'),'release-plan.json').baseline.ref);
+        }
+        receipt.componentSourceQualification=source;
+      }
     }
   }
   fs.writeFileSync(path.join(root, 'source-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);
   return receipt;
 }
-module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
+module.exports = { selectPlanningBaseline, selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
 if (require.main === module) {
   if (process.argv[2] === 'baseline-selection') {
     const [, , , releasesFile, targetTag, repository, requestedTag, output, githubOutput, operation] = process.argv;
