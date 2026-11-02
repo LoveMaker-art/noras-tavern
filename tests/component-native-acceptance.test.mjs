@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
-import { COMPONENT_PLATFORMS, prepareComponentPayload, sealComponentAcceptance, verifyComponentNative, runComponentNative } from '../tooling/release/component-acceptance.mjs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { COMPONENT_PLATFORMS, prepareComponentPayload, sealComponentAcceptance, verifyComponentNative, runComponentNative, runComponentCloud } from '../tooling/release/component-acceptance.mjs';
 import { componentAcceptanceFixture } from './helpers/component-acceptance-fixture.mjs';
 const { verifyComponentAcceptance } = createRequire(import.meta.url)('../tooling/release/publication-source.cjs');
 
@@ -13,6 +15,60 @@ function fixture(t) {
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     return { root, ...componentAcceptanceFixture(root) };
 }
+
+test('headless qualification consumes shared core bytes and rejects incomplete outcomes or another host',t=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-cloud-qualification-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const delivery=path.join(root,'core'),baseline=path.join(root,'baseline'),hermesSource=path.join(root,'hermes');
+    for(const folder of [delivery,baseline,hermesSource])fs.mkdirSync(folder);
+    const commit='a'.repeat(40),archives={};
+    for(const name of ['app','ops','nora-mcp']){
+        const bytes=Buffer.from(name),file=`nora-tavern-${name}.tar.gz`;fs.writeFileSync(path.join(delivery,file),bytes);
+        archives[name]={name:file,sha256:createHash('sha256').update(bytes).digest('hex')};
+    }
+    fs.writeFileSync(path.join(delivery,'release-manifest.json'),JSON.stringify({schema:'tavern-release/v2',commit,candidate:false,dirty:false,archives}));
+    const expected={schema:'nora-cloud-component-acceptance/1',platform:'linux',targetCommit:commit,outcome:'passed',
+        scenarios:['fresh','running','stopped','dependency-rebuild'].map(scenario=>({scenario,outcome:'passed',stop:'confirmed',executorHandles:'verified-closed',activeOwnedProcesses:[],installedCommit:commit,userData:'retained',worldAndChatRead:'verified'}))};
+    let calls=0;
+    const check=(result=expected,host='linux')=>runComponentCloud({delivery,baseline,hermesSource,commit,host,python:process.execPath,
+        scratch:path.join(root,'attempt-'+calls),run:(_command,args)=>{
+            calls++;assert.ok(args.includes('--hermes-source'));assert.ok(args.some(value=>value.endsWith('tests/deployment/cloud_component_acceptance.py')));
+            assert.ok(fs.statSync(args[2]).isFile(), 'The actual Python actor must exist before qualification');
+            const output=args[args.indexOf('--scratch')+1];fs.mkdirSync(output);fs.writeFileSync(path.join(output,'cloud-acceptance.json'),JSON.stringify(result));
+        }});
+    assert.equal(check().outcome,'passed');
+    for(const mutate of [v=>v.outcome='failed',v=>v.scenarios[0].stop='unconfirmed',v=>v.scenarios[1].userData='changed',
+        v=>v.scenarios[2].worldAndChatRead='unconfirmed',v=>v.scenarios[3].outcome='not-executed',v=>v.targetCommit='b'.repeat(40),v=>v.scenarios.pop(),
+        v=>v.scenarios[0].executorHandles='unconfirmed',v=>v.scenarios[0].activeOwnedProcesses=[123]]){
+        const bad=structuredClone(expected);mutate(bad);assert.throws(()=>check(bad));
+    }
+    const before=calls;assert.throws(()=>check(expected,'darwin'),/actual Linux/);assert.equal(calls,before);
+    fs.appendFileSync(path.join(delivery,archives.app.name),'changed');assert.throws(()=>check(),/Changed cloud core/);assert.equal(calls,before);
+});
+
+test('headless fixture respects its shared deadline and closes an actual timed-out child',()=>{
+    const script=path.resolve('tests/deployment/cloud_component_acceptance.py');
+    const program=`import importlib.util,pathlib,sys,tempfile,time,psutil
+spec=importlib.util.spec_from_file_location('cloud_fixture',sys.argv[1]);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory(prefix='nora-cloud-deadline-') as temp:
+ fixture=module.Scenario.__new__(module.Scenario);fixture.root=pathlib.Path(temp);fixture.env={'PATH':str(pathlib.Path(sys.executable).parent)};fixture.report={'commands':[]};fixture.deadline=time.monotonic()
+ try:fixture.command('expired',['-c','raise SystemExit(99)']);raise AssertionError('Expired fixture admitted a child')
+ except RuntimeError as error:assert 'deadline exhausted' in str(error)
+ assert not list(fixture.root.iterdir())
+ children=[];original=module.subprocess.Popen
+ def held(*args,**options):
+  child=original(*args,**options);children.append(child);return child
+ module.subprocess.Popen=held;fixture.deadline=time.monotonic()+180
+ try:
+  try:fixture.command('timeout',['-c','import time; time.sleep(30)'],timeout=0.05);raise AssertionError('Timed-out actor passed')
+  except RuntimeError as error:assert 'owned children closed' in str(error)
+  assert len(children)==1 and children[0].poll() is not None and not psutil.pid_exists(children[0].pid)
+ finally:
+  for child in children:
+   if child.poll() is None:child.kill();child.wait(timeout=5)
+print('actual fixture child closed; no expired actor admitted')`;
+    const output=execFileSync(process.env.NORA_TEST_PYTHON||'python3',['-I','-B','-c',program,script],{encoding:'utf8',timeout:10000});
+    assert.match(output,/actual fixture child closed/);
+});
 test('component publication consumes all raw native reports and exact frozen delivery', async t => {
     const f = fixture(t), result = await verifyComponentAcceptance(f.delivery, f.reports, f.planRoot, f.commit);
     assert.deepEqual(Object.keys(result.native).sort(), [...COMPONENT_PLATFORMS].sort());
