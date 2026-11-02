@@ -47,7 +47,7 @@ function fixture(overrides = {}) {
     button:(text,onclick)=>Object.assign(element(),{textContent:text,onclick}),
     clearTimeout(){},clearInterval(){},setTimeout:()=>1,checkVersionsInBackground(){},...overrides});
   vm.runInContext(['textError','errorCopy','operationFailure','currentOperation','allowedActions','noraUpdateGuidance','recheckFailure','refreshFailure','recoveryReason','hasLogs','appendActions','checkedTime','unknownStatusCopy','operationFact','retryLabel','complete','canReturnHome','serviceRunning','allRunning','syncState','readStatus',
-    'controls','renderServices','dailyHome','openLogs','openLauncherDownload','recoveredOperation','route','poll'].map(definition).join('\n'),context);
+    'controls','renderServices','dailyHome','openLogs','openLauncherDownload','recoveredOperation','settledUpdateOperation','route','poll'].map(definition).join('\n'),context);
   return {context,$,descendants};
 }
 test('an incompatible package offers its replacement page and preserves the failure when that page cannot open',async()=>{

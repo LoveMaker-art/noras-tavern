@@ -227,10 +227,11 @@ test('completion reads a full sealed release plan without enlarging the submissi
   put('installer/skill-update/request.json',{...request,result,unexpected:'x'.repeat(65536)});
   await assert.rejects(desktopStatus(f.home),/Invalid skill update request/);
 });
-test('legacy receiver enters the same action and the UI routes content update to independent task', () => {
+test('legacy receiver rejects execution while the independent core task remains available', () => {
   const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
   assert.match(source, /handle\('nora:run', runAction\)/);
-  assert.match(source, /await runAction\(\{ sender: null \}, \{ action: 'update'/);
+  assert.match(source, /CORE_UPDATE_CHAT_REQUIRED/);
+  assert.doesNotMatch(source.slice(source.indexOf('  const skillUpdates = createSkillUpdateReceiver('),source.indexOf("  handle('nora:cancel'")), /runAction\(/);
   assert.match(source, /apps\/tavern-ops\/updater\/task.py/);
 });
 test('real Python skill refuses an unverified raw terminal record without a query closure', async t => {

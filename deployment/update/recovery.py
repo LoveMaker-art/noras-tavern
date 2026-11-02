@@ -1334,7 +1334,11 @@ def assess(home,root):
         journal=load(home,root,full=False)
         reason=recovery_block_reason(journal.record.get('status'))
         if reason:return {'canRecover':False,'reason':reason}
-        return {'canRecover':True,'reason':'','version':journal.plan['before']['version']}
+        result={'canRecover':True,'reason':'','version':journal.plan['before']['version']}
+        operation_id=journal.record.get('operationId')
+        if isinstance(operation_id,str) and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',operation_id,re.I):
+            result['operationId']=operation_id
+        return result
     except (OSError,ValueError,KeyError,TypeError,RuntimeError) as error:
         return {'canRecover':False,'reason':str(error)}
 

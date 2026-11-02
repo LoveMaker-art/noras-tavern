@@ -14,6 +14,55 @@ function fixture(t, execute, overrides = {}) {
   return {directory, options, controller:createOperationController(options)};
 }
 
+for(const filesOnly of [false,true])test(`automatic rollback ends current failure and retains original cause (files only=${filesOnly})`,async t=>{
+  const original=Object.assign(new Error('fixture replacement failed'),{code:'EACCES'});
+  const service=Object.assign(new Error('fixture restored service is offline'),{code:'SERVICE_OFFLINE'});
+  const f=fixture(t,async()=>{}, {executors:{update:async context=>{await context.effect('changed');throw original;}},
+    recoverers:{update:async()=>({effectState:'restored',verification:filesOnly?'failed':'confirmed',filesRestored:filesOnly,
+      ...(filesOnly?{secondaryErrors:[{operation:'restore-service',error:service}]}:{}),value:{recoveryVerification:filesOnly?'files-only':'confirmed'}})}});
+  const result=await f.controller.start('update',{target:{request:{tag:'v2.6.0'}}},'automatic-rollback');
+  assert.equal(result.state,'rolled-back');assert.equal(result.currentFailure,null);
+  assert.equal(result.primaryFailure.code,'EACCES');assert.equal(result.failureCode,'EACCES');
+  assert.equal(result.verification,filesOnly?'failed':'confirmed');
+  if(filesOnly)assert.equal(result.secondaryFailures.at(-1).code,'SERVICE_OFFLINE');
+  const reopened=createOperationController(f.options),saved=await reopened.snapshot(result.operationId);
+  assert.equal(saved.currentFailure,null);assert.equal(saved.primaryFailure.code,'EACCES');assert.equal(saved.state,'rolled-back');
+  assert.equal((await f.options.lock.probe({directory:f.directory})).busy,false);
+});
+
+test('failed update targets remain discoverable after service operations and reopen without changing history',async t=>{
+  const f=fixture(t,async()=>{}, {executors:{update:async()=>{throw new Error('fixture download failure');}}});
+  const failed=await f.controller.start('update',{target:{releasePlan:{tag:'v2.6.0'}}},'failed-target');
+  const file=path.join(f.directory,'operations',failed.operationId,'operation.json'),before=fs.readFileSync(file);
+  await f.controller.start('stop',{execute:async()=>({verification:'confirmed'})},'later-stop');
+  const reopened=createOperationController(f.options);
+  assert.equal(reopened.hasFailedUpdateTarget('2.6.0'),true);
+  assert.equal(reopened.hasFailedUpdateTarget('v2.6.0'),true);
+  assert.equal(reopened.hasFailedUpdateTarget('v2.6.1'),false);
+  assert.deepEqual(fs.readFileSync(file),before);
+});
+
+test('a restored program with a separate service failure does not block a later ordinary start',async t=>{
+  const f=fixture(t,async()=>{}, {executors:{update:async context=>{await context.effect('changed');throw new Error('fixture new program failed');}},
+    recoverers:{update:async()=>({effectState:'restored',filesRestored:true,verification:'failed'})},
+    observeEffects:async()=>({effectState:'restored',recoveryOutcome:'files-restored-start-failed'})});
+  const restored=await f.controller.start('update',{},'restored-service-failed');
+  const started=await createOperationController(f.options).start('start',{execute:async()=>({verification:'confirmed'})},'ordinary-start');
+  assert.equal(started.state,'succeeded');assert.equal((await f.controller.snapshot(restored.operationId)).state,'rolled-back');
+});
+
+test('archived update failures retain their public target and still suppress automatic replay',async t=>{
+  const f=fixture(t,async()=>{}, {executors:{update:async()=>{throw new Error('fixture download failed');}},retention:{fullRecords:2}});
+  f.options.evidence=require('../installer/desktop/evidence-store').createEvidenceStore({directory:f.directory});
+  f.controller=createOperationController(f.options);
+  const failed=await f.controller.start('update',{target:{request:{tag:'v2.6.0'}}},'archivable-failure');
+  f.options.evidence.updateDelivery(failed.operationId,{queued:0,accepted:1,last_ack:1});
+  for(const request of ['stop-one','stop-two'])await f.controller.start('stop',{execute:async()=>({verification:'confirmed'})},request);
+  const reopened=createOperationController(f.options),saved=await reopened.snapshot(failed.operationId);
+  assert.equal(saved.archived,true);assert.equal(reopened.hasFailedUpdateTarget('2.6.0'),true);
+  assert.equal(reopened.hasFailedUpdateTarget('2.6.1'),false);
+});
+
 test('service retry cooldown expires across reopen without discarding original failures',async t=>{
   for(const kind of ['start','restart','stop','shutdown'])await t.test(kind,async t=>{
     let now=Date.parse('2026-10-27T00:00:00Z'),runs=0,healthy=false;
@@ -1143,12 +1192,14 @@ test('restarting restored files is bounded and a recheck cannot silently permit 
   assert.ok(checked.allowedActions.includes('start-restored'));assert.equal(checked.allowedActions.includes('retry'),false);
 });
 
-test('a new update cannot bypass a pending restored runtime or a file-only recovery',async t=>{
-  for(const recoveryOutcome of ['recovery-required','files-restored-start-failed']){
+test('a new update cannot bypass pending program effects even after an earlier file-only recovery',async t=>{
+  for(const effects of [{effectState:'restored',recoveryOutcome:'recovery-required'},
+    {effectState:'unknown',recoveryOutcome:'files-restored-start-failed'},
+    {effectState:'changed',recoveryOutcome:'files-restored-start-failed'}]){
     let runs=0;
     const f=fixture(t,async context=>{runs++;await context.effect('changed');throw new Error('first install failed');},
       {recoverers:{install:async()=>({filesRestored:true,verification:'failed'})},
-        observeEffects:async()=>({effectState:'restored',recoveryOutcome,canRecover:true})});
+        observeEffects:async()=>({...effects,canRecover:true})});
     await f.controller.start('install',{},'pending-restoration');
     await assert.rejects(createOperationController(f.options).start('install',{target:{different:true}},'new-target'),
       {code:'UPDATE_RECOVERY_REQUIRED'});

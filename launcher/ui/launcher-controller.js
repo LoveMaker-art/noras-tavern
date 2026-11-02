@@ -50,7 +50,6 @@
   let modelSelectionOperation = null;
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
-  let bundledUpgradeAttempted = false;
   let statusUnknown = false, lastStatusAt = 0, launcherRecoveryConfirmed = false;
   let logsOpen = false, logTimer, logCursor, logOperationId, logGeneration = 0, logFollow = true, logOutcome;
   let logRecords = [], logBytes = 0, logErrorLocated = false, logFirstError, logReturnFocus;
@@ -190,14 +189,17 @@
   }
   function allowedActions(error) {
     if (statusUnknown) return ['recheck', 'logs'];
-    const actions = currentOperation(error)?.allowedActions || error?.allowedActions;
-    return Array.isArray(actions) ? actions : ['recheck', 'logs'];
+    const operation = currentOperation(error);
+    const actions = operation?.allowedActions || error?.allowedActions;
+    if (!Array.isArray(actions)) return ['recheck', 'logs'];
+    return operation?.kind === 'update' && operation.target?.request?.launcherOnly !== true
+      ? actions.filter(action => !['retry','resume'].includes(action)) : actions;
   }
   function noraUpdateGuidance(error, action) {
-    return ['update', 'check_update'].includes(action)
+    return action === 'check_update'
       && ['dns_failed','network','tls_failed','timeout','http_unauthorized','http_forbidden','rate_limited','http_error'].includes(error?.failureCode)
       && complete() && allRunning() && snapshot.modelConfigured && !snapshot.busy && !snapshot.updateRecovery && !snapshot.launcherRecovery
-      ? '网络恢复后，也可对诺拉说“更新到最新版本”。' : '';
+      ? '诺拉与酒馆更新，请与诺拉对话。' : '';
   }
   async function recheckFailure() {
     if (busy) return;
@@ -278,8 +280,10 @@
       && !busy && !statusUnknown && !snapshot.updateRecovery && !snapshot.launcherRecovery);
   }
   function isNewUpdateTarget(tag, operation = snapshot.operation) {
-    if (!canCheckNewUpdate(operation) || versionInfo?.available !== true || versionInfo.updateSupported !== true
-      || versionInfo.latestConfirmed !== true || tag !== versionInfo.latest) return false;
+    const selectedTag = versionInfo?.releaseTag || versionInfo?.latest;
+    if (!canCheckNewUpdate(operation) || versionInfo?.launcherUpdateAvailable !== true || versionInfo.launcherInstallable !== true
+      || versionInfo.latestConfirmed !== true || typeof tag !== 'string' || typeof selectedTag !== 'string'
+      || tag.replace(/^v/, '') !== selectedTag.replace(/^v/, '')) return false;
     const previous = operation.target?.releasePlan ? operation.target.releasePlan.tag : operation.target?.request?.tag;
     const releaseTag = /^v?\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
     return typeof tag === 'string' && releaseTag.test(tag) && typeof previous === 'string' && releaseTag.test(previous)
@@ -292,7 +296,7 @@
       || snapshot.updateRecovery || snapshot.launcherRecovery || snapshot.modelSyncPending) return false;
     const operation = snapshot.operation || lastFailure?.error?.operation;
     if (!operation || !['install','update','repair','recover','recoverLauncher'].includes(operation.kind)) return true;
-    return recoveredOperation(operation) || operation.state === 'succeeded'
+    return settledUpdateOperation(operation) || operation.state === 'succeeded'
       || operation.effectState === 'restored' && operation.verification === 'confirmed'
         && !['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome)
       || operation.effectState === 'untouched' && !operation.handoffRef
@@ -538,11 +542,20 @@
   }
 
   function recoveredOperation(operation) {
+    if (!operation || operation.busy === true) return false;
     return operation?.verification === 'confirmed'
       && operation.currentFailure === null
       && (operation.state === 'rolled-back' && ['restored-and-verified', 'not-required'].includes(operation.recoveryOutcome)
         || operation.state === 'failed' && operation.effectState === 'untouched' && operation.recoveryOutcome === 'not-required'
           && operation.result?.notAppliedVerification === 'confirmed');
+  }
+  function settledUpdateOperation(operation) {
+    if (recoveredOperation(operation)) return true;
+    if (!operation || operation.busy !== false || !['update','recover','recoverLauncher'].includes(operation.kind)) return false;
+    return operation.kind === 'update' && ['failed','cancelled','blocked'].includes(operation.state)
+        && operation.effectState === 'untouched' && operation.recoveryOutcome === 'not-required' && !operation.handoffRef
+      || operation.state === 'rolled-back' && operation.effectState === 'restored' && operation.currentFailure === null
+        && operation.recoveryOutcome === 'files-restored-start-failed';
   }
   function route() {
     $('main').classList.remove('update-recovery');
@@ -627,44 +640,33 @@
     if(['partial','blocked'].includes(partial?.status)){
       const original=partial.operation||snapshot.operation?.operationId===partial.operationId&&snapshot.operation;
       const operation=original?currentOperation({operation:original}):undefined;
-      fail({...(operation?{operation}:{}),allowedActions:partial.status==='partial'||partial.canRetry?['retry','recheck','logs']:['recheck','logs'],
-        logOperationId:partial.operationId,guidance:{title:partial.status==='partial'?'更新部分完成。':'更新尚未完成。',
-        detail:[partial.message,partial.coreVersion&&partial.launcherVersion?`酒馆 ${partial.coreVersion} · 启动器 ${partial.launcherVersion}`:''].filter(Boolean).join('\n'),
-        next:partial.status==='partial'?'可重试未完成的一项；已成功的部分会保留。':'请先查询原任务并保留日志和数据。'}},'update',
-        partial.operationId?()=>run('update',{operationId:partial.operationId,snapshotSequence:partial.snapshotSequence},'resumeOperation')
-          :()=>run('update',{tag:partial.releaseTag,includeLauncher:true}));
-      return;
+      const settled=(partial.settled===true||partial.firstOperationId===operation?.operationId)&&settledUpdateOperation(operation);
+      if(!settled){
+        fail({...(operation?{operation}:{}),allowedActions:['recheck','logs'],
+          logOperationId:partial.operationId,guidance:{title:partial.status==='partial'?'更新部分完成。':'更新尚未完成。',
+          detail:[partial.message,partial.coreVersion&&partial.launcherVersion?`酒馆 ${partial.coreVersion} · 启动器 ${partial.launcherVersion}`:''].filter(Boolean).join('\n'),
+          next:'请先查询原任务。启动器与诺拉更新分别从各自入口发起。'}},'update',
+          undefined);
+        return;
+      }
     }
     const operation = snapshot.operation;
     const restoredSuccessfully = recoveredOperation(operation);
-    if (operation && !restoredSuccessfully&&['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)) {
+    const settled = settledUpdateOperation(operation);
+    if (operation && !settled&&['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)) {
       fail(operationFailure(operation), operation.kind); return;
     }
-    if (snapshot.installer?.resumeTarget && snapshot.installer.phase === 'error') {
+    if (!settled && snapshot.installer?.resumeTarget && snapshot.installer.phase === 'error') {
       fail(snapshot.installer.error, 'update');
       return;
-    }
-    if (snapshot.installed && snapshot.hermesInstalled && snapshot.bundledUpgradeTarget) {
-      const target = snapshot.bundledUpgradeTarget;
-      if (!bundledUpgradeAttempted && snapshot.installer?.phase !== 'error') {
-        bundledUpgradeAttempted = true;
-        run('update', { tag: target });
-        return;
-      }
-      view = 'recovery'; daily = false; clearInline();
-      $('main').classList.remove('welcome', 'daily', 'editing');
-      $('steps').hidden = true;
-      say('继续完成版本升级。', snapshot.installer?.error || `启动器已就绪，酒馆将升级到 ${target}。世界、对话和配置会保留。`);
-      if (snapshot.installer?.phase === 'error') { fail(snapshot.installer.error, 'update'); return; }
-      $('inline').append(button('继续更新', () => run('update', { tag: target })));
-      controls(); return;
     }
     if (!autoStartAttempted && snapshot.installed && snapshot.hermesInstalled && snapshot.systemReady === true) {
       autoStartAttempted = true;
       if (!snapshot.running) { run('start', { service: 'tavern', resumeSetup: true }); return; }
     }
     if (complete()) {
-      dailyHome(restoredSuccessfully ? operation.kind === 'update' ? '更新未完成，已恢复旧版本。' : '操作已回退，恢复后的状态已核验。' : '');
+      dailyHome(restoredSuccessfully && operation.effectState === 'restored' && operation.verification === 'confirmed'
+        ? operation.kind === 'update' ? '更新未完成，已恢复旧版本。' : '操作已回退，恢复后的状态已核验。' : '');
       return;
     }
     if ((snapshot.installed || snapshot.managedInstallation) && snapshot.systemReady === false) {
@@ -673,11 +675,9 @@
       $('main').classList.remove('welcome', 'daily', 'editing');
       $('steps').hidden = true; $('management').hidden = true; clearInline();
       say('当前安装需要修复。', (snapshot.systemProblems || []).slice(0, 2).join('；'));
-      const repair = button('修复当前安装', () => run('update'));
-      repair.disabled = !snapshot.version;
-      $('inline').append(repair);
+
       const note = document.createElement('p'); note.className = 'install-location';
-      note.textContent = '使用最新兼容版本修复，保留世界、对话和配置。' + (!snapshot.version ? '无法确认版本，请先导出日志。' : '');
+      note.textContent = '请与诺拉对话检查或修复酒馆。' + (!snapshot.version ? '当前版本待确认，请保留日志。' : '');
       $('inline').append(note);
       if (hasLogs()) $('inline').append(button('查看日志', openLogs, false));
       controls(); return;
@@ -719,7 +719,7 @@
   }
   function taskView(action) {
     view = 'task'; setupStage(stage); clearInline(); $('management').hidden = true;
-    const messages = { install: '正在安装诺拉与酒馆。', pair: '正在连接 ClawChat。', start: activeService === 'nora' ? '正在启动诺拉。' : activeService === 'tavern' ? '正在启动酒馆。' : '正在启动诺拉与酒馆。', stop: '正在停止服务。', update: '正在更新诺拉与酒馆。', repair: '正在修复安装。', recover: '正在恢复旧版本，请保持窗口打开。', recoverLauncher: '正在恢复旧启动器，请保持窗口打开。' };
+    const messages = { install: '正在安装诺拉与酒馆。', pair: '正在连接 ClawChat。', start: activeService === 'nora' ? '正在启动诺拉。' : activeService === 'tavern' ? '正在启动酒馆。' : '正在启动诺拉与酒馆。', stop: '正在停止服务。', update: '正在更新启动器。', repair: '正在修复安装。', recover: '正在恢复旧版本，请保持窗口打开。', recoverLauncher: '正在恢复旧启动器，请保持窗口打开。' };
     say(messages[action] || '我正在处理。');
     $('inline').innerHTML = '<div class="job"><div class="job-head"><span id="jobTitle"></span><span id="jobPercent"></span></div><div class="meter indeterminate"><span id="meterFill"></span></div><div class="job-note" id="jobNote"></div></div><div class="task-actions" id="taskActions"></div>';
     currentTask = '准备中'; startedAt = Date.now(); lastEvent = startedAt;
@@ -935,6 +935,9 @@
         if (!statusUnknown) snapshot.installer = { ...snapshot.installer, phase: 'error', error: textError(error) };
         route(); return;
       }
+      if (['update', 'repair', 'recover', 'recoverLauncher'].includes(action) && settledUpdateOperation(snapshot.operation)
+        && (error.operation?.operationId === snapshot.operation.operationId || operation?.operationId !== snapshot.operation.operationId
+          || snapshot.operation.snapshotSequence > operation?.snapshotSequence)) { route(); return; }
       // Single-use pairing codes are never replayed automatically.
       const retry = action === 'pair'
         ? snapshot.clawchatPaired ? () => run('start') : clawForm
@@ -1349,56 +1352,106 @@
       $('pairCode').value = ''; run('pair', { code });
     };
   };
+  function renderUpdateVersions(result) {
+    const list = document.createElement('div'); list.className = 'update-list';
+    const coreAvailable = result.releaseAvailable === true;
+    const appAvailable = result.launcherUpdateAvailable === true;
+    const definitions = [
+      { id:'launcher', name:'启动器', current:result.launcherVersion, latest:result.launcherLatest,
+        available:appAvailable, error:result.launcherError, compatibility:result.launcherCompatibilityError,
+        blocked:appAvailable && result.launcherInstallable !== true },
+      { id:'core', name:'诺拉与酒馆', current:result.current, latest:result.latest,
+        available:coreAvailable, error:result.error, compatibility:result.compatibilityError,
+        blocked:result.state === 'blocked', hint:coreAvailable ? '请与诺拉对话更新。' : '' },
+    ];
+    for (const item of definitions) {
+      const row = document.createElement('section'); row.className = 'update-component'; row.dataset.component = item.id;
+      row.setAttribute('aria-label', item.name);
+      const name = document.createElement('span'); name.className = 'update-name'; name.textContent = item.name;
+      const state = document.createElement('span'); state.className = 'update-state';
+      const same = item.current && item.latest && String(item.current).replace(/^v/, '') === String(item.latest).replace(/^v/, '');
+      const confirmed = result.latestConfirmed === true;
+      state.dataset.state = item.error ? 'unavailable' : item.compatibility || item.blocked ? 'blocked'
+        : item.available || same ? confirmed ? item.available ? 'available' : 'current' : 'cached' : 'unknown';
+      state.textContent = item.error ? '检查未完成' : item.compatibility || item.blocked ? '暂不可更新' : item.available
+        ? confirmed ? '有新版本' : result.checkedAt ? '上次发现新版' : '待确认'
+        : same ? confirmed ? '已是最新' : result.checkedAt ? '上次检查一致' : '待确认'
+        : item.id === 'core' && result.state === 'ahead' ? '本机较新' : '待确认';
+      const versions = document.createElement('p'); versions.className = 'update-versions';
+      versions.textContent = `当前 ${item.current || '待确认'}${item.latest ? `  →  ${item.latest}` : ''}`;
+      row.append(name, state, versions);
+      const issue = item.error || item.compatibility;
+      if (issue) {
+        const feedback = document.createElement('p'); feedback.className = 'update-feedback';
+        const reason = errorCopy(typeof issue === 'object' ? issue : {message:issue}); feedback.textContent = [reason.title, reason.detail].filter(Boolean).join(' ');
+        row.append(feedback);
+      }
+      if (item.hint) {
+        const hint = document.createElement('p'); hint.className = 'update-guidance'; hint.textContent = item.hint; row.append(hint);
+      }
+      list.append(row);
+    }
+    $('inline').append(list);
+  }
   async function checkUpdates(options = {}) {
     if (view === 'daily' && options.currentTarget) pageReturnFocus = options.currentTarget;
-    if (busy) return; busy = true; view = 'update'; clearInline(); setupStage(stage); say('正在检查更新。'); controls();
+    if (busy) return; busy = true; view = 'update'; clearInline(); setupStage(stage);
+    $('main').classList.add('editing', 'update-view'); say('正在检查更新。'); controls();
     try {
       const result = await api.checkUpdate(); busy = false; versionInfo = result;
-      const state = result.state || (result.available ? 'available' : 'current');
       const channelName = result.channel === 'beta' ? 'Beta 测试版' : '正式版';
       const reused = result.latestConfirmed !== true && Boolean(result.checkedAt);
-      const problem = result.error || result.compatibilityError ? errorCopy({message:result.error || result.compatibilityError}) : null;
-      const title = problem ? problem.title
-        : { available: '发现可用更新。', blocked: '此版本暂时无法安装。', current: `暂无${channelName}更新。`, ahead: `本机酒馆版本高于${channelName}发布。`, unknown: '本机版本暂时无法确认。', unavailable: '检查更新未完成。' }[state];
-      const versions = `酒馆：当前 ${result.current || '待确认'}${result.latest ? ` · 发布 ${result.latest}` : ''}\n启动器：当前 ${result.launcherVersion || '待确认'} · 发布 ${result.launcherLatest || '待确认'}`;
-      const explanation = [versions, problem?.detail, result.launcherError ? `启动器更新检查未完成：${result.launcherError}` : '', state === 'blocked' ? '本次未开始安装此版本。' : '',
-        result.checkedAt ? `${reused ? '上次检查结果' : '检查时间'}：${checkedTime(result.checkedAt)}` : ''].filter(Boolean).join('\n');
-      const noraGuidance = state === 'unavailable' ? noraUpdateGuidance(result, 'check_update') : '';
-      say(title, [explanation, noraGuidance].filter(Boolean).join('\n'));
-      const operation = snapshot.operation, entries = [];
+      say('版本更新', [channelName, result.checkedAt
+        ? `${reused ? '上次检查结果' : '检查时间'}：${checkedTime(result.checkedAt)}` : ''].filter(Boolean).join(' · '));
+      renderUpdateVersions(result);
+      const operation = snapshot.operation, entries = [], links = [];
       const unresolved = operation && !recoveredOperation(operation) && ['install','update','repair','recover'].includes(operation.kind)
         && ['failed','cancelled','blocked','interrupted','rolled-back'].includes(operation.state);
-      const newTarget = unresolved && isNewUpdateTarget(result.latest, operation);
+      const newTarget = unresolved && isNewUpdateTarget(result.releaseTag || result.latest, operation);
+      const fixed = operation ? currentOperation({operation}) : undefined;
+      const tag = result.releaseTag || result.latest;
+      const fixedTag = fixed?.target?.releasePlan?.tag || fixed?.target?.request?.tag;
+      const retryOperation = !snapshot.updateSequence && fixed?.kind === 'update' && fixed.target?.request?.launcherOnly === true
+        && settledUpdateOperation(fixed) && typeof tag === 'string' && typeof fixedTag === 'string'
+        && tag.replace(/^v/,'') === fixedTag.replace(/^v/,'') && Number.isSafeInteger(fixed.snapshotSequence)
+        && fixed.allowedActions?.some(action=>['retry','resume'].includes(action)) && typeof api.resumeOperation === 'function' ? fixed : null;
       if (statusUnknown) {
         const note = document.createElement('p'); note.className = 'model-feedback'; note.textContent = unknownStatusCopy(); $('inline').append(note);
         entries.push({label:'重新查询状态', run:refreshFailure, primary:true});
-      } else if (result.available && result.updateSupported && (!unresolved || newTarget)) entries.push({
-        label:newTarget ? '安装新版更新' : '安装更新', run:() => {
-          if (newTarget && !isNewUpdateTarget(result.latest, operation)) { route(); return; }
-          return run('update', { tag: result.releaseTag||result.latest,
-            ...(result.launcherUpdateAvailable===true
-              ?result.releaseAvailable===true?{includeLauncher:true}:{launcherOnly:true}:{} ) });
+      } else if (result.launcherUpdateAvailable === true && result.launcherInstallable === true && (!unresolved || newTarget || retryOperation)) {
+        entries.push({label:retryOperation ? '重试启动器更新' : '更新启动器', run:() => {
+          if (newTarget && !isNewUpdateTarget(tag, operation)) { route(); return; }
+          if (retryOperation) return run('update', {operationId:retryOperation.operationId,snapshotSequence:retryOperation.snapshotSequence}, 'resumeOperation');
+          return run('update', {tag,launcherOnly:true});
         }, primary:true});
-      else if (unresolved) {
+      } else if (unresolved) {
         const note = document.createElement('p'); note.className = 'model-feedback';
-        note.textContent = '请先处理上次安装或更新。'; $('inline').append(note);
+        note.textContent = '请先检查上次操作。'; $('inline').append(note);
         entries.push({label:'查看上次操作', run:route, primary:true});
       }
-      if (state === 'unavailable' || reused) entries.push({label:'重新检查更新', run:() => checkUpdates(options), retryAt:result.retryAt,primary:!entries.length});
-      if (hasLogs()) entries.push({label:'查看日志', run:event=>openLogs(event,result.logOperationId), quiet:true});
-      if (result.releaseUrl) entries.push({label:'查看版本说明', run:() => api.openExternal(result.releaseUrl).catch(error => fail(error, 'update', checkUpdates)), quiet:true});
-      entries.push({label:canReturnHome() ? '返回酒馆' : '返回操作页', run:closeEdit, quiet:true,
-        primary:state === 'current' && !statusUnknown && !unresolved && !reused});
-      const group = document.createElement('div'); group.className = 'outcome-actions';
-      appendActions(group, entries); $('inline').append(group);
+      if (!entries.length && !statusUnknown && result.state === 'unavailable') entries.push({label:'重新检查', run:() => checkUpdates(options), retryAt:result.retryAt, primary:true});
+      if (!entries.some(entry=>entry.label === '重新检查')) links.push({label:'重新检查', run:() => checkUpdates(options), retryAt:result.retryAt, quiet:true});
+      if (hasLogs()) links.push({label:'查看日志', run:event=>openLogs(event,result.logOperationId), quiet:true});
+      if (result.releaseUrl) links.push({label:'版本说明', run:() => api.openExternal(result.releaseUrl).catch(error => fail(error, 'update', checkUpdates)), quiet:true});
+      entries.push({label:canReturnHome() ? '返回酒馆' : '返回操作页', run:closeEdit, quiet:entries.length > 0,
+        primary:!entries.length && !statusUnknown && !unresolved});
+      const group = document.createElement('div'); group.className = 'outcome-actions update-actions'; appendActions(group, entries);
+      const utilities = document.createElement('div'); utilities.className = 'update-links';
+      for (const entry of links) {
+        const control = button(entry.label, entry.run, false); control.className = 'quiet';
+        if (Number.isSafeInteger(entry.retryAt) && entry.retryAt > Date.now()) control.dataset.retryAt = String(entry.retryAt);
+        utilities.append(control);
+      }
+      $('inline').append(group, utilities);
     } catch (error) { busy = false; fail(error, 'update', checkUpdates); }
     controls();
   }
   function showVersionNotice() {
     if (view !== 'daily' || busy || !versionInfo || $('versionNotice')) return;
-    if (!versionInfo.available && !['blocked', 'unknown', 'unavailable'].includes(versionInfo.state)) return;
+    if (!versionInfo.available && !versionInfo.launcherUpdateAvailable && !['blocked', 'unknown', 'unavailable'].includes(versionInfo.state)) return;
     const notice = document.createElement('div'); notice.id = 'versionNotice'; notice.className = 'note';
     const summary = versionInfo.state === 'unavailable' ? '检查更新未完成' : versionInfo.state === 'blocked' ? '此版本暂时无法安装' : versionInfo.state === 'unknown' ? '本机版本暂时无法确认'
+      : versionInfo.launcherUpdateAvailable ? `启动器有新版本 ${versionInfo.launcherLatest || ''}` : versionInfo.releaseAvailable ? '诺拉与酒馆有新版本'
       : versionInfo.available ? `${versionInfo.latestConfirmed === true ? '发现' : '上次检查发现'}可用更新 ${versionInfo.latest}` : `本机酒馆版本高于最新${versionInfo.channel === 'beta' ? 'Beta 测试版' : '正式版'}`;
     const details = button('检查更新', checkUpdates, false); details.className = 'quiet';
     const label = document.createElement('span'); label.textContent = summary; label.title = summary;

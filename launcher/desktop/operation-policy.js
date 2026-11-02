@@ -574,31 +574,18 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       ||app.planDigest!==record.planDigest||app.job!==record.handoffRef)return null;
     const effects=await observe(record,{launcherOutcome:app});
     const expectedEffect=untouched?'untouched':'restored',expectedRecovery=untouched?'not-required':'restored-and-verified';
-    if(effects.effectState!==expectedEffect||effects.recoveryOutcome!==expectedRecovery)return null;
-    // A restored launcher alone cannot prove that the system transaction and
-    // services are usable. Verify the installed version, never the new target.
-    const port=record.target?.request?.port;
-    const before=await bridge('status',{port},context);
-    const version=record.target?.currentVersion||before?.version;
-    if(!version||!sameVersion(before?.version,version))return null;
-    const state=await bridge('verify-current-update',{port,version},context);
-    const roots={noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot)};
-    if(state?.updateVerified!==true||state.systemReady!==true||state.warningCode
-      ||!sameVersion(state.version,version)||!sameVersion(state.version,before.version)
-      ||!/^[a-f0-9]{40}$/.test(state.commit||'')||state.commit!==before.commit
-      ||statusFlags.some(key=>typeof state[key]!=='boolean')
-      ||['running','gatewayRunning','clawchatConnected'].some(key=>state[key]!==before[key])
-      ||!Number.isInteger(state.port)||state.port<1024||state.port>65535||state.port!==before.port
-      ||port!==undefined&&state.port!==port
-      ||Object.entries(roots).some(([key,root])=>[state[key],before[key]].some(actual=>
-        typeof actual!=='string'||!path.isAbsolute(actual)||path.resolve(actual)!==path.resolve(root))))return null;
-    const services=servicePlan(record);
-    if(services&&(state.running!==services.running||state.gatewayRunning!==services.gatewayRunning
-      ||services.clawchatConnected&&!state.clawchatConnected||services.version&&!sameVersion(state.version,services.version)))return null;
+    const settled=facts=>facts.effectState===expectedEffect&&(facts.recoveryOutcome===expectedRecovery
+      ||!untouched&&facts.recoveryOutcome==='files-restored-start-failed');
+    if(!settled(effects))return null;
+    // APP bytes and ownership are verified by its helper; the journals prove
+    // remaining program effects. Service health belongs to the next status read.
     const after=await observe(record,{launcherOutcome:app});context.check();
-    if(after.effectState!==expectedEffect||after.recoveryOutcome!==expectedRecovery)return null;
-    return {...app,value:{...state,...(untouched?{notAppliedVerification:'confirmed'}:{recoveryVerification:'confirmed'})}};
+    if(!settled(after))return null;
+    const filesOnly=after.recoveryOutcome==='files-restored-start-failed';
+    return {...app,...(filesOnly?{filesRestored:true}:{}),value:{
+      ...(untouched?{notAppliedVerification:'confirmed'}:{recoveryVerification:filesOnly?'files-only':'confirmed'})}};
   }
+
   async function inspectPartial(context,managed){
     context.check();
     const result=await runRuntime(context,{inspectPartial:true,partialRepair:managed});

@@ -1505,6 +1505,24 @@ if(mode==='capture'){
         with patch.object(recovery,'digest',side_effect=AssertionError('poll must not hash trees')):
             self.assertTrue(recovery.assess(self.home,self.root)['canRecover'])
 
+    def test_status_exposes_only_a_validated_recovery_operation_binding_without_writes(self):
+        journal=self.journal(state=False)
+        operation_id='11111111-1111-4111-8111-111111111111'
+        journal.record.update(operationId=operation_id,ownerEpoch=1)
+        journal.save('recovery-failed')
+        before=journal.file.read_bytes()
+        with patch.object(nora_system,'recovery_module',return_value=recovery):
+            result=nora_system.update_recovery(self.root,self.home)
+        self.assertTrue(result['canRecover'])
+        self.assertEqual(result.get('operationId'),operation_id)
+        self.assertEqual(journal.file.read_bytes(),before)
+        journal.plan['installRoot']=str(self.base/'another-instance')
+        journal.save()
+        with patch.object(nora_system,'recovery_module',return_value=recovery):
+            invalid=nora_system.update_recovery(self.root,self.home)
+        self.assertFalse(invalid['canRecover'])
+        self.assertNotIn('operationId',invalid,'an unvalidated raw transaction cannot release a recovery gate')
+
     def test_large_self_written_transaction_is_readable_and_cap_preserves_checkpoint(self):
         journal=self.journal()
         journal.record['capacityFixture']='x'*(2*1024*1024)

@@ -583,30 +583,8 @@ test('launcher recovery waits for preparation and cannot bypass busy or unknown 
   assert.equal(vm.runInContext('activeRun',context),true,'handoff owns the task lock until the launcher exits');
 });
 
-test('launcher backup commits only after the actual component transaction verifies its target', async t => {
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-finalize-main-'));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const payload=path.join(root,'payload'),job=path.join(root,'job'),calls=[];
-  fs.mkdirSync(payload);
-  fs.writeFileSync(path.join(payload,'release-manifest.json'),JSON.stringify({versions:{tavern:'2.4.3'}}));
-  const context=mainContext(root,{'./launcher-update':{finalize:async options=>{calls.push(options);return{status:'committed'};}}},[`--nora-self-update=${job}`]);
-  context.verified={version:'2.4.3',commit:'a'.repeat(40),systemReady:true,updateVerified:false};
-  context.payload=payload;
-  context.ownedUpdate={target:{releasePlan:{version:'2.4.3',commit:'a'.repeat(40)}},snapshot:{handoffRef:job},observe(){}};
-  vm.runInContext('activeOperationContext=ownedUpdate;',context);
-  vm.runInContext('findPython=()=>({command:"python-fixture"}); hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>command==="status"?{version:"2.4.2",systemReady:true}:verified;',context);
-  await assert.rejects(vm.runInContext('performSystemUpdate(payload,{runId:"verify-fixture"},null)',context),/尚未通过验收/);
-  assert.equal(calls.length,0);
-  context.verified.updateVerified=true;
-  await vm.runInContext('performSystemUpdate(payload,{runId:"verify-fixture"},null)',context);
-  assert.equal(calls.length,1);
-  assert.equal(calls[0].job,job);
-  assert.equal(calls[0].version,'fixture');
-  assert.equal(calls[0].target,'2.4.3');
-  assert.equal(calls[0].systemReady,true);
-  assert.equal(calls[0].updateVerified,true);
-});
-
+// APP-only handoff proof and completion are exercised by launcher_self_update
+// and launcher_app_only_update; desktop execution no longer applies core here.
 test('launcher recovery remains offered after failed status inspection, but handoff requires confirmed service shutdown', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-recovery-status-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -643,17 +621,24 @@ test('launcher recovery remains offered after failed status inspection, but hand
   assert.equal(finished.some(event=>event.status==='succeeded'),false,'preparation cannot claim completed restoration');
 });
 
-for(const verified of [false,true])test(`checking the current APP without an owned handoff cannot commit launcher backup (${verified?'core verified':'core verification rejected'})`, async t => {
+for(const verified of [false,true])test(`checking the current APP without an owned handoff cannot commit launcher backup (${verified?'core ready':'independent core not ready'})`, async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-version-comparison-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const calls=[];
   const releases=require('../installer/desktop/releases');
   const manifest={schema:'tavern-release/v2',commit:'a'.repeat(40),versions:{tavern:'2.4.2'},launcherVersion:'2.0.2',
     launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2},
-    bootstrap:{managedComponents:1,minimumLauncherVersion:'2.0.2',sha256:'b'.repeat(64)}};
+    bootstrap:{managedComponents:1,minimumLauncherVersion:'2.0.2',sha256:'b'.repeat(64)},
+    updateCompatibility:{schema:'nora-core-launcher-compatibility/1',coreVersion:'2.4.2',launcherVersions:['2.0.2'],capabilities:releases.LAUNCHER_CAPABILITIES}};
   const body=JSON.stringify(manifest),release={tag_name:'v2.4.2',assets:[{name:'release-manifest.json',size:Buffer.byteLength(body),
     browser_download_url:'https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/release-manifest.json'}]};
   const selectedPlan=await releases.selectPlan({selectedRelease:release,launcherVersion:'2.0.2',fetcher:async()=>new Response(body)});
+  const installed=path.join(root,'tavern/tavern-updates');fs.mkdirSync(installed,{recursive:true});
+  fs.writeFileSync(path.join(installed,'installed-manifest.json'),body);
+  fs.writeFileSync(path.join(installed,'installed.json'),JSON.stringify({schema:2,version:'2.4.2',commit:manifest.commit}));
+  fs.mkdirSync(path.join(root,'hermes'));
+  fs.writeFileSync(path.join(root,'hermes/nora-instance.json'),JSON.stringify({schema:1,noraHome:root,
+    hermesHome:path.join(root,'hermes'),installRoot:path.join(root,'tavern'),port:8799}));
   const context=mainContext(root,{electron:{app:{getPath:()=>root,getVersion:()=> '2.0.2'}},'./test-build':{testBuild:()=>null},
     './releases':{...releases,selectPlan:async()=>selectedPlan},'./launcher-update':{
     prepare:async()=>({tag:'v2.4.2',manifest:{versions:{tavern:'2.4.2'}}}),
@@ -661,15 +646,13 @@ for(const verified of [false,true])test(`checking the current APP without an own
   }},[`--nora-self-update=${path.join(root,'job')}`]);
   context.AbortController=AbortController;
   context.coreVerified=verified;context.bridgeRequests=[];
-  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>{bridgeRequests.push(command);return {version:"2.4.2",systemReady:true,updateVerified:command==="verify-current-update"&&coreVerified};};',context);
+  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>{bridgeRequests.push(command);return {version:"2.4.2",systemReady:coreVerified};};',context);
   // This is an APP-only comparison. A startup marker no longer selects a
   // legacy core executor; the request must state its actual update scope.
   const pending=mainCallback(context,'runAction')({sender:null},{action:'update',runId:'comparison-fixture',launcherOnly:true,expectedCoreVersion:'2.4.2'});
-  let operation;
-  if(verified){
-    const result=await pending;operation=result.operation;assert.equal(result.version,'2.4.2');
-  }else await assert.rejects(pending,error=>{operation=error.operation;return error.code==='VERIFICATION_FAILED';});
-  assert.equal(context.bridgeRequests.filter(command=>command==='verify-current-update').length,1);
+  const result=await pending,operation=result.operation;assert.equal(result.version,'2.4.2');
+  assert.equal(result.systemReady,verified);assert.equal(result.appUpdateComplete,true);assert.equal(result.coreUpdateComplete,false);
+  assert.equal(context.bridgeRequests.filter(command=>command==='verify-current-update').length,0);
   assert.equal(calls.length,0);
   assert.equal(operation.effectState,'untouched');
   assert.equal(operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));

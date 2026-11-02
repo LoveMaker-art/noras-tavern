@@ -44,7 +44,7 @@ function button(label, click, primary = true) {
   node.className = `button ${primary ? 'primary' : ''}`; return node;
 }
 
-function recovery(version, updateRecovery, extra = {}, apiExtra = {}) {
+function recovery(version, updateRecovery, extra = {}, apiExtra = {}, contextExtra = {}) {
   const elements = new Map();
   const calls = [];
   const context = vm.createContext({
@@ -60,21 +60,20 @@ function recovery(version, updateRecovery, extra = {}, apiExtra = {}) {
     document: { createElement: element }, clearInline() { context.$('inline').replaceChildren(); }, controls() {},
     say: (...args) => calls.push(['say', ...args]), button,
     run: (...args) => calls.push(args),
+    dailyHome: message => { context.view='daily';calls.push(['daily',message]); },
     fail: (error,action) => { context.view='error';calls.push(['failure',error,action]);context.clearInline();context.$('inline').append(button('查看日志',()=>calls.push(['logs']),false)); },
+    ...contextExtra,
   });
   vm.runInContext(`${guidanceSource}\n${route}\nroute();`, context);
   return { elements, calls, context, reroute: () => vm.runInContext('route();', context) };
 }
 
-test('legacy integrity failure resolves a compatible release instead of pinning the old version', () => {
+test('legacy core integrity failure gives Nora guidance without submitting a core update', () => {
   const h = recovery('2.3.2');
-  const button = h.elements.get('inline').children[0];
-  assert.equal(button.label, '修复当前安装');
-  assert.equal(h.elements.get('status').textContent, '需要修复');
-  assert.equal(h.calls.some(c => c[0] === 'stop' || c[0] === 'install'), false);
-  button.click();
-  assert.equal(h.calls.at(-1)[0], 'update');
-  assert.equal(h.calls.at(-1)[1]?.tag, undefined);
+  assert.equal(h.elements.get('status').textContent,'需要修复');
+  assert.equal(buttons(h).some(node=>node.label==='修复当前安装'),false);
+  assert.equal(h.calls.some(call=>['stop','install','update'].includes(call[0])),false);
+  assert.match(h.elements.get('inline').children.map(node=>node.textContent||'').join(''),/请与诺拉对话/);
 });
 
 test('historical restoration discloses the selected data checkpoint before moving files',()=>{
@@ -92,26 +91,85 @@ test('file-only historical recovery keeps an explicit start action and truthful 
   assert.match(failure[1].guidance.next,/启动旧版本/);
 });
 
-test('replacement installer upgrades an existing system to its bundled version only once', () => {
-  for (const systemReady of [true, false]) {
-    const h = recovery('2.3.2', null, { systemReady, bundledUpgradeTarget: 'v2.3.13' });
-    assert.equal(h.calls[0][0], 'update');
-    assert.equal(h.calls[0][1].tag, 'v2.3.13');
-    h.reroute();
-    assert.equal(h.calls.filter(c => c[0] === 'update').length, 1);
-    assert.equal(h.calls.some(c => c[0] === 'install'), false);
+test('replacement APP opening never starts its bundled core target', () => {
+  for(const systemReady of [true,false]){
+    const h=recovery('2.3.2',null,{systemReady,bundledUpgradeTarget:'v2.3.13'}, {}, {modelForm(){},pendingModel(){},clawForm(){}});
+    h.reroute();h.context.$('inline');
+    assert.equal(h.calls.some(call=>['update','install'].includes(call[0])),false);
+    assert.equal(buttons(h).some(node=>node.label==='继续更新'),false);
   }
 });
 
 test('a legacy failed upgrade has no direct replay and preserves its bundled target for diagnosis', () => {
   const h = recovery('2.3.2', null, { bundledUpgradeTarget:'v2.3.13', installer:{phase:'error',error:'fixture download failed'} });
   assert.equal(h.calls.some(call=>call[0]==='update'),false);
-  assert.equal(h.context.view,'error');assert.equal(h.context.snapshot.bundledUpgradeTarget,'v2.3.13');
+  assert.equal(h.context.view,'recovery');assert.equal(h.context.snapshot.bundledUpgradeTarget,'v2.3.13');
   assert.equal(buttons(h).some(node=>node.label==='继续更新'),false);assert.ok(buttons(h).some(node=>node.label==='查看日志'));
 });
 
+test('a confirmed restored update returns to the normal page despite its old installer error cache', () => {
+  const operation={operationId:'fixture',kind:'update',state:'rolled-back',effectState:'restored',
+    verification:'confirmed',currentFailure:null,recoveryOutcome:'restored-and-verified',
+    primaryFailure:{code:'LAUNCHER_START_FAILED'},result:{recoveryVerification:'confirmed'}};
+  const h=recovery('2.5.0',null,{operation,systemReady:true,setupCompleted:true,
+    installer:{phase:'error',resumeTarget:'v2.5.1',error:'original update failed'}},{},
+    {complete:()=>true,autoStartAttempted:true});
+  assert.equal(h.context.view,'daily');
+  assert.equal(h.calls.some(call=>call[0]==='failure'),false);
+  assert.equal(h.context.snapshot.operation.primaryFailure.code,'LAUNCHER_START_FAILED');
+});
+
+test('an ended untouched update does not keep the normal page behind its historical failure', () => {
+  const operation={operationId:'fixture',kind:'update',state:'failed',effectState:'untouched',busy:false,
+    verification:'unconfirmed',currentFailure:{code:'HTTP_403'},primaryFailure:{code:'HTTP_403'},recoveryOutcome:'not-required'};
+  const h=recovery('2.5.0',null,{operation,systemReady:true,setupCompleted:true,
+    installer:{phase:'error',resumeTarget:'v2.5.1',error:'download failed'}},{},
+    {complete:()=>true,autoStartAttempted:true});
+  assert.equal(h.context.view,'daily');
+  assert.equal(h.calls.some(call=>call[0]==='failure'),false);
+  assert.equal(h.context.snapshot.operation.verification,'unconfirmed');
+  assert.equal(h.context.snapshot.operation.primaryFailure.code,'HTTP_403');
+});
+
+test('restored program files return to existing service controls without claiming service recovery', () => {
+  const operation={operationId:'fixture',kind:'update',state:'rolled-back',effectState:'restored',busy:false,
+    verification:'failed',currentFailure:null,recoveryOutcome:'files-restored-start-failed',
+    primaryFailure:{code:'LAUNCHER_START_FAILED'},result:{recoveryVerification:'files-only'}};
+  const h=recovery('2.5.0',null,{operation,systemReady:true,setupCompleted:true,running:false,gatewayRunning:false,
+    warning:'服务尚未启动',installer:{phase:'error',resumeTarget:'v2.5.1',error:'service start failed'}},{},
+    {complete:()=>true,autoStartAttempted:true});
+  assert.equal(h.context.view,'daily');
+  assert.equal(h.context.snapshot.running,false);
+  assert.equal(h.context.snapshot.gatewayRunning,false);
+  assert.equal(h.context.snapshot.operation.verification,'failed');
+  assert.equal(h.calls.find(call=>call[0]==='daily')[1],'');
+});
+
+test('settled desktop update results leave the normal page available without repeating a failed step', () => {
+  for(const sequence of [{status:'partial',settled:true},{status:'blocked',firstOperationId:'fixture'}]){
+    const operation={operationId:'fixture',kind:'update',state:'rolled-back',effectState:'restored',busy:false,
+      verification:'confirmed',currentFailure:null,recoveryOutcome:'restored-and-verified',primaryFailure:{code:'LAUNCHER_START_FAILED'}};
+    const h=recovery('2.5.0',null,{operation,systemReady:true,setupCompleted:true,
+      updateSequence:{...sequence,operationId:'fixture',operation}},{},{complete:()=>true,autoStartAttempted:true});
+    assert.equal(h.context.view,'daily');
+    assert.equal(h.calls.some(call=>['update','failure'].includes(call[0])),false);
+    h.reroute();assert.equal(h.context.view,'daily');
+  }
+});
+
+test('an unconfirmed desktop program combination or unfinished effect keeps its existing result route', () => {
+  for(const [settled,state,effectState] of [[false,'rolled-back','restored'],[true,'interrupted','unknown']]){
+    const operation={operationId:'fixture',kind:'update',state,effectState,busy:false,
+      verification:'confirmed',currentFailure:null,recoveryOutcome:effectState==='restored'?'restored-and-verified':'recovery-required'};
+    const h=recovery('2.5.0',null,{operation,systemReady:true,setupCompleted:true,
+      updateSequence:{status:'blocked',settled,operationId:'fixture',operation}},{},{complete:()=>true,autoStartAttempted:true});
+    assert.equal(h.context.view,'error');
+    assert.equal(h.calls.some(call=>call[0]==='daily'||call[0]==='update'),false);
+  }
+});
+
 test('unknown installed version cannot trigger an unpinned repair', () => {
-  assert.equal(recovery('').elements.get('inline').children[0].disabled, true);
+  const h=recovery('');assert.equal(buttons(h).some(node=>node.label==='修复当前安装'),false);assert.equal(h.calls.some(call=>call[0]==='update'),false);
 });
 
 test('interrupted transaction offers neither reinstall nor another update', () => {
@@ -177,13 +235,13 @@ test('a missing recovery API never offers an unusable recovery action', () => {
 
 const runSource = source.slice(source.indexOf('  async function run(action'), source.indexOf('  install = () =>'));
 const statusSource = source.slice(source.indexOf('  async function readStatus()'), source.indexOf('  function hideMenu()'));
-async function failedRun(action, { freshRecovery = null, staleRecovery = null, statusError = null, message = '下载失败（HTTP 403）。' } = {}) {
+async function failedRun(action, { freshRecovery = null, staleRecovery = null, statusError = null, finishedOperation = null, message = '下载失败（HTTP 403）。' } = {}) {
   const h = recovery('2.3.17', null);
   h.calls.length = 0; h.elements.get('inline').replaceChildren();
   const c = h.context;
   Object.assign(c, {
     snapshot: { installed: true, hermesInstalled: true, systemReady: true, setupCompleted: true, version: '2.3.17', updateRecovery: null },
-    busy: false, taskTimer: null, statusUnknown: false, launcherRecoveryConfirmed:false, firstCompletionPending: false,
+    busy: false, taskTimer: null, statusUnknown: false, launcherRecoveryConfirmed:false, firstCompletionPending: false,autoStartAttempted:true,
     complete: () => true, clearInterval() {}, onEvent() {},
     taskView: value => { h.calls.push(['task', value]); c.clearInline(); },
     syncState: value => { c.snapshot = { ...c.snapshot, ...value }; },
@@ -195,13 +253,25 @@ async function failedRun(action, { freshRecovery = null, staleRecovery = null, s
     status: async () => { h.calls.push(['status']);
       if(action==='recover' && !h.calls.some(call=>call[0]==='request')) return {updateRecovery:{canRecover:true,backup:'/saved/backup'}};
       if (statusError) throw statusError;
-      return { installed: true, hermesInstalled: true, systemReady: true, updateRecovery: freshRecovery }; },
+      return { installed: true, hermesInstalled: true, systemReady: true, updateRecovery: freshRecovery,
+        ...(finishedOperation?{operation:finishedOperation}:{}) }; },
     [action]: async () => { h.calls.push(['request', action]); if(staleRecovery)c.snapshot.updateRecovery=staleRecovery;throw new Error(message); },
   };
   vm.runInContext(`${route}\nconst actualRoute = route; route = () => { observedCalls.push(['route']); return actualRoute(); };\n${statusSource}\n${runSource}`, Object.assign(c, { observedCalls: h.calls }));
   await vm.runInContext(`run(${JSON.stringify(action)});`, c);
   return h;
 }
+
+test('an update request that reports failure after confirmed recovery returns to the normal page', async () => {
+  const finishedOperation={operationId:'fixture',kind:'update',state:'rolled-back',effectState:'restored',
+    busy:false,verification:'confirmed',currentFailure:null,recoveryOutcome:'restored-and-verified',
+    primaryFailure:{code:'LAUNCHER_START_FAILED'},result:{recoveryVerification:'confirmed'}};
+  const h=await failedRun('update',{finishedOperation});
+  assert.equal(h.context.view,'daily');
+  assert.equal(h.calls.some(call=>call[0]==='fail'),false);
+  assert.equal(h.calls.filter(call=>call[0]==='request').length,1);
+  assert.equal(h.context.snapshot.operation.primaryFailure.code,'LAUNCHER_START_FAILED');
+});
 
 for (const action of ['update', 'repair', 'recover']) {
   test(`${action} failure with freshly confirmed recovery goes directly to recovery without replaying the update`, async () => {

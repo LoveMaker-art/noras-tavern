@@ -2,74 +2,13 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const releases = require('../installer/desktop/releases');
 const { sourceCandidates } = require('../installer/desktop/release-sources');
-const { parse } = require('../installer/desktop/node_modules/acorn');
 
-const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
-const fn = parse(source, { ecmaVersion: 'latest' }).body.find(n => n.type === 'FunctionDeclaration' && n.id.name === 'performSystemUpdate');
-function harness(failure, running = true, gatewayRunning = true, version = '2.3.6', systemReady = true) {
-  const calls = [];
-  const before = { version, systemReady, setupCompleted: true, running, gatewayRunning };
-  let updated = false;
-  const home = path.resolve('/nora');
-  const context = vm.createContext({
-    path, hermesHome: () => path.join(home, 'hermes'), noraHome: () => home, installRoot: () => path.join(home, 'tavern'),
-    fs: { readFileSync: () => JSON.stringify({ versions: { tavern: '2.3.7' },commit:'a'.repeat(40) }) },
-    releases: { compare: (a, b) => a === b ? 0 : a < b ? -1 : 1 },
-    updatingSystem: false,activeOperationContext:{target:{releasePlan:{version:'2.3.7',commit:'a'.repeat(40)}},snapshot:{handoffRef:null}}, sendBridgeEvent() {}, diagnostics: { error() {} },
-    systemUpdate: { perform: () => { throw new Error('EBUSY: rename hermes'); } },
-    stopForUpdate: async () => calls.push('stop'),
-    runBridge: async (action, options) => {
-      calls.push([action, options?.service]);
-      if (action === 'update') { if (failure) throw failure; updated = true; }
-      return { ...before, version: updated ? '2.3.7' : version, commit:updated?'a'.repeat(40):'b'.repeat(40), systemReady: updated || systemReady, updateVerified: updated };
-    },
-  });
-  context.systemUpdateExecutor=()=>require('../installer/desktop/system-update-executor').create({
-    bridge:context.runBridge,compare:context.releases.compare});
-  return { calls, context, run: vm.runInContext(`(${source.slice(fn.start, fn.end)})`, context) };
-}
-test('damaged current version can be repaired by the shared transaction without reinstalling', async () => {
-  const h = harness(null, false, false, '2.3.7', false);
-  const result = await h.run('/release', { runId: 'repair' }, {});
-  assert.equal(result.systemReady, true);
-  assert.ok(h.calls.some(c => c[0] === 'update'));
-});
-test('repair never downgrades an existing newer installation', async () => {
-  const h = harness(null, false, false, '2.3.8', false);
-  await assert.rejects(h.run('/release', { runId: 'repair' }, {}));
-  assert.equal(h.calls.some(c => c[0] === 'update'), false);
-});
-test('ordinary update uses updater without moving the occupied Hermes directory', async () => {
-  const h = harness();
-  const result = await h.run('/release', { runId: 'test' }, {});
-  assert.equal(result.version, '2.3.7');
-  assert.equal(h.calls.filter(c => Array.isArray(c) && c[0] === 'update').length, 1);
-  assert.equal(h.calls.some(c => c[0] === 'start' || c[0] === 'stop'), false);
-  assert.equal(h.context.updatingSystem, false);
-});
-test('failed updater preserves its recovery result without a second out-of-transaction service operation', async () => {
-  const error = new Error('updater failure; recovery=restored; backup=/test');
-  const h = harness(error, true, false);
-  await assert.rejects(h.run('/release', { runId: 'test' }, {}), e => e === error);
-  assert.equal(h.calls.some(c => c[0] === 'start' || c[0] === 'stop'), false);
-  assert.equal(h.context.updatingSystem, false);
-});
-test('update does not start services that were stopped before updating', async () => {
-  const h = harness(null, false, false);
-  await h.run('/release', { runId: 'test' }, {});
-  assert.equal(h.calls.some(c => c[0] === 'start'), false);
-});
-test('uncertain rollback does not restart services', async () => {
-  const h = harness(new Error('rollback failed'));
-  await assert.rejects(h.run('/release', { runId: 'test' }, {}), /rollback failed/);
-  assert.equal(h.calls.some(c => c[0] === 'start'), false);
-});
-
+// Core execution is owned by the independent updater. APP-only desktop dispatch
+// and handoff acceptance are exercised in launcher_app_only_update.test.cjs.
 test('component download uses shared updater plan, with no Hermes or platform bundle request', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-component-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

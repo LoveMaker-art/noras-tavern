@@ -155,17 +155,20 @@ async function run(value, adapters, {retry=false}={}) {
       if (current?.succeeded !== true) throw current?.error || fail('UPDATE_SEQUENCE_UNCONFIRMED','更新步骤的完成结果尚未确认，请保留日志。');
       await adapters.verifyStep(step,value,current); completed.push(step);
     } catch (error) {
-      const actual = await adapters.verifyCombination(value);
       const restored = await adapters.observe(step,value);
       const settled = restored?.settled === true && restored?.safe === true;
-      if (completed.length && actual?.compatible === true && settled) {
+      if (!completed.length) {
+        if (!settled) throw fail('UPDATE_RECOVERY_REQUIRED','更新结果或恢复尚未确认，请查询原任务，保留数据与日志。',error);
+        throw error;
+      }
+      const actual = await adapters.verifyCombination(value);
+      if (actual?.compatible === true && settled) {
         return {status:'partial',completed,failed:step,current:actual.current,error,
           operation:restored.operation,message:step==='launcher'
             ?'酒馆已更新；启动器更新未完成，当前程序组合已核验可用。可重试启动器，聊天和配置保留。'
             :'启动器已更新；酒馆更新未完成，当前程序组合已核验可用。可重试酒馆，聊天和配置保留。'};
       }
-      if (completed.length || !settled) throw fail('UPDATE_RECOVERY_REQUIRED','更新结果或恢复尚未确认，请查询原任务，保留数据与日志。',error);
-      throw error;
+      throw fail('UPDATE_RECOVERY_REQUIRED','更新结果或恢复尚未确认，请查询原任务，保留数据与日志。',error);
     }
   }
   const actual = await adapters.verifyCombination(value);

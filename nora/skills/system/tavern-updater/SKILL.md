@@ -37,42 +37,35 @@ In PowerShell, prefix a quoted executable with `&`.
 
 Use the verified interpreter to run this skill's `scripts/update.py`:
 
-- `--check`: check versions without opening the launcher or applying updates.
-- `--apply --confirm`: update only after the owner explicitly authorizes it.
+- `--check`: check core versions without querying or opening the APP, or applying updates.
+- `--apply --confirm`: submit a core update only after the owner explicitly authorizes it in this Nora conversation.
 - `--status`: read the last independent task and its canonical operation result.
 
-## Submit and verify the applicable components
+## Keep core and APP updates separate
 
-For a desktop installation with a verified APP, `--check` reads version metadata
-in the background and returns the check result directly. It leaves existing
-update requests unchanged. Once that check is settled, report its result;
-`--status` reads the last update task, not a continuation of this version check.
+On desktop and cloud/source installations, `--check` uses the independent core
+entry and returns the version result directly. It does not inspect APP capability,
+query APP updates, submit an update or change an existing request. Report that
+result without polling `--status`; status reads an update task, not a version check.
 
-One owner-authorized `--apply --confirm` uses the existing desktop receiver to
-submit all applicable Tavern and launcher updates. Only then may it open the verified launcher and
-restart it during replacement. It selects a compatible order and updates only
-components with a newer applicable version. A cloud/source instance without an
-APP retains the independent core updater below.
+An owner-authorized `--apply --confirm` submits only the Nora/Tavern core to the
+existing independent task. It never submits to the desktop receiver, opens the
+APP, replaces it or adds an APP update. Missing, closed, damaged or old APPs do
+not remove core update eligibility. Verify the actual core instance, interpreter,
+resources, dependencies and competing writers. A concrete compatibility problem
+must identify its affected capability; do not make an APP version a blanket core
+admission condition or silently update another component.
 
-An update's initial response may be `queued`, `running` or `restarting`. Say the request
-was submitted, then use `--status`; do not claim completion from submission or
-an APP restart. Desktop `succeeded` requires verified `updateComplete`, actual
-core and launcher versions and the associated canonical operations. When APP
-discovery fails but a verified core target is compatible with the current APP,
-the core update can continue. `status: partial`, `coreUpdateComplete: true` and
-`updateComplete: false` mean Tavern updated while the launcher check failed;
-report the actual versions and `launcherError` separately. This is settled,
-not a pending task or full desktop success. Recheck before a new authorized
-update; a successful core is not updated again just to retry APP discovery.
-A failure inside a two-component sequence retains the successful component
-and fixed sequence; an explicit retry continues that sequence.
-Old APPs or readers without this protocol require
-initial migration: use the original update button if it works; otherwise use a
-verified data-preserving installer or repair path for that historical version.
-Keep chats, characters, worlds, configuration and credentials. A missing Windows
-terminal dependency requires the corresponding complete runtime; replacing only
-the APP does not add it. Report the verified support boundary, never a universal
-old-version guarantee or a core-only result as a complete desktop update.
+APP updates belong to the launcher's own update action. If the user asks Nora
+to update the APP, explain that entry rather than submitting or opening it.
+Report core and APP results separately; core success never means the APP updated.
+
+`--status` prefers the independent core task, including failures, recovery and
+unconfirmed states. Only when a trusted core reader confirms there is no core
+task may it return a historical desktop result. That fallback is read-only:
+report its scope, actual versions and original failure; never resume its old
+two-component plan or interpret it as a newly submitted core task. A new core
+attempt requires explicit owner authorization; an APP attempt uses its own entry.
 
 Run one literal `--status` command per terminal call. If it is still running,
 wait briefly and make another status call; stop as soon as `settled: true` is
@@ -84,7 +77,7 @@ changing security settings or bypassing the guard.
 
 ## Independent core updater
 
-Nora and the desktop update button submit to the same independent updater.
+Nora submits the core update to the existing independent updater.
 An installed, open, online or recent desktop APP is not a prerequisite for a
 Nora/Tavern component update. An instance marker binds directories and the port;
 it does not transfer execution authority to a GUI session.
@@ -93,8 +86,9 @@ The task snapshots the verified updater closure, acquires the same native writer
 lock and uses the existing update transaction and recovery records. A detached
 owner continues after Nora disconnects or the caller closes. It preserves chats,
 characters, worlds, model configuration and credentials. It does not upgrade the
-external Hermes runtime. APP replacement belongs to the desktop path above,
-using the established APP helper and recovery rules.
+external Hermes runtime. APP replacement remains a separate task initiated in
+the launcher, using its established helper and recovery rules. Both tasks still
+respect the same installation writer lock and actual unfinished program effects.
 
 Before submission tell the owner that Nora may briefly disconnect. Submission
 returning exit code zero means the request was handed off, not that the update
