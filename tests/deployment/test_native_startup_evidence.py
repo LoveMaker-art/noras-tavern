@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -192,6 +193,34 @@ class NativeStartupEvidenceTests(unittest.TestCase):
             return {'pid': pid, 'argv': self.runtime.node_command(self.port, self.runtime.native_data_root),
                     'cwd': str(self.runtime.engine_root)}
         return record
+
+    def test_actual_core_process_discovery_does_not_depend_on_the_node_thread_name(self):
+        processes = self.runtime.process_module()
+        if processes.psutil is None:
+            self.skipTest('requires the packaged process library')
+        ready = self.base / 'node-ready'
+        self.script("require('node:fs').writeFileSync(process.argv[2], 'ready'); setInterval(() => {}, 1000);")
+        script = self.runtime.engine_root / 'server.js'
+        child = subprocess.Popen([NODE, str(script), str(ready)], cwd=self.runtime.engine_root,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.fixture_children.append(child)
+        deadline = time.monotonic() + 5
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(ready.is_file(), 'actual Node must acknowledge readiness')
+        self.assertIsNone(child.poll())
+        # No listener or PID hint is supplied. Linux Node can be named
+        # MainThread/node-MainThread; the active core reader must use the
+        # actual script/cwd identity and must not filter by process name.
+        with mock.patch.object(processes.psutil.Process, 'name',
+                               side_effect=AssertionError('process name is not an ownership identity')):
+            rows = processes.find_processes(script)
+        own = [row for row in rows if row['pid'] == child.pid]
+        self.assertEqual(len(own), 1)
+        self.assertEqual(Path(own[0]['script']), script.resolve())
+        self.assertEqual(Path(own[0]['cwd']), self.runtime.engine_root.resolve())
+        self.assertEqual(processes.find_processes(self.base / 'another-world/server.js'), [])
+        self.assertIsNone(child.poll(), 'read-only ownership inspection must preserve the live child')
 
     def test_wrapped_os_denial_on_an_unrelated_pid_does_not_block_runtime_discovery(self):
         processes = self.runtime.process_module()
