@@ -70,11 +70,12 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
   const validHandoff=task=>task&&UUID.test(task.id||'')&&['update','repair'].includes(task.action)
     &&contract.stages.includes(task.stage)&&Number.isSafeInteger(task.started)&&Number.isSafeInteger(task.stageStarted)
     &&(task.diagnosticConsentId===''||UUID.test(task.diagnosticConsentId||''))
-    &&(task.gapReported===undefined||typeof task.gapReported==='boolean');
+    &&(task.gapReported===undefined||typeof task.gapReported==='boolean')
+    &&(task.terminalStatus===undefined||['succeeded','failed','cancelled'].includes(task.terminalStatus));
   if(state.handoffs!==undefined&&(!Array.isArray(state.handoffs)||state.handoffs.length>64||!state.handoffs.every(validHandoff))){
     broken=true;report('handoff_state_unreadable');state.handoffs=[];
   }
-  state.handoffs=(state.handoffs||[]).map(task=>Object.fromEntries(['id','action','stage','started','stageStarted','diagnosticConsentId','gapReported'].map(key=>[key,task[key]])));
+  state.handoffs=(state.handoffs||[]).map(task=>Object.fromEntries(['id','action','stage','started','stageStarted','diagnosticConsentId','gapReported','terminalStatus'].map(key=>[key,task[key]])));
   // Import the existing durable handoff on upgrade without granting new consent.
   if(typeof readHandoffOutcome==='function'&&state.active?.handoff&&validHandoff(state.active)
     &&!state.handoffs.some(task=>task.id===state.active.id)&&state.handoffs.length<64)state.handoffs.push({...state.active});
@@ -210,13 +211,13 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
     const details = failure ? describeError(error) : EMPTY_DETAILS;
     const code = failure ? details.error_code : 'none';
     enqueue('stage_finished', status, code, undefined, details); enqueue('operation_finished', status, code, undefined, details, undefined, failure ? faultFor(error,state.active) : null);
-    const deferred=state.handoffs.some(task=>task.id===state.active.id);
-    if (status !== 'handoff'&&!(status==='interrupted'&&deferred)) rawLogs?.finish(state.active.id,status);
+    const deferred=state.handoffs.find(task=>task.id===state.active.id);
+    if (status !== 'handoff'&&!deferred) rawLogs?.finish(state.active.id,status);
     if (status === 'handoff'&&typeof readHandoffOutcome==='function'&&['update','repair'].includes(state.active.action)&&!deferred){
       if(state.handoffs.length<64)state.handoffs.push({...state.active});
       else report('handoff_queue_capacity');
     }
-    if(status!=='handoff'&&status!=='interrupted')state.handoffs=state.handoffs.filter(task=>task.id!==state.active.id);
+    if(deferred&&status!=='handoff'&&status!=='interrupted')deferred.terminalStatus=status;
     if (status === 'handoff') state.active.handoff = true;
     else state.active = null;
     save();
@@ -244,7 +245,10 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       if(consent)admitDiagnostics(task);
       if(outcome.retry===true&&task.gapReported)return;
       const details=outcome.error?describeError(outcome.error):EMPTY_DETAILS;
-      enqueue('operation_finished',outcome.status,outcome.error?details.error_code:'none',undefined,details,task,
+      // A late original error is evidence, not a second business completion.
+      // In particular it must not overwrite a successful same-ID recovery.
+      if(!task.terminalStatus||outcome.error)enqueue(task.terminalStatus?'launcher_error':'operation_finished',
+        task.terminalStatus?'failed':outcome.status,outcome.error?details.error_code:'none',undefined,details,task,
         consent&&outcome.error?faultFor(outcome.error,task,outcome.context):null);
       if(outcome.retry===true){task.gapReported=true;save();return;}
       rawLogs?.finish(task.id,outcome.status);

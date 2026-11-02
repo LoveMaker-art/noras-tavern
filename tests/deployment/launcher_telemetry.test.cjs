@@ -309,6 +309,23 @@ test('a failed detached handoff is collected after reopening even when another o
     .filter(event=>event.operation_id===id&&event.event==='operation_finished'&&event.status==='failed').length,1);
 });
 
+test('same-ID recovery completion retains detached evidence without overwriting its business outcome',async t=>{
+  for(const action of ['repair','update'])for(const status of ['succeeded','failed']){
+    let reads=0;
+    const f=fixture(t,{readHandoffOutcome:async()=>{reads++;return {status:'failed',
+      error:Object.assign(new Error('original native handoff failure'),{code:'EACCES'})};}});
+    const id=f.client.begin('update');f.client.finish('handoff');f.restart();
+    f.client.begin(action,{operationId:id});f.client.finish(status,status==='failed'?new Error('later recovery failure'):undefined);
+    f.restart();await f.client.flush();assert.equal(reads,1,action+': '+status);
+    const events=f.requests.flatMap(request=>request.data.events||[]).concat(f.read().queue).filter(event=>event.operation_id===id);
+    const original=events.find(event=>event.event==='launcher_error'&&event.system_code==='EACCES');
+    assert.ok(original,'the original detached failure must be reported after same-ID recovery');
+    assert.match(JSON.stringify(original.fault),/original native handoff failure/);
+    assert.equal(events.findLast(event=>event.event==='operation_finished').status,status,'diagnostic delivery cannot replace the business result');
+    assert.equal(f.read().handoffs.length,0);
+  }
+});
+
 test('detached diagnosis honors the original consent and a revoke/re-enable cycle', async t=>{
   for(const mode of ['never-authorized','revoked','revoked-and-enabled']){
     const flags=[];

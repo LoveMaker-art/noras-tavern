@@ -161,7 +161,7 @@ test('the detached reader refuses linked, oversized, unbound and cross-installat
   fs.rmSync(file);fs.writeFileSync(file,original);assert.deepEqual(bytes(f.base),before);
 });
 
-test('real receiver stores detached failure after offline restart and lost ACK exactly once', {skip:!process.env.NORA_LANDING_ROOT},async t=>{
+for(const repaired of [false,true])test('real receiver stores detached failure after offline restart and lost ACK exactly once'+(repaired?' following same-ID recovery':''), {skip:!process.env.NORA_LANDING_ROOT},async t=>{
   const f=await fixture(t);await f.complete();const before=bytes(f.base),db=new DatabaseSync(':memory:');t.after(()=>db.close());
   for(const file of ['0005_launcher_events.sql','0006_launcher_error_details.sql','0007_launcher_fault_packets.sql','0008_launcher_operation_logs.sql'])
     db.exec(fs.readFileSync(path.join(process.env.NORA_LANDING_ROOT,'migrations',file),'utf8'));
@@ -171,15 +171,29 @@ test('real receiver stores detached failure after offline restart and lost ACK e
   let offline=true,lost=false;
   f.config.fetcher=async(url,init)=>{if(offline)throw Error('offline');const response=await worker.fetch(new Request(url,init),env);
     if(!lost&&url.endsWith('/events')){lost=true;throw Error('lost ACK');}return response;};
-  f.reopen();await f.client.flush();assert.ok(f.client.deliverySummary(f.id).queued>0);f.reopen();offline=false;
+  f.reopen();
+  if(repaired){
+    f.client.begin('repair',{operationId:f.id});f.client.finish('succeeded');
+    assert.ok(f.client.rawLogSummary(f.id),'successful recovery cannot discard pending original failure logs');
+    f.reopen();
+  }
+  await f.client.flush();assert.ok(f.client.deliverySummary(f.id).queued>0);f.reopen();offline=false;
   for(let i=0;i<15;i++){f.advance();await f.client.flush();}
-  const rows=db.prepare("SELECT * FROM launcher_events WHERE operation_id=? AND event='operation_finished' AND status='failed'").all(f.id);
+  const rows=db.prepare("SELECT * FROM launcher_events WHERE operation_id=? AND event=? AND status='failed'").all(f.id,repaired?'launcher_error':'operation_finished');
   assert.equal(rows.length,1);assert.equal(rows[0].system_code,'EACCES');assert.equal(rows[0].error_code,'permission_denied');
   const fault=JSON.parse(rows[0].fault);assert.match(fault.errors[0].message,/winerror=32/);
   assert.equal(fault.operation.stage_id,'update_apply');
   assert.match(fault.output.join('\n'),/launcher_step=moving-old/);assert.equal(fault.operation.effect_state,'untouched');
   assert.equal(fault.operation.recovery_outcome,'not-required');assert.equal(fault.operation.verification,'confirmed');
   assert.doesNotMatch(rows[0].fault,/fixture-private-value|PRIVATE_USER_|nora-durable-replace-/);
+  if(repaired){
+    const from=new Date(Date.now()-86400000).toISOString().slice(0,10),to=new Date(Date.now()+86400000).toISOString().slice(0,10);
+    const response=await worker.fetch(new Request('https://noratavern.com/api/launcher/stats?from='+from+'&to='+to,
+      {headers:{Authorization:'Bearer '+env.STATS_READ_KEY}}),env);
+    assert.equal(response.status,200);const stats=await response.json();
+    assert.equal(stats.operations.find(row=>row.operation_id===f.id)?.status,'succeeded');
+    assert.equal(stats.errors.find(row=>row.event_id===rows[0].event_id)?.operation_outcome,'succeeded');
+  }
   const count=db.prepare('SELECT count(*) n FROM launcher_events').get().n;
   f.reopen();f.advance();await f.client.flush();assert.equal(db.prepare('SELECT count(*) n FROM launcher_events').get().n,count);
   assert.deepEqual(bytes(f.base),before);
