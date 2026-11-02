@@ -1,15 +1,24 @@
 from contextlib import ExitStack
+import base64
+import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -206,6 +215,16 @@ class StandaloneDependencyPreparationTests(unittest.TestCase):
         self.addCleanup(self.lease.close)
         self.state = {'root': self.root, 'lock': self.lease}
         self.required = ('fixture/package.json',)
+        self.node = self.root / 'runtime/bin/node'
+        self.node.parent.mkdir(parents=True)
+        self.node.touch()
+        self.npm = self.root / 'runtime/lib/node_modules/npm/bin/npm-cli.js'
+        self.npm.parent.mkdir(parents=True)
+        self.npm.touch()
+        (self.npm.parent.parent / 'package.json').write_text('{"name":"npm"}')
+        node_env = mock.patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE': str(self.node)})
+        node_env.start()
+        self.addCleanup(node_env.stop)
 
     def prepare(self):
         return UPDATER.component_dependencies(self.source, self.engine, self.old,
@@ -215,7 +234,7 @@ class StandaloneDependencyPreparationTests(unittest.TestCase):
         self.assertEqual(options['cwd'], self.engine)
         self.assertEqual(options['timeout'], 300)
         self.assertIn('--ignore-scripts', command)
-        self.assertEqual(command[1:3], ['ci', '--omit=dev'])
+        self.assertEqual(command[:4], [str(self.node), str(self.npm), 'ci', '--omit=dev'])
         package = self.engine / 'node_modules/fixture/package.json'
         package.parent.mkdir(parents=True)
         package.write_text('{"name":"fixture","version":"1.0.0"}')
@@ -223,7 +242,6 @@ class StandaloneDependencyPreparationTests(unittest.TestCase):
     def test_different_historical_lock_can_prepare_without_touching_old_program(self):
         with mock.patch.object(UPDATER.sys, 'platform', 'linux'), \
                 mock.patch.object(UPDATER, '_standalone_execution', self.state), \
-                mock.patch.object(UPDATER.shutil, 'which', return_value='/fixture/npm'), \
                 mock.patch.object(UPDATER, 'standalone_run', side_effect=self.completed_npm) as npm:
             self.assertEqual(self.prepare(), 'prepared-standalone')
         npm.assert_called_once()
@@ -257,11 +275,119 @@ class StandaloneDependencyPreparationTests(unittest.TestCase):
                     (self.engine / 'package-lock.json').write_text('changed')
                 with mock.patch.object(UPDATER.sys, 'platform', 'linux'), \
                         mock.patch.object(UPDATER, '_standalone_execution', self.state), \
-                        mock.patch.object(UPDATER.shutil, 'which', return_value='/fixture/npm'), \
                         mock.patch.object(UPDATER, 'standalone_run', side_effect=npm):
                     with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)): self.prepare()
                 self.assertEqual((self.old / 'keep.txt').read_text(), 'original program')
                 self.assertFalse((self.root / 'tavern-updates/transaction.json').exists())
+
+    def test_missing_bound_node_or_npm_cannot_use_an_unrelated_path_command(self):
+        for missing in ('node', 'npm'):
+            with self.subTest(missing=missing), mock.patch.object(UPDATER, '_standalone_execution', self.state), \
+                    mock.patch.object(UPDATER.shutil, 'which', return_value='/unrelated/npm') as lookup, \
+                    mock.patch.object(UPDATER, 'standalone_run') as execute:
+                if missing == 'node':
+                    self.node.unlink()
+                else:
+                    self.node.touch()
+                    self.npm.unlink()
+                with self.assertRaises(RuntimeError) as caught:
+                    self.prepare()
+                self.assertEqual(caught.exception.code, 'RESOURCE_INCOMPLETE')
+                if missing == 'node':
+                    lookup.assert_not_called()
+                else:
+                    lookup.assert_called_once_with('npm')
+                execute.assert_not_called()
+                self.assertEqual((self.old / 'keep.txt').read_text(), 'original program')
+
+    def test_separate_path_npm_still_executes_with_the_bound_node(self):
+        self.npm.unlink()
+        cli = self.root / 'system-tools/npm/bin/npm-cli.js'
+        cli.parent.mkdir(parents=True)
+        cli.touch()
+        (cli.parent.parent / 'package.json').write_text('{"name":"npm"}')
+        with mock.patch.object(UPDATER.shutil, 'which', return_value=str(cli)):
+            self.assertEqual(UPDATER.standalone_npm_command(), [str(self.node), str(cli)])
+
+    def test_real_guard_prepares_offline_npm_and_retains_old_program_on_npm_failure(self):
+        node = resolve_node(required=True)
+        desktop = ROOT / 'launcher/desktop'
+        if not (desktop / 'operation-lock.js').is_file():
+            desktop = ROOT / 'ops/installer/desktop'
+        helper = Path(__file__).with_name('launcher_owned_test_actor.cjs')
+        control = UPDATER._control_path
+        for fail in (False, True):
+            with self.subTest(npm_failure=fail):
+                root = Path(tempfile.mkdtemp(prefix='nora-real-npm-guard-')).resolve()
+                closed = False
+                try:
+                    engine = root / 'tavern-updates/direct-fixture/source/app/engine/sillytavern'
+                    engine.mkdir(parents=True)
+                    archive = engine / 'fixture.tgz'
+                    with tarfile.open(archive, 'w:gz') as stream:
+                        content = b'{"name":"fixture","version":"1.0.0"}'
+                        member = tarfile.TarInfo('package/package.json'); member.size = len(content)
+                        stream.addfile(member, io.BytesIO(content))
+                    integrity = 'sha512-' + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode()
+                    package = {'name': 'owned-fixture', 'version': '1.0.0', 'dependencies': {'fixture': 'file:fixture.tgz'}}
+                    (engine / 'package.json').write_text(json.dumps(package))
+                    (engine / 'package-lock.json').write_text(json.dumps({'name': package['name'], 'version': '1.0.0',
+                        'lockfileVersion': 3, 'requires': True, 'packages': {'': package,
+                            'node_modules/fixture': {'version': '1.0.0', 'resolved': 'file:fixture.tgz', 'integrity': integrity}}}))
+                    if fail:
+                        archive.unlink()
+                    old = root / 'apps/tavern-runtime/engine/sillytavern'; old.mkdir(parents=True)
+                    (old / 'package-lock.json').write_text('{"historical":"different lock"}')
+                    (old / 'keep.txt').write_text('original program')
+                    script = root / 'actor.py'
+                    script.write_text('''import importlib.util,json,sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,str(Path(sys.argv[2]).parent))
+spec=importlib.util.spec_from_file_location('real_npm_updater',sys.argv[1])
+update=importlib.util.module_from_spec(spec);sys.modules[spec.name]=update;spec.loader.exec_module(update)
+update._operation_control.require_operation()
+root=Path(sys.argv[3]);source=root/'tavern-updates/direct-fixture/source'
+engine=source/'app/engine/sillytavern';old=root/'apps/tavern-runtime/engine/sillytavern'
+expected_failure=sys.argv[4]=='failure'
+before={p.name:p.read_bytes() for p in old.iterdir()}
+locks={p.name:p.read_bytes() for p in [engine/'package.json',engine/'package-lock.json']}
+update._standalone_execution={'root':root,'home':root,'lock':None,'guarded':True}
+with update.installer_lock(root),patch.object(update.subprocess,'run',side_effect=AssertionError('unmanaged npm')):
+    try:
+        prepared=update.component_dependencies(source,engine,old,'package-lock.json',('fixture/package.json',))
+    except update.subprocess.CalledProcessError as error:
+        assert expected_failure and error.returncode!=0
+    else:
+        assert not expected_failure and prepared=='prepared-standalone'
+        assert json.loads((engine/'node_modules/fixture/package.json').read_text())['version']=='1.0.0'
+assert before=={p.name:p.read_bytes() for p in old.iterdir()}
+assert all((engine/name).read_bytes()==value for name,value in locks.items())
+assert not (root/'tavern-updates/transaction.json').exists()
+print(json.dumps({'prepared':not expected_failure,'oldProgramUnchanged':True,'lockUnchanged':True}),flush=True)
+''', encoding='utf-8')
+                    env = {**os.environ, 'HOME': str(root), 'HERMES_HOME': str(root),
+                        'PATH': str(Path(node).parent) + os.pathsep + os.environ.get('PATH', ''),
+                        'TAVERN_NODE_EXECUTABLE': node, 'NPM_CONFIG_OFFLINE': 'true',
+                        'NORA_TEST_MANAGED_PYTHON_ROOT': sys.base_prefix, 'NORA_TEST_VENV_HOME': sys.prefix}
+                    result = subprocess.run([node, str(helper), str(desktop / 'operation-lock.js'), str(root),
+                        sys.executable, str(script), str(UPDATE_ROOT / 'update.py'), str(control), str(root),
+                        'failure' if fail else 'success'], env=env, text=True, capture_output=True, timeout=25)
+                    receipts = [json.loads(line.split(' ', 1)[1]) for line in result.stderr.splitlines()
+                        if line.startswith('NORA_FIXTURE_CLOSURE ')]
+                    closed = bool(receipts and receipts[-1]['closed'])
+                    self.assertTrue(closed, result.stdout + result.stderr)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    sessions = [json.loads(p.read_text()) for p in (root / 'installer/operations/.guards').glob('*.json')]
+                    jobs = [job for session in sessions for job in session['jobs']]
+                    npm = [job for job in jobs if job['kind'] == 'node-maintenance']
+                    self.assertEqual(len(npm), 1)
+                    self.assertTrue(all(job.get('closedAt') and job['delegation']['identityStatus'] == 'reported' for job in jobs))
+                    self.assertTrue(Path(npm[0]['executionIdentity']['executable']).samefile(node))
+                    self.assertEqual(npm[0]['exitCode'] == 0, not fail)
+                finally:
+                    if closed:
+                        shutil.rmtree(root)
 
 
 if __name__ == "__main__":

@@ -887,6 +887,26 @@ def reuse_dependencies(target, current, lock_name, required):
     raise resource_incomplete('更新资源依赖不完整，且现有依赖不能安全复用；当前安装尚未替换。请重新下载完整正式安装包。')
 
 
+def standalone_npm_command():
+    """Run npm's script through the task's acknowledged Node, never a shell shim."""
+    node = Path(os.environ.get('TAVERN_NODE_EXECUTABLE') or '')
+    if not node.is_absolute() or not node.is_file():
+        raise resource_incomplete('独立更新缺少当前任务的 Node，尚未停止服务或修改安装。')
+    located = shutil.which('npm')
+    candidates = [node.parent / 'npm', node.parent / 'node_modules/npm/bin/npm-cli.js',
+                  node.parent.parent / 'lib/node_modules/npm/bin/npm-cli.js']
+    if located:
+        candidates.extend((Path(located), Path(located).parent / 'node_modules/npm/bin/npm-cli.js'))
+    for candidate in candidates:
+        if candidate.is_file():
+            cli = candidate.resolve()
+            package = cli.parent.parent / 'package.json'
+            if cli.name == 'npm-cli.js' and package.is_file():
+                if json.loads(package.read_text(encoding='utf-8')).get('name') == 'npm':
+                    return [str(node), str(cli)]
+    raise resource_incomplete('当前 Node 缺少对应的 npm 入口，尚未停止服务或修改安装。')
+
+
 def standalone_dependencies(source, target, lock_name, required):
     """Prepare a verified Linux component in private staging, before stopping.
 
@@ -911,11 +931,9 @@ def standalone_dependencies(source, target, lock_name, required):
     if (value.get('lockfileVersion') not in (2, 3) or not isinstance(value.get('packages'), dict)
             or any(package.get('hasInstallScript') for package in value['packages'].values())):
         raise resource_incomplete('独立更新依赖清单需要额外安装脚本，尚未停止服务；请保留当前安装并反馈日志。')
-    npm = shutil.which('npm')
-    if not npm:
-        raise resource_incomplete('独立更新需要现有 Node.js 对应的 npm，尚未停止服务或修改安装。')
+    command = standalone_npm_command()
     log('在临时目录准备当前系统的锁定依赖，原服务继续运行')
-    standalone_run([npm, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
+    standalone_run([*command, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
         '--userconfig', os.devnull, '--cache', str(source.parent / 'npm-cache')],
         cwd=target, timeout=300, check=True, text=True)
     if (any(file_sha(target / name) != digest for name, digest in before.items())
