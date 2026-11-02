@@ -59,6 +59,7 @@ const reviewedNativeTestSelectionSteps = new Set([
     '1fbf8b7c2f28394463de7ff27e5b7e51f0cb8cb80947cd50ea7cab90344881e6', // Same-run stage handoff; exact reviewed body.
 ]);
 const reviewedComponentTestSelectionSteps = new Set([
+    'e27b0846400d228ac430bbfc39f63cfdf304da50af10a8608e0cf7371d35e88b', // Prior exact planning command; paired with the independent comparison command below.
     '1effccae0891db117ab2e98e755ebad322e48844f62834652fad6a3bfdf6b2de', // 2026-11-02: independent published planning/upgrade facts before payload restore; no construction.
     '7fa1f251173dbb1b7267ea98f257b0c147a3710e8b96d77fea340b58479cd345', // Same plan producer, now comparing the separately selected regression baseline.
     'e23859937c08b2cc9478b5584a0e8ec483380676dee7ea96f8a686b3bfcfe1b5', // Same impact selector with the independent comparison baseline.

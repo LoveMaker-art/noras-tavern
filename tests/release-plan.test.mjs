@@ -58,6 +58,16 @@ test('step titles cannot exempt changed unknown executable commands from review'
     }
 });
 
+test('both old and independent component planning commands remain verification-only while unreviewed commands reject',()=>{
+    const text=base=>`jobs:\n  build-components:\n    steps:\n      - name: Plan\n        id: plan\n        shell: bash\n        run: |\n          set -euo pipefail\n          node tooling/release/release-plan.mjs --base "${base}" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"\n`;
+    const inputs=change('.github/workflows/publish-component-update.yml');
+    inputs.baseline.configuration.componentWorkflow=workflowInputs(text('$BASELINE_TAG'),'build-components');
+    inputs.current.configuration.componentWorkflow=workflowInputs(text('$REGRESSION_BASELINE'),'build-components');
+    assert.equal(createReleasePlan(inputs).mode,'verification-only');
+    inputs.current.configuration.componentWorkflow=workflowInputs(text('$REGRESSION_BASELINE').replace('node tooling/release/release-plan.mjs','bash unknown-builder.sh'),'build-components');
+    assert.equal(createReleasePlan(inputs).requiresReview,true);
+});
+
 test('test-looking commands with shell execution or paths outside tests still require review', () => {
     for (const command of ['node --test tests/contracts.test.mjs; bash build-runtime.sh',
         'node --test tests/../tooling/release/build-runtime.mjs', 'node --test tests/./contracts.test.mjs',
