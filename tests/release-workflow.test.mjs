@@ -232,7 +232,7 @@ test('the full profile retains complete source coverage and focused profiles lea
   const runtime=steps.findIndex(step=>step.name==='Download and verify unchanged published components');
   const files=command=>[...command.matchAll(/tests\/deployment\/([\w.-]+\.test\.cjs)/g)].map(match=>match[1]);
   const sourceFiles=steps.slice(0,runtime).flatMap(step=>files(step.run||''));
-  verifyLauncherStability({checkEnvironment:()=>({environment:process.env}),run:(command,args)=>{
+  verifyLauncherStability({platform:'darwin',checkEnvironment:()=>({environment:process.env}),run:(command,args)=>{
     sourceFiles.push(...args.filter(arg=>arg.endsWith('.test.cjs')).map(file=>path.basename(file)));return {status:0};
   }});
   for(const file of new Set(sourceFiles))assert.equal(sourceFiles.filter(name=>name===file).length,1,
