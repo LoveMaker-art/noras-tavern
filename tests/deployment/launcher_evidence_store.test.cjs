@@ -68,6 +68,19 @@ test('acknowledged statistics cannot archive evidence while original operation l
   raw.jobs[0].done=true;fs.writeFileSync(file,JSON.stringify(raw));assert.equal(f.store.archive(record.operationId),true);
 });
 
+test('acknowledged events cannot archive a detached worker whose diagnostic result is still pending',async t=>{
+  const f=fixture(t),{createOperationController}=require('../installer/desktop/operation-state');
+  const controller=createOperationController({directory:f.directory,evidence:f.store,
+    lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),executors:{install:async()=>({verification:'confirmed'})}});
+  const operation=await controller.start('install',{},'pending-handoff-diagnostic');
+  f.store.updateDelivery(operation.operationId,{operationId:operation.operationId,queued:0,accepted:3,last_ack:1});
+  const file=path.join(f.directory,'telemetry.json');
+  fs.writeFileSync(file,JSON.stringify({schema:1,queue:[],handoffs:[{id:operation.operationId}]}));
+  assert.equal(f.store.canArchive(operation.operationId),false);
+  fs.writeFileSync(file,JSON.stringify({schema:1,queue:[],handoffs:[]}));
+  assert.equal(f.store.canArchive(operation.operationId),true);
+});
+
 test('reserved ACK space bounds retained data and delivery without replacing a primary',async t=>{
   const limits={globalBytes:4096,historyCapacity:2,ackCapacity:512},f=fixture(t,{limits});
   const {createOperationController}=require('../installer/desktop/operation-state');

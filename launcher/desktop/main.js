@@ -1811,6 +1811,7 @@ if (primaryInstance) {
       environment:{os_release:os.release(),node:process.versions.node,electron:process.versions.electron,launcher_build:launcherBuild()},
       fetcher: (url, options) => net.fetch(url, options), diagnostic: code => diagnostics.write('telemetry.diagnostic', { code }),
       operationLogs:(id,cursor)=>diagnostics.readOperation(id,cursor),
+      readHandoffOutcome:(id,options)=>launcherUpdate.readDiagnostics(launcherRecoveryOptions(),id,options),
       logScope:(task,work)=>diagnostics.scope(task.id,{action:task.action,version:app.getVersion(),node:process.versions.node,electron:process.versions.electron},work),
       operationContext:()=>activeOperationContext?{...activeOperationContext.snapshot,
         currentVersion:activeOperationContext.target.currentVersion||null,

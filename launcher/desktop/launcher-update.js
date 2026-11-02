@@ -227,26 +227,98 @@ function nativeHelperError(record) {
 function helperError(record, message = '启动器恢复未完成，请查看更新日志。') {
   return launcherError(message, { source: 'launcher', site: 'launcher.operation' }, nativeHelperError(record));
 }
-function helperCall(python, helper, args, cwd, {spawnChild} = {}) {
+// This reader has no recovery authority. The helper validates the sealed job;
+// only a bounded, reviewed projection enters the existing telemetry outbox.
+async function readDiagnostics(options,operationId,{details=true}={}){
+  if(!OPERATION_ID.test(operationId||''))throw new TypeError('Invalid diagnostic operation ID');
+  const root=path.resolve(options.home,'installer'),directory=path.join(root,'operations',operationId);
+  const read=(file,maximum)=>{
+    for(let current=file;current!==path.dirname(root);current=path.dirname(current)){
+      const stat=fs.lstatSync(current);if(stat.isSymbolicLink())throw Error('Linked diagnostic record');
+    }
+    const stat=fs.lstatSync(file);if(!stat.isFile()||stat.size>maximum)throw Error('Invalid diagnostic record');
+    const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));
+    try{
+      const before=fs.fstatSync(fd);
+      if(!before.isFile()||before.dev!==stat.dev||before.ino!==stat.ino||before.size!==stat.size)throw Error('Changed diagnostic record');
+      const buffer=Buffer.alloc(stat.size+1);let size=0,count;
+      do{count=fs.readSync(fd,buffer,size,buffer.length-size,null);size+=count;}while(count&&size<buffer.length);
+      const after=fs.fstatSync(fd);
+      if(size!==stat.size||after.size!==stat.size||after.mtimeMs!==before.mtimeMs)throw Error('Changed diagnostic record');
+      return JSON.parse(buffer.subarray(0,size).toString('utf8'));
+    }finally{fs.closeSync(fd);}
+  };
+  let operation;
+  try{
+    operation=read(path.join(directory,'operation.json'),256*1024);
+    if(operation.schema!=='nora-operation/1'||operation.operationId!==operationId||!['update','repair','recover'].includes(operation.kind)
+      ||typeof operation.handoffRef!=='string'||!/^[a-f0-9]{64}$/.test(operation.planDigest||''))throw Error('Unbound diagnostic record');
+    const job=path.resolve(operation.handoffRef);
+    if(path.dirname(job)!==path.join(root,'launcher-update'))throw Error('Diagnostic job outside installation');
+    const plan=read(path.join(job,'plan.json'),2*1024*1024);
+    if(plan.schema!==2||plan.operationId!==operationId||plan.planDigest!==operation.planDigest)throw Error('Diagnostic plan mismatch');
+    ownedJob(job,options);
+    // Opt-out keeps basic technical results, without reading retained errors.
+    const observed=await helperCall(options.python,options.helper,['--diagnostics',job,...(!details?['--no-diagnostic-details']:[])],job,{timeoutMs:5000,recordErrors:false});
+    if(!observed)return null;
+    if(observed.operationId!==operationId||observed.planDigest!==operation.planDigest)throw Error('Diagnostic result mismatch');
+    if(observed.status==='succeeded')return operation.target?.request?.launcherOnly===true||operation.state==='succeeded'
+      ?{status:'succeeded'}:null; // An APP commit alone cannot finish a legacy combined operation.
+    if(!['failed','interrupted'].includes(observed.status))throw Error('Invalid diagnostic outcome');
+    const phases=new Set(['prepared','waiting-parent','moving-old','installing-new','awaiting-launcher','awaiting-system',
+      'recovery-prepared','moving-failed','restoring-old','recovery-failed','cancelled','restored']);
+    const phase=phases.has(observed.phase)?observed.phase:'unknown',step=phases.has(observed.failurePhase)?observed.failurePhase:'unknown';
+    const error=programError(observed.diagnosticError)||launcherError('更新执行进程已退出，未取得原始失败原因。',{code:'UNKNOWN_PROGRAM_ERROR'});
+    const stage=['recovery-prepared','moving-failed','restoring-old','recovery-failed'].includes(step)?'rollback':'update_apply';
+    const project=(value,depth=0)=>value&&depth<4?{name:value.name,message:value.message,code:value.code,
+      frames:typeof value.stack==='string'?value.stack.split(/\r?\n/).slice(-12):[],cause:project(value.cause,depth+1)}:null;
+    const evidence={operationId,primary:project(error),secondary:(error.secondaryErrors||[]).map(item=>({error:project(item.error)})),
+      context:{stage},missingReasons:[],truncated:observed.truncated===true};
+    const roles={'moving-old':'launcher-app -> launcher-backup','installing-new':'launcher-staged-app -> launcher-app',
+      'moving-failed':'launcher-app -> launcher-failed-app','restoring-old':'launcher-backup -> launcher-app'};
+    const effect=['untouched','restored','unknown'].includes(observed.effectState)?observed.effectState:'unknown';
+    const recovery=['not-required','restored-and-verified','recovery-required'].includes(observed.recoveryOutcome)?observed.recoveryOutcome:'recovery-required';
+    const verification=observed.verification==='confirmed'?'confirmed':'unconfirmed';
+    evidence.reviewedOutput=[`[INFO] launcher_step=${step} launcher_status=${phase}`,
+      ...(roles[step]?[`[INFO] launcher_object=${roles[step]}`]:[]),
+      `[INFO] launcher_effect=${effect} recovery=${recovery} verification=${verification}`];
+    evidence.missingReasons=[...new Set([...evidence.missingReasons,...(observed.missingReasons||[]),
+      ...(step==='unknown'?['unknown_evidence_gap']:[])])].slice(0,16);
+    return {status:observed.status,error,context:{operation:{...operation,currentVersion:operation.target?.currentVersion||operation.currentVersion,
+      target:{releasePlan:plan.releasePlan,tag:plan.target},
+      effectState:effect,recoveryOutcome:recovery,verification},evidence}};
+  }catch(cause){
+    const safeCause=cause?.source==='launcher'?cause:launcherError('交接诊断记录读取或身份核验失败。',
+      {code:typeof cause?.code==='string'&&/^[A-Z_]{1,32}$/.test(cause.code)?cause.code:'UNKNOWN_PROGRAM_ERROR'});
+    const error=launcherError('启动器交接诊断无法读取，实际程序修改和恢复结果尚未确认。',{code:'UNKNOWN_PROGRAM_ERROR'},safeCause);
+    return {status:'interrupted',retry:true,error,context:{operation:operation?.operationId===operationId?{operationId,
+      effectState:'unknown',recoveryOutcome:'recovery-required',verification:'unconfirmed'}:null,
+      evidence:{operationId,primary:null,secondary:[],missingReasons:['evidence_missing','primary_detail_missing'],truncated:false}}};
+  }
+}
+function helperCall(python, helper, args, cwd, {spawnChild,timeoutMs,recordErrors=true} = {}) {
   return new Promise((resolve, reject) => {
     const child = (spawnChild||spawn)(python, ['-B', helper, ...args], { cwd: helperCwd(cwd), windowsHide: true,
       ...(spawnChild ? {} : {stdio: ['ignore', 'pipe', 'pipe']}) });
     child.stdout.setEncoding?.('utf8'); child.stderr.setEncoding?.('utf8');
     let output = '', errors = '', failed;
+    const timeout=timeoutMs?setTimeout(()=>{failed=launcherError('只读诊断检查超时。',{code:'TIMEOUT'});child.kill();},timeoutMs):null;
+    timeout?.unref();
     child.stdout.on('data', chunk => {
       if (failed) return;
       output += chunk;
       if (output.length > 2 * 1024 * 1024) { failed = new Error('启动器恢复程序返回内容过大。'); output = ''; }
     });
     child.stderr.on('data', chunk => { errors = (errors + chunk).slice(-8192); });
-    child.once('error', reject);
+    child.once('error',error=>{if(timeout)clearTimeout(timeout);reject(error);});
     child.once('close', code => {
+      if(timeout)clearTimeout(timeout);
       if (failed) return reject(failed);
       if (code !== 0) {
         let record;
         try { record = JSON.parse(output).error; } catch {}
         const error = helperError(record, '启动器恢复检查未完成，请保留日志和备份。');
-        try { if (errors) fs.appendFileSync(path.join(cwd, 'replace.log'), errors, { mode: 0o600 }); }
+        try { if (recordErrors&&errors) fs.appendFileSync(path.join(cwd, 'replace.log'), errors, { mode: 0o600 }); }
         catch (logError) { error.secondaryErrors = [{ operation: 'save_recovery_log', error: logError }]; }
         return reject(error);
       }
@@ -343,5 +415,5 @@ async function finalize(options) {
   return helperCall(options.python, options.helper,
     ['--finalize', job, '--target', options.target, '--version', options.version, '--verified'], job, {spawnChild:options.spawnChild});
 }
-module.exports = { inspect, prepare, prepareHandoff, launchHandoff, resume, waitHandoff,verifyHandoff,verifyRecovery,
+module.exports = { inspect, prepare, prepareHandoff, launchHandoff, resume, waitHandoff,verifyHandoff,verifyRecovery,readDiagnostics,
   prepareRecovery,assessJob,inspectOutcome, applicationRoot, assessPending, recover, finalize,validateManifest };

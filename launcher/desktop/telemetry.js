@@ -22,13 +22,14 @@ function errorCode(error) {
 
 function createTelemetry({ file, launcherVersion, platform = process.platform, arch = process.arch,
   enabled = true, diagnosticDefault = false, cohort = 'unknown', fetcher = globalThis.fetch, now = Date.now, random = Math.random,
-  diagnostic = () => {}, automatic = true, clean, roots, environment, operationContext, onDelivery = () => {}, operationLogs, logScope }) {
+  diagnostic = () => {}, automatic = true, clean, roots, environment, operationContext, onDelivery = () => {}, operationLogs, logScope, readHandoffOutcome }) {
   let state, broken = false, controller, sending = false, attempts = 0, due = 0, timer;
   let productVersion = 'unknown', progressValue = null, generation = 0;
   const operations = new AsyncLocalStorage(), reported = new WeakMap(), diagnosticTasks = new WeakMap();
   const faults = createFaultPackets({clean,roots,environment});
   let rawLogs;
   const report = code => { try { diagnostic(code); } catch {} };
+  let collectingHandoff=false,closed=false;
   try {
     if (fs.existsSync(file)) {
       if (fs.statSync(file).size > 2 * 1024 * 1024) throw Error('oversized');
@@ -65,6 +66,18 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       }
     } else state = { schema: 1, id: randomUUID(), cohort, enabled: false, consentVersion: 0, sequence: 0, seen: false, ready: false, active: null, queue: [] };
   } catch { broken = true; state = { enabled: false, queue: [] }; report('state_unreadable'); }
+  // These are pending diagnostics, not business tasks or recovery authority.
+  const validHandoff=task=>task&&UUID.test(task.id||'')&&['update','repair'].includes(task.action)
+    &&contract.stages.includes(task.stage)&&Number.isSafeInteger(task.started)&&Number.isSafeInteger(task.stageStarted)
+    &&(task.diagnosticConsentId===''||UUID.test(task.diagnosticConsentId||''))
+    &&(task.gapReported===undefined||typeof task.gapReported==='boolean');
+  if(state.handoffs!==undefined&&(!Array.isArray(state.handoffs)||state.handoffs.length>64||!state.handoffs.every(validHandoff))){
+    broken=true;report('handoff_state_unreadable');state.handoffs=[];
+  }
+  state.handoffs=(state.handoffs||[]).map(task=>Object.fromEntries(['id','action','stage','started','stageStarted','diagnosticConsentId','gapReported'].map(key=>[key,task[key]])));
+  // Import the existing durable handoff on upgrade without granting new consent.
+  if(typeof readHandoffOutcome==='function'&&state.active?.handoff&&validHandoff(state.active)
+    &&!state.handoffs.some(task=>task.id===state.active.id)&&state.handoffs.length<64)state.handoffs.push({...state.active});
   const deliveryKeys = ['accepted','rejected','expired','evicted','paused','detail_suppressed','last_http','last_ack','last_error','missing'];
   const dirtyDelivery = new Set();
   const restoredDelivery = state.delivery;
@@ -140,7 +153,7 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
     for (const id of dirtyDelivery) notifyDelivery(id); dirtyDelivery.clear();
   }
   // Basic operation statistics are independent of detailed diagnostic consent.
-  const allowed = () => enabled && !broken && now() >= (state.pauseUntil || 0);
+  const allowed = () => !closed && enabled && !broken && now() >= (state.pauseUntil || 0);
   const detailedAllowed = () => allowed() && state.enabled && state.consentVersion === 3;
   const protect = fn => (...args) => {
     try { return fn(...args); } catch { broken = true; controller?.abort(); report('state_write_failed'); }
@@ -151,8 +164,9 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
     const consent = diagnosticTasks.get(task);
     if (!detailedAllowed() || !consent?.enabled || consent.generation !== generation) return null;
     let operation; if (typeof operationContext === 'function') {try {operation = operationContext();} catch {}}
-    const correlated = operation?.operationId === task.id ? operation : null;
-    return faults.packet(error,task,typeof operationContext === 'function' ? {...context,operation:correlated,evidence:correlated?.evidence} : context);
+    const correlated = context?.operation?.operationId===task.id?context.operation:operation?.operationId === task.id ? operation : null;
+    return faults.packet(error,task,correlated||typeof operationContext === 'function'
+      ? {...context,operation:correlated,evidence:context?.evidence||correlated?.evidence} : context);
   }
   const elapsed = start => Math.max(0, Math.min(30 * DAY, now() - start));
   function enqueue(event, status = 'running', code = 'none', stageOverride, details = EMPTY_DETAILS, taskOverride, fault = null) {
@@ -192,13 +206,57 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
   function finish(status, error) {
     if (!allowed() || !currentScope() || !state.active) return;
     if (status === 'failed' && errorCode(error) === 'cancelled') status = 'cancelled';
-    const details = status === 'failed' ? describeError(error) : EMPTY_DETAILS;
-    const code = status === 'failed' ? details.error_code : 'none';
-    enqueue('stage_finished', status, code, undefined, details); enqueue('operation_finished', status, code, undefined, details, undefined, status === 'failed' ? faultFor(error,state.active) : null);
-    if (status !== 'handoff') rawLogs?.finish(state.active.id,status);
+    const failure = status === 'failed' || status === 'interrupted' && Boolean(error);
+    const details = failure ? describeError(error) : EMPTY_DETAILS;
+    const code = failure ? details.error_code : 'none';
+    enqueue('stage_finished', status, code, undefined, details); enqueue('operation_finished', status, code, undefined, details, undefined, failure ? faultFor(error,state.active) : null);
+    const deferred=state.handoffs.some(task=>task.id===state.active.id);
+    if (status !== 'handoff'&&!(status==='interrupted'&&deferred)) rawLogs?.finish(state.active.id,status);
+    if (status === 'handoff'&&typeof readHandoffOutcome==='function'&&['update','repair'].includes(state.active.action)&&!deferred){
+      if(state.handoffs.length<64)state.handoffs.push({...state.active});
+      else report('handoff_queue_capacity');
+    }
+    if(status!=='handoff'&&status!=='interrupted')state.handoffs=state.handoffs.filter(task=>task.id!==state.active.id);
     if (status === 'handoff') state.active.handoff = true;
     else state.active = null;
     save();
+  }
+  async function collectHandoff(){
+    if(closed||collectingHandoff||!allowed()||typeof readHandoffOutcome!=='function'||!state.handoffs.length)return;
+    collectingHandoff=true;
+    const task=state.handoffs[0],sentGeneration=generation;
+    try{
+      if(now()-task.started>7*DAY){
+        state.handoffs.shift();rawLogs?.finish(task.id,'interrupted');
+        if(state.active?.id===task.id&&state.active.handoff)state.active=null;
+        const entry=delivery(task.id);entry.missing=[...new Set([...entry.missing,'expired'])].slice(-16);
+        dirtyDelivery.add(task.id);report('handoff_diagnostic_expired');save();return;
+      }
+      const consent=Boolean(detailedAllowed()&&task.diagnosticConsentId&&task.diagnosticConsentId===state.diagnosticConsentId);
+      let outcome;
+      try{outcome=await readHandoffOutcome(task.id,{details:consent});}
+      catch{outcome={status:'interrupted',retry:true,error:new Error('交接诊断暂时无法读取，等待补查。'),
+        context:{evidence:{operationId:task.id,primary:null,secondary:[],missingReasons:['evidence_missing','primary_detail_missing'],truncated:false}}};}
+      if(closed||generation!==sentGeneration||!allowed()||!state.handoffs.includes(task))return;
+      if(!outcome)return;
+      if(!['failed','succeeded','interrupted'].includes(outcome.status)||outcome.status==='failed'&&!outcome.error)
+        throw Error('invalid handoff outcome');
+      if(consent)admitDiagnostics(task);
+      if(outcome.retry===true&&task.gapReported)return;
+      const details=outcome.error?describeError(outcome.error):EMPTY_DETAILS;
+      enqueue('operation_finished',outcome.status,outcome.error?details.error_code:'none',undefined,details,task,
+        consent&&outcome.error?faultFor(outcome.error,task,outcome.context):null);
+      if(outcome.retry===true){task.gapReported=true;save();return;}
+      rawLogs?.finish(task.id,outcome.status);
+      state.handoffs=state.handoffs.filter(value=>value!==task);
+      if(state.active?.id===task.id&&state.active.handoff)state.active=null;
+      save();
+    }catch{report('handoff_diagnostic_read_failed');}
+    finally{
+      // A slow or missing worker must not starve other captured handoffs.
+      if(state.handoffs[0]===task)state.handoffs.push(state.handoffs.shift());
+      collectingHandoff=false;
+    }
   }
   const api = {
     // Explicit launcher callers only. observe() intentionally ignores logs/error text
@@ -320,6 +378,7 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       fs.rmSync(previous, { force: true });
     }),
     async flush() {
+      if(typeof readHandoffOutcome==='function'&&state.handoffs.length)await collectHandoff();
       const rawWork=rawLogs?.flush();
       if (!allowed() || sending || now() < due || !state.queue.length) { await rawWork; return; }
       sending = true; controller = new AbortController();
@@ -376,7 +435,7 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       } finally { clearTimeout(timeout); controller = null; sending = false; await rawWork; }
     },
     rawLogSummary: id => rawLogs?.summary(id) || null,
-    close() { clearInterval(timer); controller?.abort(); rawLogs?.close(); },
+    close() { closed=true;generation++;clearInterval(timer); controller?.abort(); rawLogs?.close(); },
   };
   if(operationLogs&&enabled&&!broken)rawLogs=createOperationLogDelivery({file:file+'.logs',read:operationLogs,
     project:text=>faults.text(text,Number.MAX_SAFE_INTEGER),fetcher,now,diagnostic:report,

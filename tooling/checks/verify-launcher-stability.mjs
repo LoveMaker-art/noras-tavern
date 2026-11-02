@@ -14,6 +14,7 @@ const javascript = [
     'launcher_process_output.test.cjs',
     'launcher_diagnostics.test.cjs',
     'launcher_lifecycle_diagnostics.test.cjs',
+    'launcher_handoff_diagnostics.test.cjs',
     'launcher_network_policy.test.cjs',
     'launcher_operation_state.test.cjs',
     'launcher_operation_result.test.cjs',

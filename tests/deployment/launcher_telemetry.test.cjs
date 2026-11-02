@@ -281,6 +281,87 @@ test('restart records interrupted, update handoff is preserved without false cra
   assert.equal(f.client.begin('update'),update);
   assert.equal(f.read().queue.some(e=>e.operation_id===update&&e.status==='interrupted'),false);
 });
+
+test('an interrupted operation with a known native cause preserves its error code and fault', t=>{
+  const f=fixture(t);
+  const id=f.client.begin('update');f.client.stage('update_handoff');
+  f.client.finish('interrupted',Object.assign(new Error('file replacement denied'),{code:'EACCES'}));
+  const result=f.read().queue.findLast(event=>event.operation_id===id&&event.event==='operation_finished');
+  assert.equal(result.status,'interrupted');assert.equal(result.error_code,'permission_denied');
+  assert.equal(result.system_code,'EACCES');assert.ok(result.fault);
+});
+
+test('a failed detached handoff is collected after reopening even when another operation replaces the active task', async t=>{
+  let ready=false,reads=0;
+  const f=fixture(t,{readHandoffOutcome:async id=>{
+    reads++;return ready?{status:'failed',error:Object.assign(new Error('detached replacement failure'),{code:'EACCES'}),
+      context:{operation:{operationId:id,stageId:'applying',effectState:'untouched',recoveryOutcome:'not-required',verification:'confirmed'}}}:null;
+  }});
+  const id=f.client.begin('update');f.client.stage('update_handoff');f.client.finish('handoff');
+  f.restart();f.client.begin('start');f.client.finish('succeeded');await f.client.flush();
+  assert.ok(reads>0,'the detached outcome must be inspected independently of the active UI task');
+  ready=true;f.advance(400000);await f.client.flush();
+  const terminal=f.read().queue.concat(f.requests.flatMap(request=>request.data.events||[]))
+    .filter(event=>event.operation_id===id&&event.event==='operation_finished'&&event.status==='failed');
+  assert.equal(terminal.length,1);assert.equal(terminal[0].system_code,'EACCES');assert.ok(terminal[0].fault);
+  f.restart();f.advance(400000);await f.client.flush();
+  assert.equal(f.read().queue.concat(f.requests.flatMap(request=>request.data.events||[]))
+    .filter(event=>event.operation_id===id&&event.event==='operation_finished'&&event.status==='failed').length,1);
+});
+
+test('detached diagnosis honors the original consent and a revoke/re-enable cycle', async t=>{
+  for(const mode of ['never-authorized','revoked','revoked-and-enabled']){
+    const flags=[];
+    const f=fixture(t,{consent:mode!=='never-authorized',readHandoffOutcome:async(id,options)=>{
+      flags.push(options.details);return {status:'failed',error:Object.assign(new Error('PRIVATE_DETACHED_CAUSE'),{code:'EACCES'})};
+    }});
+    const id=f.client.begin('update');f.client.finish('handoff');f.restart();
+    if(mode!=='never-authorized')f.client.setEnabled(false);
+    if(mode==='revoked-and-enabled')f.client.setEnabled(true);
+    await f.client.flush();assert.deepEqual(flags,[false],mode);
+    const events=f.requests.flatMap(request=>request.data.events||[]).concat(f.read().queue);
+    const result=events.findLast(event=>event.operation_id===id&&event.status==='failed');
+    assert.equal(result.system_code,'EACCES');assert.equal(result.fault,null);
+    assert.doesNotMatch(JSON.stringify(events),/PRIVATE_DETACHED_CAUSE/);
+  }
+});
+
+test('closing telemetry during a detached read cannot write or send a late result', async t=>{
+  let release;
+  const f=fixture(t,{readHandoffOutcome:()=>new Promise(resolve=>{release=resolve;})});
+  f.client.begin('update');f.client.finish('handoff');const work=f.client.flush();
+  const before=fs.readFileSync(f.file,'utf8');f.client.close();
+  release({status:'failed',error:new Error('late detached cause')});await work;
+  assert.equal(fs.readFileSync(f.file,'utf8'),before);assert.equal(f.requests.length,0);
+});
+
+test('detached diagnostic backlog remains bounded and one pending worker does not starve another', async t=>{
+  const reads=[];const f=fixture(t,{readHandoffOutcome:async id=>{reads.push(id);return null;}});
+  const first=f.client.begin('update');f.client.finish('handoff');
+  const second=f.client.begin('update',{operationId:require('node:crypto').randomUUID()});f.client.finish('handoff');
+  await f.client.flush();await f.client.flush();assert.deepEqual(reads,[first,second]);
+  for(let i=0;i<70;i++){f.client.begin('update',{operationId:require('node:crypto').randomUUID()});f.client.finish('handoff');}
+  assert.equal(f.read().handoffs.length,64);
+});
+
+test('an unreadable handoff reports its gap once and retries after reopen until the original failure becomes readable',async t=>{
+  let ready=false;
+  const f=fixture(t,{readHandoffOutcome:async()=>ready
+    ?{status:'failed',error:Object.assign(new Error('original replacement cause'),{code:'EACCES'})}
+    :{status:'interrupted',retry:true,error:new Error('diagnostic evidence unavailable')}});
+  const id=f.client.begin('update');f.client.finish('handoff');await f.client.flush();
+  assert.equal(f.read().handoffs.length,1);f.restart();f.advance(400000);await f.client.flush();
+  const all=()=>f.requests.flatMap(request=>request.data.events||[]).concat(f.read().queue);
+  assert.equal(all().filter(event=>event.operation_id===id&&event.status==='interrupted'&&event.event==='operation_finished').length,1);
+  ready=true;f.advance(400000);await f.client.flush();assert.equal(f.read().handoffs.length,0);
+  assert.equal(all().filter(event=>event.operation_id===id&&event.status==='failed'&&event.system_code==='EACCES').length,1);
+});
+
+test('expired detached diagnostics disclose expiry without reviving the old handoff on reopen',async t=>{
+  const f=fixture(t,{readHandoffOutcome:async()=>null});const id=f.client.begin('update');f.client.finish('handoff');
+  f.advance(8*86400000);await f.client.flush();assert.equal(f.read().handoffs.length,0);
+  assert.ok(f.client.deliverySummary(id).missing.includes('expired'));f.restart();assert.equal(f.read().handoffs.length,0);
+});
 test('late response after opt out and back in cannot erase the new queue',async t=>{
   let reply;
   const f=fixture(t,{fetcher:()=>new Promise(resolve=>{reply=resolve;})});const sending=f.client.flush();

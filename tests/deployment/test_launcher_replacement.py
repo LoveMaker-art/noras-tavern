@@ -1028,6 +1028,24 @@ class OperationReplacementTests(unittest.TestCase):
         self.assertTrue(any(item['error']['name'] == 'PermissionError' for item in record.get('secondaryErrors', [])))
         self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['phase'], 'recovery-failed')
 
+    def test_detached_diagnostics_consume_saved_proof_without_rehashing_or_unlocking_legacy_records(self):
+        f = self.fixture(); worker.prepare(f['job'])
+        with patch.object(worker, 'parent_alive', return_value=False), patch.object(worker, 'launch_old'), \
+                patch.object(worker, 'retry_rename', side_effect=PermissionError(13, 'controlled replacement denied')):
+            with self.assertRaises(PermissionError): worker.run(f['job'])
+        with patch.object(worker, 'parent_alive', return_value=False), \
+                patch.object(worker, 'tree_digest', side_effect=AssertionError('diagnostic read must not hash program trees')):
+            observed = worker.inspect_diagnostics(f['job'])
+            self.assertEqual(observed['verification'], 'confirmed')
+            self.assertEqual(observed['failurePhase'], 'moving-old')
+            snapshot = worker.read_json(f['job'] / 'recovery.json')
+            snapshot.pop('diagnosticVerification')
+            worker.write_json(f['job'] / 'recovery.json', snapshot)
+            observed = worker.inspect_diagnostics(f['job'])
+            self.assertEqual(observed['verification'], 'unconfirmed')
+            self.assertEqual(observed['effectState'], 'unknown')
+            self.assertIn('controlled replacement denied', observed['diagnosticError']['message'])
+
     def test_evidence_budget_is_sealed_before_replacement_and_tampering_preserves_application(self):
         f = self.fixture(); worker.prepare(f['job'])
         snapshot = worker.read_json(f['job'] / 'recovery.json')

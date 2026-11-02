@@ -356,6 +356,9 @@ function createEvidenceStore({ directory, clean = value => value, redact = value
         const state=JSON.parse(fs.readFileSync(file,'utf8'));
         if(state.schema!==1||!Array.isArray(state.queue)||state.queue.some(event=>!event||typeof event.operation_id!=='string'))return false;
         if(state.queue.some(event=>event.operation_id===operationId))return false;
+        if(state.handoffs!==undefined&&(!Array.isArray(state.handoffs)||state.handoffs.length>64
+          ||state.handoffs.some(task=>!UUID.test(task?.id||''))))return false;
+        if(state.handoffs?.some(task=>task.id===operationId))return false;
       }
       return true;
     }catch{return false;}

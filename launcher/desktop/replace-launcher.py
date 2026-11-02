@@ -625,13 +625,81 @@ def freeze_failure(ctx, error):
     try:
         shared_module('operation_evidence', ctx['job']).freeze(error, nora_home=ctx['home'],
             operation_id=ctx['plan'].get('operationId') or ctx['plan']['token'],
-            installer_directory=ctx['home'] / 'installer', context={'stage': 'restoring'})
+            installer_directory=ctx['home'] / 'installer', context={'stage': getattr(error, '_launcher_stage', 'restoring')})
     except Exception as saving:
         error.secondary_errors = [*getattr(error, 'secondary_errors', ()), saving]
         error._diagnostic_missing = [*getattr(error, '_diagnostic_missing', ()), 'evidence_save_failed']
 
 
+def annotate_failure(snapshot, error):
+    phase = snapshot.get('phase')
+    objects = {'moving-old': ('launcher-app', 'launcher-backup'),
+               'installing-new': ('launcher-staged-app', 'launcher-app'),
+               'moving-failed': ('launcher-app', 'launcher-failed-app'),
+               'restoring-old': ('launcher-backup', 'launcher-app')}
+    if phase not in RECOVERABLE_PHASES: return
+    snapshot.setdefault('failurePhase', phase)
+    error._launcher_stage = 'restoring' if phase in ('recovery-prepared', 'moving-failed', 'restoring-old', 'recovery-failed') else 'update_apply'
+    if not isinstance(error, OSError): return
+    facts = [f'launcher_step={phase}']
+    if phase in objects:
+        source, target = objects[phase]
+        facts.extend((f'source_object={source}', f'target_object={target}'))
+    if type(getattr(error, 'winerror', None)) is int: facts.append(f'winerror={error.winerror}')
+    # Only fixed object roles are appended; private absolute paths remain local.
+    error._bridge_diagnostic_message = str(error) + '; ' + '; '.join(facts)
+
+
+def inspect_diagnostics(job, *, details=True):
+    """Read a finished worker's evidence; never settle or recover its task."""
+    ctx = context(job)
+    if ctx['plan']['schema'] != 2: raise ValueError('旧交接缺少诊断身份')
+    try:
+        with job_lock(ctx['job'], readonly=True):
+            snapshot = validate_snapshot(ctx, full=False)
+            pid, created = snapshot.get('workerPid'), snapshot.get('workerCreationTime')
+            if type(pid) is int and type(created) in (int, float) and parent_alive(pid, created): return None
+            if snapshot['phase'] in ('prepared', 'waiting-parent') and parent_alive(
+                    ctx['plan']['parentPid'], ctx['plan']['parentCreationTime']): return None
+            phase = snapshot['phase']
+            if phase == 'committed':
+                return {'operationId': ctx['plan']['operationId'], 'planDigest': ctx['plan']['planDigest'], 'status': 'succeeded'}
+            if phase == 'awaiting-system': return None  # The new APP still owns verification.
+            primary = snapshot.get('diagnosticError') if details else ({'name': 'Error', 'message': '启动器程序替换失败。',
+                'code': snapshot.get('diagnosticError', {}).get('code'), 'stack': ''} if snapshot.get('diagnosticError') else None)
+            missing, truncated = [], bool(primary and primary.get('truncated'))
+            evidence_file = ctx['home'] / 'installer/operations' / ctx['plan']['operationId'] / 'evidence/python.json'
+            evidence_module = shared_module('operation_evidence', ctx['job'])
+            try:
+                if not details: raise FileNotFoundError()
+                evidence_module.operation_directory(ctx['home'], operation_id=ctx['plan']['operationId'])
+                if evidence_file.parent.is_symlink() or evidence_file.is_symlink() or evidence_file.stat().st_size > evidence_module.MAX_BYTES:
+                    raise ValueError('诊断证据路径或容量无效')
+                saved = evidence_module._validate_record(read_json(evidence_file), ctx['plan']['operationId'])
+                primary = dict(saved['primary'])
+                primary['secondaryErrors'] = [*primary.get('secondaryErrors', []), *saved.get('secondaryErrors', [])][:2]
+                missing.extend(saved['missingReasons'])
+                truncated = saved['truncated'] or primary.get('truncated', False)
+            except (OSError, ValueError, TypeError): missing.append('evidence_missing')
+            result = {'operationId': ctx['plan']['operationId'], 'planDigest': ctx['plan']['planDigest'],
+                      'status': 'failed' if primary else 'interrupted', 'diagnosticError': primary,
+                      'phase': phase, 'failurePhase': snapshot.get('failurePhase'), 'missingReasons': missing,
+                      'truncated': truncated,
+                      'effectState': 'unknown', 'recoveryOutcome': 'recovery-required', 'verification': 'unconfirmed'}
+        # Consume the writer's completed check, without re-hashing an APP just
+        # to upload its error. Legacy records lack that proof and stay unknown.
+        if phase in ('cancelled', 'restored') and snapshot.get('diagnosticVerification') == 'confirmed':
+            result.update(effectState='untouched' if phase == 'cancelled' else 'restored', verification='confirmed',
+                          recoveryOutcome='not-required' if phase == 'cancelled' else 'restored-and-verified')
+        if not primary: result['missingReasons'].append('primary_detail_missing')
+        return result
+    except RuntimeError:
+        # A live worker owns the read lock. It will be inspected on a later drain.
+        return None
+
+
 def report_failure(ctx, snapshot, phase, error, **extra):
+    if phase == 'restored': extra['diagnosticVerification'] = 'confirmed'
     try: checkpoint(ctx, snapshot, phase, diagnosticError=error_data(error), **extra)
     except Exception as recording:
         error.secondary_errors = [*getattr(error, 'secondary_errors', ()), recording]
@@ -670,7 +738,7 @@ def wait_parent(pid, created, *, cancel=None):
 def cancel_untouched(ctx, snapshot, *, error=None):
     if not untouched(ctx, snapshot): raise ValueError('原程序现场发生变化，未取消恢复')
     extra = {'diagnosticError': error_data(error)} if error is not None else {}
-    checkpoint(ctx, snapshot, 'cancelled', **worker_identity(), **extra)
+    checkpoint(ctx, snapshot, 'cancelled', diagnosticVerification='confirmed', **worker_identity(), **extra)
     try: clean_stage(ctx, snapshot)
     except (OSError, ValueError) as cleanup:
         checkpoint(ctx, snapshot, 'cancelled', cleanupError=error_data(cleanup), **extra)
@@ -702,7 +770,7 @@ def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False)
         checkpoint(ctx, snapshot, 'restoring-old'); retry_rename(ctx['backup'], ctx['app'])
     validate_snapshot(ctx, full=True)
     should_launch = not snapshot.get('launchAttempted')
-    checkpoint(ctx, snapshot, 'restored', launchAttempted=True)
+    checkpoint(ctx, snapshot, 'restored', launchAttempted=True, diagnosticVerification='confirmed')
     state_file = ctx['home'] / 'installer/state.json'
     try: state = read_json(state_file) if exists(state_file) else {}
     except (OSError, ValueError): state = {}
@@ -740,10 +808,13 @@ def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False)
             raise ValueError('旧启动器回滚协议未知，未覆盖程序')
         try: return restore(ctx, parent_pid=parent_pid, parent_creation_time=parent_creation_time, allow_legacy=allow_legacy)
         except Exception as error:
-            freeze_failure(ctx, error)
             try: phase = read_json(ctx['job'] / 'recovery.json').get('phase')
             except Exception as recording:
                 error.secondary_errors = [*getattr(error, 'secondary_errors', ()), recording]; phase = snapshot.get('phase')
+            failure_snapshot = dict(snapshot, phase=phase)
+            annotate_failure(failure_snapshot, error)
+            if failure_snapshot.get('failurePhase'): snapshot.setdefault('failurePhase', failure_snapshot['failurePhase'])
+            freeze_failure(ctx, error)
             if phase not in ('committed', 'restored', 'cancelled'): report_failure(ctx, snapshot, 'recovery-failed', error, **worker_identity())
             freeze_failure(ctx, error)
             raise
@@ -888,6 +959,7 @@ def replace(ctx, *, allow_legacy=False):
     except Exception as error:
         # Freeze before stopping/replacing any failed tree. A later restore error
         # remains secondary to this exact exception instance.
+        annotate_failure(snapshot, error)
         freeze_failure(ctx, error)
         if child:
             try:
@@ -900,6 +972,8 @@ def replace(ctx, *, allow_legacy=False):
         if moved:
             try: restore(ctx, allow_legacy=allow_legacy)
             except Exception as recovery_error:
+                try: annotate_failure(read_json(ctx['job'] / 'recovery.json'), recovery_error)
+                except (OSError, ValueError): pass
                 error.secondary_errors = [*getattr(error, 'secondary_errors', ()), recovery_error]
                 report_failure(ctx, snapshot, 'recovery-failed', error, rollbackError=error_data(recovery_error))
             else:
@@ -931,6 +1005,7 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--assess', metavar='JOB')
     modes.add_argument('--inspect-outcome', metavar='JOB')
+    modes.add_argument('--diagnostics', metavar='JOB')
     modes.add_argument('--prepare', metavar='JOB')
     modes.add_argument('--prepare-recovery', metavar='JOB')
     modes.add_argument('--process-identity', type=int, metavar='PID')
@@ -942,9 +1017,10 @@ def main():
     parser.add_argument('--target')
     parser.add_argument('--version')
     parser.add_argument('--verified', action='store_true')
+    parser.add_argument('--no-diagnostic-details', action='store_true')
     args = parser.parse_args()
-    job = Path(args.assess or args.inspect_outcome or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
-    if not (args.assess or args.inspect_outcome or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
+    job = Path(args.assess or args.inspect_outcome or args.diagnostics or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
+    if not (args.assess or args.inspect_outcome or args.diagnostics or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
         parser.error('缺少更新任务目录')
     try:
         if args.recover or args.job:
@@ -959,6 +1035,8 @@ def main():
             result = assess(job)
         elif args.inspect_outcome:
             result = inspect_outcome(job)
+        elif args.diagnostics:
+            result = inspect_diagnostics(job, details=not args.no_diagnostic_details)
         elif args.recover:
             result = recover(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created)
         elif args.finalize:

@@ -17,7 +17,7 @@
 | 独立部署更新 | `test_standalone_update_entry.py`、`test_standalone_update_recovery.py`、`test_update_dependency_materialization.py`：单文件入口、无桌面凭据执行、Linux staging 依赖准备与拒绝边界、持久恢复、设置备份轮换与再次中断；不替代旧安装实测 |
 | 无APP实例启停与历史准入 | `test_cloud_lifecycle_cli.py`：真实CLI启停／重启、重复启动、Node与Python写锁双向互斥、错误实例与丢失委托、程序替换意图及数据边界；`test_updater_task_backend.py`覆盖已完成历史与当前任务的区分。Linux须原生执行，不能以Mac结果代替OFD锁互斥 |
 | 版本、来源与下载 | `launcher_release_plan.test.cjs`、`launcher_network_policy.test.cjs`、`launcher_network.test.cjs` |
-| 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs` |
+| 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs`；`launcher_handoff_diagnostics.test.cjs`覆盖独立替换首因／恢复失败／硬退出、重开补报和实际接收器去重，接收器输入缺失时不算该项通过 |
 | 引导、进度与界面 | `launcher_guidance_flow.test.cjs`、`launcher_task_progress.test.cjs`、`launcher_controller.test.cjs` |
 | 原生配对重试界面 | `launcher_pair_ui_electron.cjs`：生产 HTML/preload/controller 与原生锁，激活回复和服务状态受控；不连接外部 ClawChat，不证明真实账号激活或网关调用 |
 | 真实程序流程 | `launcher_product_refactor_smoke.cjs`：实际 native lease、受管生产者与临时安装；不是完整 GUI/真实账户验收 |
