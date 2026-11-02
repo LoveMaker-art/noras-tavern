@@ -1,6 +1,6 @@
 # 启动器产品设计
 
-产品设计版本：**1.47**。核对日期：2026-11-02。与[项目总览](README.md)共同构成现行设计。Linux云端的诺拉与酒馆按[部署边界](README.md#deployment-support)独立安装、运行和维护；本模块继续负责Windows／Mac桌面入口及现有模型管理，不扩大全服务表单，也不把桌面目录或APP变成云端核心能力前提。保留现有启动器行为与此前验收边界；共用核心的源码适配及审查收敛见[实施记录](../launcher-reliability-plan.md#cloud-core-review-convergence-20261101)，本地合并见[整合记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)，不表示部署或发布；L-D07／L-D08及本轮L-D09继续登记未完成范围。
+产品设计版本：**1.48**。核对日期：2026-11-02。与[项目总览](README.md)共同构成现行设计。Linux云端的诺拉与酒馆按[部署边界](README.md#deployment-support)独立安装、运行和维护；本模块继续负责Windows／Mac桌面入口及现有模型管理，不扩大全服务表单，也不把桌面目录或APP变成云端核心能力前提。保留现有启动器行为与此前验收边界；共用核心的源码适配及审查收敛见[实施记录](../launcher-reliability-plan.md#cloud-core-review-convergence-20261101)，本地合并见[整合记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)，不表示部署或发布；L-D07／L-D08及本轮L-D09继续登记未完成范围。
 
 1.47于2026-11-02按用户明确要求调整更新入口：启动器检查核心与APP两项、只执行APP更新；诺拉对话只提交核心更新。新任务不再联合更新，详细规则见[共同更新职责](README.md#shared-update)。入口及更新页源码已整合本地main，技术回归和隔离页面验收通过；已安装技能、安装包与正式实例未切换，未推送发布；1.46恢复收尾要求继续有效。目标环境与历史接入缺口见L-D10。
 1.44仅在既有1.43设计上整合[N-12](nora.md#models-and-visuals)／[T-23](tavern.md#visuals)阅读控制与默认排版，启动器行为、模型管理及数据保护规则保持；实际合并范围见[本轮记录](../launcher-reliability-plan.md#reading-main-integration-20261030)。

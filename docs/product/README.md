@@ -1,6 +1,8 @@
 # 诺拉酒馆产品设计：总览与共同约定
 
-产品设计版本：**1.47**。确认与核对日期：2026-11-02。用户明确要求分开更新职责：启动器可检查核心与APP两项，但只执行APP自身更新；诺拉／酒馆核心更新仅由用户在诺拉对话中授权发起。取消新任务的一键双更新和跨组件自动续接，详见[共同更新规则](#shared-update)。入口分离与更新页已在独立分支实现并整合本地main，关联技术回归及隔离浏览器验收通过；未推送、部署或发布，成品自更新和历史用户接入未完整验收，见[本轮记录](../launcher-reliability-plan.md#update-entry-separation-20261102)。1.46已确认的程序恢复、原任务结束、正常页面返回和用户数据保护继续有效，Q-02仅用于已有双更新任务的安全收尾，不授权新双更新。
+1.48于2026-11-02按用户确认更新[诺拉默认人格](nora.md#conversation)，用于后续新安装和缺少人格时的初始化；已有诺拉人格不因模板更新被覆盖。默认正文唯一维护于 `nora/SOUL.md`，本次不改变模型、技能、启停或更新职责；远端单实例采用与实际验证见[执行记录](../launcher-reliability-plan.md#default-persona-20261102)。
+
+产品设计版本：**1.48**。确认与核对日期：2026-11-02。用户明确要求分开更新职责：启动器可检查核心与APP两项，但只执行APP自身更新；诺拉／酒馆核心更新仅由用户在诺拉对话中授权发起。取消新任务的一键双更新和跨组件自动续接，详见[共同更新规则](#shared-update)。入口分离与更新页已在独立分支实现并整合本地main，关联技术回归及隔离浏览器验收通过；未推送、部署或发布，成品自更新和历史用户接入未完整验收，见[本轮记录](../launcher-reliability-plan.md#update-entry-separation-20261102)。1.46已确认的程序恢复、原任务结束、正常页面返回和用户数据保护继续有效，Q-02仅用于已有双更新任务的安全收尾，不授权新双更新。
 
 1.45已按用户要求将诺拉与酒馆的Linux及云端部署列为正式产品目标，撤销[N-05](nora.md#model-configuration)仅限Mac／Windows受管本地安装的设计限制；以当前实例的身份、授权和实际能力为边界。Windows／Mac桌面交付、模型先验证后保存、已有内容与数据保护规则保留。设计要求、源码实现、目标环境验收及发布分别记录，当前Linux适配与验收缺口见[N-D04](nora.md#differences)。最初的[文档修订](../launcher-reliability-plan.md#linux-cloud-baseline-20261030)之后，已实施[共用核心与路径适配](../launcher-reliability-plan.md#cloud-core-instance-20261031)及审查修正；范围、结果与未验项见[原合并记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)。后续生命周期、跨语言写锁和历史准入修复按用户授权整合本地main，见[增量复核](../launcher-reliability-plan.md#cloud-lifecycle-main-review-20261101)。源码合并不表示部署或发布。
 
