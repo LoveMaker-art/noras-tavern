@@ -47,6 +47,7 @@ jobs:
       product_tag: ${{ steps.product.outputs.product_tag }}
       delivery_artifact_id: ${{ steps.delivery.outputs.artifact-id }}
       delivery_artifact_digest: ${{ steps.delivery.outputs.artifact-digest }}
+      regression_baseline: ${{ steps.baselines.outputs.regression_baseline }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -74,6 +75,16 @@ jobs:
           BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
           BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
         run: node tooling/release/system-release.mjs --workflow-options
+      - name: Fix regression and upgrade baselines before downloading product payloads
+        id: baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          facts="$RUNNER_TEMP/component-published-releases.json"
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$facts"
+          target_tag="${NORA_PRODUCT_SOURCE_TAG:-$NORA_PUBLICATION_TAG}"
+          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$facts" "$target_tag" "$GITHUB_REPOSITORY" "$BASELINE_TAG" "$RUNNER_TEMP/component-upgrade-baseline.json" "$GITHUB_OUTPUT" build
+          node -e 'const fs=require("node:fs"),assert=require("node:assert/strict"),{selectPlanningBaseline}=require("./tooling/release/publication-source.cjs");const baseline=process.env.NORA_PRODUCT_SOURCE_TAG||selectPlanningBaseline(JSON.parse(fs.readFileSync(process.argv[1])));assert.match(baseline,/^v[0-9]+\.[0-9]+\.[0-9]+$/);fs.appendFileSync(process.env.GITHUB_ENV,"REGRESSION_BASELINE="+baseline+"\n");fs.appendFileSync(process.env.GITHUB_OUTPUT,"regression_baseline="+baseline+"\n");' "$facts"
       - name: Resolve product identity or restore the exact original product ZIP
         id: product
         run: node tooling/release/publication-source.cjs restore-product
@@ -83,7 +94,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node tooling/release/release-plan.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
+          node tooling/release/release-plan.mjs --base "$REGRESSION_BASELINE" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
       - name: Require an explicitly compatible component plan
         if: inputs.product_source_run == ''
         env:
@@ -98,7 +109,7 @@ jobs:
           npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
       - name: Select regression from the fixed component baseline
         id: test-impact
-        run: node tooling/checks/launcher-test-impact.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json" --github-output "$GITHUB_OUTPUT"
+        run: node tooling/checks/launcher-test-impact.mjs --base "$REGRESSION_BASELINE" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json" --github-output "$GITHUB_OUTPUT"
       - name: Audit release fixture entries before product preparation
         run: node tooling/checks/release-fixtures.mjs
       - name: Verify release contracts and update preservation
@@ -126,7 +137,7 @@ jobs:
           export NORA_TEST_PYTHON="$(python -B -c 'import sys;print(sys.executable,end="")')"
           case "$FULL_REGRESSION" in
             true) node "$PWD/tooling/checks/verify-launcher-stability.mjs" ;;
-            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
+            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$REGRESSION_BASELINE" --head "$GITHUB_SHA" --run-focused ;;
             *) echo 'Missing verified test selection' >&2; exit 1 ;;
           esac
       - name: Check affected Tavern frontend against existing Nora contracts
@@ -199,6 +210,7 @@ jobs:
       delivery_artifact_id: ${{ needs.build-components.outputs.delivery_artifact_id }}
       delivery_artifact_digest: ${{ needs.build-components.outputs.delivery_artifact_digest }}
       baseline_tag: ${{ inputs.baseline_tag }}
+      regression_baseline: ${{ needs.build-components.outputs.regression_baseline }}
       force_full_regression: ${{ inputs.force_full_regression || false }}
 
   accept-components:

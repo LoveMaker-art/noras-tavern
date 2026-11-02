@@ -59,6 +59,10 @@ const reviewedNativeTestSelectionSteps = new Set([
     '1fbf8b7c2f28394463de7ff27e5b7e51f0cb8cb80947cd50ea7cab90344881e6', // Same-run stage handoff; exact reviewed body.
 ]);
 const reviewedComponentTestSelectionSteps = new Set([
+    '1effccae0891db117ab2e98e755ebad322e48844f62834652fad6a3bfdf6b2de', // 2026-11-02: independent published planning/upgrade facts before payload restore; no construction.
+    '7fa1f251173dbb1b7267ea98f257b0c147a3710e8b96d77fea340b58479cd345', // Same plan producer, now comparing the separately selected regression baseline.
+    'e23859937c08b2cc9478b5584a0e8ec483380676dee7ea96f8a686b3bfcfe1b5', // Same impact selector with the independent comparison baseline.
+    '8ed6ca446c7c742ee1119c9736db459be5c2479748dd6144f600c9359dd9b168', // Full/focused groups unchanged; independent comparison baseline only.
     '9a9ed55e653d6484414815d90ce73579bf5a24b731f78fedba15793756b84179', // Desktop recovery moved intact to every native component target; Linux core contracts retained.
     '9d08d68699aa9553bd090724c696ba8bb763cf4dfc36ec1d1cfcd6bb26cebccd', // 2026-11-02: Linux headless regression; full desktop gate retained in every native component job.
     '38106a73d472a9903e47ea494896e2b8024fe25ab63e595a58d76547f2a1a2ce',

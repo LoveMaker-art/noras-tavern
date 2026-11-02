@@ -193,7 +193,10 @@ test('publication requires all three platform stage chains and rejects changed d
 test('component source qualification restores independently after failed native acceptance and stays distinct from installer proof',async t=>{
  const f=fixture(t);f.expected.options={pipeline:'components',force_full_regression:false,productCommit:f.expected.commit,productSourceRun:'',deliveryArtifactId:'92',deliveryArtifactDigest:'d'.repeat(64)};f.expected.baseline='v2.6.0';
  const impact={schema:'nora-test-impact/1',source:{commit:f.expected.commit},planDigest:'a'.repeat(64),full:false,ui:false,content:true,tavern:false};
+ f.expected.options.regressionBaseline='v2.6.4';impact.baseline={ref:'v2.6.0'};
  fs.writeFileSync(path.join(f.temp,'test-impact.json'),JSON.stringify(impact));
+ await assert.rejects(stage.seal('source',path.join(f.home,'wrong-regression-baseline'),f),/regression baseline/i);
+ impact.baseline.ref='v2.6.4';fs.writeFileSync(path.join(f.temp,'test-impact.json'),JSON.stringify(impact));
  const output=path.join(f.home,'component-source'),r=await stage.seal('source',output,f);
  assert.equal(r.context.options.pipeline,'components');
  const zip=path.join(f.home,'component-source.zip');execFileSync(process.env.NORA_STAGE_TEST_PYTHON||'python3',['-I','-B','-c',

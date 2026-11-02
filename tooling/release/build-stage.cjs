@@ -36,6 +36,7 @@ function verifyComponentInputs(options) {
     assert.ok(Number.isSafeInteger(Number(options.deliveryArtifactId)));
     assert.match(options.deliveryArtifactDigest,/^(?:sha256:)?[a-f0-9]{64}$/,'Missing upstream component artifact digest');
     if(options.productSourceRun)assert.ok(Number.isSafeInteger(Number(options.productSourceRun)));
+    if(Object.hasOwn(options,'regressionBaseline'))assert.match(options.regressionBaseline,/^v\d+\.\d+\.\d+$/,'Invalid component regression baseline');
 }
 function context(env=process.env) {
     const platform=`${process.platform}-${process.arch}`;assert.ok(platforms.includes(platform));
@@ -189,6 +190,7 @@ async function seal(stage, output, {root=process.cwd(),temp=process.env.RUNNER_T
     if(stage==='source'){
         const impact=JSON.parse(fs.readFileSync(path.join(temp,'test-impact.json')));
         assert.equal(impact.source?.commit,expected.commit,'Selection belongs to another source');assert.match(impact.planDigest||'',/^[a-f0-9]{64}$/);
+        if(expected.options.regressionBaseline)assert.equal(impact.baseline?.ref,expected.options.regressionBaseline,'Component regression baseline differs');
         if(expected.options.force_full_regression)assert.equal(impact.full,true,'Forced full qualification was lost');
     }
     if(stage==='package')assert.ok(fs.existsSync(path.join(root,'release')),'Missing package tree');
@@ -231,6 +233,7 @@ async function restore(stage,{root=process.cwd(),temp=process.env.RUNNER_TEMP,ex
     fs.writeFileSync(path.join(temp,`nora-stage-input-${stage}.json`),JSON.stringify(proof,null,2)+'\n',{flag:'wx'});
     if(stage==='source'){
         const impact=JSON.parse(fs.readFileSync(path.join(temp,'test-impact.json')));assert.equal(impact.schema,'nora-test-impact/1');
+        if(expected.options.regressionBaseline)assert.equal(impact.baseline?.ref,expected.options.regressionBaseline,'Component regression baseline differs');
         assert.equal(impact.source?.commit,expected.commit,'Selection belongs to another source');assert.match(impact.planDigest||'',/^[a-f0-9]{64}$/);
         for(const field of ['full','ui','content','tavern'])assert.equal(typeof impact[field],'boolean');
         if(process.env.GITHUB_OUTPUT)fs.appendFileSync(process.env.GITHUB_OUTPUT,['full','ui','content','tavern'].map(key=>`${key}=${impact[key]}`).join('\n')+'\n');

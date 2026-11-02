@@ -50,6 +50,16 @@ test('maintenance, persistence, unknown inputs and changed environments always r
     }
 });
 
+test('the server first-paint locale renderer selects Tavern contracts without narrowing persisted backend changes',()=>{
+    const render=selectTestImpact(fixture(['app/engine/sillytavern/src/nora-locale-bootstrap.js']));
+    assert.equal(render.full,false);assert.equal(render.tavern,true);
+    assert.ok(render.minimum.javascript.includes('launcher_uninstall.test.cjs'));
+    assert.ok(render.requiredNative.includes('user-data'));
+    for(const file of ['app/engine/sillytavern/src/nora-story-statistics.js','app/engine/sillytavern/src/nora-world-core/store.js'])
+        assert.equal(selectTestImpact(fixture([file])).full,true,file);
+    assert.equal(selectTestImpact(fixture(['app/engine/sillytavern/src/nora-locale-bootstrap.js','deployment/update/update.py'])).full,true);
+});
+
 test('a version-only APP manifest and lock do not make an otherwise focused UI change full', () => {
     const f = fixture(['launcher/ui/index.html', 'launcher/desktop/package.json', 'launcher/desktop/package-lock.json', 'app/.tavern-release-version']);
     f.current.configuration.launcher.version = '2.2.7';

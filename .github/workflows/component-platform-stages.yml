@@ -26,6 +26,9 @@ on:
       baseline_tag:
         required: true
         type: string
+      regression_baseline:
+        required: true
+        type: string
       force_full_regression:
         type: boolean
         default: false
@@ -40,8 +43,9 @@ env:
   NORA_PRODUCT_SOURCE_RUN: ${{ inputs.product_source_run }}
   NORA_PRODUCT_SOURCE_TAG: ${{ inputs.product_source_run != '' && inputs.product_tag || '' }}
   BASELINE_TAG: ${{ inputs.baseline_tag }}
+  REGRESSION_BASELINE: ${{ inputs.regression_baseline }}
   ACCEPTANCE_BASELINE_TAG: ${{ inputs.baseline_tag }}
-  NORA_STAGE_OPTIONS: ${{ format('{{"pipeline":"components","force_full_regression":{0},"productCommit":"{1}","productSourceRun":"{2}","deliveryArtifactId":"{3}","deliveryArtifactDigest":"{4}"}}', inputs.force_full_regression || false, inputs.product_commit, inputs.product_source_run, inputs.delivery_artifact_id, inputs.delivery_artifact_digest) }}
+  NORA_STAGE_OPTIONS: ${{ format('{{"pipeline":"components","force_full_regression":{0},"productCommit":"{1}","productSourceRun":"{2}","deliveryArtifactId":"{3}","deliveryArtifactDigest":"{4}","regressionBaseline":"{5}"}}', inputs.force_full_regression || false, inputs.product_commit, inputs.product_source_run, inputs.delivery_artifact_id, inputs.delivery_artifact_digest, inputs.regression_baseline) }}
   PYTHONUTF8: '1'
   PYTHONIOENCODING: utf-8
 jobs:
@@ -112,11 +116,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json"
+          node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$REGRESSION_BASELINE" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json"
           selection="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/test-impact.json")).full')"
           case "$selection" in
             true) node "$PWD/tooling/checks/verify-launcher-stability.mjs"; node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_update_recovery ;;
-            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
+            false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$REGRESSION_BASELINE" --head "$GITHUB_SHA" --run-focused ;;
             *) echo 'Missing verified native test selection' >&2; exit 1 ;;
           esac
       - name: Seal reusable component source qualification

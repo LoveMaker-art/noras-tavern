@@ -46,7 +46,8 @@ export function selectTestImpact({ baseline, current, plan }) {
             || /^nora\/skills\/creative\/[^/]+\/(?:SKILL\.md|references\/[\w./-]+\.md)$/.test(file)) {
             flags.content=true;reasons.push({path:file,reason:'Managed Nora content, template installation and customization'});continue;
         }
-        if (file.startsWith('app/engine/sillytavern/public/') || file.startsWith('app/native-extensions/nora-ui/')) {
+        if (file.startsWith('app/engine/sillytavern/public/') || file.startsWith('app/native-extensions/nora-ui/')
+            || file==='app/engine/sillytavern/src/nora-locale-bootstrap.js') {
             flags.tavern=true;reasons.push({path:file,reason:'Tavern frontend plus existing backup and native product checks'});continue;
         }
         full(file,'Maintenance, persisted data, test qualification or other input without a proven narrow boundary');

@@ -745,6 +745,44 @@ test('component acceptance retries restore the complete passed source stage and 
   }
 });
 
+test('component regression and upgrade baselines are fixed separately before restoring a product',()=>{
+  const job=components.jobs['build-components'],steps=job.steps;
+  const baseline=steps.findIndex(step=>step.id==='baselines');
+  assert.ok(baseline>=0&&baseline<steps.findIndex(step=>step.id==='product'));
+  assert.match(steps[baseline].run,/baseline-selection/);
+  assert.match(steps[baseline].run,/selectPlanningBaseline/);
+  assert.match(steps[baseline].run,/NORA_PRODUCT_SOURCE_TAG/);
+  assert.match(steps.find(step=>step.id==='plan').run,/--base "\$REGRESSION_BASELINE"/);
+  assert.match(steps.find(step=>step.id==='test-impact').run,/--base "\$REGRESSION_BASELINE"/);
+  assert.equal(components.jobs['native-components'].with.regression_baseline,'${{ needs.build-components.outputs.regression_baseline }}');
+  assert.equal(componentStages.env.REGRESSION_BASELINE,'${{ inputs.regression_baseline }}');
+  assert.match(componentStages.env.NORA_STAGE_OPTIONS,/regressionBaseline/);
+  const source=componentStages.jobs.source.steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance');
+  assert.match(source.run,/--base "\$REGRESSION_BASELINE"/);
+  assert.doesNotMatch(source.run,/--base "\$BASELINE_TAG"/);
+  const upgrade=componentStages.jobs.acceptance.steps.find(step=>step.name==='Authenticate the published baseline for actual native upgrades');
+  assert.match(upgrade.run,/--tag "\$BASELINE_TAG"/);
+});
+
+test('the actual component baseline step preserves upgrade identity and rejects an obsolete baseline early',t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'component-baselines-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const step=components.jobs['build-components'].steps.find(step=>step.id==='baselines');
+  const lines=step.run.split('\n'),network=lines.findIndex(line=>line.includes('gh api '));
+  assert.ok(network>=0);lines[network]='cp "$FIXTURE_FACTS" "$facts"';
+  const facts=path.join(directory,'facts.json');
+  fs.writeFileSync(facts,JSON.stringify([['v2.6.0','v2.6.4'].map(tag_name=>({tag_name,draft:false,prerelease:false}))]));
+  for(const [name,source,upgrade,expected] of [['new','','v2.6.4','v2.6.4'],['revalidate','v2.6.4','v2.6.0','v2.6.4'],['obsolete','','v2.6.0',null]]){
+    const temp=path.join(directory,name);fs.mkdirSync(temp);
+    const env={PATH:path.dirname(process.execPath)+path.delimiter+process.env.PATH,RUNNER_TEMP:temp,FIXTURE_FACTS:facts,
+      GITHUB_REPOSITORY:'owner/repo',GITHUB_ENV:path.join(temp,'env'),GITHUB_OUTPUT:path.join(temp,'output'),
+      NORA_PUBLICATION_TAG:'v2.6.5',NORA_PRODUCT_SOURCE_TAG:source,BASELINE_TAG:upgrade};
+    const result=spawnSync('bash',['-c',lines.join('\n')],{cwd:root,env,encoding:'utf8',timeout:10000});
+    if(expected){assert.equal(result.status,0,result.stderr);assert.match(fs.readFileSync(env.GITHUB_ENV,'utf8'),new RegExp('REGRESSION_BASELINE='+expected));
+      assert.equal(JSON.parse(fs.readFileSync(path.join(temp,'component-upgrade-baseline.json'))).tag,upgrade);
+    }else{assert.notEqual(result.status,0);assert.equal(fs.existsSync(env.GITHUB_ENV),false);assert.match(result.stderr,/most recent published older stable/);}
+  }
+});
+
 test('verification-only dispatches check tooling without historical payloads or product builds',()=>{
  const preflight=caller.jobs.preflight;
  assert.equal(preflight.outputs.plan_mode,'${{ steps.plan.outputs.mode }}');
