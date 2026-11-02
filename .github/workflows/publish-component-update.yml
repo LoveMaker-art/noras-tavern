@@ -112,7 +112,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_launcher_update_recovery tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Check affected Tavern frontend against existing Nora contracts
         if: steps.test-impact.outputs.tavern == 'true'
         timeout-minutes: 15
@@ -235,7 +235,7 @@ jobs:
           node tooling/checks/launcher-test-impact.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/native-test-impact.json"
           selection="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/native-test-impact.json")).full')"
           case "$selection" in
-            true) node tooling/checks/verify-launcher-stability.mjs ;;
+            true) node tooling/checks/verify-launcher-stability.mjs; node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_update_recovery ;;
             false) echo 'Unchanged native maintenance contracts; actual component acceptance remains mandatory' ;;
             *) echo 'Missing verified native test selection' >&2; exit 1 ;;
           esac

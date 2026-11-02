@@ -57,6 +57,7 @@ const reviewedNativeTestSelectionSteps = new Set([
     '1fbf8b7c2f28394463de7ff27e5b7e51f0cb8cb80947cd50ea7cab90344881e6', // Same-run stage handoff; exact reviewed body.
 ]);
 const reviewedComponentTestSelectionSteps = new Set([
+    '9a9ed55e653d6484414815d90ce73579bf5a24b731f78fedba15793756b84179', // Desktop recovery moved intact to every native component target; Linux core contracts retained.
     '9d08d68699aa9553bd090724c696ba8bb763cf4dfc36ec1d1cfcd6bb26cebccd', // 2026-11-02: Linux headless regression; full desktop gate retained in every native component job.
     '38106a73d472a9903e47ea494896e2b8024fe25ab63e595a58d76547f2a1a2ce',
     '0d1ca1161a0b88ea66935bd52b51f2a7e2f4a88ce0f3bd3088172e26b89da857',

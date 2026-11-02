@@ -470,12 +470,18 @@ test('component Linux preparation exercises headless updates while full desktop 
   assert.equal(components.jobs['build-components']['runs-on'], 'ubuntu-latest');
   const linux = components.jobs['build-components'].steps.find(step => step.name === 'Require the selected component source regression');
   assert.doesNotMatch(linux.run, /verify-launcher-stability\.mjs/);
+  const independent = components.jobs['build-components'].steps.find(step => step.name === 'Check independent update and data contracts outside the full gate');
+  assert.doesNotMatch(independent.run, /test_launcher_update_recovery/);
+  for (const name of ['test_update_download_sources', 'test_incremental_update', 'test_update_check', 'test_managed_update', 'test_native_startup_evidence', 'test_native_cli_diagnostics'])
+    assert.ok(independent.run.includes(`tests.deployment.${name}`), name);
   for (const name of ['test_update_dependency_materialization', 'test_update_operation_safety', 'test_updater_task_backend', 'test_standalone_update_recovery'])
     assert.ok(linux.run.includes(`tests.deployment.${name}`), `actual Linux maintenance path: ${name}`);
   const native = components.jobs['native-components'];
   assert.deepEqual(native.strategy.matrix.include.map(item => item.platform).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
   const gate = native.steps.find(step => step.name === 'Qualify native maintenance changes before actual component acceptance');
   assert.match(gate.run, /true\) node tooling\/checks\/verify-launcher-stability\.mjs/);
+  assert.match(gate.run, /tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_launcher_update_recovery/);
+  assert.ok(gate.run.indexOf('verify-launcher-stability.mjs') < gate.run.indexOf('test_launcher_update_recovery'));
   assert.equal(gate['continue-on-error'], undefined);
   assert.ok(native.steps.indexOf(gate) < native.steps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data'));
 });
