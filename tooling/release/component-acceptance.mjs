@@ -182,35 +182,6 @@ export function runComponentNative({ payload, baseline, reports, scratch, commit
     }
 }
 
-// Headless qualification consumes the original shared archives. It never
-// pretends a desktop environment archive is a Linux runtime.
-export function runComponentCloud({ delivery, baseline, scratch, python, hermesSource, commit,
-    root = path.resolve(fileURLToPath(new URL('../../', import.meta.url))), host = process.platform, run = execFileSync }) {
-    assert.equal(host, 'linux', 'Run headless product qualification on an actual Linux host');
-    assert.match(commit, /^[a-f0-9]{40}$/);
-    for (const directory of [delivery, baseline, hermesSource]) assert.ok(path.isAbsolute(directory) && fs.statSync(directory).isDirectory());
-    assert.ok(path.isAbsolute(python) && fs.statSync(python).isFile(), 'Explicit installed Hermes Python required');
-    assert.ok(path.isAbsolute(scratch) && !fs.existsSync(scratch), 'Use a new private qualification directory');
-    const product = read(find(delivery, 'release-manifest.json'));
-    assert.equal(product.commit, commit); assert.equal(product.candidate, false); assert.equal(product.dirty, false);
-    for (const key of ['app', 'ops', 'nora-mcp']) assert.ok(product.archives?.[key], `Missing cloud archive ${key}`);
-    for (const descriptor of Object.values(product.archives))
-        assert.equal(hashFile(find(delivery, safe(descriptor.name))), descriptor.sha256, 'Changed cloud core archive');
-    run(python, ['-I', '-B', path.join(root, 'tests/deployment/cloud_component_acceptance.py'),
-        '--target', delivery, '--baseline', baseline, '--scratch', scratch, '--hermes-source', hermesSource],
-    { cwd: root, stdio: 'inherit', timeout: 1500000 });
-    const result = read(path.join(scratch, 'cloud-acceptance.json'));
-    assert.equal(result.schema, 'nora-cloud-component-acceptance/1'); assert.equal(result.platform, 'linux');
-    assert.equal(result.targetCommit, commit); assert.equal(result.outcome, 'passed');
-    assert.deepEqual(result.scenarios.map(item => item.scenario), ['fresh', 'running', 'stopped', 'dependency-rebuild']);
-    for (const value of result.scenarios) {
-        assert.equal(value.outcome, 'passed'); assert.equal(value.stop, 'confirmed');
-        assert.equal(value.executorHandles, 'verified-closed'); assert.deepEqual(value.activeOwnedProcesses, []);
-        assert.equal(value.installedCommit, commit); assert.equal(value.userData, 'retained'); assert.equal(value.worldAndChatRead, 'verified');
-    }
-    return result;
-}
-
 export function sealComponentAcceptance({ delivery, reports, plan, output, commit, tag, productSource, verificationCommit }) {
     assert.equal(plan.source.commit, commit); assert.equal(plan.mode, 'components'); assert.equal(plan.requiresReview, false);
     const baselineTag = plan.baseline.ref, baselineCommit = plan.baseline.commit;
@@ -240,8 +211,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         const plan = read(planFile); assert.equal(plan.baseline.ref, baselineTag);
         sealComponentAcceptance({ delivery, reports, plan, output, commit, tag,
             ...(process.env.PRODUCT_SOURCE_FILE?{productSource:read(process.env.PRODUCT_SOURCE_FILE),verificationCommit:process.env.GITHUB_SHA}:{}) });
-    } else if (command === 'cloud') {
-        assert.equal(args.length, 6); const [delivery, baseline, scratch, python, hermesSource, commit] = args;
-        runComponentCloud({ delivery, baseline, scratch, python, hermesSource, commit });
-    } else throw new Error('Use component-acceptance.mjs prepare|run|seal|cloud');
+    } else throw new Error('Use component-acceptance.mjs prepare|run|seal');
 }
