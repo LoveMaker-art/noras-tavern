@@ -103,7 +103,7 @@ export function workflowInputs(text = '', job = 'build') {
     let end = start + 1;
     while (end < lines.length && !/^ {2}[\w-]+:\s*$/.test(lines[end])) end++;
     const body = lines.slice(start + 1, end);
-    const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line) && !/^\s*-\s+name\s*:/.test(line))
+    const normalize = block => block.filter(line => line.trim() && line.trim()!=="if: inputs.product_source_run == ''" && !/^\s*#/.test(line) && !/^\s*-\s+name\s*:/.test(line))
         .map(line => line.trim().replace(/\s+#.*$/, '').replace("needs.preflight.outputs.plan_mode != 'verification-only' && ",'' )).join('\n');
     const environment = body.filter(line => /\b(?:runs-on|runner|node-version|python-version)\s*:/.test(line)
         || /"(?:runner|platform|arch|package_script)"\s*:/.test(line));
@@ -111,7 +111,8 @@ export function workflowInputs(text = '', job = 'build') {
     let block = [];
     const flush = () => {
         const value = normalize(block);
-        const reviewedVerification = ((job === 'build-components' || job === 'publish')
+        const reviewedVerification = (job==='build-components'&&value==='id: product\nrun: node tooling/release/publication-source.cjs restore-product')
+            || ((job === 'build-components' || job === 'publish')
             && reviewedComponentVerificationSteps.has(hash(value)))
             || (['build','source','runtime','package'].includes(job) && reviewedNativeTestSelectionSteps.has(hash(value)))
             || (job==='build-components' && reviewedComponentTestSelectionSteps.has(hash(value)));

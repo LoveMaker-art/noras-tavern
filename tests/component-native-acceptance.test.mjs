@@ -174,3 +174,20 @@ test('the real native runner still refuses an unsupported Linux host before invo
     assert.throws(() => runComponentNative({ run: () => { executions++; } }), /COMPONENT_PLATFORMS/);
     assert.equal(executions, 0);
 });
+
+test('revalidation receipt distinguishes product and verifier and still consumes every raw native result',async t=>{
+    const f=fixture(t);fs.unlinkSync(f.output);
+    const verifier='c'.repeat(40),source={schema:'nora-component-product/1',repository:'owner/tavern',productCommit:f.commit,productRun:123,
+        producer:{id:20,attempt:1},artifacts:[],tag:f.tag,verificationCommit:verifier};
+    const receipt=sealComponentAcceptance({delivery:f.delivery,reports:f.reports,plan:f.plan,output:f.output,commit:f.commit,tag:f.tag,
+        productSource:source,verificationCommit:verifier});
+    assert.equal(receipt.schema,'nora-component-acceptance/3');assert.equal(receipt.commit,f.commit);
+    assert.deepEqual(receipt.qualification,{commit:verifier,productSource:source});
+    await assert.rejects(verifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit));
+    const expected={commit:verifier,productSource:source};
+    assert.equal((await verifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit,expected)).outcome,'passed');
+    await assert.rejects(verifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit,{...expected,commit:'d'.repeat(40)}));
+    const file=path.join(f.reports,'nora-component-native-win32-x64/stopped/harness-result.json');
+    const value=JSON.parse(fs.readFileSync(file));value.userData='changed';fs.writeFileSync(file,JSON.stringify(value));
+    await assert.rejects(verifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit,expected));
+});

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
-import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
+import { verifyLauncherStability, sourceTestGroups } from '../tooling/checks/verify-launcher-stability.mjs';
 import { verifyBackupSafety } from '../tooling/checks/verify-backup-safety.mjs';
 import { runFocusedRegression } from '../tooling/checks/launcher-test-impact.mjs';
 import { auditReleaseFixtures, missingPythonTests, assertFixturePrerequisites } from '../tooling/checks/release-fixtures.mjs';
@@ -87,6 +87,28 @@ test('fixture prerequisite audit rejects wrong-platform recovery and dependencie
   assertFixturePrerequisites({jobs:{source:{'runs-on':'macos-15',steps:[...steps].reverse()}}});
 });
 
+test('authored native script entries are checked before packaging, without requiring generated dependencies',()=>{
+  const loaded=[{name:'entry-fixture',workflow:{jobs:{native:{steps:[
+    {run:'./tooling/checks/launcher-installed-check.ps1'},
+    {run:'node launcher/desktop/node_modules/electron/install.js'},
+  ]}}}}];
+  const report=auditReleaseFixtures({root,loaded});
+  assert.ok(report.scripts.includes('tooling/checks/launcher-installed-check.ps1'));
+  assert.ok(!report.scripts.some(file=>file.includes('/node_modules/')));
+  loaded[0].workflow.jobs.native.steps.push({run:'./tooling/checks/missing-native-entry-fixture.ps1'});
+  assert.throws(()=>auditReleaseFixtures({root,loaded}),/missing authored script/);
+});
+
+test('fixture audit follows the actual Tavern npm glob and dynamic contract consumer without running them',()=>{
+  const report=auditReleaseFixtures({root,loaded:[{name:'frontend',workflow:{jobs:{source:{steps:[
+    {run:'node tooling/run.mjs npm --prefix app/engine/sillytavern run test:nora'},
+  ]}}}}]});
+  for(const name of ['nora-world-ui-boundary.test.mjs','nora-ui-shell-contract.mjs','run-nora-contracts.mjs'])
+    assert.ok(report.files.includes(`app/engine/sillytavern/tests/${name}`),name);
+  assert.ok(report.scripts.includes('app/engine/sillytavern/build/build-public-lib.mjs'));
+  assert.ok(report.scripts.includes('app/engine/sillytavern/build/sync-story-profile-runtime.mjs'));
+});
+
 test('the release reference audit detects a missing Python module or named native test without importing it', () => {
   const existing = scripts(full).match(/tests\.deployment\.[A-Za-z_][\w.]*\.test_[A-Za-z_\w]*/)?.[0];
   assert.ok(existing, 'The actual Windows/native named entry must be included');
@@ -112,20 +134,20 @@ test('component delivery requires all three native platforms before the final pu
   const prepare = nativeSteps.findIndex(step => step.name === 'Materialize the same frozen component payload');
   const run = nativeSteps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data');
   assert.ok(prepare >= 0 && run > prepare);
-  assert.match(nativeSteps[prepare].run, /component-acceptance\.mjs prepare.*component-delivery.*component-payload.*GITHUB_SHA/);
-  assert.match(nativeSteps[run].run, /component-acceptance\.mjs" run.*component-payload.*component-baseline.*GITHUB_SHA.*BASELINE_TAG.*baseline_commit/);
+  assert.match(nativeSteps[prepare].run, /component-acceptance\.mjs prepare.*COMPONENT_DELIVERY.*component-payload.*PRODUCT_COMMIT/);
+  assert.match(nativeSteps[run].run, /component-acceptance\.mjs" run.*component-payload.*component-baseline.*PRODUCT_COMMIT.*BASELINE_TAG.*baseline_commit/);
   assert.equal(nativeSteps[run]['continue-on-error'], undefined);
   assert.equal(nativeSteps.find(step => step.name === 'Pin the native verification tool interpreter').with['python-version'], '3.11.9');
   const baseline = nativeSteps.find(step => step.name === 'Authenticate the published baseline for actual native upgrades');
   assert.match(baseline.run, /acceptance-baseline\.mjs.*--expected-commit/);
   assert.match(nativeSteps.find(step => step.name === 'Restore the verified frozen runtime for native harness prerequisites').run, /restore-launcher-runtime\.cjs.*component-payload/);
   const archive = componentStages.jobs.acceptance.steps.find(step => step.uses === 'actions/upload-artifact@v4');
-  assert.equal(archive.if, 'always()'); assert.equal(archive.with.name, 'nora-component-native-${{ inputs.platform }}');
+  assert.equal(archive.if, 'success()');assert.equal(archive.with.overwrite,'true'); assert.equal(archive.with.name, 'nora-component-native-${{ inputs.platform }}');
   assert.equal(archive.with['if-no-files-found'], 'error');
   assert.ok(!components.jobs['build-components'].steps.some(step => step.with?.name === 'nora-component-acceptance'),
     'Source-only Ubuntu checks must not publish the final native receipt');
   const final = accepted.steps.find(step => step.name === 'Accept only complete three-platform native evidence for these bytes');
-  assert.match(final.run, /component-acceptance\.mjs seal.*component-delivery.*component-native.*release-plan\.json.*GITHUB_SHA/);
+  assert.match(final.run, /component-acceptance\.mjs seal.*COMPONENT_DELIVERY.*component-native.*release-plan\.json.*PRODUCT_COMMIT/);
   assert.equal(final['continue-on-error'], undefined);
 });
 test('source checks run locally in each platform job without cross-machine report handoff', () => {
@@ -436,13 +458,16 @@ test('mandatory backup workflow contracts run in preflight with finite installat
 test('component Linux preparation exercises headless updates while full desktop maintenance stays on all native targets', () => {
   assert.equal(components.jobs['build-components']['runs-on'], 'ubuntu-latest');
   const linux = components.jobs['build-components'].steps.find(step => step.name === 'Require the selected component source regression');
-  assert.doesNotMatch(linux.run, /verify-launcher-stability\.mjs/);
-  const independent = components.jobs['build-components'].steps.find(step => step.name === 'Check independent update and data contracts outside the full gate');
-  assert.doesNotMatch(independent.run, /test_launcher_update_recovery/);
-  for (const name of ['test_update_download_sources', 'test_incremental_update', 'test_update_check', 'test_managed_update', 'test_native_startup_evidence', 'test_native_cli_diagnostics'])
-    assert.ok(independent.run.includes(`tests.deployment.${name}`), name);
-  for (const name of ['test_update_dependency_materialization', 'test_update_operation_safety', 'test_updater_task_backend', 'test_standalone_update_recovery'])
-    assert.ok(linux.run.includes(`tests.deployment.${name}`), `actual Linux maintenance path: ${name}`);
+  assert.match(linux.run, /true\) node "\$PWD\/tooling\/checks\/verify-launcher-stability\.mjs"/);
+  assert.equal(components.jobs['build-components'].steps.filter(step => step.name === 'Check independent update and data contracts outside the full gate').length, 0,
+    'the same Linux qualification must not maintain a second handwritten module list');
+  const selected=sourceTestGroups('linux');
+  for (const name of ['test_update_dependency_materialization', 'test_update_operation_safety', 'test_updater_task_backend', 'test_standalone_update_recovery',
+    'test_update_download_sources', 'test_incremental_update', 'test_update_check', 'test_managed_update', 'test_native_startup_evidence', 'test_native_cli_diagnostics',
+    'test_cloud_instance_paths', 'test_cloud_lifecycle_cli', 'test_cloud_volume_recovery'])
+    assert.ok(selected.python.includes(name), `actual Linux maintenance path: ${name}`);
+  assert.equal(new Set(selected.python).size,selected.python.length);
+  assert.deepEqual(selected.javascript,['cloud_core_release.test.cjs']);
   const native = components.jobs['native-components'];
   assert.deepEqual(native.strategy.matrix.include.map(item => item.platform).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
   const gate = componentNative.steps.find(step => step.name === 'Qualify native maintenance changes before actual component acceptance');
@@ -682,9 +707,10 @@ test('component requalification is explicit and reads producer facts from the or
   assert.equal(publisher.on.workflow_dispatch.inputs.requalify_components.default,'false');
   const restore=publisher.jobs['publish-accepted'].steps.find(step=>step.name==='Restore accepted delivery with exact artifact ZIP hashes').run;
   assert.match(restore,/if \[\[ "\$\{REQUALIFY_COMPONENTS:-false\}" == true \]\]/);
-  assert.match(restore,/actions\/runs\/\$SOURCE_RUN\/jobs\?filter=latest&per_page=100/);
+  assert.match(restore,/allJobs\(process\.env\.GITHUB_REPOSITORY,process\.env\.SOURCE_RUN\)/);
+  assert.doesNotMatch(restore,/jobs\?filter=latest/,'Earlier successful source jobs and failed attempts remain visible');
   assert.match(restore,/publication-source\.cjs delivery.*'' '' "\$qualification_jobs"/);
-  assert.ok(restore.indexOf('/jobs?filter=latest')<restore.indexOf('publication-source.cjs delivery'));
+  assert.ok(restore.indexOf('allJobs(')<restore.indexOf('publication-source.cjs delivery'));
 });
 test('APP-only builds retain ordinary core gates and require real interactive historical APP evidence after sealing target bytes',()=>{
  assert.equal(full.on.workflow_dispatch.inputs.app_only.default,'false');
@@ -729,4 +755,48 @@ test('verification-only dispatches check tooling without historical payloads or 
  const start=gate.run.indexOf('verification-only)');assert.ok(start>=0);
  assert.doesNotMatch(gate.run.slice(start).split(';;')[0],/No product build.*exit 1/);
  assert.ok(preflight.steps.some(step=>step.run?.includes('release-fixtures.mjs')));
+});
+
+test('original component ZIP revalidation never runs compilation and keeps verification and product commits distinct',()=>{
+ const build=components.jobs['build-components'];
+ assert.ok(components.on.workflow_dispatch.inputs.product_source_run);assert.ok(components.on.workflow_dispatch.inputs.product_source_tag);
+ assert.equal(build.outputs.product_commit,'${{ steps.product.outputs.product_commit }}');
+ assert.equal(build.outputs.product_tag,'${{ steps.product.outputs.product_tag }}');
+ const restore=build.steps.find(step=>step.id==='product');assert.equal(restore.run,'node tooling/release/publication-source.cjs restore-product');
+ assert.equal(restore.if,undefined,'both paths resolve their identity before proceeding');
+ for(const name of ['Plan component changes before compilation','Require an explicitly compatible component plan',
+  'Build only shared application and updater components','Reuse verified environments and seal three system manifests','Verify the frozen component delivery before native acceptance'])
+  assert.equal(build.steps.find(step=>step.name===name).if,"inputs.product_source_run == ''",name);
+ for(const name of ['Verify release contracts and update preservation','Require chat backup safety tests','Require the selected component source regression'])
+  assert.equal(build.steps.find(step=>step.name===name).if,undefined,'new verifier must actually execute '+name);
+ for(const stage of ['source','acceptance']){
+  const steps=componentStages.jobs[stage].steps;
+  const unwrap=steps.findIndex(step=>step.name==='Normalize the original or newly built component delivery');
+  assert.ok(unwrap>=0&&unwrap<steps.findIndex(step=>step.name==='Materialize the same frozen component payload'));
+  assert.match(steps.find(step=>step.name==='Materialize the same frozen component payload').run,/PRODUCT_COMMIT/);
+ }
+ assert.equal(componentStages.env.PRODUCT_COMMIT,'${{ inputs.product_commit }}');
+ assert.match(componentStages.env.NORA_STAGE_OPTIONS,/productCommit/);assert.match(componentStages.env.NORA_STAGE_OPTIONS,/productSourceRun/);
+ assert.match(componentStages.jobs.source.steps.find(step=>step.name?.startsWith('Qualify native maintenance')).run,/--head "\$GITHUB_SHA"/);
+ assert.ok(publisher.on.workflow_dispatch.inputs.revalidated_components);
+ assert.match(publisher.jobs['publish-accepted'].steps.find(step=>step.name?.startsWith('Restore accepted delivery')).run,/REVALIDATED_COMPONENTS/);
+});
+
+test('component retries retain failed diagnostics, replace only canonical CI slots, and bind changed upstream artifacts',()=>{
+ const delivery=components.jobs['build-components'].steps.find(step=>step.id==='delivery');
+ assert.equal(delivery.with.overwrite,'true');
+ const accepted=componentStages.jobs.acceptance.steps.find(step=>step.name==='Preserve raw native component evidence');
+ assert.equal(accepted.if,'success()');assert.equal(accepted.with.overwrite,'true');
+ const failure=componentStages.jobs.acceptance.steps.find(step=>step.name?.startsWith('Preserve failed native diagnostics'));
+ assert.equal(failure.if,'failure() || cancelled()');assert.ok(failure.with.name.includes('github.run_attempt'));
+ assert.equal(failure.with.overwrite,undefined,'older failures must not be overwritten by a later successful retry');
+ for(const key of ['delivery_artifact_id','delivery_artifact_digest']){
+  assert.equal(components.jobs['native-components'].with[key],`\${{ needs.build-components.outputs.${key} }}`);
+  assert.ok(componentStages.on.workflow_call.inputs[key]);
+ }
+ assert.match(componentStages.env.NORA_STAGE_OPTIONS,/deliveryArtifactId/);assert.match(componentStages.env.NORA_STAGE_OPTIONS,/deliveryArtifactDigest/);
+ for(const job of Object.values(componentStages.jobs)){
+  const check=job.steps.findIndex(step=>step.name==='Qualify product and verification handoff inputs before downloading');
+  assert.ok(check>=0&&check<job.steps.findIndex(step=>step.uses==='actions/download-artifact@v4'));
+ }
 });

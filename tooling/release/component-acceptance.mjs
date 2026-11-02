@@ -182,14 +182,19 @@ export function runComponentNative({ payload, baseline, reports, scratch, commit
     }
 }
 
-export function sealComponentAcceptance({ delivery, reports, plan, output, commit, tag }) {
+export function sealComponentAcceptance({ delivery, reports, plan, output, commit, tag, productSource, verificationCommit }) {
     assert.equal(plan.source.commit, commit); assert.equal(plan.mode, 'components'); assert.equal(plan.requiresReview, false);
     const baselineTag = plan.baseline.ref, baselineCommit = plan.baseline.commit;
     assert.match(baselineTag, /^v\d+\.\d+\.\d+$/); assert.match(baselineCommit, /^[a-f0-9]{40}$/);
     const native = {};
     for (const platform of COMPONENT_PLATFORMS) native[platform] = verifyComponentNative({ delivery,
         reports: path.join(reports, `nora-component-native-${platform}`), platform, commit, baselineTag, baselineCommit });
-    const receipt = { schema: 'nora-component-acceptance/2', commit, tag, outcome: 'passed', files: componentInventory(delivery), native };
+    const receipt = { schema: productSource ? 'nora-component-acceptance/3' : 'nora-component-acceptance/2', commit, tag, outcome: 'passed', files: componentInventory(delivery), native };
+    if(productSource){
+        assert.equal(productSource.schema,'nora-component-product/1');assert.equal(productSource.productCommit,commit);assert.equal(productSource.tag,tag);
+        assert.match(verificationCommit||'',/^[a-f0-9]{40}$/);assert.equal(productSource.verificationCommit,verificationCommit);
+        receipt.qualification={commit:verificationCommit,productSource};
+    }
     assert.ok(!fs.existsSync(output)); fs.writeFileSync(output, json(receipt)); return receipt;
 }
 
@@ -204,6 +209,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else if (command === 'seal') {
         assert.equal(args.length, 7); const [delivery, reports, planFile, output, commit, tag, baselineTag] = args;
         const plan = read(planFile); assert.equal(plan.baseline.ref, baselineTag);
-        sealComponentAcceptance({ delivery, reports, plan, output, commit, tag });
+        sealComponentAcceptance({ delivery, reports, plan, output, commit, tag,
+            ...(process.env.PRODUCT_SOURCE_FILE?{productSource:read(process.env.PRODUCT_SOURCE_FILE),verificationCommit:process.env.GITHUB_SHA}:{}) });
     } else throw new Error('Use component-acceptance.mjs prepare|run|seal');
 }

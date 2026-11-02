@@ -26,6 +26,17 @@ const checked = (command, args, options = {}) => execFileSync(command, args,
     {encoding:'utf8', timeout:120000, maxBuffer:32*1024*1024, ...options}).trim();
 async function hashFile(file) {const hash=crypto.createHash('sha256');for await(const bytes of fs.createReadStream(file))hash.update(bytes);return hash.digest('hex');}
 const verifierPython = () => process.env.NORA_STAGE_PYTHON || 'python';
+function verifyComponentInputs(options) {
+    assert.equal(options.pipeline,'components');assert.equal(typeof options.force_full_regression,'boolean');
+    for(const key of ['productCommit','productSourceRun','deliveryArtifactId','deliveryArtifactDigest'])
+        assert.equal(typeof options[key],'string',`Missing component input: ${key}`);
+    assert.match(options.productCommit,/^[a-f0-9]{40}$/,'Missing component product identity');
+    assert.match(options.productSourceRun,/^(?:|[1-9][0-9]*)$/);
+    assert.match(options.deliveryArtifactId,/^[1-9][0-9]*$/,'Missing upstream component artifact ID');
+    assert.ok(Number.isSafeInteger(Number(options.deliveryArtifactId)));
+    assert.match(options.deliveryArtifactDigest,/^(?:sha256:)?[a-f0-9]{64}$/,'Missing upstream component artifact digest');
+    if(options.productSourceRun)assert.ok(Number.isSafeInteger(Number(options.productSourceRun)));
+}
 function context(env=process.env) {
     const platform=`${process.platform}-${process.arch}`;assert.ok(platforms.includes(platform));
     assert.match(env.GITHUB_SHA||'',/^[a-f0-9]{40}$/);assert.match(env.GITHUB_REPOSITORY||'',/^[\w.-]+\/[\w.-]+$/);
@@ -34,6 +45,7 @@ function context(env=process.env) {
     assert.equal(checked('git',['rev-parse','HEAD']),env.GITHUB_SHA,'Stage source differs');
     assert.equal(checked('git',['status','--porcelain','--untracked-files=no']),'','Stage source is dirty');
     const options=JSON.parse(env.NORA_STAGE_OPTIONS||'null');assert.ok(options&&typeof options==='object'&&!Array.isArray(options));
+    if(options.pipeline==='components')verifyComponentInputs(options);
     assert.match(env.ACCEPTANCE_BASELINE_TAG||'',/^(?:EMPTY|v\d+\.\d+\.\d+)$/,'Missing selected acceptance baseline');
     const environment={imageOS:env.ImageOS||os.platform(),imageVersion:env.ImageVersion||os.version(),kernel:os.release(),node:process.version,
         python:checked(verifierPython(),['-I','-B','-c','import sys;print(sys.version)']),platform};
@@ -50,6 +62,7 @@ function environmentIdentity(environment) {
 }
 function verifyContext(receipt, expected, stage) {
     assert.equal(receipt.schema,'nora-build-stage/1');assert.equal(receipt.stage,stage);
+    if(pipeline(expected)==='components')verifyComponentInputs(receipt.context.options);
     for(const key of ['repository','commit','runId','platform','baseline'])assert.equal(receipt.context[key],expected[key],`Stage ${key} differs`);
     assert.match(receipt.context.baseline||'',/^(?:EMPTY|v\d+\.\d+\.\d+)$/);
     assert.ok(Number.isSafeInteger(receipt.context.attempt)&&receipt.context.attempt>0&&receipt.context.attempt<=expected.attempt,'Invalid producer attempt');
@@ -214,7 +227,7 @@ async function restore(stage,{root=process.cwd(),temp=process.env.RUNNER_TEMP,ex
         ...(expected.options.app_only?['temporary/nora-upgrade-baseline','temporary/nora-upgrade-baseline-launcher']:['temporary/nora-upgrade-baseline/baseline-source-receipt.json'])];
     const spec=path.join(scratch,'restore-spec.json');fs.writeFileSync(spec,JSON.stringify({roots:{workspace:root,temporary:temp},allowed,scratch:path.join(scratch,'restored')}));
     checked(verifierPython(),['-I','-B','-c',tarScript,'restore',archive,spec],{timeout:1200000});
-    const proof={schema:'nora-stage-input/1',stage,artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt,producer:{id:producer.id,attempt:receipt.context.attempt}};
+    const proof={schema:'nora-stage-input/1',stage,...(pipeline(expected)==='components'?{consumerEnvironment:expected.environment}:{}),artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt,producer:{id:producer.id,attempt:receipt.context.attempt}};
     fs.writeFileSync(path.join(temp,`nora-stage-input-${stage}.json`),JSON.stringify(proof,null,2)+'\n',{flag:'wx'});
     if(stage==='source'){
         const impact=JSON.parse(fs.readFileSync(path.join(temp,'test-impact.json')));assert.equal(impact.schema,'nora-test-impact/1');
@@ -233,13 +246,21 @@ async function provenance(temp=process.env.RUNNER_TEMP,root=process.cwd(),enviro
 function componentStageArtifacts(artifacts) {
     return artifacts.artifacts.filter(item=>/^nora-component-stage-source-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name));
 }
-function verifyComponentSourceProof(input,run,artifacts,jobs,platform,baseline) {
+function verifyComponentSourceProof(input,run,artifacts,jobs,platform,baseline,productSource) {
     assert.equal(input.schema,'nora-stage-input/1');assert.equal(input.stage,'source');
     const expected={...input.receipt.context,attempt:run.run_attempt};
     assert.equal(pipeline(expected),'components');assert.equal(expected.platform,platform);assert.equal(expected.baseline,baseline);
     assert.equal(expected.repository,run.repository.full_name);assert.equal(expected.commit,run.head_sha);assert.equal(expected.runId,run.id);
+    if(productSource){assert.equal(expected.options.productCommit,productSource.productCommit);assert.equal(expected.options.productSourceRun,String(productSource.productRun));}
+    else{assert.equal(expected.options.productCommit,run.head_sha);assert.equal(expected.options.productSourceRun,'');}
     assert.equal(jobs.total_count,jobs.jobs.length,'Incomplete component job listing');
+    const deliveries=artifacts.artifacts.filter(item=>item.name==='nora-component-delivery');assert.equal(deliveries.length,1,'Missing upstream component delivery');
+    assert.equal(String(deliveries[0].id),expected.options.deliveryArtifactId,'Component source qualified a different upstream delivery');
+    assert.equal(deliveries[0].digest?.replace(/^sha256:/,''),expected.options.deliveryArtifactDigest?.replace(/^sha256:/,''),'Component source qualified different upstream bytes');
+    assert.equal(deliveries[0].workflow_run.id,run.id);assert.equal(deliveries[0].workflow_run.head_sha,run.head_sha);
+
     verifyContext(input.receipt,expected,'source');
+    assert.deepEqual(environmentIdentity(input.consumerEnvironment),environmentIdentity(expected.environment),'Component acceptance environment differs');
     const matches=componentStageArtifacts(artifacts).filter(item=>item.id===input.artifact.id);
     assert.equal(matches.length,1,'Missing original component source artifact');
     const item=matches[0];verifyArtifact(item,expected,'source',run.repository.id);
@@ -342,9 +363,9 @@ async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=ap
     assert.deepEqual([...seen].sort(),[...platforms].sort(),'Every platform requires successful original acceptance');
     return {mode:'staged',platforms:[...seen].sort()};
 }
-module.exports={componentStageArtifacts,verifyComponentSourceProof,componentSourceGates,stages,platforms,name,jobName,context,verifyContext,verifyArtifact,verifyJob,producerJobs,hashFile,tarScript,entries,seal,restore,provenance,deliveryFiles,required,stageArtifacts,verifyStageEvidence,verifyPublishedStages,verifyFinalJob,allJobs};
+module.exports={verifyComponentInputs,componentStageArtifacts,verifyComponentSourceProof,componentSourceGates,stages,platforms,name,jobName,context,verifyContext,verifyArtifact,verifyJob,producerJobs,hashFile,tarScript,entries,seal,restore,provenance,deliveryFiles,required,stageArtifacts,verifyStageEvidence,verifyPublishedStages,verifyFinalJob,allJobs};
 if(require.main===module){
     const [command,stage,output]=process.argv.slice(2);
-    Promise.resolve().then(()=>command==='seal'?seal(stage,output):command==='restore'?restore(stage):command==='provenance'?provenance():assert.fail('Use seal, restore or provenance'))
+    Promise.resolve().then(()=>command==='check-component-input'?assert.equal(context().options.pipeline,'components'):command==='seal'?seal(stage,output):command==='restore'?restore(stage):command==='provenance'?provenance():assert.fail('Use check-component-input, seal, restore or provenance'))
         .catch(error=>{console.error(error);process.exitCode=1;});
 }

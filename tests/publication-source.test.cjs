@@ -7,6 +7,22 @@ const { captureChild, stopChild } = require('./deployment/launcher_test_lifecycl
 const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const stableRelease = tag_name => ({ id: 1, tag_name, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' });
+function writeFixtureArchives(archives) {
+  // Keep archive construction independent of the production ZIP reader. Use
+  // the selected test interpreter rather than a different ambient Python.
+  execFileSync(process.env.NORA_TEST_PYTHON || 'python3', ['-I', '-B', '-c', `
+import json,pathlib,sys,zipfile
+for archive in json.load(sys.stdin):
+ with zipfile.ZipFile(archive['output'],'w') as zipped:
+  if 'directory' in archive:
+   root=pathlib.Path(archive['directory'])
+   for file in sorted(root.rglob('*')):
+    if file.is_file() and ('only' not in archive or file.name==archive['only']):
+     zipped.write(file,file.relative_to(root))
+  else:
+   for name,content in archive['members']:zipped.writestr(name,content)
+`], { input: JSON.stringify(archives) });
+}
 function writeGhFixture(bin, source) {
   // A kernel shebang cannot quote a Node path containing spaces. Keep the
   // executable fixture offline even when the repository lives in such a path.
@@ -175,8 +191,7 @@ for(const conclusion of ['failure','cancelled'])test(`state CLI requires the API
   plan.destinations=['github','jihulab'];const planBytes=JSON.stringify(plan,null,2)+'\n';fs.writeFileSync(planFile,planBytes);
   f.value.planId=hash(planBytes);f.value.sealedStateHashes=immutableStateHashes(f.root);f.save();
   const runner=fs.mkdtempSync(path.join(os.tmpdir(),'nora-state-cli-'));t.after(()=>fs.rmSync(runner,{recursive:true,force:true}));
-  const zip=path.join(runner,'state.zip');execFileSync('python3',['-B','-c',
-    'import os,sys,zipfile\nwith zipfile.ZipFile(sys.argv[2],"w") as z:\n for root,dirs,files in os.walk(sys.argv[1]):\n  for name in files:\n   p=os.path.join(root,name);z.write(p,os.path.relpath(p,sys.argv[1]))',f.root,zip]);
+  const zip=path.join(runner,'state.zip');writeFixtureArchives([{output:zip,directory:f.root}]);
   const bytes=fs.readFileSync(zip);for(const item of f.artifacts.artifacts){item.size_in_bytes=bytes.length;item.digest='sha256:'+hash(bytes);}
   const bin=path.join(runner,'bin');fs.mkdirSync(bin);
   writeGhFixture(bin, `process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_STATE_ZIP));\n`);
@@ -228,7 +243,7 @@ for(const requalify of [false,true])test(`actual source CLI hashes ZIPs and veri
     const directory=item.name==='nora-component-delivery'?evidence.delivery:item.name==='nora-component-acceptance'?evidence.reports:
       item.name==='nora-release-plan'?evidence.planRoot:path.join(evidence.reports,item.name);
     const zip = path.join(root, `${item.id}.zip`);
-    execFileSync('python3', ['-c', 'import pathlib,zipfile,sys\nroot=pathlib.Path(sys.argv[2])\nwith zipfile.ZipFile(sys.argv[1],"w") as z:\n for p in root.rglob("*"):\n  if p.is_file() and (sys.argv[3]!="receipt" or p.name=="component-acceptance.json"):z.write(p,p.relative_to(root))', zip, directory,item.name==='nora-component-acceptance'?'receipt':'all']);
+    writeFixtureArchives([{output:zip,directory,...(item.name==='nora-component-acceptance'?{only:'component-acceptance.json'}:{})}]);
     const bytes = fs.readFileSync(zip); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
   }
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
@@ -308,9 +323,7 @@ function fullCliFixture(t, {staged=false, mutateMetadata}={}) {
   }
   if(mutateMetadata)mutateMetadata(members['nora-tavern-darwin-arm64']);
   f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], id: 8, name: 'nora-release-plan' }); f.artifacts.total_count++;
-  const zipInput = path.join(root, 'zip-members.json');
-  fs.writeFileSync(zipInput, JSON.stringify(f.artifacts.artifacts.map(item => members[item.name])));
-  execFileSync('python3', ['-c', 'import json,sys,zipfile,os\nwith open(sys.argv[1]) as f: artifacts=json.load(f)\nfor index,members in enumerate(artifacts,1):\n with zipfile.ZipFile(os.path.join(sys.argv[2],str(index)+".zip"),"w") as z:\n  for name,content in members: z.writestr(name,content)', zipInput, root]);
+  writeFixtureArchives(f.artifacts.artifacts.map(item=>({output:path.join(root,`${item.id}.zip`),members:members[item.name]})));
   for (const item of f.artifacts.artifacts) {
     const bytes = fs.readFileSync(path.join(root, `${item.id}.zip`)); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
   }
@@ -655,4 +668,168 @@ test('failed component aggregation can preserve complete split source and native
  listing.total_count=listing.jobs.length;
  assert.equal(componentQualification(f.run,f.options).producerJobIds.length,7);
  listing.jobs[2].steps[0].conclusion='skipped';assert.throws(()=>componentQualification(f.run,f.options));
+});
+
+test('a revised verifier may retain a successfully built component product even when its original native fixture failed',()=>{
+ const {verifyComponentProduct}=require('../tooling/release/publication-source.cjs');
+ const f=qualificationFixture();f.options.qualificationJobs.jobs[2].conclusion='failure';
+ const producer=f.options.qualificationJobs.jobs[0];producer.started_at='2026-11-02T00:00:00Z';producer.completed_at='2026-11-02T00:05:00Z';
+ for(const item of f.artifacts.artifacts)item.created_at='2026-11-02T00:04:00Z';
+ const proof=verifyComponentProduct(f.run,f.artifacts,f.options.qualificationJobs,f.options);
+ assert.equal(proof.productCommit,f.run.head_sha);assert.equal(proof.productRun,f.run.id);
+ assert.deepEqual(proof.artifacts.map(item=>item.name).sort(),['nora-component-delivery','nora-release-plan']);
+ for(const change of [x=>x.jobs.jobs[0].conclusion='failure',x=>x.jobs.jobs[0].steps[0].conclusion='skipped',x=>x.artifacts.artifacts[0].created_at='2026-11-02T00:06:00Z',x=>x.run.head_sha='b'.repeat(40),x=>x.run.conclusion='cancelled']){
+  const x={run:structuredClone(f.run),artifacts:structuredClone(f.artifacts),jobs:structuredClone(f.options.qualificationJobs)};
+  change(x);assert.throws(()=>verifyComponentProduct(x.run,x.artifacts,x.jobs,f.options));
+ }
+});
+
+test('revalidation compares fixed source trees: pure verification changes are allowed, actual product changes are refused',async()=>{
+ const {verifyRevalidationInputs}=require('../tooling/release/publication-source.cjs');
+ const repo=path.resolve(__dirname,'..'),product='8241b79c6759c1aaea2e494b42f342d92ca15eff';
+ const result=await verifyRevalidationInputs({root:repo,productCommit:product,verificationCommit:'4b74567cb5fc6344019fb3550cc0f1d6fb21756e'});
+ assert.equal(result.mode,'verification-only');assert.equal(result.requiresReview,false);
+ await assert.rejects(verifyRevalidationInputs({root:repo,productCommit:execFileSync('git',['rev-parse','v2.6.0^{commit}'],{cwd:repo,encoding:'utf8'}).trim(),verificationCommit:product}),/product|construction|verification-only/i);
+});
+
+test('retained product wrapper preserves original ZIP bytes and rechecks API provenance before extracting on a new worker',async t=>{
+ const {restoreComponentProduct,unwrapComponentProduct}=require('../tooling/release/publication-source.cjs');
+ const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'nora-retained-product-'));t.after(()=>fs.rmSync(temporary,{recursive:true,force:true}));
+ const root=path.resolve(__dirname,'..'),tag='v2.5.5',commit=execFileSync('git',['rev-parse',tag+'^{commit}'],{cwd:root,encoding:'utf8'}).trim();
+ const {componentAcceptanceFixture}=await import('./helpers/component-acceptance-fixture.mjs');
+ const payload=componentAcceptanceFixture(path.join(temporary,'fixture'),commit),f=qualificationFixture();
+ f.run.head_sha=commit;f.options.commit=commit;
+ for(const item of f.artifacts.artifacts){item.workflow_run.head_sha=commit;item.created_at='2026-11-02T00:04:00Z';}
+ for(const job of f.options.qualificationJobs.jobs){job.head_sha=commit;job.started_at='2026-11-02T00:00:00Z';job.completed_at='2026-11-02T00:05:00Z';}
+ // An old native fixture failure is preserved; new raw native evidence will be required later.
+ f.options.qualificationJobs.jobs[2].conclusion='failure';
+ const archives=new Map();
+ for(const name of ['nora-component-delivery','nora-release-plan']){
+  const directory=name==='nora-component-delivery'?payload.delivery:payload.planRoot,file=path.join(temporary,name+'.zip');
+  writeFixtureArchives([{output:file,directory}]);
+  const item=f.artifacts.artifacts.find(item=>item.name===name);item.size_in_bytes=fs.statSync(file).size;item.digest='sha256:'+hash(fs.readFileSync(file));archives.set(item.id,file);
+ }
+ const verificationCommit='4b74567cb5fc6344019fb3550cc0f1d6fb21756e',checks=[];
+ const shared={repository:f.options.repository,tag,verificationCommit,root,
+  facts:()=>({run:f.run,artifacts:f.artifacts,jobs:f.options.qualificationJobs}),
+  verifyInputs:async args=>{checks.push(args);return {mode:'verification-only',requiresReview:false};}};
+ const restored=await restoreComponentProduct({...shared,runId:f.run.id,output:path.join(temporary,'source'),download:async(item,_repo,target)=>fs.copyFileSync(archives.get(item.id),target)});
+ assert.deepEqual(fs.readFileSync(path.join(restored.bundle,'delivery.zip')),fs.readFileSync(archives.get(1)));
+ const next=await unwrapComponentProduct({...shared,productCommit:commit,bundle:restored.bundle,output:path.join(temporary,'next-worker')});
+ assert.deepEqual(fs.readFileSync(path.join(next.delivery,'release-manifest.json')),fs.readFileSync(path.join(payload.delivery,'release-manifest.json')));
+ assert.equal(next.receipt.productRun,f.run.id);assert.equal(next.receipt.verificationCommit,verificationCommit);
+ assert.equal(checks.length,2);assert.ok(checks.every(item=>item.productCommit===commit&&item.verificationCommit===verificationCommit));
+ const archive=path.join(restored.bundle,'delivery.zip');fs.appendFileSync(archive,'changed');
+ await assert.rejects(unwrapComponentProduct({...shared,productCommit:commit,bundle:restored.bundle,output:path.join(temporary,'bad-worker')}),/size|digest/);
+ assert.equal(fs.existsSync(path.join(temporary,'bad-worker')),false);
+});
+
+test('actual revalidation CLIs restore one original product, bind new three-platform evidence and refuse changed protection',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-revalidation-cli-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const repo=path.join(root,'source'),bin=path.join(root,'bin'),temp=path.join(root,'runner');for(const dir of [repo,bin,temp])fs.mkdirSync(dir);
+ const git=(...args)=>execFileSync('git',args,{cwd:repo,encoding:'utf8',stdio:'pipe'}).trim();
+ const write=(file,value)=>{const target=path.join(repo,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,value);};
+ git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+ write('tooling/source-layout.json',JSON.stringify({schema:1,rules:[['launcher/ui/','ops/installer/']]}));
+ write('launcher/desktop/package.json',JSON.stringify({name:'fixture',version:'1.0.0',build:{files:[],extraResources:[]}}));
+ write('launcher/ui/index.html','unchanged product');git('add','.');git('-c','commit.gpgSign=false','commit','-qm','product');
+ const productCommit=git('rev-parse','HEAD');git('tag','v2.5.5');
+ write('tests/verifier.test.mjs','// revised verifier only');git('add','.');git('-c','commit.gpgSign=false','commit','-qm','verifier');
+ const verificationCommit=git('rev-parse','HEAD'),script=path.resolve(__dirname,'../tooling/release/publication-source.cjs');
+ const {componentAcceptanceFixture}=await import('./helpers/component-acceptance-fixture.mjs');
+ const {sealComponentAcceptance}=await import('../tooling/release/component-acceptance.mjs');
+ const stage=require('../tooling/release/build-stage.cjs'),payload=componentAcceptanceFixture(path.join(root,'payload'),productCommit);
+ const original=qualificationFixture();original.run.id=456;original.run.head_sha=productCommit;original.options.runId='456';original.options.commit=productCommit;
+ original.options.qualificationJobs.jobs[2].conclusion='failure';
+ for(const item of original.artifacts.artifacts){item.id+=100;item.workflow_run.id=456;item.workflow_run.head_sha=productCommit;item.created_at='2026-11-02T00:04:00Z';}
+ for(const job of original.options.qualificationJobs.jobs)Object.assign(job,{run_id:456,head_sha:productCommit,started_at:'2026-11-02T00:00:00Z',completed_at:'2026-11-02T00:05:00Z'});
+ for(const item of original.artifacts.artifacts.filter(item=>['nora-component-delivery','nora-release-plan'].includes(item.name))){
+  const file=path.join(root,`${item.id}.zip`);writeFixtureArchives([{output:file,directory:item.name==='nora-component-delivery'?payload.delivery:payload.planRoot}]);
+  item.size_in_bytes=fs.statSync(file).size;item.digest='sha256:'+hash(fs.readFileSync(file));
+ }
+ for(const [name,value]of [['original-run',original.run],['original-artifacts',original.artifacts],['original-jobs',original.options.qualificationJobs]])fs.writeFileSync(path.join(root,name+'.json'),JSON.stringify(value));
+ writeGhFixture(bin,`const fs=require('node:fs'),path=require('node:path'),root=process.env.FIXTURE_ZIP_ROOT,endpoint=process.argv.at(-1);
+fs.appendFileSync(path.join(root,'api-calls.txt'),endpoint+'\\n');
+let file,slurp=false;
+if(endpoint.includes('/actions/artifacts/'))file=endpoint.split('/').at(-2)+'.zip';
+else if(endpoint.endsWith('/runs/456'))file='original-run.json';
+else if(endpoint.includes('/runs/456/artifacts?')){file='original-artifacts.json';slurp=true;}
+else if(endpoint.includes('/runs/456/jobs?')){file='original-jobs.json';slurp=true;}
+else if(endpoint.includes('/runs/123/jobs?')){file='current-jobs.json';slurp=true;}
+else throw Error('Unexpected fixture API '+endpoint);
+const bytes=fs.readFileSync(path.join(root,file));process.stdout.write(slurp?'['+bytes+']':bytes);
+`);
+ const env={...process.env,PATH:bin+path.delimiter+process.env.PATH,FIXTURE_ZIP_ROOT:root,GITHUB_REPOSITORY:'owner/tavern',GITHUB_SHA:verificationCommit,
+  RUNNER_TEMP:temp,GITHUB_ENV:path.join(temp,'env'),GITHUB_OUTPUT:path.join(temp,'output'),BASELINE_TAG:payload.baselineTag,
+  NORA_PRODUCT_SOURCE_RUN:'456',NORA_PRODUCT_SOURCE_TAG:payload.tag};
+ const execute=(args,extra={})=>spawnSync(process.execPath,[script,...args],{cwd:repo,env:{...env,...extra},encoding:'utf8'});
+ const restored=execute(['restore-product']);assert.equal(restored.status,0,restored.stderr);
+ const bundle=path.join(temp,'retained-component/bundle'),origin=JSON.parse(fs.readFileSync(path.join(bundle,'product-source.json')));
+ assert.equal(origin.sourceRunConclusion,'failure');assert.equal(origin.productCommit,productCommit);
+ const unwrapped=execute(['unwrap-product',bundle,path.join(temp,'native-worker')],{PRODUCT_COMMIT:productCommit,PRODUCT_TAG:payload.tag});
+ assert.equal(unwrapped.status,0,unwrapped.stderr);
+ const current=fixture('components');current.run.head_sha=verificationCommit;current.run.run_attempt=1;
+ for(const item of current.artifacts.artifacts)item.workflow_run.head_sha=verificationCommit;
+ const delivery=current.artifacts.artifacts.find(item=>item.name==='nora-component-delivery');
+ writeFixtureArchives([{output:path.join(root,`${delivery.id}.zip`),directory:bundle}]);delivery.size_in_bytes=fs.statSync(path.join(root,`${delivery.id}.zip`)).size;delivery.digest='sha256:'+hash(fs.readFileSync(path.join(root,`${delivery.id}.zip`)));
+ const jobs={jobs:[]};
+ for(const [index,platform]of ['darwin-arm64','darwin-x64','win32-x64'].entries()){
+  const item={...delivery,id:20+index,name:stage.name('source',platform,'components')};
+  const bytes=Buffer.from('synthetic source checkpoint '+platform);fs.writeFileSync(path.join(root,`${item.id}.zip`),bytes);item.size_in_bytes=bytes.length;item.digest='sha256:'+hash(bytes);current.artifacts.artifacts.push(item);
+  const environment={imageOS:platform,imageVersion:'1',kernel:'fixture',node:'v24.19.0',python:'3.11.9',platform};
+  const context={repository:'owner/tavern',commit:verificationCommit,runId:123,attempt:1,platform,baseline:payload.baselineTag,environment,
+   options:{pipeline:'components',force_full_regression:false,productCommit,productSourceRun:'456',deliveryArtifactId:String(delivery.id),deliveryArtifactDigest:delivery.digest}};
+  const receipt={schema:'nora-build-stage/1',stage:'source',context,inputs:[],archive:{size:10240,sha256:hash('synthetic tar')}};
+  const job={id:30+index,run_id:123,run_attempt:1,head_sha:verificationCommit,name:stage.jobName('source',platform,'components'),status:'completed',conclusion:'success',steps:stage.componentSourceGates.map(name=>({name,status:'completed',conclusion:'success'}))};jobs.jobs.push(job);
+  payload.write(payload.reports,`nora-component-native-${platform}/nora-stage-input-source.json`,{schema:'nora-stage-input/1',stage:'source',consumerEnvironment:{...environment,imageVersion:'2'},artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt,producer:{id:job.id,attempt:1}});
+ }
+ jobs.total_count=jobs.jobs.length;fs.writeFileSync(path.join(root,'current-jobs.json'),JSON.stringify(jobs));
+ fs.unlinkSync(payload.output);sealComponentAcceptance({delivery:payload.delivery,reports:payload.reports,plan:payload.plan,output:payload.output,commit:productCommit,tag:payload.tag,productSource:origin,verificationCommit});
+ const archiveEvidence=()=>{
+  for(const item of current.artifacts.artifacts.filter(item=>item.id!==delivery.id&&item.id<20)){
+   const directory=item.name==='nora-component-acceptance'?payload.reports:item.name==='nora-release-plan'?payload.planRoot:path.join(payload.reports,item.name);
+   const file=path.join(root,`${item.id}.zip`);writeFixtureArchives([{output:file,directory,...(item.name==='nora-component-acceptance'?{only:'component-acceptance.json'}:{})}]);item.size_in_bytes=fs.statSync(file).size;item.digest='sha256:'+hash(fs.readFileSync(file));
+  }
+  current.artifacts.total_count=current.artifacts.artifacts.length;
+  fs.writeFileSync(path.join(root,'current-run.json'),JSON.stringify(current.run));fs.writeFileSync(path.join(root,'current-artifacts.json'),JSON.stringify(current.artifacts));
+ };
+ archiveEvidence();fs.writeFileSync(path.join(root,'api-calls.txt'),'');
+ const publish=(name,enabled='true')=>execute(['delivery',path.join(root,'current-run.json'),path.join(root,'current-artifacts.json'),productCommit,'owner/tavern','123','components',path.join(root,name),payload.tag,'','','','',enabled]);
+ const accepted=publish('accepted');assert.equal(accepted.status,0,accepted.stderr);
+ const proof=JSON.parse(fs.readFileSync(path.join(root,'accepted/source-receipt.json')));assert.equal(proof.sourceCommit,productCommit);assert.equal(proof.verificationCommit,verificationCommit);assert.deepEqual(proof.productOrigin,origin);assert.equal(Object.keys(proof.componentSourceQualification).length,3);
+ assert.deepEqual(fs.readFileSync(path.join(root,'accepted/delivery/release-manifest.json')),fs.readFileSync(path.join(payload.delivery,'release-manifest.json')));
+ const calls=fs.readFileSync(path.join(root,'api-calls.txt'),'utf8');
+ for(const item of origin.artifacts)assert.ok(!calls.includes(`/actions/artifacts/${item.id}/zip`),'publisher must consume embedded original bytes instead of downloading the original product again');
+ assert.notEqual(publish('without-opt-in','false').status,0);
+ const raw=path.join(payload.reports,'nora-component-native-win32-x64/stopped/harness-result.json'),previous=fs.readFileSync(raw),bad=JSON.parse(previous);bad.userData='changed';fs.writeFileSync(raw,JSON.stringify(bad));archiveEvidence();
+ const rejected=publish('bad-data');assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/retained|changed|digest|native/i);assert.equal(fs.existsSync(path.join(root,'bad-data/source-receipt.json')),false);
+ fs.writeFileSync(raw,previous);const sourceProof=path.join(payload.reports,'nora-component-native-win32-x64/nora-stage-input-source.json'),wrong=JSON.parse(fs.readFileSync(sourceProof));wrong.receipt.context.options.deliveryArtifactId='999';fs.writeFileSync(sourceProof,JSON.stringify(wrong));archiveEvidence();
+ const refused=publish('bad-upstream');assert.notEqual(refused.status,0);assert.match(refused.stderr,/different upstream delivery/);assert.equal(fs.existsSync(path.join(root,'bad-upstream/source-receipt.json')),false);
+});
+
+test('cross-commit component revalidation is explicit, cannot authorize full packages, and still requires a completed new verification run',()=>{
+ const f=fixture('components'),product='b'.repeat(40);
+ assert.throws(()=>verifyDelivery(f.run,f.artifacts,{...f.options,commit:product}));
+ assert.equal(verifyDelivery(f.run,f.artifacts,{...f.options,commit:product,revalidatedComponents:true}).length,6);
+ for(const extra of [{mode:'full'},{revalidatedComponents:'false'}])
+  assert.throws(()=>verifyDelivery(f.run,f.artifacts,{...f.options,commit:product,revalidatedComponents:true,...extra}));
+ f.run.conclusion='failure';assert.throws(()=>verifyDelivery(f.run,f.artifacts,{...f.options,commit:product,revalidatedComponents:true}));
+});
+
+test('failed attempt diagnostics never become product input or erase the preserved failure',()=>{
+ const f=fixture('components');f.run.run_attempt=2;
+ const item={...f.artifacts.artifacts[0],id:99,name:'nora-component-failed-native-darwin-arm64-attempt-1'};
+ f.artifacts.artifacts.push(item);f.artifacts.total_count++;
+ assert.equal(verifyDelivery(f.run,f.artifacts,f.options).length,6);
+ item.name='nora-component-failed-native-darwin-arm64-attempt-3';assert.throws(()=>verifyDelivery(f.run,f.artifacts,f.options));
+ item.name='nora-component-failed-native-unknown-attempt-1';assert.throws(()=>verifyDelivery(f.run,f.artifacts,f.options));
+});
+
+test('summary requalification uses the latest producer of each name and records, rather than hides, earlier failures',()=>{
+ const f=qualificationFixture();f.run.run_attempt=2;
+ const current=f.options.qualificationJobs.jobs[2],old={...structuredClone(current),id:99,conclusion:'failure'};
+ current.run_attempt=2;f.options.qualificationJobs.jobs.push(old);f.options.qualificationJobs.total_count++;
+ const proof=componentQualification(f.run,f.options);
+ assert.equal(proof.previousAttempts[0].id,99);assert.equal(proof.previousAttempts[0].conclusion,'failure');
+ current.conclusion='failure';old.conclusion='success';assert.throws(()=>componentQualification(f.run,f.options));
 });

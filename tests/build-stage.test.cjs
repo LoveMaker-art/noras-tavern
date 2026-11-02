@@ -191,7 +191,7 @@ test('publication requires all three platform stage chains and rejects changed d
 });
 
 test('component source qualification restores independently after failed native acceptance and stays distinct from installer proof',async t=>{
- const f=fixture(t);f.expected.options={pipeline:'components',force_full_regression:false};f.expected.baseline='v2.6.0';
+ const f=fixture(t);f.expected.options={pipeline:'components',force_full_regression:false,productCommit:f.expected.commit,productSourceRun:'',deliveryArtifactId:'92',deliveryArtifactDigest:'d'.repeat(64)};f.expected.baseline='v2.6.0';
  const impact={schema:'nora-test-impact/1',source:{commit:f.expected.commit},planDigest:'a'.repeat(64),full:false,ui:false,content:true,tavern:false};
  fs.writeFileSync(path.join(f.temp,'test-impact.json'),JSON.stringify(impact));
  const output=path.join(f.home,'component-source'),r=await stage.seal('source',output,f);
@@ -212,19 +212,29 @@ test('component source qualification restores independently after failed native 
 });
 
 test('publication rechecks component source API identity, attempt, baseline and all source gates',t=>{
- const f=fixture(t);f.expected.options={pipeline:'components'};f.expected.baseline='v2.6.0';
+ const f=fixture(t);f.expected.options={pipeline:'components',force_full_regression:false,productCommit:f.expected.commit,productSourceRun:'',deliveryArtifactId:'92',deliveryArtifactDigest:'d'.repeat(64)};f.expected.baseline='v2.6.0';
  const r=receipt(f),item={id:91,name:stage.name('source',f.expected.platform,'components'),expired:false,size_in_bytes:45,digest:'sha256:'+'b'.repeat(64),workflow_run:{id:7,head_sha:f.expected.commit,repository_id:9,head_repository_id:9}};
- const input={schema:'nora-stage-input/1',stage:'source',artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt:r,producer:{id:20,attempt:2}};
- const run={id:7,run_attempt:3,head_sha:f.expected.commit,repository:{id:9,full_name:'owner/repo'}},artifacts={artifacts:[item]};
+ const input={schema:'nora-stage-input/1',stage:'source',consumerEnvironment:structuredClone(f.expected.environment),artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt:r,producer:{id:20,attempt:2}};
+ const run={id:7,run_attempt:3,head_sha:f.expected.commit,repository:{id:9,full_name:'owner/repo'}},artifacts={artifacts:[item,{...item,id:92,name:'nora-component-delivery',digest:'sha256:'+'d'.repeat(64)}]};
  const producer={...job(f),name:stage.jobName('source',f.expected.platform,'components'),steps:stage.componentSourceGates.map(name=>({name,status:'completed',conclusion:'success'}))};
  const jobs={total_count:1,jobs:[producer]};
  const check=(proof=input,j=jobs,a=artifacts,b='v2.6.0')=>stage.verifyComponentSourceProof(proof,run,a,j,'win32-x64',b);
  assert.equal(check().artifactId,91);
- for(const change of [x=>x.receipt.context.commit='c'.repeat(40),x=>x.producer.attempt=1,x=>x.producer.id=999,x=>x.artifact.digest='sha256:'+'c'.repeat(64),x=>x.receipt.context.options.pipeline='installer']){
+ for(const change of [x=>x.receipt.context.commit='c'.repeat(40),x=>x.producer.attempt=1,x=>x.producer.id=999,x=>x.artifact.digest='sha256:'+'c'.repeat(64),x=>x.receipt.context.options.pipeline='installer',x=>delete x.consumerEnvironment,x=>x.consumerEnvironment.kernel='changed',x=>x.receipt.context.options.deliveryArtifactId='93',x=>x.receipt.context.options.deliveryArtifactDigest='e'.repeat(64)]){
   const altered=structuredClone(input);change(altered);assert.throws(()=>check(altered));
  }
  assert.throws(()=>check(input,jobs,artifacts,'v2.5.9'));
  for(const change of [x=>x.jobs[0].conclusion='failure',x=>x.jobs[0].steps.pop(),x=>x.jobs[0].steps[0].conclusion='skipped']){
   const altered=structuredClone(jobs);change(altered);assert.throws(()=>check(input,altered));
  }
+});
+
+test('component handoff refuses absent or malformed upstream metadata before a large payload or native fixture is prepared',()=>{
+ const value={pipeline:'components',force_full_regression:false,productCommit:'a'.repeat(40),productSourceRun:'123',deliveryArtifactId:'92',deliveryArtifactDigest:'sha256:'+'b'.repeat(64)};
+ stage.verifyComponentInputs(value);
+ for(const key of Object.keys(value)){
+  const missing={...value};delete missing[key];assert.throws(()=>stage.verifyComponentInputs(missing),key);
+ }
+ for(const extra of [{deliveryArtifactId:'9007199254740992'},{deliveryArtifactDigest:'unknown'},{productSourceRun:'9007199254740992'},{force_full_regression:'false'}])
+  assert.throws(()=>stage.verifyComponentInputs({...value,...extra}));
 });

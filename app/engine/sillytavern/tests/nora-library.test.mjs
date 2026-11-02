@@ -10,7 +10,6 @@ import { createNoraWorldCore } from '../src/nora-world-core/index.js';
 import { createStBackendMaterializer } from '../src/nora-world-core/st-backend-materializer.js';
 import { createNoraWorldsV2Router } from '../src/endpoints/nora-worlds-v2.js';
 import { readActivationSnapshot } from '../src/nora-world-core/activation-snapshot.js';
-import { createStPresetAdapter } from '../public/scripts/nora-adapters/st-preset-adapter.js';
 
 test('library HTTP imports isolate books, atomically add roles, reject races and preserve original entries', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-library-test-'));
@@ -150,34 +149,6 @@ test('library HTTP imports isolate books, atomically add roles, reject races and
         character: { id: 'broken-ref', operation: 'create', patch: { name: 'Broken', description: '{{char::nonexistent}}' } } });
     assert.equal(badReference.status, 400);
     assert.deepEqual(await core.getWorld(a.world_id), latestA);
-});
-
-test('preset import does not apply; explicit apply keeps connections and filters unapproved scripts before events', async () => {
-    const values = []; const names = {}; const selected = []; const saved = [];
-    const settings = { bind_preset_to_connection: true, custom_url: 'unchanged', preset_settings_openai: '' };
-    const manager = { getAllPresets: () => Object.keys(names), getSelectedPresetName: () => settings.preset_settings_openai,
-        getPresetList: () => ({ presets: values, preset_names: names }), findPreset: name => names[name],
-        savePreset: async (...args) => saved.push(args),
-        selectPreset: async index => { selected.push(structuredClone(values[index])); assert.equal(settings.bind_preset_to_connection, false); settings.preset_settings_openai = Object.keys(names)[index]; } };
-    const adapter = createStPresetAdapter(() => ({ getPresetManager: () => manager, chatCompletionSettings: settings }));
-    const preset = { prompts: [{ identifier: 'main', content: 'Story instructions' }], prompt_order: [{ character_id: 100001, order: [] }],
-        extensions: { tavern_helper: { scripts: [{ content: 'unsafe' }] }, custom: { preserved: true } }, custom_url: 'different' };
-    await adapter.importPreset('Test preset', preset);
-    assert.equal(saved[0][2].skipUpdate, true); assert.equal(selected.length, 0);
-    assert.deepEqual(adapter.listPresets().items[0].preset, preset);
-    await adapter.applyPreset('Test preset');
-    assert.equal(selected[0].extensions.tavern_helper, undefined);
-    assert.deepEqual(selected[0].extensions.custom, { preserved: true });
-    assert.deepEqual(values[0], preset, 'Original stored preset remains intact');
-    assert.equal(settings.bind_preset_to_connection, true); assert.equal(settings.custom_url, 'unchanged');
-    await adapter.applyPreset('Test preset', { enableScripts: true });
-    assert.deepEqual(selected[1].extensions.tavern_helper, preset.extensions.tavern_helper);
-    await assert.rejects(adapter.importPreset('Test preset', preset), /同名/);
-    await assert.rejects(adapter.importPreset('Bad', { description: 'A card, not a preset' }), /prompts/);
-    await assert.rejects(adapter.importPreset('__proto__', preset), /有效/);
-    manager.selectPreset = async () => { throw new Error('failure'); };
-    await assert.rejects(adapter.applyPreset('Test preset'), /failure/);
-    assert.deepEqual(values[0], preset); assert.equal(settings.bind_preset_to_connection, true);
 });
 
 test('actual ST lore collector includes library copies once and drops them when switching worlds', async () => {

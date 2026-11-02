@@ -15,6 +15,14 @@ on:
         description: Reviewed committed compatibility JSON (blank selects compatibility/v<core-version>.json)
         type: string
         default: ''
+      product_source_run:
+        description: Original successful component build whose immutable ZIP is revalidated; no new product is constructed
+        type: string
+        default: ''
+      product_source_tag:
+        description: Original product tag (required with product_source_run)
+        type: string
+        default: ''
       force_full_regression:
         description: Run complete regression for periodic qualification; cannot reduce required coverage
         type: boolean
@@ -31,14 +39,21 @@ permissions:
 
 jobs:
   build-components:
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || inputs.product_source_run != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      product_commit: ${{ steps.product.outputs.product_commit }}
+      product_tag: ${{ steps.product.outputs.product_tag }}
+      delivery_artifact_id: ${{ steps.delivery.outputs.artifact-id }}
+      delivery_artifact_digest: ${{ steps.delivery.outputs.artifact-digest }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       BASELINE_TAG: ${{ inputs.baseline_tag }}
       PYTHONUTF8: '1'
+      NORA_PRODUCT_SOURCE_RUN: ${{ inputs.product_source_run }}
+      NORA_PRODUCT_SOURCE_TAG: ${{ inputs.product_source_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,13 +74,18 @@ jobs:
           BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
           BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
         run: node tooling/release/system-release.mjs --workflow-options
+      - name: Resolve product identity or restore the exact original product ZIP
+        id: product
+        run: node tooling/release/publication-source.cjs restore-product
       - name: Plan component changes before compilation
+        if: inputs.product_source_run == ''
         id: plan
         shell: bash
         run: |
           set -euo pipefail
           node tooling/release/release-plan.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
       - name: Require an explicitly compatible component plan
+        if: inputs.product_source_run == ''
         env:
           PLAN_MODE: ${{ steps.plan.outputs.mode }}
           REQUIRES_REVIEW: ${{ steps.plan.outputs.requires_review }}
@@ -105,22 +125,16 @@ jobs:
           set -euo pipefail
           export NORA_TEST_PYTHON="$(python -B -c 'import sys;print(sys.executable,end="")')"
           case "$FULL_REGRESSION" in
-            true) node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_dependency_materialization tests.deployment.test_update_operation_safety tests.deployment.test_updater_task_backend tests.deployment.test_standalone_update_recovery ;;
+            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs" ;;
             false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
             *) echo 'Missing verified test selection' >&2; exit 1 ;;
           esac
-      - name: Check independent update and data contracts outside the full gate
-        # These retain their own entry/fixture coverage; full-gate modules are not run twice here.
-        if: steps.test-impact.outputs.full == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Check affected Tavern frontend against existing Nora contracts
         if: steps.test-impact.outputs.tavern == 'true'
         timeout-minutes: 15
         run: node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run test:nora
       - name: Build only shared application and updater components
+        if: inputs.product_source_run == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -129,21 +143,25 @@ jobs:
           if [[ -n "$NORA_UPDATE_COMPATIBILITY_FILE" ]]; then publication_args+=(--update-compatibility "$NORA_UPDATE_COMPATIBILITY_FILE"); fi
           node tooling/release/package-release.mjs --components-only "${publication_args[@]}"
       - name: Reuse verified environments and seal three system manifests
+        if: inputs.product_source_run == ''
         shell: bash
         run: |
           set -euo pipefail
           release_dir="$(find release -maxdepth 1 -type d -name 'stable-*' | sort | tail -n 1)"
           node tooling/release/package-component-update.mjs "$release_dir" "$BASELINE_TAG" artifacts
       - name: Verify the frozen component delivery before native acceptance
+        if: inputs.product_source_run == ''
         shell: bash
         run: |
           set -euo pipefail
           node tooling/release/verify-launcher-release.cjs artifacts "$GITHUB_REF_NAME" "$GITHUB_SHA" components
       - name: Preserve accepted component delivery
+        id: delivery
         uses: actions/upload-artifact@v4
         with:
           name: nora-component-delivery
-          path: artifacts/**
+          overwrite: true
+          path: ${{ steps.product.outputs.upload_root }}/**
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -152,6 +170,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-release-plan
+          overwrite: true
           path: |
             ${{ runner.temp }}/release-plan.json
             ${{ runner.temp }}/test-impact.json
@@ -174,17 +193,30 @@ jobs:
     with:
       runner: ${{ matrix.runner }}
       platform: ${{ matrix.platform }}
+      product_commit: ${{ needs.build-components.outputs.product_commit }}
+      product_tag: ${{ needs.build-components.outputs.product_tag }}
+      product_source_run: ${{ inputs.product_source_run }}
+      delivery_artifact_id: ${{ needs.build-components.outputs.delivery_artifact_id }}
+      delivery_artifact_digest: ${{ needs.build-components.outputs.delivery_artifact_digest }}
       baseline_tag: ${{ inputs.baseline_tag }}
       force_full_regression: ${{ inputs.force_full_regression || false }}
 
   accept-components:
     needs: [build-components, native-components]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COMPONENT_PLAN_FILE: ${{ runner.temp }}/component-plan/release-plan.json
+      PRODUCT_COMMIT: ${{ needs.build-components.outputs.product_commit }}
+      PRODUCT_TAG: ${{ needs.build-components.outputs.product_tag }}
+      NORA_PRODUCT_SOURCE_RUN: ${{ inputs.product_source_run }}
+      NORA_PRODUCT_SOURCE_TAG: ${{ inputs.product_source_tag }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -200,13 +232,15 @@ jobs:
         with:
           name: nora-release-plan
           path: ${{ runner.temp }}/component-plan
+      - name: Normalize the original or newly built component delivery
+        run: node tooling/release/publication-source.cjs unwrap-product "${{ runner.temp }}/component-delivery" "${{ runner.temp }}/component-original"
       - name: Accept only complete three-platform native evidence for these bytes
         shell: bash
         env:
           BASELINE_TAG: ${{ inputs.baseline_tag }}
         run: |
           set -euo pipefail
-          node tooling/release/component-acceptance.mjs seal "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-native" "$RUNNER_TEMP/component-plan/release-plan.json" "$RUNNER_TEMP/component-acceptance.json" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$BASELINE_TAG"
+          node tooling/release/component-acceptance.mjs seal "$COMPONENT_DELIVERY" "$RUNNER_TEMP/component-native" "$RUNNER_TEMP/component-plan/release-plan.json" "$RUNNER_TEMP/component-acceptance.json" "$PRODUCT_COMMIT" "$PRODUCT_TAG" "$BASELINE_TAG"
       - name: Preserve final native-accepted component receipt
         uses: actions/upload-artifact@v4
         with:

@@ -291,9 +291,10 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
   }
   return { initialRelease: false, baselines: result };
 }
-async function verifyComponentAcceptance(delivery, acceptance, planRoot, commit) {
+async function verifyComponentAcceptance(delivery, acceptance, planRoot, commit, qualification=null) {
   const report = oneReport(acceptance, 'component-acceptance.json');
-  assert.equal(report.schema, 'nora-component-acceptance/2', 'Component publication requires three-platform native acceptance; old source-only receipts are insufficient');
+  assert.equal(report.schema, qualification?'nora-component-acceptance/3':'nora-component-acceptance/2', 'Component publication requires matching raw native and product-source evidence');
+  assert.deepEqual(report.qualification,qualification||undefined,'Product and verification source evidence differs');
   assert.equal(report.commit, commit); assert.equal(report.outcome, 'passed'); assert.match(report.tag, /^v\d+\.\d+\.\d+$/);
   const plan = oneReport(planRoot, 'release-plan.json'); assert.equal(plan.schema, 'nora-release-plan/v1'); assert.equal(plan.source.commit, commit);
   assert.equal(plan.mode, 'components'); assert.equal(plan.requiresReview, false);
@@ -336,6 +337,98 @@ function identity(run, artifacts, { repository, runId }, conclusions) {
     assert.equal(item.workflow_run.head_repository_id, run.repository.id);
   }
 }
+const componentBuildGates=['Verify release contracts and update preservation','Require chat backup safety tests',
+  'Require the selected component source regression','Build only shared application and updater components',
+  'Reuse verified environments and seal three system manifests','Verify the frozen component delivery before native acceptance','Preserve accepted component delivery'];
+function verifyComponentProduct(run,artifacts,jobs,options) {
+  identity(run,artifacts,options,['success','failure']);
+  assert.equal(run.path,'.github/workflows/publish-component-update.yml');
+  assert.equal(run.head_sha,options.commit,'Original product source differs');
+  assert.equal(jobs.total_count,jobs.jobs.length,'Incomplete original product jobs');
+  const selected=['nora-component-delivery','nora-release-plan'].map(name=>{
+    const items=artifacts.artifacts.filter(item=>item.name===name);assert.equal(items.length,1,'Missing original product artifact');return items[0];
+  });
+  const producers=jobs.jobs.filter(job=>job.name==='build-components'&&job.status==='completed'&&job.conclusion==='success'
+    &&selected.every(item=>Number.isFinite(Date.parse(item.created_at))&&Date.parse(item.created_at)>=Date.parse(job.started_at)&&Date.parse(item.created_at)<=Date.parse(job.completed_at)));
+  assert.equal(producers.length,1,'Original product build did not complete successfully with these artifacts');
+  const job=producers[0];assert.ok(Number.isSafeInteger(job.id)&&job.id>0);assert.equal(job.run_id,run.id);assert.equal(job.head_sha,run.head_sha);
+  assert.ok(Number.isSafeInteger(job.run_attempt)&&job.run_attempt>0&&job.run_attempt<=run.run_attempt);
+  for(const name of componentBuildGates){
+    const matches=job.steps.filter(step=>step.name===name);assert.equal(matches.length,1,'Missing original construction gate: '+name);
+    assert.equal(matches[0].status,'completed');assert.equal(matches[0].conclusion,'success','Original construction gate failed: '+name);
+  }
+  return {schema:'nora-component-product/1',repository:options.repository,productCommit:run.head_sha,productRun:run.id,sourceRunConclusion:run.conclusion,
+    producer:{id:job.id,attempt:job.run_attempt},artifacts:selected.map(item=>({id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest}))};
+}
+async function verifyRevalidationInputs({root=process.cwd(),productCommit,verificationCommit}) {
+  for(const value of [productCommit,verificationCommit])assert.match(value||'',/^[a-f0-9]{40}$/);
+  execFileSync('git',['merge-base','--is-ancestor',productCommit,verificationCommit],{cwd:root,stdio:'pipe'});
+  const {readGitSnapshot,createReleasePlan}=await import('./release-plan.mjs');
+  const plan=createReleasePlan({baseline:readGitSnapshot(root,productCommit),current:readGitSnapshot(root,verificationCommit)});
+  assert.equal(plan.mode,'verification-only','Revalidation cannot replace changed product or construction inputs');
+  assert.equal(plan.requiresReview,false,'Revalidation has unknown construction inputs');return plan;
+}
+const githubJSON = endpoint => JSON.parse(execFileSync('gh',['api',endpoint],{encoding:'utf8',timeout:120000,maxBuffer:32*1024*1024}));
+function productFacts(repository,runId) {
+  assert.match(repository,/^[\w.-]+\/[\w.-]+$/);assert.match(String(runId),/^[1-9][0-9]*$/);assert.ok(Number.isSafeInteger(Number(runId)));
+  const run=githubJSON(`repos/${repository}/actions/runs/${runId}`);
+  const pages=JSON.parse(execFileSync('gh',['api','--paginate','--slurp',`repos/${repository}/actions/runs/${runId}/artifacts?per_page=100`],{encoding:'utf8',timeout:120000,maxBuffer:32*1024*1024}));
+  assert.ok(Array.isArray(pages)&&pages.every(page=>Array.isArray(page.artifacts)));
+  const artifacts={artifacts:pages.flatMap(page=>page.artifacts)};artifacts.total_count=artifacts.artifacts.length;
+  return {run,artifacts,jobs:allJobs(repository,runId)};
+}
+function productTagCommit(root,tag) {
+  assert.match(tag||'',/^v\d+\.\d+\.\d+$/);
+  return execFileSync('git',['rev-parse','--verify',`refs/tags/${tag}^{commit}`],{cwd:root,encoding:'utf8'}).trim();
+}
+async function retainedProductManifest(restored,commit,tag) {
+  const manifest=oneReport(restored.delivery,'release-manifest.json');
+  assert.equal(manifest.schema,'tavern-release/v2');assert.equal(manifest.commit,commit);
+  assert.equal(manifest.candidate,false);assert.equal(manifest.dirty,false);
+  const {releasePublicationTag}=await import('./system-release.mjs');assert.equal(releasePublicationTag(manifest),tag,'Original product publication differs');
+}
+function extractProductArchives(bundle,output) {
+  assert.ok(!fs.existsSync(output),'Product restore directory must be new');fs.mkdirSync(output,{recursive:true});
+  for(const [file,folder] of [['delivery.zip','delivery'],['plan.zip','plan']])
+    execFileSync(process.env.NORA_STAGE_PYTHON||'python3',['-I','-B','-c',extractScript,path.join(bundle,file),path.join(output,folder)],{stdio:'inherit',timeout:120000});
+  return {delivery:path.join(output,'delivery'),plan:path.join(output,'plan')};
+}
+async function restoreComponentProduct({repository,runId,tag,verificationCommit,output,root=process.cwd(),
+  facts=productFacts,download=downloadArchive,verifyInputs=verifyRevalidationInputs}) {
+  const commit=productTagCommit(root,tag),original=facts(repository,runId);
+  const product=verifyComponentProduct(original.run,original.artifacts,original.jobs,{repository,runId,commit});
+  const verificationPlan=await verifyInputs({root,productCommit:commit,verificationCommit});
+  assert.ok(!fs.existsSync(output),'Product restore root must be new');fs.mkdirSync(output,{recursive:true});
+  const bundle=path.join(output,'bundle');fs.mkdirSync(bundle);
+  for(const [name,target] of [['nora-component-delivery','delivery.zip'],['nora-release-plan','plan.zip']]){
+    const item=original.artifacts.artifacts.find(item=>item.name===name),file=path.join(bundle,target);
+    await download(item,repository,file);if(download!==downloadArchive)await verifyArchive(file,item);
+  }
+  const receipt={...product,tag,verificationCommit};
+  fs.writeFileSync(path.join(bundle,'product-source.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+  const restored=extractProductArchives(bundle,path.join(output,'restored'));
+  await retainedProductManifest(restored,commit,tag);
+  const plan=oneReport(restored.plan,'release-plan.json');assert.equal(plan.source.commit,commit);assert.equal(plan.mode,'components');assert.equal(plan.requiresReview,false);
+  fs.writeFileSync(path.join(output,'verification-plan.json'),JSON.stringify(verificationPlan,null,2)+'\n',{flag:'wx'});
+  return {...restored,bundle,receipt,verificationPlan};
+}
+async function unwrapComponentProduct({bundle,output,repository,tag,productCommit,verificationCommit,root=process.cwd(),
+  facts=productFacts,verifyInputs=verifyRevalidationInputs}) {
+  assert.deepEqual(fs.readdirSync(bundle).sort(),['delivery.zip','plan.zip','product-source.json'],'Unexpected retained-product wrapper input');
+  for(const name of fs.readdirSync(bundle)){const stat=fs.lstatSync(path.join(bundle,name));assert.ok(stat.isFile()&&!stat.isSymbolicLink(),'Linked retained-product input');}
+  assert.ok(fs.statSync(path.join(bundle,'product-source.json')).size<=128*1024,'Product source metadata exceeds its bound');
+  const receipt=JSON.parse(fs.readFileSync(path.join(bundle,'product-source.json')));
+  assert.equal(productTagCommit(root,tag),productCommit);assert.equal(receipt.productCommit,productCommit);assert.equal(receipt.verificationCommit,verificationCommit);
+  const original=facts(repository,receipt.productRun),expected=verifyComponentProduct(original.run,original.artifacts,original.jobs,{repository,runId:receipt.productRun,commit:productCommit});
+  assert.deepEqual(receipt,{...expected,tag,verificationCommit},'Retained product source changed');
+  const verificationPlan=await verifyInputs({root,productCommit,verificationCommit});
+  for(const [name,file] of [['nora-component-delivery','delivery.zip'],['nora-release-plan','plan.zip']])
+    await verifyArchive(path.join(bundle,file),original.artifacts.artifacts.find(item=>item.name===name));
+  const restored=extractProductArchives(bundle,output);await retainedProductManifest(restored,productCommit,tag);
+  const plan=oneReport(restored.plan,'release-plan.json');
+  assert.equal(plan.source.commit,productCommit);assert.equal(plan.mode,'components');assert.equal(plan.requiresReview,false);
+  return {...restored,receipt,verificationPlan};
+}
 function componentQualification(run, options) {
   assert.equal(options.mode, 'components', 'Only component summaries can be requalified');
   assert.equal(run.conclusion, 'failure');
@@ -343,12 +436,19 @@ function componentQualification(run, options) {
   assert.ok(listing && Array.isArray(listing.jobs));
   assert.equal(listing.total_count, listing.jobs.length);
   const staged=listing.jobs.some(job=>platforms.some(platform=>job.name===stageJobName('source',platform,'components')));
-  const count=staged?8:5;assert.equal(listing.jobs.length,count);
-  assert.equal(new Set(listing.jobs.map(job=>job.id)).size,count);
+  assert.equal(new Set(listing.jobs.map(job=>job.id)).size,listing.jobs.length);
+  const latest=new Map(),attempts=new Set();
+  for(const job of listing.jobs){
+    assert.equal(job.run_id,run.id);assert.equal(job.head_sha,run.head_sha);assert.equal(job.status,'completed');
+    assert.ok(Number.isSafeInteger(job.run_attempt)&&job.run_attempt>0&&job.run_attempt<=run.run_attempt);
+    const key=job.name+'\0'+job.run_attempt;assert.ok(!attempts.has(key),'Ambiguous producer attempt');attempts.add(key);
+    const old=latest.get(job.name);
+    if(!old||old.run_attempt<job.run_attempt)latest.set(job.name,job);
+  }
+  const producers=[...latest.values()];assert.equal(producers.length,staged?8:5);
   const expected=new Map([
-    ['build-components', ['Verify release contracts and update preservation', 'Require chat backup safety tests',
-      'Require the selected component source regression', 'Build only shared application and updater components',
-      'Reuse verified environments and seal three system manifests', 'Verify the frozen component delivery before native acceptance', 'Preserve accepted component delivery']],
+    ['build-components', options.revalidatedComponents?['Resolve product identity or restore the exact original product ZIP',
+      'Verify release contracts and update preservation','Require chat backup safety tests','Require the selected component source regression','Preserve accepted component delivery']:componentBuildGates],
     ...[['macos-15','darwin-arm64'],['macos-15-intel','darwin-x64'],['windows-latest','win32-x64']].flatMap(([runner,platform])=>staged?
       [[stageJobName('source',platform,'components'),componentSourceGates],
         [stageJobName('acceptance',platform,'components'),['Restore successful source qualification without running it again',
@@ -357,7 +457,7 @@ function componentQualification(run, options) {
         'Test fresh target installation and both native upgrade states with retained user data', 'Preserve raw native component evidence']]]),
     ['accept-components', null],
   ]);
-  for(const job of listing.jobs){
+  for(const job of producers){
     assert.ok(Number.isSafeInteger(job.id)&&job.id>0); assert.equal(job.run_id,run.id); assert.equal(job.head_sha,run.head_sha);
     assert.ok(Number.isSafeInteger(job.run_attempt)&&job.run_attempt>0&&job.run_attempt<=run.run_attempt);
     assert.equal(job.status,'completed'); assert.ok(expected.has(job.name),'Unexpected qualification producer');
@@ -372,29 +472,38 @@ function componentQualification(run, options) {
   }
   assert.equal(expected.size,0);
   return {mode:'component-raw-evidence-requalified',sourceRunConclusion:run.conclusion,
-    producerJobIds:listing.jobs.filter(job=>job.name!=='accept-components').map(job=>job.id).sort((a,b)=>a-b),
-    failedSummaryJobId:listing.jobs.find(job=>job.name==='accept-components').id};
+    producerJobIds:producers.filter(job=>job.name!=='accept-components').map(job=>job.id).sort((a,b)=>a-b),
+    failedSummaryJobId:producers.find(job=>job.name==='accept-components').id,
+    previousAttempts:listing.jobs.filter(job=>latest.get(job.name).id!==job.id).map(job=>({id:job.id,name:job.name,attempt:job.run_attempt,conclusion:job.conclusion}))};
 }
 function verifyDelivery(run, artifacts, options) {
   identity(run, artifacts, options, options.qualificationJobs ? ['failure'] : ['success']);
-  assert.match(options.commit, /^[a-f0-9]{40}$/); assert.equal(run.head_sha, options.commit, 'Product source differs from release tag');
+  assert.match(options.commit, /^[a-f0-9]{40}$/);
+  assert.ok(options.revalidatedComponents===undefined||typeof options.revalidatedComponents==='boolean','Invalid original-product revalidation mode');
+  if(options.revalidatedComponents)assert.equal(options.mode,'components');
+  else assert.equal(run.head_sha, options.commit, 'Product source differs from release tag');
   assert.ok(['full', 'components'].includes(options.mode));
   const qualification=options.qualificationJobs?componentQualification(run,options):null;
   const full = options.mode === 'full';
   assert.equal(run.path, `.github/workflows/${full ? 'build-integrated-launcher' : 'publish-component-update'}.yml`);
   const intermediate = new Set((full?stageArtifacts(artifacts):componentStageArtifacts(artifacts)).map(item=>item.name));
+  if(!full)for(const item of artifacts.artifacts){
+    const match=/^nora-component-failed-native-(darwin-arm64|darwin-x64|win32-x64)-attempt-([1-9][0-9]*)$/.exec(item.name);
+    if(match){assert.ok(Number.isSafeInteger(Number(match[2]))&&Number(match[2])<=run.run_attempt,'Invalid diagnostic attempt');intermediate.add(item.name);}
+  }
   const names = artifacts.artifacts.filter(item=>!intermediate.has(item.name)).map(item => item.name).sort();
   const expected = full ? fullNames : componentNames.filter(name=>!qualification||name!=='nora-component-acceptance');
   assert.deepEqual(names.filter(name => name !== 'nora-release-plan' && !(full && diagnostics.includes(name))), expected.filter(name => name !== 'nora-release-plan').sort(), 'Incomplete accepted delivery or unexpected artifact');
   if (!full) assert.ok(names.includes('nora-release-plan'), 'Component source must retain its change plan');
   return artifacts.artifacts.filter(item => !diagnostics.includes(item.name)&&!intermediate.has(item.name));
 }
-async function requalifyComponentAcceptance(delivery, acceptance, planRoot, commit, tag) {
+async function requalifyComponentAcceptance(delivery, acceptance, planRoot, commit, tag, qualification=null) {
   assert.equal(reportFiles(acceptance,'component-acceptance.json').length,0,'An existing component receipt cannot be replaced');
   const {sealComponentAcceptance}=await import('./component-acceptance.mjs');
   const output=path.join(acceptance,'requalified-component-acceptance');fs.mkdirSync(output);
   return sealComponentAcceptance({delivery,reports:acceptance,plan:oneReport(planRoot,'release-plan.json'),
-    output:path.join(output,'component-acceptance.json'),commit,tag});
+    output:path.join(output,'component-acceptance.json'),commit,tag,
+    ...(qualification?{productSource:qualification.productSource,verificationCommit:qualification.commit}:{})});
 }
 function verifyState(run, artifacts, options) {
   identity(run, artifacts, options, ['success', 'failure', 'cancelled']);
@@ -495,7 +604,7 @@ async function downloadArchive(item, repository, archive, { timeout = 20 * 60 * 
 async function materialize(run, artifacts, options, root, kind) {
   const accepted = kind === 'state' ? [verifyState(run, artifacts, options)] : verifyDelivery(run, artifacts, options);
   assert.ok(!fs.existsSync(root), 'Source directory already exists'); fs.mkdirSync(root, { recursive: true });
-  const receipt = { schema: 'nora-publication-source/1', kind, sourceRun: run.id, sourceCommit: run.head_sha,
+  const receipt = { schema: 'nora-publication-source/1', kind, sourceRun: run.id, sourceCommit: kind==='delivery'?options.commit:run.head_sha,
     publisherCommit: process.env.GITHUB_SHA || null, mode: options.mode || null, artifacts: [] };
   if(kind==='delivery'&&options.qualificationJobs) receipt.qualification=componentQualification(run,options);
   const originalDeliveries = new Map();
@@ -525,6 +634,16 @@ async function materialize(run, artifacts, options, root, kind) {
         },
       });
     }
+    let retained;
+    if(options.revalidatedComponents){
+      assert.equal(originalDeliveries.size,1);const bundle=originalDeliveries.get('nora-component-delivery');assert.ok(bundle);
+      retained=await unwrapComponentProduct({bundle,output:path.join(root,'retained-product'),repository:options.repository,
+        tag:options.tag,productCommit:options.commit,verificationCommit:run.head_sha});
+      const original=reportFiles(retained.plan,'release-plan.json'),current=reportFiles(path.join(root,'plan'),'release-plan.json');
+      assert.equal(original.length,1);assert.equal(current.length,1);assert.deepEqual(fs.readFileSync(original[0]),fs.readFileSync(current[0]),'Original change plan bytes differ');
+      originalDeliveries.set('nora-component-delivery',retained.delivery);
+      receipt.productOrigin=retained.receipt;receipt.verificationCommit=run.head_sha;
+    }
     for (const source of originalDeliveries.values()) flattenDelivery(source,path.join(root,'delivery'));
     if (options.mode === 'full') {
       receipt.acceptance = await verifyNativeAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), options.commit);
@@ -533,18 +652,18 @@ async function materialize(run, artifacts, options, root, kind) {
         { ...options, targetTag: options.tag,targetDelivery:path.join(root,'delivery'),
           targetManifest:JSON.parse(fs.readFileSync(path.join(root,'delivery/release-manifest.json'))) });
     } else {
-      if(receipt.qualification) await requalifyComponentAcceptance(path.join(root,'delivery'),path.join(root,'acceptance'),path.join(root,'plan'),options.commit,options.tag);
-      receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
+      if(receipt.qualification) await requalifyComponentAcceptance(path.join(root,'delivery'),path.join(root,'acceptance'),path.join(root,'plan'),options.commit,options.tag,retained?{commit:run.head_sha,productSource:retained.receipt}:null);
+      receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit,retained?{commit:run.head_sha,productSource:retained.receipt}:null);
       const stages=componentStageArtifacts(artifacts);
       const proofs=reportFiles(path.join(root,'acceptance'),'nora-stage-input-source.json');
       const jobs=allJobs(options.repository,run.id);
       const staged=jobs.jobs.some(job=>platforms.some(platform=>job.name===stageJobName('source',platform,'components')));
-      if(staged||stages.length||proofs.length){
+      if(options.revalidatedComponents||staged||stages.length||proofs.length){
         assert.equal(stages.length,3,'Every platform requires its component source stage');assert.equal(proofs.length,3);
         const source={};
         for(const platform of platforms){
           const file=proofs.filter(file=>file.split(path.sep).includes(`nora-component-native-${platform}`));assert.equal(file.length,1);
-          source[platform]=verifyComponentSourceProof(JSON.parse(fs.readFileSync(file[0])),run,artifacts,jobs,platform,oneReport(path.join(root,'plan'),'release-plan.json').baseline.ref);
+          source[platform]=verifyComponentSourceProof(JSON.parse(fs.readFileSync(file[0])),run,artifacts,jobs,platform,oneReport(path.join(root,'plan'),'release-plan.json').baseline.ref,retained?.receipt);
         }
         receipt.componentSourceQualification=source;
       }
@@ -554,8 +673,56 @@ async function materialize(run, artifacts, options, root, kind) {
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);
   return receipt;
 }
-module.exports = { selectPlanningBaseline, selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
+async function componentProductCLI(command,args) {
+  const repository=process.env.GITHUB_REPOSITORY,verificationCommit=process.env.GITHUB_SHA;
+  assert.match(repository||'',/^[\w.-]+\/[\w.-]+$/);assert.match(verificationCommit||'',/^[a-f0-9]{40}$/);
+  assert.equal(execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),verificationCommit,'Verification checkout differs');
+  assert.equal(execFileSync('git',['status','--porcelain','--untracked-files=no'],{encoding:'utf8'}).trim(),'','Verification source is dirty');
+  const sourceRun=process.env.NORA_PRODUCT_SOURCE_RUN||'',sourceTag=process.env.NORA_PRODUCT_SOURCE_TAG||'';
+  if(sourceRun)assert.match(sourceRun,/^[1-9][0-9]*$/);else assert.equal(sourceTag,'','A product tag requires its original build run');
+  const env={},outputs={};
+  if(command==='restore-product') {
+    assert.equal(args.length,0);let commit=verificationCommit,tag=process.env.NORA_PUBLICATION_TAG||process.env.GITHUB_REF_NAME,upload='artifacts';
+    if(sourceRun){
+      const result=await restoreComponentProduct({repository,runId:sourceRun,tag:sourceTag,verificationCommit,
+        output:path.join(process.env.RUNNER_TEMP,'retained-component')});
+      const originalPlan=oneReport(result.plan,'release-plan.json');assert.equal(originalPlan.baseline.ref,process.env.BASELINE_TAG,'Original upgrade baseline changed');
+      const source=reportFiles(result.plan,'release-plan.json');assert.equal(source.length,1);
+      fs.copyFileSync(source[0],path.join(process.env.RUNNER_TEMP,'release-plan.json'));
+      commit=result.receipt.productCommit;tag=sourceTag;upload=result.bundle;
+    }else assert.equal(process.env.GITHUB_REF_TYPE,'tag','New components require a fixed product tag');
+    assert.match(tag||'',/^v\d+\.\d+\.\d+$/);
+    Object.assign(env,{PRODUCT_COMMIT:commit,PRODUCT_TAG:tag});
+    Object.assign(outputs,{product_commit:commit,product_tag:tag,upload_root:upload});
+  }else{
+    assert.equal(command,'unwrap-product');assert.equal(args.length,2);
+    const [bundle,output]=args,commit=process.env.PRODUCT_COMMIT,tag=process.env.PRODUCT_TAG;
+    assert.match(commit||'',/^[a-f0-9]{40}$/);assert.match(tag||'',/^v\d+\.\d+\.\d+$/);
+    if(sourceRun){
+      const result=await unwrapComponentProduct({bundle,output,repository,tag,productCommit:commit,verificationCommit});
+      assert.equal(String(result.receipt.productRun),sourceRun,'Another original product run');
+      Object.assign(env,{COMPONENT_DELIVERY:result.delivery,PRODUCT_SOURCE_FILE:path.join(bundle,'product-source.json')});
+      const original=reportFiles(result.plan,'release-plan.json');assert.equal(original.length,1);
+      const target=path.join(process.env.RUNNER_TEMP,'release-plan.json');
+      if(fs.existsSync(target))assert.deepEqual(fs.readFileSync(target),fs.readFileSync(original[0]),'Original change plan differs');
+      else fs.copyFileSync(original[0],target);
+      if(process.env.COMPONENT_PLAN_FILE)assert.deepEqual(fs.readFileSync(process.env.COMPONENT_PLAN_FILE),fs.readFileSync(original[0]),'Downloaded change plan differs from original product');
+    }else{
+      assert.equal(commit,verificationCommit,'New product source differs');
+      assert.ok(!fs.existsSync(path.join(bundle,'product-source.json')),'Unexpected retained-product wrapper');
+      Object.assign(env,{COMPONENT_DELIVERY:bundle,PRODUCT_SOURCE_FILE:''});
+    }
+  }
+  for(const [file,values]of [[process.env.GITHUB_ENV,env],[process.env.GITHUB_OUTPUT,outputs]])if(file){
+    for(const value of Object.values(values))assert.ok(!/[\r\n]/.test(value),'Unsafe workflow output');
+    fs.appendFileSync(file,Object.entries(values).map(([key,value])=>`${key}=${value}\n`).join(''));
+  }
+}
+module.exports = { restoreComponentProduct,unwrapComponentProduct,verifyComponentProduct,verifyRevalidationInputs,selectPlanningBaseline, selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
 if (require.main === module) {
+  if(['restore-product','unwrap-product'].includes(process.argv[2])){
+    componentProductCLI(process.argv[2],process.argv.slice(3)).catch(error=>{console.error(error);process.exitCode=1;});return;
+  }
   if (process.argv[2] === 'baseline-selection') {
     const [, , , releasesFile, targetTag, repository, requestedTag, output, githubOutput, operation] = process.argv;
     const selection = selectAcceptanceBaseline(JSON.parse(fs.readFileSync(releasesFile)), { targetTag, repository, requestedTag, publication: operation === 'publication' });
@@ -563,10 +730,11 @@ if (require.main === module) {
     if (githubOutput) fs.appendFileSync(githubOutput, `acceptance_baseline_tag=${selection.tag}\ninitial_release=${selection.initialRelease}\n`);
     process.exit(0);
   }
-  const [kind, runFile, artifactsFile, commit, repository, runId, mode, output, tag, deliveryRun, assetMode, receiptFile, qualificationJobsFile] = process.argv.slice(2);
+  const [kind, runFile, artifactsFile, commit, repository, runId, mode, output, tag, deliveryRun, assetMode, receiptFile, qualificationJobsFile,revalidatedComponents] = process.argv.slice(2);
   assert.ok(['delivery', 'state'].includes(kind));
+  assert.ok(revalidatedComponents===undefined||['true','false'].includes(revalidatedComponents),'Invalid original-product revalidation mode');
   materialize(JSON.parse(fs.readFileSync(runFile)), JSON.parse(fs.readFileSync(artifactsFile)),
-    { commit, repository, runId, mode, tag, deliveryRun, assetMode,
+    { commit, repository, runId, mode, tag, deliveryRun, assetMode,revalidatedComponents:revalidatedComponents==='true',
       qualificationJobs:qualificationJobsFile?JSON.parse(fs.readFileSync(qualificationJobsFile)):null,
       publishedFacts: kind === 'delivery' && mode === 'full' && deliveryRun ? JSON.parse(fs.readFileSync(deliveryRun)) : null,
       deliveryReceipt: receiptFile ? JSON.parse(fs.readFileSync(receiptFile)) : null }, path.resolve(output), kind).catch(error => { console.error(error); process.exitCode = 1; });
