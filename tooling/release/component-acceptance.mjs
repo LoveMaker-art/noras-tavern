@@ -157,7 +157,17 @@ export function runComponentNative({ payload, baseline, reports, scratch, commit
             : ['--baseline-release', baseline, '--update-release', payload, '--start-state', state];
         run(process.execPath, [path.join(root, 'tooling/run.mjs'), 'node', path.join(root, 'tests/deployment/launcher_product_refactor_smoke.cjs'),
             '--payload', payload, ...selected, '--scratch-base', base, '--keep'], { cwd: root, stdio: 'inherit' });
-        const source = find(base, 'harness-result.json'), value = read(source);
+        // The installed tree contains legitimate runtime links. Only the
+        // harness-owned root and its direct result are evidence inputs;
+        // delivery/report inventories retain their strict recursive checks.
+        const roots = fs.readdirSync(base, { withFileTypes: true }).filter(entry => entry.name.startsWith('products-smoke-'));
+        assert.equal(roots.length, 1, 'Missing or duplicate native harness root');
+        assert.ok(roots[0].isDirectory() && !roots[0].isSymbolicLink(), 'Linked native harness root');
+        const installation = path.join(base, roots[0].name), source = path.join(installation, 'harness-result.json');
+        const resultStat = fs.lstatSync(source);
+        assert.ok(resultStat.isFile() && !resultStat.isSymbolicLink(), 'Linked native harness result');
+        const value = read(source);
+        assert.equal(value.root, fs.realpathSync(installation), 'Native result belongs to another installation');
         const installed = read(path.join(value.root, 'tavern/tavern-updates/installed.json'));
         assert.equal(installed.version, system.version, 'Native installed version differs');
         assert.equal(hashFile(path.join(baseline, 'release-manifest.json')), receipt.payloadManifestSha256);

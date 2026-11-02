@@ -156,7 +156,7 @@ jobs:
         run: node tooling/checks/launcher-test-impact.mjs --base "$ACCEPTANCE_BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/test-impact.json" --github-output "$GITHUB_OUTPUT"
 
       - name: Require launcher source stability before preparing runtimes
-        timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && inputs.arch == 'x64') && 20 || 10 }}
+        timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && inputs.arch == 'x64') && 20 || runner.os == 'macOS' && 12 || 10 }}
         shell: bash
         env:
           FULL_REGRESSION: ${{ steps.test-impact.outputs.full }}

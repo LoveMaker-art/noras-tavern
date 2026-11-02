@@ -73,7 +73,11 @@ export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, ch
     // at 465s: 679 passed, no failed assertions, two interrupted files. Keep
     // the complete serial group and finite deadline; hosted completion still
     // has to establish its actual elapsed time on each platform.
-    const javascriptTimeout = platform === 'win32' || platform === 'darwin' && arch === 'x64' ? 900000 : 240000;
+    // ARM run 41385600207 also reached its 225s internal cutoff while
+    // progressing: 992 passed, no failed assertions. Bound the full group
+    // at 345s internally; keep per-case limits and child-close checks intact.
+    const javascriptTimeout = platform === 'win32' || platform === 'darwin' && arch === 'x64' ? 900000
+        : platform === 'darwin' ? 360000 : 240000;
     const pythonTimeout = platform === 'win32' ? 480000 : 240000;
     for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',

@@ -31,6 +31,8 @@ const reviewedComponentVerificationSteps = new Set([
 // This includes the source-only test venv/dependencies, never product/runtime
 // installation. Changed commands, arguments, conditions or env need review again.
 const reviewedNativeTestSelectionSteps = new Set([
+    '3bbe17b915fe9bc66bbc303f47ae0c2d3b28d52b15ab9e155b1b0f28e57d4c1e', // Previous bounded source gate; paired with the reviewed ARM budget change.
+    'cb98a660bfb53aacc75d7b4865ed77ff9082c900adc11ee8a218cb6e91b3f90d', // 2026-11-02: finite ARM source budget; complete groups and locked test interpreter unchanged.
     '2da6a1a8de7b860607192a9ecfa59ca19e4034d4944a4155cc6b7ba8dc057ec0',
     '97d29ed162654f5670ca0d0aa6f7c803650a44fbf477862972a852f6bf5051d4',
     '95dd44f2f8a846a7b3ba04b68d79fc221bc2e8db32afad1843f3fe74d285c588',

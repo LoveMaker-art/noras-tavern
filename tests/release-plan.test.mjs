@@ -173,6 +173,17 @@ test('reviewed native policy deduplication changes verification only and cannot 
     }
 });
 
+test('reviewed ARM source headroom keeps both old and new test steps outside product construction', () => {
+    const source = fs.readFileSync(path.join(root, '.github/workflows/launcher-platform-stages.yml'), 'utf8');
+    const step = componentStep(source, 'Require launcher source stability before preparing runtimes');
+    const previous = step.replace(" || runner.os == 'macOS' && 12", '');
+    assert.notEqual(previous, step);
+    assert.deepEqual(workflowInputs(source.replace(step, previous)), workflowInputs(source));
+    for (const changed of [step.replace('25 ||', '26 ||'), step.replace('verify-launcher-stability.mjs', 'unreviewed-builder.mjs')])
+        assert.ok(workflowInputs(source.replace(step, changed)).unknown.some(value => value.includes('nora-source-python')),
+            'A nearby unreviewed budget or command cannot use the exact-step exemption');
+});
+
 test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{
     const plan=createReleasePlan(change('tooling/release/compatibility/v2.5.4.json'));
     assert.equal(plan.requiresReview,false);assert.equal(plan.mode,'components');assert.equal(plan.build.metadata,true);

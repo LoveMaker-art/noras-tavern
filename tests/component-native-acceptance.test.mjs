@@ -88,15 +88,52 @@ function runnerFixture(t, platform) {
         const state = args.includes('--start-state') ? args[args.indexOf('--start-state') + 1] : 'fresh'; calls.push(state);
         if (state === 'fresh') assert.ok(args.includes('--missing-system-receipt'));
         else assert.equal(args[args.indexOf('--baseline-release') + 1], baseline);
-        const base = args[args.indexOf('--scratch-base') + 1], installed = path.join(f.root, 'installed-' + state);
+        const base = args[args.indexOf('--scratch-base') + 1], installed = path.join(base, 'products-smoke-fixture');
         f.write(installed, 'tavern/tavern-updates/installed.json', { version: '2.5.5' });
         const raw = JSON.parse(fs.readFileSync(path.join(f.reports, `nora-component-native-${platform}`, state, 'harness-result.json')));
-        raw.root = installed; f.write(base, 'harness-result.json', raw);
+        raw.root = fs.realpathSync(installed); f.write(installed, 'harness-result.json', raw);
     };
     return { ...f, payload, baseline, platform, reports, scratch, calls, run };
 }
 
 for (const platform of COMPONENT_PLATFORMS) {
+test(`native ${platform} result collection does not treat installed runtime links as delivery inputs`, t => {
+    const f = runnerFixture(t, platform);
+    runComponentNative({ ...f, run: (...args) => {
+        f.run(...args);
+        const base = args[1][args[1].indexOf('--scratch-base') + 1];
+        const installed = path.join(base, 'products-smoke-fixture'), runtime = path.join(installed, 'hermes/python');
+        fs.mkdirSync(runtime, { recursive: true });
+        fs.symlinkSync(runtime, path.join(installed, 'runtime-link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } });
+    assert.deepEqual(f.calls, ['fresh', 'running', 'stopped']);
+    verifyComponentNative(f);
+});
+
+for (const change of ['duplicate root', 'linked root', 'linked result', 'foreign result root'])
+test(`native ${platform} result collection rejects ${change}`, t => {
+    const f = runnerFixture(t, platform);
+    assert.throws(() => runComponentNative({ ...f, run: (...args) => {
+        f.run(...args);
+        const base = args[1][args[1].indexOf('--scratch-base') + 1], installed = path.join(base, 'products-smoke-fixture');
+        const result = path.join(installed, 'harness-result.json');
+        if (change === 'duplicate root') fs.mkdirSync(path.join(base, 'products-smoke-duplicate'));
+        if (change === 'linked root') {
+            fs.renameSync(installed, path.join(f.root, 'other-installation'));
+            fs.symlinkSync(path.join(f.root, 'other-installation'), installed, process.platform === 'win32' ? 'junction' : 'dir');
+        }
+        if (change === 'linked result') {
+            fs.renameSync(result, path.join(f.root, 'other-result.json'));
+            fs.symlinkSync(path.join(f.root, 'other-result.json'), result, 'file');
+        }
+        if (change === 'foreign result root') {
+            const raw = JSON.parse(fs.readFileSync(result)); raw.root = f.root; fs.writeFileSync(result, JSON.stringify(raw));
+        }
+    } }));
+    assert.equal(fs.existsSync(path.join(f.reports, 'fresh/harness-result.json')), false);
+    assert.equal(fs.existsSync(path.join(f.reports, 'running')), false);
+});
+
 test(`native component runner records all three original ${platform} results without an intermediate summary`, t => {
     const f = runnerFixture(t, platform); runComponentNative(f);
     assert.deepEqual(f.calls, ['fresh', 'running', 'stopped']);

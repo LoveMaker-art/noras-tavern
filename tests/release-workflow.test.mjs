@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { test } from 'node:test';
+import { createRequire } from 'node:module';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
 import { verifyBackupSafety } from '../tooling/checks/verify-backup-safety.mjs';
 import { runFocusedRegression } from '../tooling/checks/launcher-test-impact.mjs';
@@ -146,7 +147,7 @@ test('component delivery requires all three native platforms before the final pu
   const run = nativeSteps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data');
   assert.ok(prepare >= 0 && run > prepare);
   assert.match(nativeSteps[prepare].run, /component-acceptance\.mjs prepare.*component-delivery.*component-payload.*GITHUB_SHA/);
-  assert.match(nativeSteps[run].run, /component-acceptance\.mjs run.*component-payload.*component-baseline.*GITHUB_SHA.*BASELINE_TAG.*baseline_commit/);
+  assert.match(nativeSteps[run].run, /component-acceptance\.mjs" run.*component-payload.*component-baseline.*GITHUB_SHA.*BASELINE_TAG.*baseline_commit/);
   assert.equal(nativeSteps[run]['continue-on-error'], undefined);
   assert.equal(nativeSteps.find(step => step.name === 'Pin the native verification tool interpreter').with['python-version'], '3.11');
   const baseline = nativeSteps.find(step => step.name === 'Authenticate the published baseline for actual native upgrades');
@@ -317,7 +318,7 @@ test('the full profile retains complete source coverage and focused profiles lea
   const componentSelection=component.findIndex(step=>step.id==='test-impact');
   const componentGate=component.findIndex(step=>step.name==='Require the selected component source regression');
   assert.ok(componentSelection>=0&&componentGate>componentSelection);
-  assert.match(components.jobs['native-components'].steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance').run,/true\) node tooling\/checks\/verify-launcher-stability\.mjs/);
+  assert.match(components.jobs['native-components'].steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance').run,/true\) node "\$PWD\/tooling\/checks\/verify-launcher-stability\.mjs"/);
   assert.match(component[componentGate].run,/--run-focused/);
   assert.match(component[componentGate].run,/Missing verified test selection.*exit 1/);
   assert.doesNotMatch(scripts(publisher),/verify-launcher-stability|--run-focused|launcher-installed-check/,
@@ -479,11 +480,30 @@ test('component Linux preparation exercises headless updates while full desktop 
   const native = components.jobs['native-components'];
   assert.deepEqual(native.strategy.matrix.include.map(item => item.platform).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
   const gate = native.steps.find(step => step.name === 'Qualify native maintenance changes before actual component acceptance');
-  assert.match(gate.run, /true\) node tooling\/checks\/verify-launcher-stability\.mjs/);
+  assert.match(gate.run, /true\) node "\$PWD\/tooling\/checks\/verify-launcher-stability\.mjs"/);
   assert.match(gate.run, /tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_launcher_update_recovery/);
   assert.ok(gate.run.indexOf('verify-launcher-stability.mjs') < gate.run.indexOf('test_launcher_update_recovery'));
   assert.equal(gate['continue-on-error'], undefined);
   assert.ok(native.steps.indexOf(gate) < native.steps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data'));
+});
+
+test('native component maintenance wrappers satisfy the real Windows offline process census', () => {
+  const { windowsProcesses } = createRequire(import.meta.url)('../deployment/uninstall/uninstall-offline-check.js');
+  const native = components.jobs['native-components'];
+  for (const name of ['Qualify native maintenance changes before actual component acceptance',
+    'Test fresh target installation and both native upgrade states with retained user data']) {
+    const body = native.steps.find(step => step.name === name).run;
+    const entries = [...body.matchAll(/\bnode\s+("\$PWD\/[^"\n]+\.mjs"|tooling\/[^\s;]+\.mjs)/g)];
+    assert.ok(entries.length > 0, name);
+    for (const [, entry] of entries) {
+      const script = entry.replaceAll('$PWD/', 'C:/work/nora/');
+      const snapshot = { schema: 'nora-uninstall-processes/1', processes: [
+        { pid: 42, name: 'node.exe', executable: 'C:\\Node\\node.exe', commandLine: 'node "C:\\tests\\worker.cjs"' },
+        { pid: 43, name: 'node.exe', executable: 'C:\\Node\\node.exe', commandLine: `node ${script}` },
+      ] };
+      assert.doesNotThrow(() => windowsProcesses(JSON.stringify(snapshot), { root: 'C:\\NoraTavern', pid: 42 }), name + ': ' + entry);
+    }
+  }
 });
 
 test('component workers prepare locked engine dependencies before real recovery consumers', () => {

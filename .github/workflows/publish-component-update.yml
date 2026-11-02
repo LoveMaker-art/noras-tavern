@@ -232,10 +232,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node tooling/checks/launcher-test-impact.mjs --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/native-test-impact.json"
+          node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --force-full "${{ inputs.force_full_regression || false }}" --output "$RUNNER_TEMP/native-test-impact.json"
           selection="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/native-test-impact.json")).full')"
           case "$selection" in
-            true) node tooling/checks/verify-launcher-stability.mjs; node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_update_recovery ;;
+            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs"; node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_update_recovery ;;
             false) echo 'Unchanged native maintenance contracts; actual component acceptance remains mandatory' ;;
             *) echo 'Missing verified native test selection' >&2; exit 1 ;;
           esac
@@ -248,7 +248,7 @@ jobs:
           # The harness restores its own isolated runtime. Hide the prerequisite
           # checkout so a test cannot silently use it as the installed product.
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-          node tooling/release/component-acceptance.mjs run "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP/component-baseline" "$RUNNER_TEMP/component-native-reports" "$RUNNER_TEMP/component-native-scratch" "$GITHUB_SHA" "$BASELINE_TAG" "$baseline_commit"
+          node "$PWD/tooling/release/component-acceptance.mjs" run "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP/component-baseline" "$RUNNER_TEMP/component-native-reports" "$RUNNER_TEMP/component-native-scratch" "$GITHUB_SHA" "$BASELINE_TAG" "$baseline_commit"
       - name: Preserve raw native component evidence
         if: always()
         uses: actions/upload-artifact@v4
