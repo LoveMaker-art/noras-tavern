@@ -51,7 +51,7 @@ installation backup is `<verified-install-root>/tavern-backups/<timestamp>-<vers
 It is used immediately if the new local Tavern fails to start and is kept for
 manual recovery after success.
 
-## Historical independent Linux entry
+## Historical independent core entry
 
 Old installed skills are immutable until the update runs. Some call the raw
 installer; 2.4.3 and later published bootstraps also require desktop credentials
@@ -74,11 +74,14 @@ successful upgrade. Python-era migrations have a distinct service/data
 contract; report an unsupported layout explicitly instead of promising that
 every historical 1.x layout is covered by the native 2.x path.
 
-The skill and desktop UI share one updater and one native writer lock. Each
-submission lives under `<noraHome>/installer/update-jobs/<requestId>` and points
+The skill submits only core tasks; the desktop UI submits only APP updates.
+They retain the same instance's native writer lock without a joint update plan.
+Each core submission lives under `<noraHome>/installer/update-jobs/<requestId>` and points
 to the canonical `<noraHome>/installer/operations/<operationId>/operation.json`.
 The submission directory holds a verified immutable runner and diagnostics; it
 is not a second outcome journal. No GUI heartbeat or launcher session is needed.
 A caller receives acceptance only after the controller owns the lock and durable
 operation. Reconnecting callers read that same operation. APP replacement keeps
 its separate guarded handoff and cannot become a prerequisite for content updates.
+Old desktop results may be queried as read-only history when no independent core
+task exists; they do not authorize resuming another component or a joint plan.

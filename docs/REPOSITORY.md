@@ -83,9 +83,9 @@ docs/                  用户文档、当前导航、历史记录
 | 对象 | 唯一入口与职责 |
 | --- | --- |
 | 启动器管理的完整本地系统 | `operation-state.js` / `operation-policy.js` 统一准入、结果和恢复策略；`runtime-transaction.js`、`first_install.py`、`update.py` 各自保存受管文件事务。`system-update.js` 只负责受支持历史快照恢复。 |
-| 无APP的云端／核心实例及旧独立部署 | 技能通过`deployment/update/task.py`交给同一核心任务；`task_backend.py`、`update.py`和`recovery.py`按实际绑定处理更新、旧数据迁移及恢复，不要求桌面APP。桌面管理实例仍走其原系统后端，不借独立入口改变归属。 |
+| 诺拉对话发起的核心更新（桌面及无APP部署） | 技能通过`deployment/update/task.py`交给同一独立核心任务；`task_backend.py`、`update.py`和`recovery.py`按实际绑定处理更新、旧数据迁移及恢复，不要求或唤起桌面APP。 |
 | Git 克隆、npm 启动的精简版 | 按精简版文档拉取源码、安装依赖和重新构建；不是启动器安装。 |
-| 桌面启动器应用本身 | `launcher-update.js` / `replace-launcher.py` 替换 APP 并验证同一操作交接；联合交付验收之前保留备份。完整安装器也可覆盖更换 APP，保留原数据目录。 |
+| 桌面启动器应用本身 | `launcher-update.js` / `replace-launcher.py` 只替换APP并验证同一操作交接，确认其程序效果后结束自身任务；历史未确认的恢复仍保留。完整安装器也可覆盖更换APP，保留原数据目录。 |
 
 它们共享适用的配置、实例定位和校验逻辑，但更新对象不同。不能为了表面上只剩一个“更新”文件，把桌面应用、Agent 运行时和源码检出强行混成同一种升级。
 

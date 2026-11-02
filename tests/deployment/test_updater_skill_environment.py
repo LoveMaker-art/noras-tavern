@@ -21,57 +21,132 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+class UpdaterSkillCliRoutingTests(unittest.TestCase):
+    def installation(self):
+        temporary = tempfile.TemporaryDirectory(prefix='nora skill core routing ')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        home, install = root / 'hermes', root / 'tavern'
+        home.mkdir()
+        (home / 'config.yaml').write_text('{}\n')
+        (home / 'nora-instance.json').write_text(json.dumps({
+            'schema': 1, 'noraHome': str(root), 'hermesHome': str(home),
+            'installRoot': str(install), 'port': 18899}))
+        (root / 'installer').mkdir()
+        (root / 'installer/launcher-control.json').write_text('{}')
+        # The interpreter and installed updater are process boundaries. Tiny
+        # offline endpoints exercise the real CLI dispatch and instance checks;
+        # they do not claim a full Hermes installation or update acceptance.
+        hermes_code = root / 'hermes-code'
+        (hermes_code / 'hermes_cli').mkdir(parents=True)
+        (hermes_code / 'hermes_cli/__init__.py').write_text('')
+        (hermes_code / 'hermes_constants.py').write_text(
+            'import os\nfrom pathlib import Path\ndef get_hermes_home():\n    return Path(os.environ["HERMES_HOME"])\n')
+        ops = install / 'apps/tavern-ops'
+        updater, desktop = ops / 'updater', ops / 'installer/desktop'
+        updater.mkdir(parents=True)
+        desktop.mkdir(parents=True)
+        (updater / 'bootstrap.py').write_text(
+            'from pathlib import Path\ndef resolve_update_target(home, managed_home=None):\n'
+            '    assert home == Path(' + repr(str(home)) + ')\n'
+            '    assert managed_home == Path(' + repr(str(root)) + ')\n'
+            '    return home, Path(' + repr(str(install)) + ')\n')
+        (updater / 'task.py').write_text(
+            'import json,sys\nreply={"scope":"core","argv":sys.argv[1:]}\n'
+            'reply.update({"state":"available","latest":"v2.6.0"} if "--check" in sys.argv else '
+            '{"status":"submitting","requestId":"core-request"})\nprint(json.dumps(reply))\n')
+        probe_log = root / 'desktop-probes.jsonl'
+        (desktop / 'updater-task.js').write_text(
+            'const fs=require("node:fs");const log=' + json.dumps(str(probe_log)) + ';\n'
+            'module.exports.desktopProtocol="nora-desktop-update/1";\n'
+            'if(require.main!==module)fs.appendFileSync(log,"desktop protocol probe\\n");\n'
+            'else {let input="";process.stdin.on("data",data=>input+=data);process.stdin.on("end",()=>{\n'
+            'const request=JSON.parse(input);if(request.scope==="desktop"){fs.appendFileSync(log,input+"\\n");\n'
+            'const old=' + json.dumps(str(root / 'legacy-status.json')) + ';console.log(fs.existsSync(old)?'
+            'fs.readFileSync(old,"utf8"):JSON.stringify({scope:"desktop",status:"error",error:"APP lookup must not run"}));}\n'
+            'else console.log(fs.readFileSync(' + json.dumps(str(root / 'core-status.json')) + ',"utf8"));});}\n')
+        (root / 'core-status.json').write_text(json.dumps({'status': 'none', 'settled': True, 'busy': False}))
+        (desktop / 'updater-capability.js').write_text('// authenticated fixture reader companion\n')
+        artifacts = {'ops/installer/desktop/' + name: MODULE.hashlib.sha256((desktop / name).read_bytes()).hexdigest()
+                     for name in ('updater-task.js', 'updater-capability.js')}
+        receipts = install / 'tavern-updates'
+        receipts.mkdir()
+        (receipts / 'installed-manifest.json').write_text(json.dumps({
+            'schema': 'tavern-release/v2', 'commit': 'a' * 40, 'versions': {'tavern': '2.5.7'}, 'artifacts': artifacts}))
+        (receipts / 'installed.json').write_text(json.dumps({'version': '2.5.7', 'commit': 'a' * 40}))
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('HERMES_HOME', 'NORA_TAVERN_HOME', 'NORA_HERMES_HOME',
+                                      'TAVERN_DATA_ROOT', 'HERMES_INSTALL_DIR', 'NORA_PYTHON')}
+        environment.update(HERMES_HOME=str(home), HERMES_INSTALL_DIR=str(hermes_code),
+                           NORA_PYTHON=sys.executable, PYTHONPATH=str(hermes_code),
+                           TAVERN_NODE_EXECUTABLE=os.environ['NORA_TEST_NODE'], PYTHONDONTWRITEBYTECODE='1')
+        return root, home, install, probe_log, environment
+
+    def test_desktop_nora_apply_submits_only_the_independent_core_task(self):
+        root, home, install, probe_log, environment = self.installation()
+        before = (home / 'config.yaml').read_bytes()
+        result = subprocess.run([sys.executable, '-B', str(SPEC.origin), '--apply', '--confirm'],
+                                env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        reply = json.loads(result.stdout)
+        self.assertEqual(reply['scope'], 'core')
+        self.assertEqual(reply['requestId'], 'core-request')
+        self.assertEqual(reply['argv'], ['--hermes-home', str(home), '--install-root', str(install), '--apply', '--confirm'])
+        self.assertFalse(probe_log.exists(), 'Nora must not query or submit to the APP receiver')
+        self.assertEqual((home / 'config.yaml').read_bytes(), before)
+
+    def test_desktop_nora_check_returns_core_metadata_without_an_app_query(self):
+        root, home, install, probe_log, environment = self.installation()
+        result = subprocess.run([sys.executable, '-B', str(SPEC.origin), '--check'],
+                                env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        reply = json.loads(result.stdout)
+        self.assertEqual(reply['scope'], 'core')
+        self.assertEqual(reply['state'], 'available')
+        self.assertEqual(reply['latest'], 'v2.6.0')
+        self.assertEqual(reply['argv'], ['--hermes-home', str(home), '--install-root', str(install), '--check'])
+        self.assertFalse(probe_log.exists(), 'APP lookup must not delay or reject the independent core check')
+
+    def test_status_prefers_the_core_task_without_loading_the_app_reader(self):
+        for state, settled, busy, code in [('succeeded', True, False, 0), ('failed', True, False, 1),
+                                           ('recovering', False, True, 0), ('inspection-required', False, None, 1)]:
+            with self.subTest(state=state):
+                root, home, install, probe_log, environment = self.installation()
+                reply = {'status': state, 'requestId': 'core-request', 'settled': settled, 'busy': busy,
+                         'operation': {'kind': 'update', 'state': state}}
+                (root / 'core-status.json').write_text(json.dumps(reply))
+                # Task reads must still work if the Hermes probe can no longer run.
+                environment['NORA_PYTHON'] = str(root / 'missing-python')
+                result = subprocess.run([sys.executable, '-B', str(SPEC.origin), '--status'],
+                                        env=environment, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout), reply)
+                self.assertFalse(probe_log.exists(), 'Historical APP state cannot mask an independent core task')
+
+    def test_status_reads_legacy_desktop_history_only_when_the_core_reader_confirms_no_task(self):
+        root, home, install, probe_log, environment = self.installation()
+        reply = {'scope': 'desktop', 'status': 'partial', 'settled': True, 'busy': False,
+                 'result': {'version': '2.5.7', 'launcherVersion': '2.2.6', 'updateComplete': False}}
+        (root / 'legacy-status.json').write_text(json.dumps(reply))
+        environment['NORA_PYTHON'] = str(root / 'missing-python')
+        result = subprocess.run([sys.executable, '-B', str(SPEC.origin), '--status'],
+                                env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), reply)
+        requests = [json.loads(line) for line in probe_log.read_text().splitlines() if line.startswith('{')]
+        self.assertEqual(requests, [{'scope': 'desktop', 'action': 'status', 'confirm': False, 'noraHome': str(root)}])
+        self.assertFalse((root / 'installer/skill-update/request.json').exists())
+
+
 class UpdaterSkillEnvironmentTests(unittest.TestCase):
-    def test_desktop_check_returns_its_result_without_submitting_or_polling_an_update(self):
-        reply = {'scope': 'desktop', 'action': 'check', 'status': 'succeeded', 'settled': True,
-                 'result': {'current': '2.5.6', 'latest': 'v2.5.7', 'launcherLatest': '2.2.7'}}
-        with tempfile.TemporaryDirectory() as directory:
-            home, _ = self.managed(directory)
-            with patch.dict(os.environ, {'HERMES_HOME': str(home)}), patch.object(sys, 'argv', ['update.py', '--check']), \
-                    patch.object(MODULE, 'select_python', return_value=os.path.abspath(sys.executable)), \
-                    patch.object(MODULE, 'desktop_transport', return_value=reply) as desktop, \
-                    patch.object(MODULE, 'standalone_entry') as core, patch.object(MODULE, 'task_status') as status, \
-                    patch('builtins.print') as output:
-                MODULE.main()
-            desktop.assert_called_once_with(home, 'check', confirm=False)
-            core.assert_not_called()
-            status.assert_not_called()
-            self.assertEqual(json.loads(output.call_args.args[0]), reply)
+    def test_legacy_desktop_transport_cannot_check_or_submit_updates(self):
+        for action, confirm in [('check', False), ('update', True), ('status', True)]:
+            with self.subTest(action=action, confirm=confirm), patch.object(MODULE.subprocess, 'run') as run:
+                with self.assertRaisesRegex(RuntimeError, '仅供查询'):
+                    MODULE.desktop_transport(Path('/unused'), action, confirm)
+                run.assert_not_called()
 
-    def test_desktop_update_submits_once_without_falling_back_to_core_only(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home, _ = self.managed(directory)
-            with patch.dict(os.environ, {'HERMES_HOME': str(home)}), patch.object(sys, 'argv', ['update.py', '--apply', '--confirm']), \
-                    patch.object(MODULE, 'select_python', return_value=os.path.abspath(sys.executable)), \
-                    patch.object(MODULE, 'desktop_transport', return_value={'scope': 'desktop', 'status': 'queued', 'requestId': 'same-request'}) as desktop, \
-                    patch.object(MODULE, 'standalone_entry') as core, patch('builtins.print') as output:
-                MODULE.main()
-            desktop.assert_called_once_with(home, 'update', confirm=True)
-            core.assert_not_called()
-            self.assertEqual(json.loads(output.call_args.args[0])['status'], 'queued')
-
-    def test_synchronous_desktop_check_allows_the_reader_budget_without_extending_submission_wait(self):
-        for action, limit in [('check', 120), ('update', 45)]:
-            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
-                home, _ = self.managed(directory)
-                root = Path(directory).resolve()
-                (root / 'installer/launcher-control.json').write_text('{}')
-                node = home / 'node/bin/node'
-                node.parent.mkdir(parents=True)
-                node.write_text('selection fixture')
-                entry = root / 'verified-reader.js'
-                reply = {'scope': 'desktop', 'status': 'succeeded' if action == 'check' else 'queued'}
-                replies = [subprocess.CompletedProcess([], 0, '{"desktopProtocol":"nora-desktop-update/1"}', ''),
-                           subprocess.CompletedProcess([], 0, json.dumps(reply), '')]
-                with patch.object(MODULE, 'query_entries', return_value=iter([entry])), \
-                        patch.object(MODULE.subprocess, 'run', side_effect=replies) as run:
-                    self.assertEqual(MODULE.desktop_transport(home, action, action == 'update'), reply)
-                self.assertEqual(run.call_args.kwargs['timeout'], limit)
-                if action == 'check':
-                    self.assertGreater(run.call_args.kwargs['timeout'], 100,
-                                       'the reader has a 100-second metadata budget')
-
-    def test_old_reader_is_probed_before_any_desktop_update_submission(self):
+    def test_old_reader_is_probed_before_a_legacy_desktop_status_request(self):
         with tempfile.TemporaryDirectory() as directory:
             home, _ = self.managed(directory)
             root = Path(directory).resolve()
@@ -83,25 +158,9 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             with patch.object(MODULE, 'query_entries', return_value=iter([entry])), \
                     patch.object(MODULE.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '{"desktopProtocol":null}', '')) as run:
                 with self.assertRaisesRegex(RuntimeError, '旧更新器'):
-                    MODULE.desktop_transport(home, 'update', True)
+                    MODULE.desktop_transport(home, 'status')
             self.assertEqual(run.call_count, 1)
-            self.assertIn('-e', run.call_args.args[0], 'an unsupported old reader must never receive action=update')
-
-    def test_desktop_status_uses_existing_result_without_hermes_probe(self):
-        for status in ('succeeded', 'partial'):
-            with self.subTest(status=status):
-                reply = {'scope': 'desktop', 'status': status, 'settled': True, 'busy': False,
-                         'result': {'version': '2.5.7', 'launcherVersion': '2.2.6', 'updateComplete': status == 'succeeded'}}
-                if status == 'partial':
-                    reply['result'].update(coreUpdateComplete=True, launcherError='APP query timed out')
-                with patch.object(sys, 'argv', ['update.py', '--status']), \
-                        patch.object(MODULE, 'desktop_transport', return_value=reply), \
-                        patch.object(MODULE, 'select_python') as select, \
-                        patch.object(MODULE, 'standalone_entry') as core, patch('builtins.print') as output:
-                    MODULE.main()
-                select.assert_not_called()
-                core.assert_not_called()
-                self.assertEqual(json.loads(output.call_args.args[0]), reply)
+            self.assertIn('-e', run.call_args.args[0], 'an unsupported old reader must never receive a request')
 
     def test_supported_desktop_reader_failure_is_not_reported_as_an_old_version(self):
         with tempfile.TemporaryDirectory() as directory:

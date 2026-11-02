@@ -316,11 +316,12 @@ async function dailyInteractionPage(browser,viewport,options={}){
       modelOptions:async()=>({ok:true,models:['test-model']}),
       operationLogs:async id=>({operationId:id||'22222222-2222-4222-8222-222222222222',records:[{id:'one',text:'[INFO] retained log',outcome:'succeeded'}],hasMore:false,missing:[]}),
       ...(options.resumeReady?{resumeOperation:async request=>{window.resumeRequest=request;return {restarting:true};}}:{}),
+      ...(options.recoveryReady?{recoverOperation:async request=>{window.recoverRequest=request;return {restarting:true};}}:{}),
       openInstallDirectory:async()=>{window.calls.push({name:'directory'});},
       openExternal:async()=>{window.calls.push({name:'external'});},
       openClawChatApp:async()=>({ok:true}),openClawChat:async()=>{},uninstall:async()=>{window.calls.push({name:'uninstall'});return new Promise(resolve=>{window.finishUninstall=resolve;});}};
   },options);
-  await page.goto(url);await page.locator(options.initialState?.retainedUninstallPending||options.initialState?.updateSequence?'#copy':'.services').waitFor();
+  await page.goto(url);await page.locator(options.waitFor||(options.initialState?.retainedUninstallPending||options.initialState?.updateSequence?'#copy':'.services')).waitFor();
   await page.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
   return page;
 }
@@ -504,6 +505,155 @@ async function dailyAnchors(page){
     .map(selector=>{const e=document.querySelector(selector),r=e.getBoundingClientRect();return [selector,{x:r.x,y:r.y}];})));
 }
 
+test('a verified new APP publication can follow an untouched APP failure when its tag differs from core',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const operation={operationId:'11111111-1111-4111-8111-111111111111',kind:'update',state:'failed',
+      snapshotSequence:7,busy:false,effectState:'untouched',verification:'unconfirmed',recoveryOutcome:'not-required',
+      currentFailure:{code:'RESOURCE_DOWNLOAD_FAILED'},allowedActions:['retry','recheck','logs'],
+      target:{request:{action:'update',tag:'v2.5.2',launcherOnly:true},releasePlan:{tag:'v2.5.2'}}};
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{initialState:{operation,busy:false},versionResult:{
+      state:'unavailable',available:false,updateSupported:false,error:'核心检查暂未完成',latestConfirmed:true,
+      current:'2.5.2',latest:'v2.5.2',releaseTag:'v2.5.3',
+      launcherVersion:'2.2.2',launcherLatest:'2.2.3',launcherUpdateAvailable:true,launcherInstallable:true,releaseAvailable:false}});
+    await page.evaluate(()=>{window.NoraLauncherBridge.update=async options=>{window.updateRequest=options;return {restarting:true};};});
+    await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
+    await page.locator('.update-component').first().waitFor();
+    assert.equal(await page.getByRole('button',{name:'更新启动器',exact:true}).count(),1,JSON.stringify(await page.evaluate(()=>({
+      busy:window.state.busy??null,operation:window.state.operation,copy:document.querySelector('#copy').textContent,
+      buttons:[...document.querySelectorAll('#inline button')].map(control=>control.textContent)}))));
+    await page.getByRole('button',{name:'更新启动器',exact:true}).click();
+    await page.waitForFunction(()=>Boolean(window.updateRequest));
+    const request=await page.evaluate(()=>({...window.updateRequest,onEvent:undefined}));
+    assert.equal(request.tag,'v2.5.3');assert.equal(request.launcherOnly,true);assert.equal(request.includeLauncher,undefined);
+    assert.deepEqual(await page.evaluate(()=>window.state.operation),operation,'checking a new APP target preserves the failed task');
+    assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('cached component rows never assert that either installed component is currently the latest',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{
+      state:'current',available:false,updateSupported:true,latestConfirmed:false,checkedAt:'2026-10-08T05:51:27Z',metadataSource:'cache',
+      current:'2.5.2',latest:'v2.5.2',launcherVersion:'2.2.2',launcherLatest:'2.2.2',
+      launcherUpdateAvailable:false,launcherInstallable:false,releaseAvailable:false}});
+    await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
+    await page.locator('.update-component').first().waitFor();
+    assert.equal(await page.locator('.update-component').count(),2);
+    assert.doesNotMatch((await page.locator('.update-state').allTextContents()).join('\n'),/已是最新/);
+    assert.deepEqual(await page.locator('.update-state').allTextContents(),['上次检查一致','上次检查一致']);
+    assert.match(await page.locator('#subcopy').innerText(),/上次检查结果/);
+    assert.equal(await page.getByRole('button',{name:'更新启动器',exact:true}).count(),0);
+    assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
+
+test('unverified APP metadata stays text-only and returning home clears the update layout',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const label='<img src=x onerror="window.metadataExecuted=true">';
+    for(const launcherInstallable of [false,undefined]){
+      const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{
+        state:'available',latestConfirmed:true,current:'2.5.2',latest:label,launcherVersion:'2.2.2',launcherLatest:label,
+        launcherUpdateAvailable:true,launcherInstallable,releaseAvailable:true}});
+      try{
+        await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
+        await page.locator('.update-component').first().waitFor();
+        assert.equal(await page.getByRole('button',{name:'更新启动器',exact:true}).count(),0);
+        assert.equal(await page.getByRole('button',{name:'安装更新',exact:true}).count(),0);
+        assert.equal(await page.locator('.update-list img').count(),0);
+        assert.ok((await page.locator('.update-list').innerText()).includes(label));
+        assert.equal(await page.evaluate(()=>window.metadataExecuted),undefined);
+        await page.getByRole('button',{name:'返回酒馆',exact:true}).click();await page.locator('.services').waitFor();
+        assert.equal(await page.locator('main.update-view').count(),0);
+        assert.equal(await page.locator('.update-component').count(),0);assert.deepEqual(page.uiErrors,[]);
+      }finally{await page.close();}
+    }
+  }finally{await browser.close();}
+});
+
+test('core and unmarked update tasks never expose GUI retry even when the record allows it',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    for(const target of [{request:{action:'update',tag:'v2.5.2'}},{}]){
+      const operation={operationId:'11111111-1111-4111-8111-111111111111',kind:'update',state:'failed',snapshotSequence:7,
+        busy:false,effectState:'unknown',verification:'unconfirmed',recoveryOutcome:'recovery-required',target,
+        allowedActions:['retry','resume','recheck','logs'],primaryFailure:{code:'RESOURCE_DOWNLOAD_FAILED',
+          guidance:{title:'更新未完成。',detail:'请查询原任务。'}}};
+      const page=await dailyInteractionPage(browser,{width:1120,height:680},{initialState:{operation},resumeReady:true,waitFor:'#inline .outcome-actions'});
+      try{
+        await page.locator('#inline .outcome-actions').waitFor();
+        assert.equal(await page.getByRole('button',{name:/重新尝试更新|继续更新|重试更新/}).count(),0);
+        assert.equal(await page.getByRole('button',{name:'重新检查',exact:true}).count(),1);
+        assert.equal(await page.getByRole('button',{name:'查看日志',exact:true}).count(),1);
+        assert.equal(await page.evaluate(()=>window.resumeRequest),undefined);assert.deepEqual(page.uiErrors,[]);
+      }finally{await page.close();}
+    }
+  }finally{await browser.close();}
+});
+
+test('independent core recovery stays query-and-logs only in error and dedicated recovery views',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    for(const dedicated of [false,true])for(const filesRestored of [false,true]){
+      const operation={operationId:'11111111-1111-4111-8111-111111111111',kind:'update',state:'interrupted',snapshotSequence:7,
+        busy:false,effectState:filesRestored?'restored':'unknown',verification:'failed',currentFailure:{code:'TEST_CORE_FAILURE'},
+        recoveryOutcome:filesRestored?'files-restored-start-failed':'recovery-required',legacyDesktopRecovery:false,
+        target:{request:{action:'update',tag:'v2.5.2'}},allowedActions:[filesRestored?'start-restored':'recover','retry','resume','recheck','logs'],
+        primaryFailure:{code:'TEST_CORE_FAILURE',guidance:{title:'核心更新尚未结束。',detail:'请查询原任务。'}}};
+      const page=await dailyInteractionPage(browser,{width:1120,height:680},{initialState:{operation,busy:false,
+        ...(dedicated?{updateRecovery:{canRecover:true,restoreVersion:'2.5.1',backup:'/isolated/core-backup'}}:{})},
+        resumeReady:true,recoveryReady:true,waitFor:'#inline .outcome-actions'});
+      try{
+        assert.deepEqual(await page.locator('#inline button').allTextContents(),['重新检查','查看日志']);
+        assert.equal(await page.getByRole('button',{name:/恢复旧版本|启动旧版本|重新尝试更新|继续更新/}).count(),0);
+        if(dedicated)assert.match(await page.locator('#subcopy').innerText(),/请与诺拉对话/);
+        await page.evaluate(()=>{
+          window.NoraLauncherBridge.recheckOperation=async request=>{
+            window.recheckRequest=request;window.state.operation={...window.state.operation,snapshotSequence:8};return {...window.state};
+          };
+          window.NoraLauncherBridge.operationLogs=async id=>{window.logsRequest=id;return {operationId:id,records:[],missing:[],hasMore:false};};
+        });
+        await page.getByRole('button',{name:'重新检查',exact:true}).click();
+        assert.deepEqual(await page.evaluate(()=>window.recheckRequest),{operationId:operation.operationId,snapshotSequence:7});
+        assert.equal(await page.getByRole('button',{name:/恢复旧版本|启动旧版本|重新尝试更新|继续更新/}).count(),0);
+        await page.getByRole('button',{name:'查看日志',exact:true}).click();
+        await page.getByRole('button',{name:'返回操作页',exact:true}).waitFor();
+        assert.equal(await page.evaluate(()=>window.logsRequest),operation.operationId);
+        assert.equal(await page.evaluate(()=>window.recoverRequest),undefined);
+        assert.equal(await page.evaluate(()=>window.resumeRequest),undefined);assert.deepEqual(page.uiErrors,[]);
+      }finally{await page.close();}
+    }
+  }finally{await browser.close();}
+});
+
+test('backend-permitted legacy desktop recovery retains restore but never update retry',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    for(const dedicated of [false,true])for(const filesRestored of [false,true]){
+      // This trusted bridge fixture expresses backend permission; journal proof is tested at the backend boundary.
+      const operation={operationId:'11111111-1111-4111-8111-111111111111',kind:'update',state:'interrupted',snapshotSequence:7,
+        busy:false,effectState:filesRestored?'restored':'unknown',verification:'failed',currentFailure:{code:'TEST_LEGACY_FAILURE'},
+        recoveryOutcome:filesRestored?'files-restored-start-failed':'recovery-required',legacyDesktopRecovery:true,
+        target:{request:{action:'update',tag:'v2.5.2'}},allowedActions:[filesRestored?'start-restored':'recover','retry','resume','recheck','logs'],
+        primaryFailure:{code:'TEST_LEGACY_FAILURE',guidance:{title:'旧桌面更新尚未结束。',detail:'请保留备份。'}}};
+      const page=await dailyInteractionPage(browser,{width:1120,height:680},{initialState:{operation,busy:false,
+        ...(dedicated?{updateRecovery:{canRecover:true,restoreVersion:'2.5.1',backup:'/isolated/legacy-backup'}}:{})},
+        resumeReady:true,recoveryReady:true,waitFor:'#inline .outcome-actions'});
+      try{
+        assert.equal(await page.getByRole('button',{name:/重新尝试更新|继续更新|重试更新/}).count(),0);
+        const restore=page.getByRole('button',{name:filesRestored?'启动旧版本':'恢复旧版本',exact:true});
+        assert.equal(await restore.isEnabled(),true);await restore.click();
+        await page.waitForFunction(()=>Boolean(window.recoverRequest));
+        const request=await page.evaluate(()=>({...window.recoverRequest,onEvent:undefined}));
+        assert.equal(request.operationId,operation.operationId);assert.equal(request.snapshotSequence,7);
+        assert.equal(await page.evaluate(()=>window.resumeRequest),undefined);assert.deepEqual(page.uiErrors,[]);
+      }finally{await page.close();}
+    }
+  }finally{await browser.close();}
+});
+
 test('update cooldown keeps retry disabled through polling while logs and return remain usable', {timeout:20000},async()=>{
   const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM});
   try{
@@ -511,7 +661,7 @@ test('update cooldown keeps retry disabled through polling while logs and return
       state:'unavailable',available:false,current:'2.4.2',launcherVersion:'2.0.2',retryAt:Date.now()+600000,
       error:'下载或更新服务限制了请求。\n请在约 10 分钟后重新检查。'}});
     await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
-    const retry=page.getByRole('button',{name:'重新检查更新',exact:true});
+    const retry=page.getByRole('button',{name:'重新检查',exact:true});
     assert.equal(await retry.isDisabled(),true);
     assert.equal(await page.getByRole('button',{name:'查看日志',exact:true}).isEnabled(),true);
     assert.equal(await page.getByRole('button',{name:'返回酒馆',exact:true}).isEnabled(),true);
@@ -519,27 +669,27 @@ test('update cooldown keeps retry disabled through polling while logs and return
     await page.getByRole('button',{name:'返回操作页',exact:true}).click();
     assert.equal(await retry.isDisabled(),true);
     await page.evaluate(()=>{const original=Date.now;Date.now=()=>original()+3600000;});
-    await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.textContent==='重新检查更新'&&!button.disabled),{},{timeout:7000});
+    await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.textContent==='重新检查'&&!button.disabled),{},{timeout:7000});
     await page.getByRole('button',{name:'返回酒馆',exact:true}).click();
     await page.locator('.services').waitFor();assert.deepEqual(page.uiErrors,[]);
   }finally{await browser.close();}
 });
 
-for(const both of [false,true])test(`the existing update button submits the fixed batch for ${both?'both components':'APP only'}`,async()=>{
+for(const both of [false,true])test(`the update button submits only APP when ${both?'both components have updates':'only APP has an update'}`,async()=>{
   const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
   try{
     const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{state:'available',available:true,updateSupported:true,
       current:both?'2.4.2':'2.5.2',latest:'v2.5.2',releaseTag:'v2.5.3',launcherVersion:'2.2.2',launcherLatest:'2.2.3',
-      launcherUpdateAvailable:true,releaseAvailable:both}});
+      launcherUpdateAvailable:true,launcherInstallable:true,latestConfirmed:true,releaseAvailable:both}});
     await page.evaluate(()=>{window.NoraLauncherBridge.update=async options=>{window.updateRequest=options;return {restarting:true};};});
     await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
-    await page.getByRole('button',{name:'安装更新',exact:true}).click();
+    await page.getByRole('button',{name:'更新启动器',exact:true}).click();
     const request=await page.evaluate(()=>({...window.updateRequest,onEvent:undefined}));
-    assert.equal(request.tag,'v2.5.3');assert.equal(request.includeLauncher,both?true:undefined);assert.equal(request.launcherOnly,both?undefined:true);
+    assert.equal(request.tag,'v2.5.3');assert.equal(request.includeLauncher,undefined);assert.equal(request.launcherOnly,true);
     assert.deepEqual(page.uiErrors,[]);
   }finally{await browser.close();}
 });
-test('reopened compatible partial update explains both versions and retries the original operation',async()=>{
+test('reopened historical partial update explains both versions and only requeries the original operation',async()=>{
   const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
   try{
     const operationId='11111111-1111-4111-8111-111111111111';
@@ -559,17 +709,19 @@ test('reopened compatible partial update explains both versions and retries the 
     });
     await page.getByRole('button',{name:'重新检查',exact:true}).click();
     assert.match(await page.locator('#copy').innerText(),/更新部分完成/);
-    await page.getByRole('button',{name:'重新尝试更新',exact:true}).click();
-    const request=await page.evaluate(()=>({...window.resumeRequest,onEvent:undefined}));
-    assert.equal(request.operationId,operationId);assert.equal(request.snapshotSequence,8);assert.deepEqual(page.uiErrors,[]);
+    const request=await page.evaluate(()=>window.recheckRequest);
+    assert.equal(request.operationId,operationId);assert.equal(request.snapshotSequence,7);
+    assert.equal(await page.evaluate(()=>window.state.operation.snapshotSequence),8);
+    assert.equal(await page.getByRole('button',{name:/重新尝试更新|继续更新/}).count(),0);
+    assert.equal(await page.evaluate(()=>window.resumeRequest),undefined);assert.deepEqual(page.uiErrors,[]);
   }finally{await browser.close();}
 });
-test('a failed second phase immediately shows the canonical partial result',async()=>{
+test('a legacy partial result returned by an APP request stays readable without a cross-component retry',async()=>{
   const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
   try{
     const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{state:'available',available:true,updateSupported:true,
       current:'2.4.3',latest:'v2.5.2',releaseTag:'v2.5.3',launcherVersion:'2.2.1',launcherLatest:'2.2.2',
-      launcherUpdateAvailable:true,releaseAvailable:true}});
+      launcherUpdateAvailable:true,launcherInstallable:true,latestConfirmed:true,releaseAvailable:true}});
     await page.evaluate(()=>{window.NoraLauncherBridge.resumeOperation=async()=>({restarting:true});window.NoraLauncherBridge.update=async()=>{
       const operation={operationId:'11111111-1111-4111-8111-111111111111',kind:'update',state:'rolled-back',
         snapshotSequence:9,effectState:'restored',verification:'confirmed',recoveryOutcome:'restored-and-verified',
@@ -579,14 +731,15 @@ test('a failed second phase immediately shows the canonical partial result',asyn
       const {allowedActions,...raw}=operation;throw {message:'更新部分完成',operation:raw};
     };});
     await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
-    await page.getByRole('button',{name:'安装更新',exact:true}).click();
+    await page.getByRole('button',{name:'更新启动器',exact:true}).click();
     await page.getByText('更新部分完成。',{exact:true}).waitFor();
     assert.match(await page.locator('#subcopy').innerText(),/2\.4\.3.*2\.2\.2/s);
-    assert.equal(await page.getByRole('button',{name:'重新尝试更新',exact:true}).isEnabled(),true);
+    assert.equal(await page.getByRole('button',{name:/重新尝试更新|继续更新/}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'重新检查',exact:true}).isEnabled(),true);
     assert.deepEqual(page.uiErrors,[]);
   }finally{await browser.close();}
 });
-test('partial update retry uses its own core task when the latest task is a later shutdown',async()=>{
+test('historical partial requery retains its core task identity when the latest task is a later shutdown',async()=>{
   const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
   try{
     const operationId='11111111-1111-4111-8111-111111111111';
@@ -597,10 +750,19 @@ test('partial update retry uses its own core task when the latest task is a late
         snapshotSequence:4,busy:false,allowedActions:['logs']},
       updateSequence:{status:'partial',failed:'core',operation:core,operationId,snapshotSequence:13,
         coreVersion:'2.4.3',launcherVersion:'2.2.2',message:'旧酒馆已恢复，启动器更新保留。'}}});
-    await page.getByRole('button',{name:'重新尝试更新',exact:true}).click();
-    await page.waitForFunction(()=>Boolean(window.resumeRequest),{},{timeout:3000});
-    const request=await page.evaluate(()=>({...window.resumeRequest,onEvent:undefined}));
+    await page.evaluate(()=>{window.NoraLauncherBridge.recheckOperation=async request=>{
+      window.recheckRequest=request;
+      const original=window.state.updateSequence.operation;
+      window.state.updateSequence={...window.state.updateSequence,operation:{...original,snapshotSequence:14}};
+      return {...window.state};
+    };});
+    assert.equal(await page.getByRole('button',{name:/重新尝试更新|继续更新/}).count(),0);
+    await page.getByRole('button',{name:'重新检查',exact:true}).click();
+    const request=await page.evaluate(()=>window.recheckRequest);
     assert.equal(request.operationId,operationId);assert.equal(request.snapshotSequence,13);
+    assert.equal(await page.evaluate(()=>window.state.operation.kind),'shutdown');
+    assert.equal(await page.evaluate(()=>window.state.updateSequence.operation.snapshotSequence),14);
+    assert.equal(await page.evaluate(()=>window.resumeRequest),undefined);
     assert.deepEqual(page.uiErrors,[]);
   }finally{await browser.close();}
 });

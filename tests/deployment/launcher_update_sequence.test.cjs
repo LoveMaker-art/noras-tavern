@@ -81,6 +81,15 @@ test('reopen reads canonical partial failure without silently replaying it',asyn
   const reopened=await sequence.run(f.load(),a.api);
   assert.equal(reopened.status,'partial');assert.deepEqual(a.calls,before);
 });
+test('a restored first failure ends without requiring unrelated combination health and does not replay on reopen',async t=>{
+  const f=fixture(t,{appFirst:true}),value=f.create(),a=adapters(value,{failStep:'launcher'});
+  let healthChecks=0;
+  a.api.verifyCombination=async()=>{healthChecks++;throw new Error('fixture independent core health failure');};
+  await assert.rejects(sequence.run(value,a.api),{message:'injected phase failure'});
+  assert.deepEqual(a.calls,['launcher']);assert.equal(healthChecks,0);
+  await assert.rejects(sequence.run(f.load(),a.api),{message:'injected phase failure'});
+  assert.deepEqual(a.calls,['launcher']);assert.equal(healthChecks,0);
+});
 test('an unfinished restore cannot become compatible partial success',async t=>{
   const f=fixture(t),value=f.create(),a=adapters(value,{failStep:'launcher',unconfirmed:true});
   await assert.rejects(sequence.run(value,a.api),{code:'UPDATE_RECOVERY_REQUIRED'});

@@ -314,12 +314,34 @@ test('confirmed untouched handoff reopening clears stale hints without losing th
   assert.equal(response.value.operation.primaryFailure.code,'EACCES');
 });
 
-for(const [name,options] of [
-  ['a partial original system',{resultChanges:{systemReady:false}}],
-  ['files restored but services unconfirmed',{outcome:'files-only'}],
-  ['unknown restoration effects',{outcome:'unknown'}],
-  ['a different known original version',{currentVersion:'2.4.4'}],
-])test(`reopening a rollback preserves maintenance guidance for ${name}`,async t=>{
+test('a closed program recovery clears its cache without requiring a historical healthy runtime result',async t=>{
+  const f=launcherFixture(t,{cacheWriteDenied:true});fs.mkdirSync(path.join(f.home,'installer'),{recursive:true});
+  fs.writeFileSync(path.join(f.home,'installer','state.json'),JSON.stringify({schema:1,phase:'error',port:8799,
+    error:'Ended APP update',resumeTarget:'v2.4.6',setupCompleted:true}));
+  const operation=await rollbackFixture(f,{resultChanges:{version:undefined,commit:undefined,systemReady:undefined,
+    noraHome:undefined,hermesHome:undefined,installRoot:undefined,port:undefined}});
+  const recordFile=path.join(f.home,'installer','operations',operation.operationId,'operation.json'),before=fs.readFileSync(recordFile);
+  const current={...f.context.fixtureOutput.at(-1),version:'2.4.5',commit:'b'.repeat(40),systemReady:false,running:false,gatewayRunning:false};
+  fs.mkdirSync(path.join(f.home,'hermes'),{recursive:true});fs.writeFileSync(path.join(f.home,'hermes','nora-instance.json'),
+    JSON.stringify({schema:1,noraHome:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),port:8799}));
+  const reopened=launcherFixture(t,{existingHome:f.home,output:[current]});
+  const response=await reopened.status();assert.equal(response.ok,true);
+  assert.equal(response.value.installer.error,'');assert.equal(response.value.installer.resumeTarget,null);
+  assert.equal(response.value.installer.phase,'idle');assert.equal(response.value.installer.setupCompleted,true);
+  assert.equal(response.value.systemReady,false);assert.equal(response.value.running,false);
+  assert.deepEqual(fs.readFileSync(recordFile),before,'cache reconciliation must not rewrite the closed task');
+  await vm.runInContext(`operations().start('stop',{execute:async()=>({verification:'confirmed'})},'after-recovery-stop')`,reopened.context);
+  const again=launcherFixture(t,{existingHome:f.home,output:[current]});
+  const final=await again.status();assert.equal(final.value.operation.kind,'stop');
+  assert.equal(final.value.installer.error,'');assert.equal(final.value.installer.resumeTarget,null);
+});
+
+for(const [name,options,closed] of [
+  ['a partial original system',{resultChanges:{systemReady:false}},true],
+  ['files restored but services unconfirmed',{outcome:'files-only'},true],
+  ['unknown restoration effects',{outcome:'unknown'},false],
+  ['a different known original version',{currentVersion:'2.4.4'},true],
+])test(`reopening a rollback separates its program result from ${name}`,async t=>{
   const f=launcherFixture(t,{cacheWriteDenied:true});fs.mkdirSync(path.join(f.home,'installer'),{recursive:true});
   fs.writeFileSync(path.join(f.home,'installer','state.json'),JSON.stringify({schema:1,phase:'error',error:'Keep recovery guidance',resumeTarget:'v2.4.6'}));
   const operation=await rollbackFixture(f,options);assert.ok(operation.primaryFailure);
@@ -327,8 +349,12 @@ for(const [name,options] of [
     JSON.stringify({schema:1,noraHome:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),port:18888}));
   const reopened=launcherFixture(t,{existingHome:f.home,output:[{...f.context.fixtureRestored,event:'result'}]});
   const response=await reopened.status();assert.equal(response.ok,true);
-  assert.equal(response.value.installer.phase,'error');assert.equal(response.value.installer.error,'Keep recovery guidance');
-  assert.equal(response.value.installer.resumeTarget,'v2.4.6');
+  assert.equal(response.value.installer.phase,closed?response.value.systemReady?'ready':'idle':'error');
+  assert.equal(response.value.installer.error,closed?'':'Keep recovery guidance');
+  assert.equal(response.value.installer.resumeTarget,closed?null:'v2.4.6');
+  assert.equal(response.value.systemReady,f.context.fixtureRestored.systemReady);
+  assert.equal(response.value.version,f.context.fixtureRestored.version);
+  assert.equal(response.value.operation.primaryFailure.code,'VERIFICATION_FAILED');
 });
 
 test('reopening with an old error cache projects the confirmed maintenance and live matching system', async t => {

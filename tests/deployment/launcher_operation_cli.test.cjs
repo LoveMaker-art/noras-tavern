@@ -550,10 +550,11 @@ test('a failed explicit update continuation remains failed after a confirmed aut
   assert.deepEqual(calls,['operation-effects','resume-committed-update','recover']);
   assert.equal(operation.state,'rolled-back');assert.equal(operation.verification,'confirmed');
   assert.equal(operation.kind,'update');assert.equal(operation.requestedAction,'update');
-  assert.equal(operation.primaryFailure.code,'EPIPE');assert.equal(operation.currentFailure.code,'ECONNRESET');
+  assert.equal(operation.primaryFailure.code,'EPIPE');assert.equal(operation.currentFailure,null);
   assert.equal(cli.terminalResult(operation).ok,false,'automatic rollback is recovery evidence, not a successful update');
   assert.ok(raw.at(-1)?.final,'the retained operation log must reach a final ACK');
-  assert.match(raw.map(chunk=>chunk.text).join(''),/verification interrupted/);
+  assert.match(raw.map(chunk=>chunk.text).join(''),/verification interrupted/,
+    'the continuation failure remains in the saved logs after its confirmed automatic recovery');
   assert.match(raw.map(chunk=>chunk.text).join(''),/restored-and-verified/);
 });
 

@@ -561,18 +561,21 @@ test('main creates one fresh source context per execution and passes it to every
   const walk=node=>{if(!node||typeof node!=='object')return;if(node.type)nodes.push(node);for(const value of Object.values(node))if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);};walk(tree);
   const execute=nodes.find(node=>node.type==='VariableDeclarator'&&node.id.name==='executeAction').init;
   const inner=[];const collect=node=>{if(!node||typeof node!=='object')return;if(node.type)inner.push(node);for(const value of Object.values(node))if(Array.isArray(value))value.forEach(collect);else if(value&&typeof value==='object')collect(value);};collect(execute);
+  collect(nodes.find(node=>node.type==='FunctionDeclaration'&&node.id.name==='runLauncherUpdate'));
   const declaration=inner.filter(node=>node.type==='VariableDeclarator'&&node.id.name==='networkPolicy');assert.equal(declaration.length,1);
   const network=require(path.join(modules,'release-network'));
   const initializer='('+text.slice(declaration[0].init.start,declaration[0].init.end)+')';
   const first=vm.runInNewContext(initializer,{require:name=>{assert.equal(name,'./release-network');return network;}});
   const second=vm.runInNewContext(initializer,{require:()=>network});
   assert.notEqual(first.sourceContext,second.sourceContext,'resumed/handoff executions do not inherit a previous source preference');
-  const expected=new Map([['releases.selectPlan',1],['launcherUpdate.prepare',1],['releases.prepareInstall',2],['releases.prepareUpdate',1]]);
+  const expected=new Map([['releases.selectPlan',1],['launcherUpdate.prepare',1],['releases.prepareInstall',1],['releases.prepareUpdate',0]]);
   for(const [callee,count]of expected){
     const calls=inner.filter(node=>node.type==='CallExpression'&&node.callee.type==='MemberExpression'&&`${node.callee.object.name}.${node.callee.property.name}`===callee);
     assert.equal(calls.length,count,callee);
     for(const call of calls){const property=call.arguments[0].properties.find(p=>p.key?.name==='networkPolicy');assert.equal(property?.value?.name,'networkPolicy',`${callee} must receive the one execution-owned policy`);}
   }
+  const appCall=inner.find(node=>node.type==='CallExpression'&&node.callee.name==='runLauncherUpdate');
+  assert.equal(appCall.arguments[1].properties.find(property=>property.key?.name==='networkPolicy').value.name,'networkPolicy');
   assert.equal(inner.filter(node=>node.type==='AssignmentExpression'&&node.left.object?.name==='networkPolicy').length,0,'main does not install a selector deadline on the execution policy');
 });
 

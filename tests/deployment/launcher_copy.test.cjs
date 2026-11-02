@@ -49,7 +49,7 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
 
 function uiContext(values = {}) {
   const elements = new Map();
-  const element = () => ({ hidden: false, append() {}, classList: { add() {}, remove() {}, toggle() {} } });
+  const element = () => ({ hidden: false, dataset:{}, setAttribute() {}, append() {}, classList: { add() {}, remove() {}, toggle() {} } });
   const context = vm.createContext({
     busy: false, snapshot: {}, view: 'daily', statusUnknown: false, launcherRecoveryConfirmed:false, lastStatusAt:0, api:{}, refreshFailure(){},lastFailure:null,
     $: id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
@@ -60,7 +60,7 @@ function uiContext(values = {}) {
     button: () => ({}), textError: String,
     ...values,
   });
-  vm.runInContext(['hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','complete','canReturnHome'].map(definition).join('\n'),context);
+  vm.runInContext(['renderUpdateVersions','currentOperation','isNewUpdateTarget','hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','settledUpdateOperation','complete','canReturnHome'].map(definition).join('\n'),context);
   return context;
 }
 
@@ -148,13 +148,13 @@ test('ClawChat client IPC uses a fixed protocol and keeps downloads on a separat
 
 test('version details and the daily notice name the channel actually checked', async () => {
   for (const channel of ['stable', 'beta']) for (const state of ['current', 'ahead']) {
-    let title;
+    let title, subtitle;
     const versionInfo = { state, channel, current: '2.0.0', latest: '2.0.0', latestConfirmed:true };
-    const context = uiContext({ versionInfo, say: value => { title = value; }, api: { checkUpdate: async () => versionInfo } });
+    const context = uiContext({ versionInfo, say: (value,detail) => { title = value; subtitle=detail; }, api: { checkUpdate: async () => versionInfo } });
     vm.runInContext(definition('checkUpdates'), context);
     await vm.runInContext('checkUpdates()', context);
     const channelName = channel === 'beta' ? 'Beta 测试版' : '正式版';
-    assert.equal(title, state === 'current' ? `暂无${channelName}更新。` : `本机酒馆版本高于${channelName}发布。`);
+    assert.equal(title,'版本更新');assert.match(subtitle,new RegExp(channelName));
     const appended = [];
     context.view = 'daily';
     context.$ = id => id === 'versionNotice' ? null : { append: value => appended.push(value) };
@@ -185,7 +185,7 @@ test('opening an installed launcher starts only Tavern once, including unfinishe
       run: (action, options) => calls.push([action, options.service]),
       dailyHome: () => calls.push('daily'), modelForm: () => calls.push('model'),
     });
-    vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('route')}\nroute();`, context);
+    vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('settledUpdateOperation')}\n${definition('route')}\nroute();`, context);
     assert.deepEqual(calls, [['start', 'tavern']]);
     vm.runInContext('route();', context);
     assert.equal(calls.filter(c => Array.isArray(c)).length, 1, 'no restart loop after failure or manual stop');
@@ -205,7 +205,7 @@ test('startup does not compete with an update, reuse a missing install, or start
       $: () => ({ hidden: false, append() {}, classList: { add() {}, remove() {} } }),
       document: { createElement: () => ({ append() {}, setAttribute() {} }) },
     });
-    vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('route')}\nroute();`, context);
+    vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('settledUpdateOperation')}\n${definition('route')}\nroute();`, context);
     assert.deepEqual(calls, []);
   }
 });
@@ -218,7 +218,7 @@ test('pending saved model routes to resume rather than requesting the key again'
     pendingModel: () => { resumed = true; }, run: () => assert.fail('must reuse running service'),
     modelForm: () => assert.fail('must not ask for key again'),
   });
-  vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('route')}\nroute();`, context);
+  vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('settledUpdateOperation')}\n${definition('route')}\nroute();`, context);
   assert.equal(resumed, true);
 });
 
@@ -231,7 +231,7 @@ test('installation messages describe ClawChat access and the full-system update 
   assert.ok(bridge.includes('hooks/tavern-liveware-register/handler.py'), 'registration uses the shared hook');
   assert.ok(services.includes('ClawChat 连接服务尚未停止'));
   assert.doesNotMatch(bridge + services, /手机(?:连接组件|酒馆入口|连接服务)/);
-  assert.ok(definition('taskView').includes("update: '正在更新诺拉与酒馆。'"));
+  assert.ok(definition('taskView').includes("update: '正在更新启动器。'"));
   assert.doesNotMatch(definition('renderServices'), /service-detail|conversation-link|打开酒馆/, 'service rows do not repeat the conversation and launch entries');
 });
 

@@ -21,62 +21,58 @@ function setup(t,overrides={}){
   return {home,events,record,context,options,policy:create(options),journal,setRuntime:next=>{runtime=next;}};
 }
 
-test('restored handoff closes only after actual system verification and no other pending effects',async t=>{
-  let facts={effectState:'untouched',reason:'no_journal'},app,status,verified;
+for(const untouched of [false,true])test(`handoff closure requires only owned program facts (untouched=${untouched})`,async t=>{
+  let facts={effectState:'untouched',reason:'no_journal'},app;
   const f=setup(t,{inspectRuntime:()=>facts,inspectLauncherOutcome:async()=>app,
-    bridge:async(command)=>{f.events.push(command);return command==='status'?status:verified;}});
+    bridge:async command=>{throw new Error('Closure must not query unrelated '+command);}});
   Object.assign(f.record,{state:'awaiting-handoff',handoffRef:'/owned/job',planDigest:'a'.repeat(64),
     target:{currentVersion:'2.4.5',request:{port:18999}}});
-  app={status:'restored',verification:'confirmed',effectState:'restored',busy:false,workerOffline:true,
-    operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef};
-  status={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:false,
-    running:false,gatewayRunning:false,clawchatConnected:false,version:'2.4.5',commit:'b'.repeat(40),port:18999,
-    noraHome:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern')};
-  verified={...status,updateVerified:true};
+  app={status:untouched?'cancelled':'restored',verification:'confirmed',effectState:untouched?'untouched':'restored',
+    busy:false,workerOffline:true,operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef};
   const result=await f.policy.reconcileHandoff(f.record,f.context);
-  assert.equal(result.value.recoveryVerification,'confirmed');
-  assert.deepEqual(f.events,['status','verify-current-update']);
-  for(const mutation of ['worker','binding','runtime','health','version','root','port','service']){
-    const originalApp={...app},originalVerified={...verified};
+  assert.equal(result.value[untouched?'notAppliedVerification':'recoveryVerification'],'confirmed');
+  assert.equal(result.value.systemReady,undefined,'restoration does not invent service health');
+  assert.equal(result.value.version,undefined,'an APP helper version is not a core version');
+  for(const mutation of ['worker','busy','binding','plan','job','runtime','unknown','effect']){
+    const originalApp={...app};
     if(mutation==='worker')app.workerOffline=false;
+    if(mutation==='busy')app.busy=true;
     if(mutation==='binding')app.operationId='another-operation';
+    if(mutation==='plan')app.planDigest='b'.repeat(64);
+    if(mutation==='job')app.job='/foreign/job';
     if(mutation==='runtime')facts={effectState:'changed',canRecover:true};
-    if(mutation==='health')verified.updateVerified=false;
-    if(mutation==='version')verified.version='2.5.0';
-    if(mutation==='root')verified.noraHome='/foreign';
-    if(mutation==='port')verified.port=19000;
-    if(mutation==='service')verified.running=true;
+    if(mutation==='unknown')facts={effectState:'unknown',canRecover:false};
+    if(mutation==='effect')app.effectState=untouched?'restored':'untouched';
     assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null,mutation);
-    app=originalApp;verified=originalVerified;facts={effectState:'untouched',reason:'no_journal'};
+    app=originalApp;facts={effectState:'untouched',reason:'no_journal'};
   }
 });
-test('cancelled handoff requires untouched complete installation, offline worker and matching service state',async t=>{
-  let facts={effectState:'untouched',reason:'no_journal'},app,status,verified;
-  const f=setup(t,{inspectRuntime:()=>facts,inspectLauncherOutcome:async()=>app,
-    bridge:async command=>command==='status'?status:verified});
-  Object.assign(f.record,{state:'awaiting-handoff',handoffRef:'/owned/job',planDigest:'a'.repeat(64),
-    target:{currentVersion:'2.5.0',request:{port:18999}}});
-  app={status:'cancelled',verification:'confirmed',effectState:'untouched',busy:false,workerOffline:true,
-    operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef};
-  status={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
-    running:true,gatewayRunning:true,clawchatConnected:true,version:'2.5.0',commit:'b'.repeat(40),port:18999,
-    noraHome:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern')};
-  verified={...status,updateVerified:true};
-  assert.equal((await f.policy.reconcileHandoff(f.record,f.context))?.status,'cancelled');
-  for(const mutation of ['worker','binding','runtime','health','version','root','port','service','effect']){
-    const originalApp={...app},originalVerified={...verified};
-    if(mutation==='worker')app.workerOffline=false;
-    if(mutation==='binding')app.operationId='foreign';
-    if(mutation==='runtime')facts={effectState:'restored'};
-    if(mutation==='health')verified.updateVerified=false;
-    if(mutation==='version')verified.version='2.4.5';
-    if(mutation==='root')verified.noraHome='/foreign';
-    if(mutation==='port')verified.port=19000;
-    if(mutation==='service')verified.running=false;
-    if(mutation==='effect')app.effectState='restored';
-    assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null,mutation);
-    app=originalApp;verified=originalVerified;facts={effectState:'untouched',reason:'no_journal'};
-  }
+
+for(const filesOnly of [false,true])test(`APP restoration closes independently of core acceptance (separate service failure=${filesOnly})`,async t=>{
+  let app;
+  const f=setup(t,{systemEffects:async()=>filesOnly?{effectState:'restored',recoveryOutcome:'files-restored-start-failed'}:{effectState:'untouched',recoveryOutcome:'not-required'},
+    inspectLegacy:()=>null,inspectLauncherOutcome:async()=>app,inspectLauncher:async()=>app,
+    bridge:async command=>{f.events.push(command);throw new Error('Unrelated service/core verification must not delay program closure');}});
+  const protectedFiles=['chats/story.jsonl','characters/card.json','worlds/world.json','config/model.json'];
+  for(const file of protectedFiles){const target=path.join(f.home,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'current user content: '+file);}
+  const bytes=protectedFiles.map(file=>fs.readFileSync(path.join(f.home,file)));
+  const options={directory:path.join(f.home,'installer'),lock:createTestOperationLock(),
+    observeEffects:record=>f.policy.observe(record),verifyRestoredHandoff:(record,context)=>f.policy.reconcileHandoff(record,context)};
+  const controller=createOperationController(options);
+  const pending=await controller.start('update',{target:{currentVersion:'2.5.7',request:{tag:'v2.6.0',launcherOnly:true,port:18999}},
+    execute:async context=>{await context.handoff('/owned/restored-job');return {handoff:true};}},'restored-app');
+  app={status:'restored',verification:'confirmed',effectState:'restored',workerOffline:true,busy:false,
+    operationId:pending.operationId,planDigest:pending.planDigest,job:pending.handoffRef,
+    failure:Object.assign(new Error('fixture incoming APP failed before completion'),{code:'LAUNCHER_START_FAILED'})};
+  const ended=await controller.recheck(pending.operationId);
+  assert.equal(ended.state,'rolled-back');assert.equal(ended.verification,filesOnly?'failed':'confirmed');assert.equal(ended.currentFailure,null);
+  assert.equal(ended.primaryFailure.code,'LAUNCHER_START_FAILED');
+  assert.deepEqual(f.events,[],'APP closure does not wait for status or whole-core acceptance');
+  assert.equal(ended.recoveryOutcome,filesOnly?'files-restored-start-failed':'restored-and-verified');
+  const reopened=createOperationController(options);
+  assert.equal((await reopened.snapshot(pending.operationId)).state,'rolled-back');
+  assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'after-restored-app')).state,'succeeded');
+  for(const [index,file] of protectedFiles.entries())assert.deepEqual(fs.readFileSync(path.join(f.home,file)),bytes[index]);
 });
 
 test('a failure before any journal exists stays untouched without executing recovery',async t=>{

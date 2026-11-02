@@ -185,7 +185,7 @@ test('a failed new runtime restores exact original missing programs and bytes; l
  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('actual no-Python status and existing UI route retain repair action; corrupt history cannot show fresh install',async()=>{
+test('actual no-Python status guides core repair to Nora; corrupt history cannot show fresh install',async()=>{
  const f=fixture();try{
   const vm=require('node:vm'),desktop=path.join(__dirname,'../installer/desktop'),{parse}=require(path.join(desktop,'node_modules/acorn'));
   const main=fs.readFileSync(path.join(desktop,'main.js'),'utf8'),ast=parse(main,{ecmaVersion:'latest'});
@@ -197,7 +197,7 @@ test('actual no-Python status and existing UI route retain repair action; corrup
    modelBusy:false,activeRun:false,statusRequest:null,activeOperationContext:null,releaseAbort:null,cancelled:false,updatingSystem:false,activeProcess:null,
    readLauncherRecovery:async()=>null,operations:()=>({snapshot:async()=>null}),systemUpdate:{inspect:()=>null},findPython:()=>null,
    runBridge:async()=>{bridgeCalls++;throw Error('no old Python should execute');},statusErrorMessage:error=>error.message,LOCAL_TEST:null});
-  vm.runInContext(definition('nodeStatus')+'\n'+definition('taskCancellation'),context);
+  vm.runInContext(['nodeStatus','taskCancellation','desktopSequenceForOperation','projectDesktopOperation'].map(definition).join('\n'),context);
   const query=vm.runInContext('('+main.slice(callback.start,callback.end)+')',context),status=await query();
   assert.equal(status.installed,false);assert.equal(status.managedInstallation,true);assert.equal(status.version,'2.4.5');assert.equal(status.running,null);assert.equal(bridgeCalls,0);
   const source=fs.readFileSync(path.join(desktop,'../launcher-controller.js'),'utf8'),html=fs.readFileSync(path.join(desktop,'../launcher-conversation-prototype.html'),'utf8');
@@ -205,7 +205,8 @@ test('actual no-Python status and existing UI route retain repair action; corrup
   const harness=fs.readFileSync(path.join(__dirname,'launcher_guidance_flow.test.cjs'),'utf8'),helper=harness.slice(harness.indexOf('function descendants('),harness.indexOf('\nconst ready='));
   const ui=vm.createContext({statements,source,html,vm,assert,Map,formatUserError:require(path.join(desktop,'error-presentation')).formatUserError});
   vm.runInContext(helper,ui);const page=ui.fixture({snapshot:status});await page.invoke('route()');
-  assert.equal(page.output().view,'recovery');assert.ok(page.output().buttons.some(button=>button.text==='修复当前安装'&&!button.disabled));
+  assert.equal(page.output().view,'recovery');assert.equal(page.output().buttons.some(button=>button.text==='修复当前安装'),false);
+  assert.match(page.output().inlineText,/请与诺拉对话/);
   assert.ok(!page.output().buttons.some(button=>button.text.includes('安装酒馆')||button.text==='继续安装'));
   f.write('tavern/tavern-updates/installed.json',{schema:2,version:'2.0.1',commit:'a'.repeat(40)});
   const unavailable=await query();assert.equal(unavailable.statusUnavailable,true);assert.equal(unavailable.installed,undefined);assert.equal(bridgeCalls,0);

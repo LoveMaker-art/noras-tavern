@@ -154,7 +154,7 @@ test('launcher HTTP failures retain structured release metadata', async t => {
   error => error.status === 403 && error.source === 'release_service' && error.site === 'release.download');
 });
 
-test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 release', async t => {
+test('desktop replacement status does not authorize a bundled core upgrade', async t => {
   const f = fixture(t);
   const manifestFile = path.join(f.root, 'release-manifest.json');
   const manifest = JSON.parse(fs.readFileSync(manifestFile));
@@ -175,7 +175,7 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,
     quitting: false, uninstalling: false, selectingLocation: false, modelBusy: false,
     statusRequest: null, activeRun: false, activeOperationContext:null, desktopUpdateNotice:null, LOCAL_TEST: null, CHANNEL: 'stable', telemetry: null,
-    operations:()=>({snapshot:async()=>null}),systemUpdate: { inspect: () => null }, noraHome: () => f.root,
+    operations:()=>({snapshot:async()=>null,hasFailedUpdateTarget:()=>false}),systemUpdate: { inspect: () => null }, noraHome: () => f.root,
     readLauncherRecovery: async () => null,
     readInstallerState: () => ({ phase: 'ready' }), findPython: () => true,
     runBridge: async () => ({ installed: true, hermesInstalled: true, version: '2.3.2', systemReady: true }),
@@ -183,29 +183,15 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
     nodeStatus: warning => { throw new Error(warning || 'unexpected fallback'); },
     statusErrorMessage: error => { throw error; },
   });
-  const cancellation=require('../installer/desktop/node_modules/acorn').parse(source,{ecmaVersion:'latest'}).body.find(node=>node.id?.name==='taskCancellation');
-  assert.ok(cancellation);vm.runInContext(source.slice(cancellation.start,cancellation.end),context);
+  const definitions=require('../installer/desktop/node_modules/acorn').parse(source,{ecmaVersion:'latest'}).body;
+  for(const name of ['taskCancellation','desktopSequenceForOperation','projectDesktopOperation']){
+    const definition=definitions.find(node=>node.id?.name===name);assert.ok(definition,name);
+    vm.runInContext(source.slice(definition.start,definition.end),context);
+  }
   vm.runInContext(source.slice(source.indexOf("  handle('nora:status'"), source.indexOf("  handle('nora:choose-directory'")), context);
   const snapshot = await status();
-  assert.equal(snapshot.bundledUpgradeTarget, 'v2.3.13');
-  const ui = fs.readFileSync(path.join(__dirname, '../installer/launcher-controller.js'), 'utf8');
-  let request;
-  vm.runInNewContext(ui.slice(ui.indexOf('  function recoveredOperation('), ui.indexOf('  function taskView(')) + '\nroute();', {
-    snapshot, statusUnknown: false, bundledUpgradeAttempted: false, run: (action, options) => { request = { action, ...options }; },
-    $: () => ({ classList: { remove() {} } }),
-  });
-  assert.equal(request.action, 'update');
-  const urls = [];
-  const fetcher = createLocalRelease(f.root);
-  const prepared = await update.prepare({ ...f.options, launcherVersion: '1.1.0', tag: request.tag,
-    fetcher: (url, options) => { urls.push(url); return fetcher(url, options); } });
-  assert.equal(prepared.tag, 'v2.3.13');
-  assert.equal(prepared.launcher, null);
-  const candidates=require('../installer/desktop/release-sources').sourceCandidates(
-    'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.3.13');
-  assert.equal(urls[0],candidates[0].url);
-  assert.equal(urls.filter(url=>candidates.some(source=>source.url===url)).length,1);
-  assert.equal(urls.some(url => url.includes('v2.3.2')), false);
+  assert.equal(snapshot.bundledUpgradeTarget,null);
+  assert.equal(snapshot.version,'2.3.2');
   assert.equal(fs.existsSync(path.join(f.root, 'cache')), false);
 });
 test('corrupt download and mismatched platform never reach replacement', async t => {
@@ -400,6 +386,33 @@ for(const damaged of ['APP','updater','manifest-receipt'])test(`core rebinding n
   await assert.rejects(update.prepareHandoff(f.handoff),{code:'OPERATION_CAPABILITY_INVALID'});
   assert.deepEqual(fs.readFileSync(file),before);
   assert.equal(fs.existsSync(path.join(f.home,'installer/launcher-update')),false);
+});
+
+test('an APP-scoped handoff validates APP resources without executing or rebinding a modified core updater',async t=>{
+  const f=await handoffFixture(t),installRoot=await externallyUpdatedCore(f);
+  f.operation.target.request={action:'update',launcherOnly:true};
+  f.operation.planDigest=crypto.createHash('sha256').update(JSON.stringify(f.operation.target)).digest('hex');
+  const file=capability.receiptPath(f.home),before=fs.readFileSync(file);
+  const updater=path.join(installRoot,'apps/tavern-ops/updater/update.py');fs.appendFileSync(updater,' user customization');
+  const bytes=fs.readFileSync(updater);
+  const job=await update.prepareHandoff(f.handoff);
+  assert.ok(fs.existsSync(path.join(job,'plan.json')));
+  assert.deepEqual(fs.readFileSync(file),before);assert.deepEqual(fs.readFileSync(updater),bytes);
+  fs.appendFileSync(path.join(f.resourcesRoot,'app.asar'),' changed APP');
+  await assert.rejects(update.prepareHandoff(f.handoff),{code:'OPERATION_CAPABILITY_INVALID'});
+});
+
+test('APP-only finalization requires its own handoff proof and does not claim core health',async t=>{
+  const f=await handoffFixture(t),job=await update.prepareHandoff(f.handoff);
+  const plan=JSON.parse(fs.readFileSync(path.join(job,'plan.json'))),marker=path.join(job,'finalized');
+  f.write(f.helper,`import sys,json\nfrom pathlib import Path\nif '--assess' in sys.argv: print(json.dumps({'status':'awaiting-system','busy':False,'workerOffline':True}))\nelif '--finalize' in sys.argv:\n Path(${JSON.stringify(marker)}).write_text('APP verified')\n print(json.dumps({'status':'committed'}))\n`);
+  const operation=operationFor(plan,job);
+  const options={home:f.home,executable:f.executable,job,helper:f.helper,python:python(),appOnly:true,
+    operation,target:plan.target,version:plan.version,systemReady:false,updateVerified:false};
+  assert.equal((await update.finalize(options)).status,'committed');assert.ok(fs.existsSync(marker));
+  fs.unlinkSync(marker);
+  await assert.rejects(update.finalize({...options,operation:{...operation,planDigest:'0'.repeat(64)}}),/替换结果尚未确认/);
+  assert.equal(fs.existsSync(marker),false);
 });
 
 test('unfinished launcher recovery blocks a second handoff before any new job is written', async t => {

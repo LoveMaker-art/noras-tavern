@@ -74,8 +74,11 @@ async function prepareHandoff({prepared,home,executable,python,helper,previousVe
   if(!prepared.launcher||prepared.releasePlan?.planId!==fixed.planId
     ||crypto.createHash('sha256').update(JSON.stringify(operation.target)).digest('hex')!==operation.planDigest)
     throw new Error('启动器替换与固定发布计划不一致，未修改程序。');
-  const capability=await require('./launcher-capability').refresh({receiptPath:path.join(home,'installer','launcher-control.json'),
-    noraHome:home,currentExecutable:executable});
+  // APP replacement consumes its own sealed resources. A locally changed core
+  // updater is not an execution source for this handoff.
+  const capabilities=require('./launcher-capability');
+  const capability=await (operation.target.request?.launcherOnly===true?capabilities.validateApp:capabilities.refresh)(
+    {receiptPath:path.join(home,'installer','launcher-control.json'),noraHome:home,currentExecutable:executable});
   const pending=await assessPending({home,executable,python,helper});
   if(pending)throw new Error(pending.reason||'尚有未完成的启动器更新，请先恢复旧启动器再重试。');
   const root=applicationRoot(executable);
@@ -332,7 +335,11 @@ async function verifyRecovery(options){
 }
 async function finalize(options) {
   const job = ownedJob(options.job, options);
-  if (options.systemReady !== true || options.updateVerified !== true) throw new Error('联合更新尚未通过实际验收，旧启动器备份继续保留。');
+  if(options.appOnly===true){
+    if(!await verifyHandoff({...options,job,planDigest:options.operation?.planDigest}))
+      throw new Error('启动器替换结果尚未确认，旧启动器备份继续保留。');
+  }else if(options.systemReady!==true||options.updateVerified!==true)
+    throw new Error('联合更新尚未通过实际验收，旧启动器备份继续保留。');
   return helperCall(options.python, options.helper,
     ['--finalize', job, '--target', options.target, '--version', options.version, '--verified'], job, {spawnChild:options.spawnChild});
 }

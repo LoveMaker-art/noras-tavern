@@ -152,7 +152,7 @@ function fixture({ current, initial = {}, providers, read, switchSaved, deleteSa
     setTimeout: () => 1, clearTimeout() {}, clearInterval() {}, Date, URL,
   });
   const names = ['textError', 'errorCopy', 'operationFailure', 'currentOperation', 'allowedActions', 'noraUpdateGuidance', 'unknownStatusCopy',
-    'operationFact', 'retryLabel', 'canCheckNewUpdate', 'hasLogs', 'appendActions', 'recoveredOperation', 'complete', 'canReturnHome',
+    'operationFact', 'retryLabel', 'canCheckNewUpdate', 'hasLogs', 'appendActions', 'recoveredOperation', 'settledUpdateOperation', 'complete', 'canReturnHome',
     'serviceRunning', 'allRunning', 'syncState', 'readStatus', 'hideMenu', 'controls', 'displaySteps', 'setupStage', 'renderServices',
     'renderConversationEntry', 'showVersionNotice', 'dailyHome', 'closeEdit', 'savedModelConfiguration', 'modelActivation', 'modelAuthLabel', 'modelConnectionText', 'renderModelList', 'unresolvedModelOperation', 'recheckModelOperation', 'modelSettings', 'modelForm',
     'pendingModel', 'recheckFailure', 'refreshFailure', 'fail', 'route', 'poll'];

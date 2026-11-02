@@ -189,9 +189,6 @@ def query_entries(home, root):
 
 
 def task_status(home):
-    desktop = desktop_transport(home, 'status')
-    if desktop is not None and desktop.get('status') != 'none':
-        return desktop
     root = managed_root(home)
     unavailable = {'status': 'inspection-required', 'settled': False, 'busy': None,
                    'error': '无法核验更新任务是否结束，请保留日志，暂勿重复更新。'}
@@ -219,6 +216,13 @@ def task_status(home):
                     or reply['settled'] and reply.get('busy') is not False
                     or reply.get('status') in ('succeeded', 'failed', 'rolled-back', 'blocked', 'cancelled', 'interrupted') and not reply['settled']):
                 continue
+            # An independent core task owns its result, even if an old desktop
+            # request is still saved. Only an explicit, verified absence of a
+            # core task permits the read-only historical desktop fallback.
+            if reply.get('status') == 'none':
+                desktop = desktop_transport(home, 'status')
+                if desktop is not None and desktop.get('status') != 'none':
+                    return desktop
             return reply
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
             continue
@@ -226,11 +230,9 @@ def task_status(home):
 
 
 def desktop_transport(home, action, confirm=False):
-    """Submit to the existing desktop receiver using an authenticated reader.
-
-    The receiver, not this wrapper, owns version selection and APP replacement.
-    Absence of a desktop receipt retains the independent core-only deployment.
-    """
+    """Read an old desktop result; never submit or resume a desktop update."""
+    if action != 'status' or confirm:
+        raise RuntimeError('旧桌面任务仅供查询；诺拉更新只提交独立核心任务。')
     if not (home / 'nora-instance.json').is_file():
         return None
     binding = instance_paths(home, query=True)
@@ -255,9 +257,7 @@ def desktop_transport(home, action, confirm=False):
             continue
         reply = subprocess.run([str(node), str(entry)], input=json.dumps({'scope': 'desktop', 'action': action,
             'confirm': confirm, 'noraHome': str(root)}), text=True, encoding='utf-8', capture_output=True,
-            # Version discovery retains the reader's 100-second network budget;
-            # its synchronous caller must not kill it at the submission timeout.
-            timeout=120 if action == 'check' else 45, check=False)
+            timeout=45, check=False)
         try:
             result = json.loads(reply.stdout)
         except (ValueError, TypeError):
@@ -275,7 +275,7 @@ def desktop_transport(home, action, confirm=False):
         if result.get('scope') != 'desktop':
             continue
         return result
-    raise RuntimeError('当前旧更新器尚不支持诺拉整套更新。原更新入口可用时先升级启动器；入口失效时使用已验证的保留数据安装或修复方式，勿删除原数据。')
+    raise RuntimeError('当前旧更新器无法查询历史桌面任务，请保留原记录和日志。核心更新使用独立核心入口。')
 
 
 def standalone_entry(home):
@@ -336,12 +336,6 @@ def main():
     environment['PATH'] = str(Path(python).parent) + os.pathsep + environment.get('PATH', '')
     if os.path.abspath(sys.executable) != python:
         raise SystemExit(subprocess.call([python, '-B', str(Path(__file__).absolute()), *sys.argv[1:]], env=environment))
-    desktop = desktop_transport(home, 'check' if args.check else 'update', confirm=args.confirm)
-    if desktop is not None:
-        print(json.dumps(desktop))
-        if desktop.get('status') in ('error', 'inspection-required', 'interrupted'):
-            raise SystemExit(1)
-        return
     entry, root = standalone_entry(home)
     environment['TAVERN_DATA_ROOT'] = str(root)
     command = [str(entry), '--hermes-home', str(home), '--install-root', str(root)]

@@ -87,8 +87,49 @@ function fixture(extra={}) {
 
 const ready={installed:true,hermesInstalled:true,setupCompleted:true,systemReady:true,version:'2.4.2',running:true,gatewayRunning:true,clawchatConnected:true};
 const network=formatUserError({code:'TIMEOUT',source:'release_service'},{action:'update'});
-const updateResult={state:'available',available:true,updateSupported:true,current:'2.4.2',latest:'v2.4.3',channel:'stable'};
+const updateResult={state:'available',available:true,updateSupported:true,current:'2.4.2',latest:'v2.4.3',channel:'stable',
+  releaseAvailable:true,launcherUpdateAvailable:true,launcherInstallable:true,launcherVersion:'2.0.2',launcherLatest:'2.0.3',latestConfirmed:true};
 function action(h,label){return descendants(h.inline).find(n=>n.tagName==='BUTTON'&&n.textContent===label);}
+test('independent core failures are read-only in the launcher even when the core permits recovery',async()=>{
+  const operation={operationId:'22222222-2222-4222-8222-222222222222',kind:'update',state:'failed',snapshotSequence:3,
+    effectState:'changed',recoveryOutcome:'recovery-required',busy:false,target:{request:{action:'update'}},
+    allowedActions:['recover','start-restored','retry','resume','recheck','logs']};
+  let calls=0;
+  const h=fixture({snapshot:{...ready,operation},api:{recoverOperation:async()=>{calls++;},openLogs:async()=>({ok:true})}});
+  h.context.coreFailure={operation};await h.invoke('fail(coreFailure,"update")');
+  assert.equal(action(h,'恢复旧版本'),undefined);assert.equal(action(h,'启动旧版本'),undefined);
+  assert.ok(action(h,'重新检查'));assert.ok(action(h,'查看日志'));
+  await h.invoke('continueOperation("recover")');assert.equal(calls,0);
+});
+test('independent core recovery state does not become a launcher recovery button',async()=>{
+  const operation={operationId:'33333333-3333-4333-8333-333333333333',kind:'update',state:'failed',snapshotSequence:3,
+    effectState:'changed',recoveryOutcome:'recovery-required',busy:false,target:{request:{action:'update'}},
+    allowedActions:['recover','recheck','logs']};
+  const h=fixture({snapshot:{...ready,operation,updateRecovery:{canRecover:true,backup:'/isolated/core-backup'}},
+    api:{recoverOperation:async()=>assert.fail('core recovery belongs to Nora'),openLogs:async()=>({ok:true})}});
+  await h.invoke('route()');assert.equal(action(h,'恢复旧版本'),undefined);
+  assert.match(h.output().copy.join('\n'),/诺拉/);assert.ok(action(h,'重新检查'));assert.ok(action(h,'查看日志'));
+});
+test('verified historical desktop recovery remains available without allowing core retry',async()=>{
+  const operation={operationId:'44444444-4444-4444-8444-444444444444',kind:'update',state:'failed',snapshotSequence:3,
+    effectState:'changed',recoveryOutcome:'recovery-required',busy:false,legacyDesktopRecovery:true,target:{request:{action:'update'}},
+    allowedActions:['recover','retry','resume','recheck','logs']};
+  let calls=0;
+  const h=fixture({snapshot:{...ready,operation},api:{recoverOperation:async()=>{calls++;return {...ready};},
+    status:async()=>({...ready,operation}),openLogs:async()=>({ok:true})}});
+  h.context.coreFailure={operation};await h.invoke('fail(coreFailure,"update")');
+  assert.ok(action(h,'恢复旧版本'));assert.equal(action(h,'重试更新'),undefined);
+  assert.deepEqual(JSON.parse(await h.invoke('JSON.stringify(allowedActions(coreFailure))')),['recover','recheck','logs']);
+  await h.invoke('continueOperation("recover")');assert.equal(calls,1);
+});
+test('an unbound core recovery record cannot use the old generic recovery endpoint',async()=>{
+  let calls=0;
+  const recovery={canRecover:true,backup:'/isolated/core-backup'};
+  const h=fixture({snapshot:{...ready,updateRecovery:recovery},api:{status:async()=>({...ready,updateRecovery:recovery}),
+    recover:async()=>{calls++;return {...ready};},openLogs:async()=>({ok:true})}});
+  await h.invoke('route()');assert.equal(action(h,'恢复旧版本'),undefined);
+  await h.invoke('run("recover")');assert.equal(calls,0);assert.match(h.output().copy.join('\n'),/诺拉/);
+});
 test('installed users can check and request updates before model or pairing setup completes',async()=>{
   for(const [view,configuration] of [['model',{modelConfigured:false}],['model-pending',{modelSyncPending:true}],
       ['claw',{modelConfigured:true,clawchatPaired:false}]]){
@@ -99,9 +140,9 @@ test('installed users can check and request updates before model or pairing setu
     const update=h.menu.find(control=>control.dataset.action==='update');
     assert.equal(h.output().managementVisible,true,view);assert.equal(update.hidden,false,view);assert.equal(update.disabled,false,view);
     update.onclick();await new Promise(resolve=>setImmediate(resolve));
-    assert.equal(checks,1);assert.ok(action(h,'安装更新'),JSON.stringify(h.output()));
+    assert.equal(checks,1);assert.ok(action(h,'更新启动器'),JSON.stringify(h.output()));
     h.context.run=async(kind,payload)=>requests.push({kind,tag:payload.tag});
-    await action(h,'安装更新').onclick();
+    await action(h,'更新启动器').onclick();
     assert.deepEqual(requests,[{kind:'update',tag:'v2.4.3'}]);
     assert.equal(h.context.snapshot.setupCompleted,false,'Checking an update cannot fabricate completed setup');
   }
@@ -132,22 +173,22 @@ test('history capacity explains preserved transactions and offers logs without a
 });
 test('unknown-version repair has a working log action while repair remains disabled',async()=>{
   const h=fixture({snapshot:{installed:true,hermesInstalled:true,systemReady:false,version:''}});await h.invoke('route()');
-  assert.equal(action(h,'修复当前安装').disabled,true);const logs=action(h,'查看日志');assert.ok(logs);await logs.onclick({currentTarget:logs});assert.deepEqual(h.calls,[['logs']]);
+  assert.equal(action(h,'修复当前安装'),undefined);assert.match(h.inline.textContent,/请与诺拉对话/);const logs=action(h,'查看日志');assert.ok(logs);await logs.onclick({currentTarget:logs});assert.deepEqual(h.calls,[['logs']]);
 });
 test('unavailable check gives matching failure title, direct retry, and leaves running services untouched',async()=>{
   let checks=0;const h=fixture({snapshot:{...ready},api:{openLogs:async()=>({ok:true}),checkUpdate:async()=>{checks++;return {state:'unavailable',available:false,current:'2.4.2',latest:'v2.4.3',error:network};}}});
-  await h.invoke('checkUpdates()');assert.match(h.output().copy[0],/超时/);assert.ok(action(h,'重新检查更新'));await action(h,'重新检查更新').onclick();assert.equal(checks,2);assert.equal(h.context.snapshot.running,true);
+  await h.invoke('checkUpdates()');assert.match(h.inline.textContent,/超时/);assert.ok(action(h,'重新检查'));await action(h,'重新检查').onclick();assert.equal(checks,2);assert.equal(h.context.snapshot.running,true);
 });
-test('update-query network guidance requires the actual failure class and an available Nora',async()=>{
+test('Nora guidance is core-specific and never an alternative APP update entry',async()=>{
   for(const [snapshot,failureCode,expected] of [
     [{...ready,modelConfigured:true},'timeout',true],
     [{...ready,modelConfigured:true},'verification_failed',false],
     [{...ready,modelConfigured:true,gatewayRunning:false},'timeout',false],
     [{...ready,modelConfigured:true,updateRecovery:{canRecover:true}},'timeout',false],
     [{...ready,modelConfigured:false},'timeout',false]]){
-    const h=fixture({snapshot,api:{checkUpdate:async()=>({state:'unavailable',error:network,failureCode})}});
-    await h.invoke('checkUpdates()');
-    assert.equal(h.output().copy.join('\n').includes('网络恢复后，也可对诺拉说'),expected);
+    const h=fixture({snapshot});h.context.error={failureCode};
+    assert.equal(Boolean(await h.invoke('noraUpdateGuidance(error,"check_update")')),expected);
+    assert.equal(await h.invoke('noraUpdateGuidance(error,"update")'),'');
   }
 });
 test('a release failure log button opens the readonly check identity instead of the prior installation',async()=>{
@@ -157,7 +198,7 @@ test('a release failure log button opens the readonly check identity instead of 
       compatibilityError:'线上发布与当前启动器不兼容。\n请等待兼容版本发布。'})}});
   h.context.openLogs=async(event,id)=>{requested=id;};await h.invoke('checkUpdates()');
   const logs=action(h,'查看日志');await logs.onclick({currentTarget:logs});assert.equal(requested,checkId);
-  assert.equal(action(h,'安装更新'),undefined);assert.equal(action(h,'重新检查更新'),undefined);
+  assert.equal(action(h,'更新启动器'),undefined);assert.ok(action(h,'重新检查'));
 });
 test('background notice reports unavailable check rather than incompatible release',async()=>{
   const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({state:'unavailable',available:false,error:network})}});await h.invoke('renderServices(); checkVersionsInBackground()');assert.match(h.inline.textContent,/检查更新未完成/);assert.doesNotMatch(h.inline.textContent,/不可用于完整安装/);
@@ -170,14 +211,14 @@ test('a failed update and failed status preserve the primary cause and cannot re
 });
 function structuredFailure({title='任意清晰错误。',actions=['recheck','logs'],attempt=2,kind='update',code='NETWORK'}={}) {
   const operation={operationId:'fixture-operation',snapshotSequence:attempt,state:'failed',kind,attempt,
-    effectState:'untouched',verification:'failed',allowedActions:actions,primaryFailure:{code,guidance:{title,detail:'本次操作没有完成，数据已保留。',next:'请先检查当前条件。'}}};
+    effectState:'untouched',verification:'failed',target:{request:{action:'update',launcherOnly:true}},allowedActions:actions,primaryFailure:{code,guidance:{title,detail:'本次操作没有完成，数据已保留。',next:'请先检查当前条件。'}}};
   return Object.assign(new Error('raw fixture must not be displayed'),{guidance:operation.primaryFailure.guidance,
     failureCode:'timeout',userCode:code,allowedActions:actions,operation});
 }
 function untouchedUpdate(state='failed') {
   return {...structuredFailure({actions:['retry','recheck','logs'],attempt:1}).operation,state,busy:false,
     recoveryOutcome:'not-required',handoffRef:null,
-    target:{request:{action:'update',tag:'v2.4.3'},releasePlan:{tag:'v2.4.3',planId:'frozen-243-plan'}}};
+    target:{request:{action:'update',tag:'v2.4.3',launcherOnly:true},releasePlan:{tag:'v2.4.3',planId:'frozen-243-plan'}}};
 }
 const newerUpdate={...updateResult,current:'2.4.1',latest:'v2.4.4',latestConfirmed:true};
 test('an untouched terminal update can check and install a different latest target without resuming its old plan',async()=>{
@@ -189,9 +230,11 @@ test('an untouched terminal update can check and install a different latest targ
       update:async request=>{updates++;assert.equal(request.tag,'v2.4.4');assert.equal(request.operationId,undefined);
         assert.equal(request.snapshotSequence,undefined);return {...ready,version:'2.4.4',operation:completed};},
       resumeOperation:async()=>{resumes++;},status:async()=>({...ready,version:'2.4.4',busy:false,operation:completed})}});
-    await h.invoke('route()');assert.ok(action(h,'重新尝试更新'),'the frozen-target retry remains available');
+    await h.invoke('route()');assert.equal(h.context.view,'daily');
+    h.context.previousFailure=Object.assign(Error('historical update failure'),{operation});
+    await h.invoke('fail(previousFailure,"update")');assert.ok(action(h,'重新尝试更新'),'the frozen-target retry remains available in its failure context');
     const check=action(h,'检查新版更新');assert.ok(check);await check.onclick();
-    const install=action(h,'安装新版更新');assert.ok(install);await install.onclick();
+    const install=action(h,'更新启动器');assert.ok(install);await install.onclick();
     assert.equal(checks,1);assert.equal(updates,1);assert.equal(resumes,0);assert.equal(JSON.stringify(operation),original);
     assert.equal(h.context.snapshot.operation.operationId,'new-update-operation');
   }
@@ -215,29 +258,32 @@ test('new-target UI admission rejects uncertain effects, recovery, handoff and e
     h.context.original=Object.assign(Error('sealed failure'),{operation,allowedActions:operation.allowedActions});
     await h.invoke('fail(original,"update")');assert.equal(action(h,'检查新版更新'),undefined,JSON.stringify(scenario));
     await h.invoke('run("update",{tag:"v2.4.4"})');assert.equal(updates,0,JSON.stringify(scenario));
-    if(!scenario.busy){await h.invoke('checkUpdates()');assert.equal(action(h,'安装新版更新'),undefined,JSON.stringify(scenario));}
+    if(!scenario.busy){await h.invoke('checkUpdates()');assert.equal(action(h,'更新启动器'),undefined,JSON.stringify(scenario));}
   }
 });
 test('checking a new release never releases the same, aliased, unknown or unconfirmed frozen target',async()=>{
   for(const [previous,latest,confirmed] of [['v2.4.3','v2.4.3',true],['2.4.3','v2.4.3',true],
     [undefined,'v2.4.4',true],['','v2.4.4',true],['v2.4.3','',true],['v2.4.3','v2.4.4',false]]){
-    const operation=untouchedUpdate();operation.target={request:{tag:previous},releasePlan:{tag:previous}};let updates=0;
+    const operation=untouchedUpdate();operation.target={request:{tag:previous,launcherOnly:true},releasePlan:{tag:previous}};let updates=0;
     const h=fixture({snapshot:{...ready,busy:false,operation},api:{checkUpdate:async()=>({...newerUpdate,latest,latestConfirmed:confirmed}),
       update:async()=>{updates++;},resumeOperation:async()=>{throw Error('the old target must not be resumed by a new-target attempt');}}});
-    await h.invoke('checkUpdates()');assert.equal(action(h,'安装新版更新'),undefined);
+    await h.invoke('checkUpdates()');assert.equal(action(h,'更新启动器'),undefined);
     await h.invoke(`run("update",{tag:${JSON.stringify(latest)}})`);assert.equal(updates,0);
+    h.context.previousFailure=Object.assign(Error('historical update failure'),{operation});
+    await h.invoke('fail(previousFailure,"update")');
     assert.ok(action(h,'重新尝试更新'),'same-target retry still belongs to the original operation');
   }
 });
 test('new-target controls recheck live safety on click and honor the selected plan over the request hint',async()=>{
   const operation=untouchedUpdate();operation.target.request.tag='v2.4.2';let checks=0,updates=0;
   const h=fixture({snapshot:{...ready,busy:false,operation},api:{checkUpdate:async()=>{checks++;return {...newerUpdate};},update:async()=>{updates++;}}});
-  await h.invoke('route()');const check=action(h,'检查新版更新');assert.ok(check);
+  h.context.previousFailure=Object.assign(Error('historical update failure'),{operation});
+  await h.invoke('fail(previousFailure,"update")');const check=action(h,'检查新版更新');assert.ok(check);
   h.context.snapshot.operation={...operation,busy:true};await check.onclick();assert.equal(checks,0);
-  h.context.snapshot.operation=operation;await h.invoke('checkUpdates()');const install=action(h,'安装新版更新');assert.ok(install);
+  h.context.snapshot.operation=operation;await h.invoke('checkUpdates()');const install=action(h,'更新启动器');assert.ok(install);
   h.context.snapshot.updateRecovery={canRecover:true};await install.onclick();assert.equal(updates,0);
   h.context.snapshot.updateRecovery=null;h.context.api.checkUpdate=async()=>({...newerUpdate,latest:'v2.4.3'});
-  await h.invoke('checkUpdates()');assert.equal(action(h,'安装新版更新'),undefined,'the release plan overrides an older request hint');
+  await h.invoke('checkUpdates()');assert.equal(action(h,'更新启动器'),undefined,'the release plan overrides an older request hint');
 });
 test('typed setup blockers open the existing configuration forms instead of repeating startup',async()=>{
   for(const [code,label,handler] of [['MODEL_SETUP_REQUIRED','配置模型','modelForm'],
@@ -283,7 +329,7 @@ test('legacy or unknown errors only offer safe query and log actions even if the
   assert.equal(action(h,'重试'),undefined);assert.ok(action(h,'重新查询状态'));assert.ok(action(h,'查看日志'));
 });
 test('recover rechecks current canRecover before calling the actual recovery IPC',async()=>{
-  let recoveries=0;const h=fixture({snapshot:{...ready,systemReady:false,updateRecovery:{canRecover:true,backup:'/fixture/backup'}},api:{openLogs:async()=>({ok:true}),status:async()=>({...ready,systemReady:false,updateRecovery:{canRecover:false,reason:'备份检查未通过。'}}),recover:async()=>{recoveries++;}}});
+  let recoveries=0;const h=fixture({snapshot:{...ready,systemReady:false,updateRecovery:{kind:'legacy',canRecover:true,backup:'/fixture/backup'}},api:{openLogs:async()=>({ok:true}),status:async()=>({...ready,systemReady:false,updateRecovery:{kind:'legacy',canRecover:false,reason:'备份检查未通过。'}}),recover:async()=>{recoveries++;}}});
   await h.invoke('route()');await action(h,'恢复旧版本').onclick();assert.equal(recoveries,0);assert.equal(action(h,'恢复旧版本'),undefined);assert.ok(action(h,'查看日志'));
 });
 test('recovery reason has readable guidance and retains raw evidence only in labelled details',async()=>{
@@ -343,7 +389,7 @@ test('a confirmed explicit recovery retains the original failure and returns to 
   const h=fixture({snapshot:{...ready,operation:restored},api:{checkUpdate:async()=>updateResult}});
   await h.invoke('route()');assert.equal(h.context.view,'daily');
   assert.equal(h.context.snapshot.operation.primaryFailure.code,original.operation.primaryFailure.code);
-  await h.invoke('checkUpdates()');assert.ok(action(h,'安装更新'));
+  await h.invoke('checkUpdates()');assert.ok(action(h,'更新启动器'));
   assert.doesNotMatch(h.inline.textContent,/上次操作尚未确认/);
 });
 
@@ -355,7 +401,7 @@ test('verified unapplied update retains the first failure and permits navigation
   await h.invoke('route()');assert.equal(h.context.view,'daily');
   await h.invoke('route()');assert.equal(h.context.view,'daily','returning to the home page must remain usable');
   assert.equal(h.context.snapshot.operation.primaryFailure.code,original.operation.primaryFailure.code);
-  await h.invoke('checkUpdates()');assert.ok(action(h,'安装更新'));
+  await h.invoke('checkUpdates()');assert.ok(action(h,'更新启动器'));
   for(const patch of [{verification:'unconfirmed'},{effectState:'changed'},{recoveryOutcome:'recovery-required'},
       {currentFailure:original.operation.primaryFailure},{result:{}}]){
     const denied=fixture({snapshot:{...ready,operation:{...ended,...patch}}});
@@ -363,12 +409,12 @@ test('verified unapplied update retains the first failure and permits navigation
   }
 });
 
-test('automatic rollback and files-only recovery still show the failed operation',async()=>{
+test('unresolved rollback keeps its failure while settled files-only recovery returns to current service facts',async()=>{
   const original=structuredFailure();
   for(const patch of [{verification:'confirmed',recoveryOutcome:'restored-and-verified',currentFailure:original.operation.primaryFailure},
-    {verification:'failed',recoveryOutcome:'files-restored-start-failed',currentFailure:null}]){
+    {verification:'failed',recoveryOutcome:'files-restored-start-failed',currentFailure:null,busy:false}]){
     const h=fixture({snapshot:{...ready,operation:{...original.operation,state:'rolled-back',effectState:'restored',...patch}}});
-    await h.invoke('route()');assert.equal(h.context.view,'error');
+    await h.invoke('route()');assert.equal(h.context.view,patch.currentFailure===null?'daily':'error');
     assert.equal(action(h,'重试'),undefined);
   }
 });
@@ -421,15 +467,15 @@ test('a failed status query retains confirmed facts and their observation time w
 
 test('version view separates launcher and system versions, dates cached facts and has one primary action',async()=>{
   const h=fixture({snapshot:{...ready},api:{openLogs:async()=>({ok:true}),checkUpdate:async()=>({...updateResult,latestConfirmed:false,checkedAt:'2026-10-05T01:00:00Z',launcherVersion:'2.0.2',releaseUrl:'https://example.invalid/release'})}});
-  await h.invoke('checkUpdates()');const content=h.output().copy.join('\n');
-  assert.match(content,/酒馆：当前 2\.4\.2[\s\S]*启动器：当前 2\.0\.2/);assert.match(content,/上次检查结果：.*2026/);assert.doesNotMatch(content,/GitHub|已是最新/);
-  assert.deepEqual(descendants(h.inline).filter(n=>n.classList.contains('primary')).map(n=>n.textContent),['安装更新']);
-  assert.ok(action(h,'重新检查更新'));assert.ok(action(h,'查看日志'));
+  await h.invoke('checkUpdates()');const content=h.output().copy.join('\n')+h.inline.textContent;
+  assert.match(content,/启动器[\s\S]*当前 2\.0\.2[\s\S]*诺拉与酒馆[\s\S]*当前 2\.4\.2/);assert.match(content,/上次检查结果：.*2026/);assert.doesNotMatch(content,/GitHub|已是最新/);
+  assert.deepEqual(descendants(h.inline).filter(n=>n.classList.contains('primary')).map(n=>n.textContent),['更新启动器']);
+  assert.ok(action(h,'重新检查'));assert.ok(action(h,'查看日志'));
 });
 
 test('unknown runtime state cannot offer installation from a successful readonly release query',async()=>{
   const h=fixture({snapshot:{...ready},statusUnknown:true,api:{checkUpdate:async()=>updateResult}});
-  await h.invoke('checkUpdates()');assert.equal(action(h,'安装更新'),undefined);assert.ok(action(h,'重新查询状态'));
+  await h.invoke('checkUpdates()');assert.equal(action(h,'更新启动器'),undefined);assert.ok(action(h,'重新查询状态'));
 });
 
 test('model authentication failure gives a direct log button without losing input or resubmitting',async()=>{
@@ -539,7 +585,7 @@ test('a fresh no-update result prioritizes return and a failed first check does 
   assert.ok(action(h,'查看日志'));
   h.context.api.checkUpdate=async()=>({state:'unavailable',latestConfirmed:false,checkedAt:null});
   await h.invoke('checkUpdates()');assert.doesNotMatch(h.output().copy.join('\n'),/上次检查的结果/);
-  assert.deepEqual(descendants(h.inline).filter(n=>n.classList.contains('primary')).map(n=>n.textContent),['重新检查更新']);
+  assert.deepEqual(descendants(h.inline).filter(n=>n.classList.contains('primary')).map(n=>n.textContent),['重新检查']);
 });
 
 test('a model-list authentication failure preserves input and never recommends manual naming as its remedy',async()=>{
@@ -566,13 +612,80 @@ test('the model failure log entry stays bound to the submitted operation instead
   assert.equal(requested,submitted.operationId);
 });
 
+test('component updates: both offers expose only an APP request and a Nora reminder',async()=>{
+  const requests=[];
+  const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,
+    latestConfirmed:true,releaseAvailable:true,launcherUpdateAvailable:true,launcherInstallable:true,
+    launcherVersion:'2.2.8',launcherLatest:'2.2.9'})}});
+  await h.invoke('checkUpdates()');
+  assert.match(h.inline.textContent,/请与诺拉对话更新/);
+  assert.ok(action(h,'更新启动器'));
+  h.context.run=async(action,payload)=>requests.push({action,...payload});
+  await action(h,'更新启动器').onclick();
+  assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
+  assert.equal(action(h,'安装更新'),undefined);
+});
+test('component updates: core-only offer never provides a core installation action',async()=>{
+  const requests=[];
+  const h=fixture({snapshot:{...ready},run:(...args)=>requests.push(args),api:{checkUpdate:async()=>({...updateResult,
+    releaseAvailable:true,launcherUpdateAvailable:false,launcherInstallable:false,
+    launcherVersion:'2.2.8',launcherLatest:'2.2.8'})}});
+  await h.invoke('checkUpdates()');
+  assert.match(h.inline.textContent,/诺拉.*酒馆/);
+  assert.match(h.inline.textContent,/请与诺拉对话更新/);
+  assert.equal(action(h,'更新启动器'),undefined);
+  assert.equal(action(h,'安装更新'),undefined);
+  assert.deepEqual(requests,[]);
+  assert.ok(action(h,'返回酒馆'));
+});
+test('component updates: a core check error does not hide a verified APP offer',async()=>{
+  const requests=[];
+  const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,state:'blocked',available:false,
+    error:'核心检查尚未完成',releaseAvailable:false,launcherUpdateAvailable:true,launcherInstallable:true,
+    launcherVersion:'2.2.8',launcherLatest:'2.2.9'})}});
+  await h.invoke('checkUpdates()');
+  assert.ok(action(h,'更新启动器'));
+  h.context.run=async(action,payload)=>requests.push({action,...payload});
+  await action(h,'更新启动器').onclick();
+  assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
+});
+test('component updates: an installed APP never starts a bundled core upgrade on open',async()=>{
+  const requests=[];
+  const h=fixture({snapshot:{...ready,bundledUpgradeTarget:'v99.0.0'},run:(...args)=>requests.push(args)});
+  await h.invoke('route()');
+  assert.equal(h.context.view,'daily');
+  assert.equal(requests.some(([action])=>action==='update'),false);
+  assert.equal(action(h,'继续更新'),undefined);
+});
+test('component updates: confirmed APP incompatibility is distinct from a failed query',async()=>{
+  const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,launcherInstallable:false,
+    launcherCompatibilityError:'此版本与当前核心接口不兼容。'})}});
+  await h.invoke('checkUpdates()');
+  const row=descendants(h.inline).find(node=>node.dataset?.component==='launcher');
+  assert.match(row.textContent,/暂不可更新/);assert.doesNotMatch(row.textContent,/检查未完成/);
+  assert.equal(action(h,'更新启动器'),undefined);
+});
+
 test('APP-only offer uses the existing update control and requests the launcher handoff explicitly',async()=>{
   const requests=[];const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,current:'2.4.3',releaseAvailable:false,launcherUpdateAvailable:true})}});
   await h.invoke('checkUpdates()');h.context.run=async(action,payload)=>requests.push({action,...payload});
-  await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
+  await action(h,'更新启动器').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
 });
-test('the existing update control requests both applicable components in one action',async()=>{
+test('both applicable components still produce only a launcher request',async()=>{
   const requests=[];const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,releaseAvailable:true,launcherUpdateAvailable:true})}});
   await h.invoke('checkUpdates()');h.context.run=async(action,payload)=>requests.push({action,...payload});
-  await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',includeLauncher:true}]);
+  await action(h,'更新启动器').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
+});
+
+test('a settled historical dual plan is not resumed by the APP control',async()=>{
+  const operation={operationId:'11111111-1111-4111-8111-111111111111',snapshotSequence:7,kind:'update',
+    state:'rolled-back',effectState:'restored',busy:false,currentFailure:null,verification:'confirmed',recoveryOutcome:'restored-and-verified'};
+  for(const laterService of [false,true]){
+    const requests=[];const h=fixture({snapshot:{...ready,operation:laterService?{kind:'stop',state:'succeeded'}:operation,
+      updateSequence:{status:'partial',settled:true,releaseTag:'v2.4.3',operationId:operation.operationId,snapshotSequence:5,operation}},
+      api:{checkUpdate:async()=>({...updateResult,releaseAvailable:true,launcherUpdateAvailable:true}),resumeOperation:async()=>({})}});
+    await h.invoke('checkUpdates()');h.context.run=async(action,payload,endpoint)=>requests.push({action,payload,endpoint});
+    await action(h,'更新启动器').onclick();
+    assert.deepEqual(JSON.parse(JSON.stringify(requests)),[{action:'update',payload:{tag:'v2.4.3',launcherOnly:true}}]);
+  }
 });

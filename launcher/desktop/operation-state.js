@@ -31,6 +31,11 @@ function retryIdentity(target){
     launcher:plan.launcherManifest||null,system:plan.systemManifest||null}}));
 }
 const failedAttempt=record=>record&&record.state!=='succeeded'&&Boolean(record.primaryFailure);
+const updateTargetTag=record=>{
+  const tag=record.updateTargetTag||record.target?.releasePlan?.tag||record.target?.request?.tag;
+  return typeof tag==='string'&&tag.length<=100&&/^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.(?:0|[1-9]\d*))?$/.test(tag)
+    ?tag.replace(/^v/,''):null;
+};
 const PAIR_COOLDOWN_MS=30000;
 const MODEL_RETRY_WINDOW_MS=30000;
 const SERVICE_RETRY_WINDOW_MS=30000;
@@ -138,6 +143,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       summary.target={};summary.archived=true;summary.archivedAt=now();summary.secondaryFailures=[];summary.evidenceStatus='archived';
       summary.retryTargetDigest=record.retryTargetDigest||retryIdentity(record.target);
       summary.requestDigest=record.requestDigest||record.planDigest;
+      if(record.kind==='update'&&updateTargetTag(record))summary.updateTargetTag=updateTargetTag(record);
       if(record.primaryFailure)summary.primaryFailure={code:record.primaryFailure.code,site:record.primaryFailure.site};
       if(record.currentFailure)summary.currentFailure={code:record.currentFailure.code,site:record.currentFailure.site};
       if(record.result&&Buffer.byteLength(JSON.stringify(record.result))<=2048)summary.result=record.result;
@@ -320,7 +326,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       // A later safe service stop must not hide a still unresolved file effect.
       // This selection stays read-only and uses the journals' actual facts.
       for(const pending of history.slice().reverse().filter(value=>!TERMINAL.has(value.state)
-        ||['recovery-required','files-restored-start-failed'].includes(value.recoveryOutcome))){
+        ||value.recoveryOutcome==='recovery-required')){
         const observed=await snapshot(pending.operationId);
         if(observed.busy||['changed','unknown'].includes(observed.effectState)
           ||observed.recoveryOutcome==='files-restored-start-failed')return observed;
@@ -501,6 +507,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
             record.recoveryOutcome=record.effectState==='untouched'?'not-required':restored?.verification==='failed'?'files-restored-start-failed':'restored-and-verified';
             record.verification=record.effectState==='untouched'?'unconfirmed':restored?.verification==='failed'?'failed':'confirmed';
             record.result=projectResult(restored,record.kind);
+            record.currentFailure=null;
             if(Array.isArray(restored?.secondaryErrors)){
               record.secondaryFailures.push(...restored.secondaryErrors.map(item=>({...failure(item.error,record.kind),operation:item.operation||'recover'})));
               saved?.freeze({secondaryErrors:restored.secondaryErrors});
@@ -580,8 +587,10 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       for(const unfinished of ['stop','shutdown'].includes(kind)?[]:records().filter(value=>!TERMINAL.has(value.state)
         ||['recovery-required','files-restored-start-failed'].includes(value.recoveryOutcome))){
         const effects=observeEffects?await observeEffects(unfinished):{effectState:unfinished.effectState==='untouched'?'untouched':'unknown'};
+        const servicesOnly=TERMINAL.has(unfinished.state)&&unfinished.effectState==='restored'
+          &&effects.effectState==='restored'&&effects.recoveryOutcome==='files-restored-start-failed';
         if(!['untouched','restored'].includes(effects.effectState)
-          ||['recovery-required','files-restored-start-failed'].includes(effects.recoveryOutcome)){
+          ||effects.recoveryOutcome==='recovery-required'||effects.recoveryOutcome==='files-restored-start-failed'&&!servicesOnly){
           const error=fail('UPDATE_RECOVERY_REQUIRED','Existing active effects require inspection before another operation');
           error.operation=dto({...unfinished,state:'interrupted',...effects});throw error;
         }
@@ -724,8 +733,9 @@ function createOperationController({directory,lock,executors={},recoverers={},re
             record.evidenceMissingReasons=frozen?.missingReasons||[];record.evidenceRef=saved?.directory||record.evidenceRef||null;
           }
           record.ownerEpoch=ownerEpoch;record.state=terminal;record.stageId='verifying';
-          record.verification='confirmed';record.effectState=untouched?'untouched':'restored';
-          record.recoveryOutcome=untouched?'not-required':'restored-and-verified';
+          const filesOnly=!untouched&&outcome.filesRestored===true&&outcome.value?.recoveryVerification==='files-only';
+          record.verification=filesOnly?'failed':'confirmed';record.effectState=untouched?'untouched':'restored';
+          record.recoveryOutcome=untouched?'not-required':filesOnly?'files-restored-start-failed':'restored-and-verified';
           record.currentFailure=null;record.result=outcome.value;
           saved?.finish({outcome:terminal});
           await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence},capture:saved});
@@ -779,6 +789,12 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     }catch(failure){await lease.release();throw failure;}
     return execute(record,{execute:async()=>{throw error;},onFailure},lease,'resume');
   }
-  return {start,snapshot,recheck,failHandoff,resume:(id,options)=>continueOperation(id,'resume',options),recover:(id,options)=>continueOperation(id,'recover',options)};
+  function hasFailedUpdateTarget(tag){
+    if(typeof tag!=='string'||!tag)return false;
+    const version=tag.replace(/^v/,'');
+    return records().some(record=>record.kind==='update'&&TERMINAL.has(record.state)&&failedAttempt(record)
+      &&updateTargetTag(record)===version);
+  }
+  return {start,snapshot,recheck,failHandoff,hasFailedUpdateTarget,resume:(id,options)=>continueOperation(id,'resume',options),recover:(id,options)=>continueOperation(id,'recover',options)};
 }
 module.exports={createOperationController};

@@ -47,7 +47,7 @@ function fixture(overrides = {}) {
     button:(text,onclick)=>Object.assign(element(),{textContent:text,onclick}),
     clearTimeout(){},clearInterval(){},setTimeout:()=>1,checkVersionsInBackground(){},...overrides});
   vm.runInContext(['textError','errorCopy','operationFailure','currentOperation','allowedActions','noraUpdateGuidance','recheckFailure','refreshFailure','recoveryReason','hasLogs','appendActions','checkedTime','unknownStatusCopy','operationFact','retryLabel','complete','canReturnHome','serviceRunning','allRunning','syncState','readStatus',
-    'controls','renderServices','dailyHome','openLogs','openLauncherDownload','recoveredOperation','route','poll'].map(definition).join('\n'),context);
+    'controls','renderServices','dailyHome','openLogs','openLauncherDownload','recoveredOperation','settledUpdateOperation','route','poll'].map(definition).join('\n'),context);
   return {context,$,descendants};
 }
 test('an incompatible package offers its replacement page and preserves the failure when that page cannot open',async()=>{
@@ -169,7 +169,9 @@ function mainHandler(channel, values) {
   }
   const ast = parse(mainSource,{ecmaVersion:'latest'}); visit(ast);
   const cancellation = ast.body.find(n=>n.id?.name==='taskCancellation');
-  return vm.runInNewContext(`${mainSource.slice(cancellation.start,cancellation.end)}\n(${mainSource.slice(callback.start,callback.end)})`,
+  const projection = ast.body.filter(n=>['desktopSequenceOptions','desktopSequenceForOperation','projectDesktopOperation'].includes(n.id?.name))
+    .map(n=>mainSource.slice(n.start,n.end)).join('\n');
+  return vm.runInNewContext(`${mainSource.slice(cancellation.start,cancellation.end)}\n${projection}\n(${mainSource.slice(callback.start,callback.end)})`,
     {require:mainRequire,updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,desktopUpdateNotice:null,...values});
 }
 
