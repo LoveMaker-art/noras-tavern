@@ -1,6 +1,6 @@
 # 酒馆产品设计
 
-产品设计版本：**1.47**。核对日期：2026-11-02。与[项目总览](README.md)共同构成现行设计。酒馆单独使用及诺拉＋酒馆完整版均以Linux云端／服务器为正式部署目标，平台与实例边界见[共同规则](README.md#deployment-support)。保留全部世界、会话、资料库、插件、阅读和数据保护规则；部分模型与恢复路径已有隔离实测，完整云端业务仍有未验项，统一见[N-D04](nora.md#differences)与[本地整合记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)，不将源码合并记为部署或全平台验收。
+产品设计版本：**1.48**。核对日期：2026-11-02。与[项目总览](README.md)共同构成现行设计。酒馆单独使用及诺拉＋酒馆完整版均以Linux云端／服务器为正式部署目标，平台与实例边界见[共同规则](README.md#deployment-support)。保留全部世界、会话、资料库、插件、阅读和数据保护规则；部分模型与恢复路径已有隔离实测，完整云端业务仍有未验项，统一见[N-D04](nora.md#differences)与[本地整合记录](../launcher-reliability-plan.md#cloud-core-main-integration-20261101)，不将源码合并记为部署或全平台验收。
 
 1.47于2026-11-02按用户明确要求调整更新入口：启动器检查核心与APP两项、只执行APP更新；诺拉对话只提交核心更新。新任务不再联合更新，详细规则见[共同更新职责](README.md#shared-update)。入口分离已实现并整合本地main，通过关联技术及隔离页面验收；本轮不改酒馆内容业务或数据格式，已安装技能、安装包与正式实例未切换，未推送发布；1.46恢复收尾要求继续有效。目标环境缺口见[L-D10](launcher.md#differences)与[N-D01](nora.md#differences)。
 1.44保留1.43全部既有规则，并整合[T-23](#visuals)阅读控制、段距真实排版修正及用户验收的内置默认；已有用户选择优先，保留故事、卡片内部排版及原文字换行。实际整合见[本轮记录](../launcher-reliability-plan.md#reading-main-integration-20261030)。
