@@ -102,7 +102,7 @@ jobs:
           set -euo pipefail
           export NORA_TEST_PYTHON="$(python -B -c 'import sys;print(sys.executable,end="")')"
           case "$FULL_REGRESSION" in
-            true) node "$PWD/tooling/checks/verify-launcher-stability.mjs" ;;
+            true) node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_dependency_materialization tests.deployment.test_update_operation_safety tests.deployment.test_updater_task_backend tests.deployment.test_standalone_update_recovery ;;
             false) node "$PWD/tooling/checks/launcher-test-impact.mjs" --base "$BASELINE_TAG" --head "$GITHUB_SHA" --run-focused ;;
             *) echo 'Missing verified test selection' >&2; exit 1 ;;
           esac

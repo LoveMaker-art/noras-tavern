@@ -317,7 +317,7 @@ test('the full profile retains complete source coverage and focused profiles lea
   const componentSelection=component.findIndex(step=>step.id==='test-impact');
   const componentGate=component.findIndex(step=>step.name==='Require the selected component source regression');
   assert.ok(componentSelection>=0&&componentGate>componentSelection);
-  assert.match(component[componentGate].run,/verify-launcher-stability\.mjs/);
+  assert.match(components.jobs['native-components'].steps.find(step=>step.name==='Qualify native maintenance changes before actual component acceptance').run,/true\) node tooling\/checks\/verify-launcher-stability\.mjs/);
   assert.match(component[componentGate].run,/--run-focused/);
   assert.match(component[componentGate].run,/Missing verified test selection.*exit 1/);
   assert.doesNotMatch(scripts(publisher),/verify-launcher-stability|--run-focused|launcher-installed-check/,
@@ -464,6 +464,20 @@ test('mandatory backup workflow contracts run in preflight with finite installat
     assert.equal(nativeSteps.filter(step => /npm ci --prefix app\/engine\/sillytavern/.test(step.run || '')).length, 1,
       `${job}: install the same locked engine dependencies only once`);
   }
+});
+
+test('component Linux preparation exercises headless updates while full desktop maintenance stays on all native targets', () => {
+  assert.equal(components.jobs['build-components']['runs-on'], 'ubuntu-latest');
+  const linux = components.jobs['build-components'].steps.find(step => step.name === 'Require the selected component source regression');
+  assert.doesNotMatch(linux.run, /verify-launcher-stability\.mjs/);
+  for (const name of ['test_update_dependency_materialization', 'test_update_operation_safety', 'test_updater_task_backend', 'test_standalone_update_recovery'])
+    assert.ok(linux.run.includes(`tests.deployment.${name}`), `actual Linux maintenance path: ${name}`);
+  const native = components.jobs['native-components'];
+  assert.deepEqual(native.strategy.matrix.include.map(item => item.platform).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
+  const gate = native.steps.find(step => step.name === 'Qualify native maintenance changes before actual component acceptance');
+  assert.match(gate.run, /true\) node tooling\/checks\/verify-launcher-stability\.mjs/);
+  assert.equal(gate['continue-on-error'], undefined);
+  assert.ok(native.steps.indexOf(gate) < native.steps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data'));
 });
 
 test('component workers prepare locked engine dependencies before real recovery consumers', () => {
