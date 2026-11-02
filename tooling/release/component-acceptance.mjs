@@ -44,10 +44,8 @@ export function componentInventory(root) {
 
 /** Materialize the exact platform closure, without repacking or downloading a
  * replacement environment. The system manifest binds every logical file. */
-export function prepareComponentPayload({ delivery, output, platform, commit }) {
+function platformInput({ delivery, platform, commit }, inventory = componentInventory(delivery)) {
     assert.ok(COMPONENT_PLATFORMS.includes(platform)); assert.match(commit, /^[a-f0-9]{40}$/);
-    assert.ok(!fs.existsSync(output), 'Component payload must be a new directory');
-    const inventory = componentInventory(delivery);
     const systemFile = find(delivery, `nora-system-${platform}.json`), system = read(systemFile);
     assert.equal(system.schema, 'nora-system/v1'); assert.equal(`${system.platform}-${system.arch}`, platform);
     assert.equal(system.commit, commit); assert.equal(system.candidate, false); assert.equal(system.channel, 'stable');
@@ -69,12 +67,35 @@ export function prepareComponentPayload({ delivery, output, platform, commit }) 
         assert.equal(descriptor.sha256, payload[key].sha256);
         assert.equal(system.files[safe(descriptor.archive)]?.sha256, descriptor.sha256);
     }
+    return {system,systemFile,productFile:find(delivery,'release-manifest.json'),entries:Object.entries(system.files)
+        .map(([name,entry])=>({name,asset:entry.asset,file:find(delivery,entry.asset)}))};
+}
+
+export function prepareComponentPayload({ delivery, output, platform, commit }) {
+    assert.ok(!fs.existsSync(output), 'Component payload must be a new directory');
+    const {system,systemFile,entries}=platformInput({delivery,platform,commit});
     fs.mkdirSync(output, { recursive: true });
     try {
-        for (const [name, entry] of Object.entries(system.files)) fs.copyFileSync(find(delivery, entry.asset), path.join(output, name));
+        for (const {name,file} of entries) fs.copyFileSync(file, path.join(output, name));
         fs.copyFileSync(systemFile, path.join(output, 'nora-system.json'));
     } catch (error) { fs.rmSync(output, { recursive: true, force: true }); throw error; }
     return system;
+}
+
+/** CI transfer subsets retain the exact canonical files and system bindings.
+ * The complete delivery remains the sole publication input. */
+export function splitComponentDelivery({delivery,output,commit}) {
+    assert.ok(!fs.existsSync(output),'Platform transfer root must be new');
+    const inventory=componentInventory(delivery);
+    const inputs=COMPONENT_PLATFORMS.map(platform=>({platform,...platformInput({delivery,platform,commit},inventory)}));
+    fs.mkdirSync(output,{recursive:true});
+    try{
+        for(const {platform,systemFile,productFile,entries} of inputs){
+            const directory=path.join(output,platform);fs.mkdirSync(directory);
+            for(const file of [systemFile,productFile,...entries.map(item=>item.file)])
+                fs.copyFileSync(file,path.join(directory,path.basename(file)),fs.constants.COPYFILE_FICLONE);
+        }
+    }catch(error){fs.rmSync(output,{recursive:true,force:true});throw error;}
 }
 
 /** Inspect raw harness evidence again at publication; a successful matrix job
@@ -211,5 +232,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         const plan = read(planFile); assert.equal(plan.baseline.ref, baselineTag);
         sealComponentAcceptance({ delivery, reports, plan, output, commit, tag,
             ...(process.env.PRODUCT_SOURCE_FILE?{productSource:read(process.env.PRODUCT_SOURCE_FILE),verificationCommit:process.env.GITHUB_SHA}:{}) });
-    } else throw new Error('Use component-acceptance.mjs prepare|run|seal');
+    } else if(command==='split'){
+        assert.equal(args.length,3);const [delivery,output,commit]=args;
+        splitComponentDelivery({delivery,output,commit});
+    } else throw new Error('Use component-acceptance.mjs prepare|run|seal|split');
 }

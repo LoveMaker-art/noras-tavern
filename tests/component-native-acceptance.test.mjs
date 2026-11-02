@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
-import { COMPONENT_PLATFORMS, prepareComponentPayload, sealComponentAcceptance, verifyComponentNative, runComponentNative } from '../tooling/release/component-acceptance.mjs';
+import { COMPONENT_PLATFORMS, prepareComponentPayload, splitComponentDelivery, sealComponentAcceptance, verifyComponentNative, runComponentNative } from '../tooling/release/component-acceptance.mjs';
 import { componentAcceptanceFixture } from './helpers/component-acceptance-fixture.mjs';
 const { verifyComponentAcceptance } = createRequire(import.meta.url)('../tooling/release/publication-source.cjs');
 
@@ -13,6 +13,24 @@ function fixture(t) {
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     return { root, ...componentAcceptanceFixture(root) };
 }
+
+test('platform transfer subsets retain exact system-bound bytes and exclude other platform environments',t=>{
+    const f=fixture(t),output=path.join(f.root,'transfers');splitComponentDelivery({...f,output});
+    const bytes=directory=>fs.readdirSync(directory).reduce((sum,name)=>sum+fs.statSync(path.join(directory,name)).size,0);
+    let transferred=0;
+    for(const platform of COMPONENT_PLATFORMS){
+        const directory=path.join(output,platform);transferred+=bytes(directory);
+        const system=JSON.parse(fs.readFileSync(path.join(f.delivery,`nora-system-${platform}.json`)));
+        const selected=['release-manifest.json',`nora-system-${platform}.json`,...Object.values(system.files).map(item=>item.asset)].sort();
+        assert.deepEqual(fs.readdirSync(directory).sort(),selected);
+        for(const name of selected)assert.deepEqual(fs.readFileSync(path.join(directory,name)),fs.readFileSync(path.join(f.delivery,name)));
+        prepareComponentPayload({...f,delivery:directory,output:path.join(f.root,'materialized-'+platform),platform});
+    }
+    assert.ok(transferred<bytes(f.delivery)*COMPONENT_PLATFORMS.length,'Platform workers must not each receive the complete delivery');
+    const platform=COMPONENT_PLATFORMS[0],directory=path.join(output,platform),system=JSON.parse(fs.readFileSync(path.join(directory,`nora-system-${platform}.json`)));
+    fs.appendFileSync(path.join(directory,system.files['release-manifest.json'].asset),'changed');
+    assert.throws(()=>prepareComponentPayload({...f,delivery:directory,output:path.join(f.root,'bad-transfer'),platform}),/Frozen component differs/);
+});
 test('component publication consumes all raw native reports and exact frozen delivery', async t => {
     const f = fixture(t), result = await verifyComponentAcceptance(f.delivery, f.reports, f.planRoot, f.commit);
     assert.deepEqual(Object.keys(result.native).sort(), [...COMPONENT_PLATFORMS].sort());

@@ -120,7 +120,7 @@ test('the release reference audit detects a missing Python module or named nativ
 });
 test('component delivery requires all three native platforms before the final publishable receipt', () => {
   const native = components.jobs['native-components'], accepted = components.jobs['accept-components'];
-  assert.equal(native.needs, 'build-components'); assert.equal(native.strategy['fail-fast'], 'false');
+  assert.deepEqual(native.needs, ['build-components','prepare-platform-inputs']); assert.equal(native.strategy['fail-fast'], 'false');
   assert.deepEqual(native.strategy.matrix.include, [
     { runner: 'macos-15', platform: 'darwin-arm64' },
     { runner: 'macos-15-intel', platform: 'darwin-x64' },
@@ -130,7 +130,8 @@ test('component delivery requires all three native platforms before the final pu
   assert.equal(accepted.if, undefined, 'A failed or skipped native matrix must not produce an accepted receipt');
   assert.equal(native.uses,'./.github/workflows/component-platform-stages.yml');
   const nativeSteps = componentNative.steps, downloaded = nativeSteps.find(step => step.uses === 'actions/download-artifact@v4');
-  assert.equal(downloaded.with.name, 'nora-component-delivery');
+  assert.equal(downloaded.with['artifact-ids'], '${{ inputs.delivery_artifact_id }}');
+  assert.equal(downloaded.with['merge-multiple'],'true');
   const prepare = nativeSteps.findIndex(step => step.name === 'Materialize the same frozen component payload');
   const run = nativeSteps.findIndex(step => step.name === 'Test fresh target installation and both native upgrade states with retained user data');
   assert.ok(prepare >= 0 && run > prepare);
@@ -741,6 +742,8 @@ test('component acceptance retries restore the complete passed source stage and 
   assert.ok(raw.with.path.includes('nora-stage-input-source.json'));
   for(const job of [source,acceptance]){
     assert.equal(job.steps.find(step=>step.uses==='actions/setup-node@v4').with['node-version'],'24.19.0');
+    assert.equal(job.steps.find(step=>step.uses==='actions/setup-node@v4').with.cache,'npm');
+    assert.equal(job.steps.find(step=>step.uses==='actions/setup-node@v4').with['cache-dependency-path'],'launcher/desktop/package-lock.json');
     assert.equal(job.steps.find(step=>step.uses==='actions/setup-python@v5').with['python-version'],'3.11.9');
   }
 });
@@ -809,8 +812,9 @@ test('original component ZIP revalidation never runs compilation and keeps verif
   assert.equal(build.steps.find(step=>step.name===name).if,undefined,'new verifier must actually execute '+name);
  for(const stage of ['source','acceptance']){
   const steps=componentStages.jobs[stage].steps;
-  const unwrap=steps.findIndex(step=>step.name==='Normalize the original or newly built component delivery');
-  assert.ok(unwrap>=0&&unwrap<steps.findIndex(step=>step.name==='Materialize the same frozen component payload'));
+  const checked=steps.findIndex(step=>step.name==='Qualify product and verification handoff inputs before downloading');
+  assert.ok(checked>=0&&checked<steps.findIndex(step=>step.name==='Materialize the same frozen component payload'));
+  assert.match(steps[checked].run,/check-component-input/);
   assert.match(steps.find(step=>step.name==='Materialize the same frozen component payload').run,/PRODUCT_COMMIT/);
  }
  assert.equal(componentStages.env.PRODUCT_COMMIT,'${{ inputs.product_commit }}');
@@ -829,7 +833,8 @@ test('component retries retain failed diagnostics, replace only canonical CI slo
  assert.equal(failure.if,'failure() || cancelled()');assert.ok(failure.with.name.includes('github.run_attempt'));
  assert.equal(failure.with.overwrite,undefined,'older failures must not be overwritten by a later successful retry');
  for(const key of ['delivery_artifact_id','delivery_artifact_digest']){
-  assert.equal(components.jobs['native-components'].with[key],`\${{ needs.build-components.outputs.${key} }}`);
+  const value=components.jobs['native-components'].with[key];
+  for(const platform of ['arm64','intel','windows'])assert.ok(value.includes(`delivery_${platform}_${key.endsWith('_id')?'id':'digest'}`));
   assert.ok(componentStages.on.workflow_call.inputs[key]);
  }
  assert.match(componentStages.env.NORA_STAGE_OPTIONS,/deliveryArtifactId/);assert.match(componentStages.env.NORA_STAGE_OPTIONS,/deliveryArtifactDigest/);
@@ -837,4 +842,30 @@ test('component retries retain failed diagnostics, replace only canonical CI slo
   const check=job.steps.findIndex(step=>step.name==='Qualify product and verification handoff inputs before downloading');
   assert.ok(check>=0&&check<job.steps.findIndex(step=>step.uses==='actions/download-artifact@v4'));
  }
+});
+
+test('native component workers consume platform subsets while publication retains the complete original delivery',()=>{
+ const prep=components.jobs['prepare-platform-inputs'],steps=prep.steps;
+ assert.equal(prep.needs,'build-components');assert.equal(prep.if,undefined);
+ assert.doesNotMatch(scripts({jobs:{prep}}),/package-release|package-component-update|electron-builder|npm run/);
+ const split=steps.findIndex(step=>step.name==='Prepare platform-only inputs from the same complete delivery');
+ assert.ok(split>steps.findIndex(step=>step.name==='Normalize the original or newly built component delivery'),'The immutable original is authenticated before platform transfer preparation');
+ for(const [id,platform] of [['delivery-arm64','darwin-arm64'],['delivery-intel','darwin-x64'],['delivery-windows','win32-x64']]){
+  const step=steps.find(step=>step.id===id);assert.equal(step.with.name,'nora-component-delivery-'+platform);assert.ok(step.with.path.includes('/'+platform+'/'));
+ }
+ for(const job of Object.values(componentStages.jobs)){
+  assert.ok(!job.steps.some(step=>/unwrap-product/.test(step.run||'')));
+  assert.equal(job.steps.find(step=>step.uses==='actions/download-artifact@v4').with['artifact-ids'],'${{ inputs.delivery_artifact_id }}');
+ }
+ assert.match(componentStages.env.NORA_STAGE_OPTIONS,/"platformDelivery":true/);
+ assert.equal(componentStages.env.COMPONENT_DELIVERY,undefined,'Runner paths are resolved inside steps, not workflow-level env');
+ assert.equal(components.jobs['accept-components'].steps.find(step=>step.uses==='actions/download-artifact@v4').with.name,'nora-component-delivery');
+});
+
+test('the earliest fixture audit rejects dangling steps and steps mixing commands with actions',()=>{
+ for(const step of [{name:'forgotten command'},{name:'mixed',run:'node check.mjs',uses:'actions/checkout@v4'}])
+  assert.throws(()=>assertFixturePrerequisites({jobs:{check:{'runs-on':'ubuntu-24.04',steps:[step]}}}),/exactly one run or uses/);
+ assert.throws(()=>assertFixturePrerequisites({env:{INPUT:'${{ runner.temp }}'},jobs:{}}),/Runner context/);
+ for(const [value,message] of [['${{ steps.missing.outputs.id }}',/missing step/],['${{ matrix.platform }}',/matrix strategy/]])
+  assert.throws(()=>assertFixturePrerequisites({jobs:{check:{outputs:{input:value},steps:[{id:'actual',uses:'actions/checkout@v4'}]}}}),message);
 });

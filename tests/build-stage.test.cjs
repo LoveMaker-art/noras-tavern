@@ -223,12 +223,32 @@ test('publication rechecks component source API identity, attempt, baseline and 
  const jobs={total_count:1,jobs:[producer]};
  const check=(proof=input,j=jobs,a=artifacts,b='v2.6.0')=>stage.verifyComponentSourceProof(proof,run,a,j,'win32-x64',b);
  assert.equal(check().artifactId,91);
+ const thin=structuredClone(input),thinArtifacts=structuredClone(artifacts);
+ thin.receipt.context.options.platformDelivery=true;thinArtifacts.artifacts[1].name='nora-component-delivery-win32-x64';
+ thinArtifacts.artifacts[1].created_at='2026-11-02T00:04:00Z';
+ const transfer={...producer,id:40,name:'prepare-platform-inputs',started_at:'2026-11-02T00:00:00Z',completed_at:'2026-11-02T00:05:00Z',steps:stage.componentTransferGates.map(name=>({name,status:'completed',conclusion:'success'}))};
+ const thinJobs={total_count:2,jobs:[producer,transfer]};
+ assert.equal(check(thin,thinJobs,thinArtifacts).transferProducerId,40);
+ assert.throws(()=>check(thin,jobs,thinArtifacts),/transfer producer/);
+ const badProducer=structuredClone(thinJobs);badProducer.jobs[1].steps[0].conclusion='skipped';assert.throws(()=>check(thin,badProducer,thinArtifacts));
+ assert.throws(()=>check(input,jobs,thinArtifacts),/fall back/);
+ thinArtifacts.artifacts[1].name='nora-component-delivery-darwin-x64';assert.throws(()=>check(thin,thinJobs,thinArtifacts),/Missing upstream/);
  for(const change of [x=>x.receipt.context.commit='c'.repeat(40),x=>x.producer.attempt=1,x=>x.producer.id=999,x=>x.artifact.digest='sha256:'+'c'.repeat(64),x=>x.receipt.context.options.pipeline='installer',x=>delete x.consumerEnvironment,x=>x.consumerEnvironment.kernel='changed',x=>x.receipt.context.options.deliveryArtifactId='93',x=>x.receipt.context.options.deliveryArtifactDigest='e'.repeat(64)]){
   const altered=structuredClone(input);change(altered);assert.throws(()=>check(altered));
  }
  assert.throws(()=>check(input,jobs,artifacts,'v2.5.9'));
  for(const change of [x=>x.jobs[0].conclusion='failure',x=>x.jobs[0].steps.pop(),x=>x.jobs[0].steps[0].conclusion='skipped']){
   const altered=structuredClone(jobs);change(altered);assert.throws(()=>check(input,altered));
+ }
+});
+
+test('platform input API identity is checked before download without fetching any product bytes',t=>{
+ const f=fixture(t);f.expected.options={pipeline:'components',force_full_regression:false,productCommit:f.expected.commit,
+  productSourceRun:'',deliveryArtifactId:'92',deliveryArtifactDigest:'d'.repeat(64),platformDelivery:true};
+ const item={id:92,name:'nora-component-delivery-win32-x64',expired:false,size_in_bytes:100,digest:'sha256:'+'d'.repeat(64),workflow_run:{id:f.expected.runId,head_sha:f.expected.commit}};
+ let calls=0;stage.checkComponentInput(f.expected,endpoint=>{calls++;assert.match(endpoint,/artifacts\/92$/);return item;});assert.equal(calls,1);
+ for(const mutate of [x=>x.expired=true,x=>x.name='nora-component-delivery-darwin-x64',x=>x.digest='sha256:'+'e'.repeat(64),x=>x.workflow_run.id++,x=>x.workflow_run.head_sha='b'.repeat(40)]){
+  const bad=structuredClone(item);mutate(bad);assert.throws(()=>stage.checkComponentInput(f.expected,()=>bad));
  }
 });
 

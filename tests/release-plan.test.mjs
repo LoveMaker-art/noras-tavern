@@ -68,6 +68,19 @@ test('both old and independent component planning commands remain verification-o
     assert.equal(createReleasePlan(inputs).requiresReview,true);
 });
 
+test('the transfer stage may select immutable platform files but cannot hide another builder',()=>{
+    const actual=fs.readFileSync(path.join(root,'.github/workflows/publish-component-update.yml'),'utf8');
+    const inputs=change('.github/workflows/publish-component-update.yml');
+    inputs.baseline.configuration.componentWorkflow=workflowInputs(actual,'build-components');
+    inputs.current.configuration.componentWorkflow=workflowInputs(actual,'build-components');
+    inputs.current.configuration.componentTransfer=workflowInputs(actual,'prepare-platform-inputs');
+    assert.equal(createReleasePlan(inputs).mode,'verification-only');
+    for(const command of ['node tooling/release/package-release.mjs','bash hidden-builder.sh']){
+        inputs.current.configuration.componentTransfer=workflowInputs(actual.replace('node tooling/release/component-acceptance.mjs split',command),'prepare-platform-inputs');
+        assert.equal(createReleasePlan(inputs).requiresReview,true,command);
+    }
+});
+
 test('test-looking commands with shell execution or paths outside tests still require review', () => {
     for (const command of ['node --test tests/contracts.test.mjs; bash build-runtime.sh',
         'node --test tests/../tooling/release/build-runtime.mjs', 'node --test tests/./contracts.test.mjs',

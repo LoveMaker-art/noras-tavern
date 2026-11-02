@@ -32,8 +32,17 @@ print(json.dumps(missing))`;
 }
 
 export function assertFixturePrerequisites(workflow) {
+    for(const value of Object.values(workflow.env||{}))
+        assert.ok(!String(value).includes('${{')||!/\brunner\./.test(value),'Runner context is unavailable in workflow-level env');
     for (const [jobName, job] of Object.entries(workflow.jobs || {})) {
         const steps = job.steps || [], scripts = steps.map(step => step.run || '');
+        for(const step of steps)assert.ok(Boolean(step.run)!==Boolean(step.uses),`${jobName}: each step needs exactly one run or uses entry`);
+        const ids=new Set(steps.map(step=>step.id).filter(Boolean));
+        for(const value of Object.values(job.outputs||{})){
+            for(const match of String(value).matchAll(/\bsteps\.([\w-]+)\.outputs\./g))
+                assert.ok(ids.has(match[1]),`${jobName}: output references a missing step: ${match[1]}`);
+            if(/\bmatrix\./.test(value))assert.ok(job.strategy?.matrix,`${jobName}: matrix output needs a matrix strategy`);
+        }
         // A concrete Linux worker cannot exercise the desktop bridge. Variable
         // native workers remain qualified by their actual runtime prerequisite.
         if (String(job['runs-on']).startsWith('ubuntu'))

@@ -75,6 +75,10 @@ const reviewedComponentTestSelectionSteps = new Set([
     '8e309e8319ea29445eb88ab88f2b84203d2d8025fd1aab6c86cfc4cd6ed6babd',
     'edb8c2e7d6490c109364770b3148ad785864646d9cc1857d8d9a1db0da7b8097',
 ]);
+const reviewedComponentTransferSteps = new Set([
+    'ec22657b4e56b2cd9d3a727ad5861b6ec6c81757d5d71dc6c6a097ed37c8def2', // Authenticated original delivery extraction only.
+    '9db13ebeed45cac2fed82882787eae2cdb7845c72e2ade48fa2402aff105aea2', // Exact system-bound CI subsets; no product reconstruction.
+]);
 const fullTools = new Set(['tooling/layout.mjs', 'tooling/source-layout.json', 'tooling/release/release-source.mjs',
     'tooling/release/build-commands.mjs', 'tooling/release/package-release.mjs', 'tooling/release/package-release.sh',
     'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs', 'tooling/release/app-only-release.mjs']);
@@ -116,7 +120,8 @@ export function workflowInputs(text = '', job = 'build') {
     let block = [];
     const flush = () => {
         const value = normalize(block);
-        const reviewedVerification = (job==='build-components'&&value==='id: product\nrun: node tooling/release/publication-source.cjs restore-product')
+        const reviewedVerification = (job==='prepare-platform-inputs'&&reviewedComponentTransferSteps.has(hash(value)))
+            || (job==='build-components'&&value==='id: product\nrun: node tooling/release/publication-source.cjs restore-product')
             || ((job === 'build-components' || job === 'publish')
             && reviewedComponentVerificationSteps.has(hash(value)))
             || (['build','source','runtime','package'].includes(job) && reviewedNativeTestSelectionSteps.has(hash(value)))
@@ -171,6 +176,7 @@ function configuration(contents) {
     }
     return { layout: layout?.rules || null, launcher: parse(configPaths[1]), launcherLock: parse(configPaths[5]), workflow,
         componentWorkflow: workflowInputs(component, /^ {2}build-components:\s*$/m.test(component) ? 'build-components' : 'publish'),
+        componentTransfer: /^ {2}prepare-platform-inputs:\s*$/m.test(component)?workflowInputs(component,'prepare-platform-inputs'):null,
         componentValidationHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update|package-component-update)|\bnpm\s+run\s+(?:build|pack:)|\belectron-builder\b)/.test(contents[configPaths[7]] || ''),
         publicationWorkflowHasBuild: /(?:\bnode\s+[^\n]*(?:package-release|package-hermes-runtime|package-launcher-update)|\bnpm\s+(?:ci|install|run\s+(?:build|pack:))|\belectron-builder\b)/.test(contents[configPaths[4]] || '') };
 }
@@ -327,7 +333,11 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
                 const key = name === configPaths[3] ? 'componentWorkflow' : 'workflow';
                 const before = baseline?.configuration?.[key] || workflowInputs('');
                 const after = current.configuration?.[key] || { unrecognized: true };
-                if (after.unrecognized || before.unrecognized) { review.push(`Unrecognized build workflow: ${name}`); full('Build instructions cannot be compared safely'); }
+                const transfer=name===configPaths[3]?current.configuration?.componentTransfer:null;
+                if(transfer&&(transfer.unrecognized||transfer.packaging.length||transfer.unknown.length)){
+                    review.push('Unclassified component transfer preparation');full('Transfer preparation cannot hide unreviewed product construction');
+                }
+                else if (after.unrecognized || before.unrecognized) { review.push(`Unrecognized build workflow: ${name}`); full('Build instructions cannot be compared safely'); }
                 else if (JSON.stringify(before.unknown || []) !== JSON.stringify(after.unknown || [])) { review.push(`Unclassified changed build step: ${name}`); full('Changed workflow command is not an audited test/publication-only step'); }
                 else if (JSON.stringify(before.environment) !== JSON.stringify(after.environment)) full('Native runner, Node/Python/ABI, external checkout or Hermes construction instructions changed');
                 else if (JSON.stringify(before.packaging) !== JSON.stringify(after.packaging)) full('npm installation or product package construction instructions changed');

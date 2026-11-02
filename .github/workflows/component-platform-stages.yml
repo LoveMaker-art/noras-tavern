@@ -45,7 +45,7 @@ env:
   BASELINE_TAG: ${{ inputs.baseline_tag }}
   REGRESSION_BASELINE: ${{ inputs.regression_baseline }}
   ACCEPTANCE_BASELINE_TAG: ${{ inputs.baseline_tag }}
-  NORA_STAGE_OPTIONS: ${{ format('{{"pipeline":"components","force_full_regression":{0},"productCommit":"{1}","productSourceRun":"{2}","deliveryArtifactId":"{3}","deliveryArtifactDigest":"{4}","regressionBaseline":"{5}"}}', inputs.force_full_regression || false, inputs.product_commit, inputs.product_source_run, inputs.delivery_artifact_id, inputs.delivery_artifact_digest, inputs.regression_baseline) }}
+  NORA_STAGE_OPTIONS: ${{ format('{{"pipeline":"components","force_full_regression":{0},"productCommit":"{1}","productSourceRun":"{2}","deliveryArtifactId":"{3}","deliveryArtifactDigest":"{4}","regressionBaseline":"{5}","platformDelivery":true}}', inputs.force_full_regression || false, inputs.product_commit, inputs.product_source_run, inputs.delivery_artifact_id, inputs.delivery_artifact_digest, inputs.regression_baseline) }}
   PYTHONUTF8: '1'
   PYTHONIOENCODING: utf-8
 jobs:
@@ -64,6 +64,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.19.0'
+          cache: npm
+          cache-dependency-path: launcher/desktop/package-lock.json
       - name: Pin the native verification tool interpreter
         id: stage-python
         uses: actions/setup-python@v5
@@ -79,18 +81,17 @@ jobs:
         run: node tooling/release/build-stage.cjs check-component-input
       - uses: actions/download-artifact@v4
         with:
-          name: nora-component-delivery
+          artifact-ids: ${{ inputs.delivery_artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/component-delivery
       - name: Install the native harness lockfile dependencies
         shell: bash
         run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
-      - name: Normalize the original or newly built component delivery
-        shell: bash
-        run: node "$PWD/tooling/release/publication-source.cjs" unwrap-product "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-original"
       - name: Materialize the same frozen component payload
         shell: bash
         run: |
           set -euo pipefail
+          COMPONENT_DELIVERY="$RUNNER_TEMP/component-delivery"
           node tooling/release/component-acceptance.mjs prepare "$COMPONENT_DELIVERY" "$RUNNER_TEMP/component-payload" "${{ inputs.platform }}" "$PRODUCT_COMMIT"
       - name: Restore the verified frozen runtime for native harness prerequisites
         timeout-minutes: 10
@@ -150,6 +151,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.19.0'
+          cache: npm
+          cache-dependency-path: launcher/desktop/package-lock.json
       - name: Pin the native verification tool interpreter
         id: stage-python
         uses: actions/setup-python@v5
@@ -168,18 +171,17 @@ jobs:
         run: node tooling/release/build-stage.cjs check-component-input
       - uses: actions/download-artifact@v4
         with:
-          name: nora-component-delivery
+          artifact-ids: ${{ inputs.delivery_artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/component-delivery
       - name: Install the native harness lockfile dependencies
         shell: bash
         run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
-      - name: Normalize the original or newly built component delivery
-        shell: bash
-        run: node "$PWD/tooling/release/publication-source.cjs" unwrap-product "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-original"
       - name: Materialize the same frozen component payload
         shell: bash
         run: |
           set -euo pipefail
+          COMPONENT_DELIVERY="$RUNNER_TEMP/component-delivery"
           node tooling/release/component-acceptance.mjs prepare "$COMPONENT_DELIVERY" "$RUNNER_TEMP/component-payload" "${{ inputs.platform }}" "$PRODUCT_COMMIT"
       - name: Authenticate the published baseline for actual native upgrades
         timeout-minutes: 10

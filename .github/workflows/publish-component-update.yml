@@ -188,8 +188,75 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-  native-components:
+  prepare-platform-inputs:
     needs: build-components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      delivery_arm64_id: ${{ steps.delivery-arm64.outputs.artifact-id }}
+      delivery_arm64_digest: ${{ steps.delivery-arm64.outputs.artifact-digest }}
+      delivery_intel_id: ${{ steps.delivery-intel.outputs.artifact-id }}
+      delivery_intel_digest: ${{ steps.delivery-intel.outputs.artifact-digest }}
+      delivery_windows_id: ${{ steps.delivery-windows.outputs.artifact-id }}
+      delivery_windows_digest: ${{ steps.delivery-windows.outputs.artifact-digest }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRODUCT_COMMIT: ${{ needs.build-components.outputs.product_commit }}
+      PRODUCT_TAG: ${{ needs.build-components.outputs.product_tag }}
+      NORA_PRODUCT_SOURCE_RUN: ${{ inputs.product_source_run }}
+      NORA_PRODUCT_SOURCE_TAG: ${{ inputs.product_source_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+      - uses: actions/download-artifact@v4
+        with:
+          name: nora-component-delivery
+          path: ${{ runner.temp }}/component-delivery
+      - name: Normalize the original or newly built component delivery
+        run: node "$PWD/tooling/release/publication-source.cjs" unwrap-product "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-original"
+      - name: Prepare platform-only inputs from the same complete delivery
+        run: node tooling/release/component-acceptance.mjs split "$COMPONENT_DELIVERY" "$RUNNER_TEMP/component-platform-delivery" "$PRODUCT_COMMIT"
+      - name: Preserve ARM platform input
+        id: delivery-arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-delivery-darwin-arm64
+          overwrite: true
+          path: ${{ runner.temp }}/component-platform-delivery/darwin-arm64/**
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - name: Preserve Intel platform input
+        id: delivery-intel
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-delivery-darwin-x64
+          overwrite: true
+          path: ${{ runner.temp }}/component-platform-delivery/darwin-x64/**
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - name: Preserve Windows platform input
+        id: delivery-windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-delivery-win32-x64
+          overwrite: true
+          path: ${{ runner.temp }}/component-platform-delivery/win32-x64/**
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+
+  native-components:
+    needs: [build-components, prepare-platform-inputs]
     strategy:
       fail-fast: false
       matrix:
@@ -207,8 +274,8 @@ jobs:
       product_commit: ${{ needs.build-components.outputs.product_commit }}
       product_tag: ${{ needs.build-components.outputs.product_tag }}
       product_source_run: ${{ inputs.product_source_run }}
-      delivery_artifact_id: ${{ needs.build-components.outputs.delivery_artifact_id }}
-      delivery_artifact_digest: ${{ needs.build-components.outputs.delivery_artifact_digest }}
+      delivery_artifact_id: ${{ matrix.platform == 'darwin-arm64' && needs.prepare-platform-inputs.outputs.delivery_arm64_id || matrix.platform == 'darwin-x64' && needs.prepare-platform-inputs.outputs.delivery_intel_id || needs.prepare-platform-inputs.outputs.delivery_windows_id }}
+      delivery_artifact_digest: ${{ matrix.platform == 'darwin-arm64' && needs.prepare-platform-inputs.outputs.delivery_arm64_digest || matrix.platform == 'darwin-x64' && needs.prepare-platform-inputs.outputs.delivery_intel_digest || needs.prepare-platform-inputs.outputs.delivery_windows_digest }}
       baseline_tag: ${{ inputs.baseline_tag }}
       regression_baseline: ${{ needs.build-components.outputs.regression_baseline }}
       force_full_regression: ${{ inputs.force_full_regression || false }}

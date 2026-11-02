@@ -768,17 +768,24 @@ const bytes=fs.readFileSync(path.join(root,file));process.stdout.write(slurp?'['
  assert.equal(origin.sourceRunConclusion,'failure');assert.equal(origin.productCommit,productCommit);
  const unwrapped=execute(['unwrap-product',bundle,path.join(temp,'native-worker')],{PRODUCT_COMMIT:productCommit,PRODUCT_TAG:payload.tag});
  assert.equal(unwrapped.status,0,unwrapped.stderr);
+ const transfers=path.join(temp,'platform-transfers');
+ const split=spawnSync(process.execPath,[path.resolve(__dirname,'../tooling/release/component-acceptance.mjs'),'split',payload.delivery,transfers,productCommit],{encoding:'utf8'});
+ assert.equal(split.status,0,split.stderr);
  const current=fixture('components');current.run.head_sha=verificationCommit;current.run.run_attempt=1;
  for(const item of current.artifacts.artifacts)item.workflow_run.head_sha=verificationCommit;
  const delivery=current.artifacts.artifacts.find(item=>item.name==='nora-component-delivery');
  writeFixtureArchives([{output:path.join(root,`${delivery.id}.zip`),directory:bundle}]);delivery.size_in_bytes=fs.statSync(path.join(root,`${delivery.id}.zip`)).size;delivery.digest='sha256:'+hash(fs.readFileSync(path.join(root,`${delivery.id}.zip`)));
- const jobs={jobs:[]};
+ const jobs={jobs:[{id:60,run_id:123,run_attempt:1,head_sha:verificationCommit,name:'prepare-platform-inputs',status:'completed',conclusion:'success',
+  started_at:'2026-11-02T00:00:00Z',completed_at:'2026-11-02T00:05:00Z',steps:stage.componentTransferGates.map(name=>({name,status:'completed',conclusion:'success'}))}]};
  for(const [index,platform]of ['darwin-arm64','darwin-x64','win32-x64'].entries()){
+  const transfer={...delivery,id:50+index,name:'nora-component-delivery-'+platform,created_at:'2026-11-02T00:04:00Z'},transferZip=path.join(root,`${transfer.id}.zip`);
+  writeFixtureArchives([{output:transferZip,directory:path.join(transfers,platform)}]);transfer.size_in_bytes=fs.statSync(transferZip).size;transfer.digest='sha256:'+hash(fs.readFileSync(transferZip));
+  current.artifacts.artifacts.push(transfer);
   const item={...delivery,id:20+index,name:stage.name('source',platform,'components')};
   const bytes=Buffer.from('synthetic source checkpoint '+platform);fs.writeFileSync(path.join(root,`${item.id}.zip`),bytes);item.size_in_bytes=bytes.length;item.digest='sha256:'+hash(bytes);current.artifacts.artifacts.push(item);
   const environment={imageOS:platform,imageVersion:'1',kernel:'fixture',node:'v24.19.0',python:'3.11.9',platform};
   const context={repository:'owner/tavern',commit:verificationCommit,runId:123,attempt:1,platform,baseline:payload.baselineTag,environment,
-   options:{pipeline:'components',force_full_regression:false,productCommit,productSourceRun:'456',deliveryArtifactId:String(delivery.id),deliveryArtifactDigest:delivery.digest}};
+   options:{pipeline:'components',force_full_regression:false,productCommit,productSourceRun:'456',deliveryArtifactId:String(transfer.id),deliveryArtifactDigest:transfer.digest,platformDelivery:true}};
   const receipt={schema:'nora-build-stage/1',stage:'source',context,inputs:[],archive:{size:10240,sha256:hash('synthetic tar')}};
   const job={id:30+index,run_id:123,run_attempt:1,head_sha:verificationCommit,name:stage.jobName('source',platform,'components'),status:'completed',conclusion:'success',steps:stage.componentSourceGates.map(name=>({name,status:'completed',conclusion:'success'}))};jobs.jobs.push(job);
   payload.write(payload.reports,`nora-component-native-${platform}/nora-stage-input-source.json`,{schema:'nora-stage-input/1',stage:'source',consumerEnvironment:{...environment,imageVersion:'2'},artifact:{id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest},receipt,producer:{id:job.id,attempt:1}});
@@ -794,6 +801,9 @@ const bytes=fs.readFileSync(path.join(root,file));process.stdout.write(slurp?'['
   fs.writeFileSync(path.join(root,'current-run.json'),JSON.stringify(current.run));fs.writeFileSync(path.join(root,'current-artifacts.json'),JSON.stringify(current.artifacts));
  };
  archiveEvidence();fs.writeFileSync(path.join(root,'api-calls.txt'),'');
+ assert.ok(verifyDelivery(current.run,current.artifacts,{repository:'owner/tavern',runId:'123',commit:productCommit,mode:'components',revalidatedComponents:true}).every(item=>!/^nora-component-delivery-/.test(item.name)));
+ const partialTransfers=structuredClone(current.artifacts);partialTransfers.artifacts=partialTransfers.artifacts.filter(item=>item.name!=='nora-component-delivery-win32-x64');partialTransfers.total_count--;
+ assert.throws(()=>verifyDelivery(current.run,partialTransfers,{repository:'owner/tavern',runId:'123',commit:productCommit,mode:'components',revalidatedComponents:true}),/Incomplete platform/);
  const publish=(name,enabled='true')=>execute(['delivery',path.join(root,'current-run.json'),path.join(root,'current-artifacts.json'),productCommit,'owner/tavern','123','components',path.join(root,name),payload.tag,'','','','',enabled]);
  const accepted=publish('accepted');assert.equal(accepted.status,0,accepted.stderr);
  const proof=JSON.parse(fs.readFileSync(path.join(root,'accepted/source-receipt.json')));assert.equal(proof.sourceCommit,productCommit);assert.equal(proof.verificationCommit,verificationCommit);assert.deepEqual(proof.productOrigin,origin);assert.equal(Object.keys(proof.componentSourceQualification).length,3);
@@ -832,4 +842,18 @@ test('summary requalification uses the latest producer of each name and records,
  const proof=componentQualification(f.run,f.options);
  assert.equal(proof.previousAttempts[0].id,99);assert.equal(proof.previousAttempts[0].conclusion,'failure');
  current.conclusion='failure';old.conclusion='success';assert.throws(()=>componentQualification(f.run,f.options));
+});
+
+test('failed summary requalification includes the platform transfer producer and all native source and acceptance jobs',()=>{
+ const f=qualificationFixture(),stage=require('../tooling/release/build-stage.cjs');
+ const jobs=f.options.qualificationJobs.jobs.filter(job=>!job.name.startsWith('native-components'));
+ const add=(name,gates)=>jobs.push({id:jobs.length+20,run_id:f.run.id,head_sha:f.run.head_sha,run_attempt:1,name,status:'completed',conclusion:'success',steps:gates.map(name=>({name,status:'completed',conclusion:'success'}))});
+ add('prepare-platform-inputs',stage.componentTransferGates);
+ for(const platform of stage.platforms){
+  add(stage.jobName('source',platform,'components'),stage.componentSourceGates);
+  add(stage.jobName('acceptance',platform,'components'),['Restore successful source qualification without running it again','Test fresh target installation and both native upgrade states with retained user data','Preserve raw native component evidence']);
+ }
+ f.options.qualificationJobs={jobs,total_count:jobs.length};assert.equal(jobs.length,9);
+ assert.equal(componentQualification(f.run,f.options).producerJobIds.length,8);
+ jobs.find(job=>job.name==='prepare-platform-inputs').steps[0].conclusion='skipped';assert.throws(()=>componentQualification(f.run,f.options));
 });

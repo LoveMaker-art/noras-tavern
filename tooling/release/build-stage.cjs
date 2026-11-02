@@ -37,6 +37,7 @@ function verifyComponentInputs(options) {
     assert.match(options.deliveryArtifactDigest,/^(?:sha256:)?[a-f0-9]{64}$/,'Missing upstream component artifact digest');
     if(options.productSourceRun)assert.ok(Number.isSafeInteger(Number(options.productSourceRun)));
     if(Object.hasOwn(options,'regressionBaseline'))assert.match(options.regressionBaseline,/^v\d+\.\d+\.\d+$/,'Invalid component regression baseline');
+    if(Object.hasOwn(options,'platformDelivery'))assert.equal(typeof options.platformDelivery,'boolean');
 }
 function context(env=process.env) {
     const platform=`${process.platform}-${process.arch}`;assert.ok(platforms.includes(platform));
@@ -88,6 +89,8 @@ const required = {
         'Verify actual lightweight update archive','Assemble full installers from the same verified payload'],
 };
 const componentSourceGates=['Require real native harness prerequisites','Qualify native maintenance changes before actual component acceptance','Seal reusable component source qualification'];
+const componentTransferGates=['Normalize the original or newly built component delivery','Prepare platform-only inputs from the same complete delivery',
+    'Preserve ARM platform input','Preserve Intel platform input','Preserve Windows platform input'];
 function verifyJob(job, expected, stage) {
     assert.ok(job,'Missing producer job');assert.equal(job.name,jobName(stage,expected.platform,pipeline(expected)));
     assert.ok(Number.isSafeInteger(job.id)&&job.id>0,'Invalid producer job identity');
@@ -101,6 +104,17 @@ function verifyJob(job, expected, stage) {
         assert.equal(matches[0].status,'completed');assert.equal(matches[0].conclusion,'success',`Stage gate did not pass: ${gate}`);}
 }
 const api = endpoint => JSON.parse(checked('gh',['api',endpoint]));
+function checkComponentInput(expected=context(),query=api) {
+    assert.equal(pipeline(expected),'components');verifyComponentInputs(expected.options);
+    if(!expected.options.platformDelivery)return;
+    const item=query(`repos/${expected.repository}/actions/artifacts/${expected.options.deliveryArtifactId}`);
+    assert.equal(String(item.id),expected.options.deliveryArtifactId);assert.equal(item.expired,false);
+    assert.ok(Number.isSafeInteger(item.size_in_bytes)&&item.size_in_bytes>0);
+    assert.equal(item.name,`nora-component-delivery-${expected.platform}`,'Wrong platform transfer input');
+    assert.match(item.digest||'',/^sha256:[a-f0-9]{64}$/);
+    assert.equal(item.digest.replace(/^sha256:/,''),expected.options.deliveryArtifactDigest.replace(/^sha256:/,''));
+    assert.equal(item.workflow_run.id,expected.runId);assert.equal(item.workflow_run.head_sha,expected.commit);
+}
 function producerJobs(receipt, expected, query=api) {
     const pages=query(`repos/${expected.repository}/actions/runs/${expected.runId}/attempts/${receipt.context.attempt}/jobs?per_page=100`);
     assert.equal(pages.total_count,pages.jobs.length,'Incomplete producer jobs');
@@ -257,10 +271,29 @@ function verifyComponentSourceProof(input,run,artifacts,jobs,platform,baseline,p
     if(productSource){assert.equal(expected.options.productCommit,productSource.productCommit);assert.equal(expected.options.productSourceRun,String(productSource.productRun));}
     else{assert.equal(expected.options.productCommit,run.head_sha);assert.equal(expected.options.productSourceRun,'');}
     assert.equal(jobs.total_count,jobs.jobs.length,'Incomplete component job listing');
-    const deliveries=artifacts.artifacts.filter(item=>item.name==='nora-component-delivery');assert.equal(deliveries.length,1,'Missing upstream component delivery');
+    if(artifacts.artifacts.some(item=>/^nora-component-delivery-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name)))
+        assert.equal(expected.options.platformDelivery,true,'Platform source proof cannot fall back to the complete delivery');
+    const deliveryName=expected.options.platformDelivery?`nora-component-delivery-${platform}`:'nora-component-delivery';
+    const deliveries=artifacts.artifacts.filter(item=>item.name===deliveryName);assert.equal(deliveries.length,1,'Missing upstream component delivery');
     assert.equal(String(deliveries[0].id),expected.options.deliveryArtifactId,'Component source qualified a different upstream delivery');
     assert.equal(deliveries[0].digest?.replace(/^sha256:/,''),expected.options.deliveryArtifactDigest?.replace(/^sha256:/,''),'Component source qualified different upstream bytes');
     assert.equal(deliveries[0].workflow_run.id,run.id);assert.equal(deliveries[0].workflow_run.head_sha,run.head_sha);
+
+    let transferProducer;
+    if(expected.options.platformDelivery){
+        const created=Date.parse(deliveries[0].created_at);
+        const candidates=jobs.jobs.filter(job=>job.name==='prepare-platform-inputs'&&Number.isFinite(created)
+            &&created>=Date.parse(job.started_at)&&created<=Date.parse(job.completed_at));
+        assert.equal(candidates.length,1,'Missing or ambiguous platform transfer producer');transferProducer=candidates[0];
+        assert.ok(Number.isSafeInteger(transferProducer.id)&&transferProducer.id>0);
+        assert.equal(transferProducer.run_id,run.id);assert.equal(transferProducer.head_sha,run.head_sha);
+        assert.ok(Number.isSafeInteger(transferProducer.run_attempt)&&transferProducer.run_attempt>0&&transferProducer.run_attempt<=run.run_attempt);
+        assert.equal(transferProducer.status,'completed');assert.equal(transferProducer.conclusion,'success');
+        for(const gate of componentTransferGates){
+            const entries=transferProducer.steps.filter(step=>step.name===gate);assert.equal(entries.length,1);
+            assert.equal(entries[0].status,'completed');assert.equal(entries[0].conclusion,'success','Platform transfer gate did not pass');
+        }
+    }
 
     verifyContext(input.receipt,expected,'source');
     assert.deepEqual(environmentIdentity(input.consumerEnvironment),environmentIdentity(expected.environment),'Component acceptance environment differs');
@@ -272,7 +305,8 @@ function verifyComponentSourceProof(input,run,artifacts,jobs,platform,baseline,p
     assert.equal(producers.length,1,'Missing or ambiguous component source producer');
     assert.equal(input.producer.id,producers[0].id);assert.equal(input.producer.attempt,input.receipt.context.attempt);
     verifyJob(producers[0],expected,'source');
-    return {artifactId:item.id,producerId:producers[0].id,attempt:input.producer.attempt};
+    return {artifactId:item.id,producerId:producers[0].id,attempt:input.producer.attempt,
+        ...(transferProducer?{transferProducerId:transferProducer.id}:{} )};
 }
 function stageArtifacts(artifacts) {return artifacts.artifacts.filter(item=>/^nora-stage-(?:source|runtime|package)-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name));}
 function verifyStageEvidence(value,run,artifacts,jobs,platform) {
@@ -366,9 +400,9 @@ async function verifyPublishedStages(delivery,acceptance,run,artifacts,{query=ap
     assert.deepEqual([...seen].sort(),[...platforms].sort(),'Every platform requires successful original acceptance');
     return {mode:'staged',platforms:[...seen].sort()};
 }
-module.exports={verifyComponentInputs,componentStageArtifacts,verifyComponentSourceProof,componentSourceGates,stages,platforms,name,jobName,context,verifyContext,verifyArtifact,verifyJob,producerJobs,hashFile,tarScript,entries,seal,restore,provenance,deliveryFiles,required,stageArtifacts,verifyStageEvidence,verifyPublishedStages,verifyFinalJob,allJobs};
+module.exports={checkComponentInput,verifyComponentInputs,componentStageArtifacts,verifyComponentSourceProof,componentSourceGates,componentTransferGates,stages,platforms,name,jobName,context,verifyContext,verifyArtifact,verifyJob,producerJobs,hashFile,tarScript,entries,seal,restore,provenance,deliveryFiles,required,stageArtifacts,verifyStageEvidence,verifyPublishedStages,verifyFinalJob,allJobs};
 if(require.main===module){
     const [command,stage,output]=process.argv.slice(2);
-    Promise.resolve().then(()=>command==='check-component-input'?assert.equal(context().options.pipeline,'components'):command==='seal'?seal(stage,output):command==='restore'?restore(stage):command==='provenance'?provenance():assert.fail('Use check-component-input, seal, restore or provenance'))
+    Promise.resolve().then(()=>command==='check-component-input'?checkComponentInput():command==='seal'?seal(stage,output):command==='restore'?restore(stage):command==='provenance'?provenance():assert.fail('Use check-component-input, seal, restore or provenance'))
         .catch(error=>{console.error(error);process.exitCode=1;});
 }

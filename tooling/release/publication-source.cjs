@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { verifyArchive, extractScript } = require('./reuse-windows-build.cjs');
-const {stageArtifacts,verifyPublishedStages,componentStageArtifacts,verifyComponentSourceProof,allJobs,jobName:stageJobName,componentSourceGates} = require('./build-stage.cjs');
+const {stageArtifacts,verifyPublishedStages,componentStageArtifacts,verifyComponentSourceProof,allJobs,jobName:stageJobName,componentSourceGates,componentTransferGates} = require('./build-stage.cjs');
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const fullNames = ['nora-tavern-shared', ...platforms.map(p => `nora-tavern-${p}`),
   ...platforms.map(p => `nora-operation-acceptance-${p}`)];
@@ -445,7 +445,8 @@ function componentQualification(run, options) {
     const old=latest.get(job.name);
     if(!old||old.run_attempt<job.run_attempt)latest.set(job.name,job);
   }
-  const producers=[...latest.values()];assert.equal(producers.length,staged?8:5);
+  const producers=[...latest.values()],transferred=latest.has('prepare-platform-inputs');assert.equal(producers.length,(staged?8:5)+(transferred?1:0));
+  assert.ok(!transferred||staged,'Platform transfer requires staged component qualification');
   const expected=new Map([
     ['build-components', options.revalidatedComponents?['Resolve product identity or restore the exact original product ZIP',
       'Verify release contracts and update preservation','Require chat backup safety tests','Require the selected component source regression','Preserve accepted component delivery']:componentBuildGates],
@@ -456,6 +457,7 @@ function componentQualification(run, options) {
       [[`native-components (${runner}, ${platform})`, ['Qualify native maintenance changes before actual component acceptance',
         'Test fresh target installation and both native upgrade states with retained user data', 'Preserve raw native component evidence']]]),
     ['accept-components', null],
+    ...(transferred?[['prepare-platform-inputs',componentTransferGates]]:[]),
   ]);
   for(const job of producers){
     assert.ok(Number.isSafeInteger(job.id)&&job.id>0); assert.equal(job.run_id,run.id); assert.equal(job.head_sha,run.head_sha);
@@ -487,6 +489,11 @@ function verifyDelivery(run, artifacts, options) {
   const full = options.mode === 'full';
   assert.equal(run.path, `.github/workflows/${full ? 'build-integrated-launcher' : 'publish-component-update'}.yml`);
   const intermediate = new Set((full?stageArtifacts(artifacts):componentStageArtifacts(artifacts)).map(item=>item.name));
+  if(!full){
+    const transfers=artifacts.artifacts.filter(item=>/^nora-component-delivery-(?:darwin-arm64|darwin-x64|win32-x64)$/.test(item.name));
+    assert.ok(transfers.length===0||transfers.length===platforms.length,'Incomplete platform transfer inputs');
+    for(const item of transfers)intermediate.add(item.name);
+  }
   if(!full)for(const item of artifacts.artifacts){
     const match=/^nora-component-failed-native-(darwin-arm64|darwin-x64|win32-x64)-attempt-([1-9][0-9]*)$/.exec(item.name);
     if(match){assert.ok(Number.isSafeInteger(Number(match[2]))&&Number(match[2])<=run.run_attempt,'Invalid diagnostic attempt');intermediate.add(item.name);}
