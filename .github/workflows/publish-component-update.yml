@@ -85,6 +85,15 @@ jobs:
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
           node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/component-native-acceptance.test.mjs tests/launcher-release-notes.test.cjs tests/launcher-test-impact.test.mjs
           node "$PWD/tooling/run.mjs" node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
+      - name: Require chat backup safety tests
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+          node --test tests/backup-safety-gate.test.mjs
+          node tooling/checks/verify-backup-safety.mjs
       - name: Require the selected component source regression
         shell: bash
         env:
@@ -104,15 +113,6 @@ jobs:
         run: |
           set -euo pipefail
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_launcher_update_recovery tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
-      - name: Require chat backup safety tests
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
-          node --test tests/backup-safety-gate.test.mjs
-          node tooling/checks/verify-backup-safety.mjs
       - name: Check affected Tavern frontend against existing Nora contracts
         if: steps.test-impact.outputs.tavern == 'true'
         timeout-minutes: 15
@@ -224,6 +224,10 @@ jobs:
       - name: Require real native harness prerequisites
         shell: bash
         run: node tooling/checks/launcher-test-environment.mjs native
+      - name: Install locked Tavern dependencies before recovery checks
+        timeout-minutes: 5
+        shell: bash
+        run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
       - name: Qualify native maintenance changes before actual component acceptance
         shell: bash
         run: |

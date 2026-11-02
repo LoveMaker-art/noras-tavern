@@ -466,6 +466,21 @@ test('mandatory backup workflow contracts run in preflight with finite installat
   }
 });
 
+test('component workers prepare locked engine dependencies before real recovery consumers', () => {
+  for (const [job, consumer] of [['build-components', 'Require the selected component source regression'],
+    ['native-components', 'Qualify native maintenance changes before actual component acceptance']]) {
+    const steps = components.jobs[job].steps;
+    const installations = steps.map((step, index) => /npm ci --prefix app\/engine\/sillytavern/.test(step.run || '') ? index : -1).filter(index => index >= 0);
+    assert.equal(installations.length, 1, `${job}: one locked engine install per fresh worker`);
+    assert.ok(installations[0] < steps.findIndex(step => step.name === consumer), `${job}: engine dependencies must precede recovery`);
+    const prerequisite = steps[installations[0]];
+    assert.equal(prerequisite.if, undefined);
+    assert.equal(prerequisite['continue-on-error'], undefined);
+    assert.match(prerequisite.run, /npm ci --prefix app\/engine\/sillytavern --ignore-scripts --no-audit --no-fund/);
+    assert.ok(Number(prerequisite['timeout-minutes']) > 0 && Number(prerequisite['timeout-minutes']) <= 10);
+  }
+});
+
 test('test prerequisites and absolute runner entries are mandatory before native suites', () => {
   const steps = full.jobs.build.steps;
   for (const step of steps) for (const line of (step.run || '').split('\n')) {
