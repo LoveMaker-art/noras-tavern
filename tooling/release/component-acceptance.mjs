@@ -89,6 +89,7 @@ export function verifyComponentNative({ delivery, reports, platform, commit, bas
     assert.equal(product.commit, commit); assert.deepEqual(payload.artifacts, product.artifacts);
     assert.equal(payload.candidate, false); assert.equal(payload.dirty, false); assert.equal(payload.versions.tavern, system.version);
     const receiptFile = find(reports, 'baseline-source-receipt.json'), receiptBytes = fs.readFileSync(receiptFile), receipt = JSON.parse(receiptBytes);
+    const reportRoot = path.dirname(receiptFile);
     assert.equal(receipt.schema, 'nora-acceptance-baseline/1'); assert.equal(receipt.mode, 'materialized');
     assert.equal(receipt.platform, platform); assert.equal(receipt.tag, baselineTag);
     assert.equal(receipt.productCommit || receipt.commit, baselineCommit, 'Native baseline differs from the frozen change plan');
@@ -105,7 +106,8 @@ export function verifyComponentNative({ delivery, reports, platform, commit, bas
     assert.equal(actualReports.length, 3, 'Component acceptance requires a fresh target installation and two native upgrade reports');
     let configurationDigest; const reportSha256 = {};
     for (const state of ['fresh', 'running', 'stopped']) {
-        const reportFile = path.join(reports, state, 'harness-result.json');
+        const reportFile = path.join(reportRoot, state, 'harness-result.json');
+        assert.ok(actualReports.includes(reportFile), 'Native reports must share their authenticated baseline directory');
         const value = read(reportFile);
         reportSha256[state] = hashFile(reportFile);
         assert.equal(value.schema, 'nora-launcher-products-smoke/1'); assert.equal(value.outcome, 'passed');

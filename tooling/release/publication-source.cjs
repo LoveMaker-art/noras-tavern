@@ -328,18 +328,60 @@ function identity(run, artifacts, { repository, runId }, conclusions) {
     assert.equal(item.workflow_run.head_repository_id, run.repository.id);
   }
 }
+function componentQualification(run, options) {
+  assert.equal(options.mode, 'components', 'Only component summaries can be requalified');
+  assert.equal(run.conclusion, 'failure');
+  const listing=options.qualificationJobs;
+  assert.ok(listing && Array.isArray(listing.jobs));
+  assert.equal(listing.total_count, listing.jobs.length); assert.equal(listing.jobs.length, 5);
+  assert.equal(new Set(listing.jobs.map(job=>job.id)).size, 5);
+  const expected=new Map([
+    ['build-components', ['Verify release contracts and update preservation', 'Require chat backup safety tests',
+      'Require the selected component source regression', 'Build only shared application and updater components',
+      'Reuse verified environments and seal three system manifests', 'Verify the frozen component delivery before native acceptance', 'Preserve accepted component delivery']],
+    ...[['macos-15','darwin-arm64'],['macos-15-intel','darwin-x64'],['windows-latest','win32-x64']].map(([runner,platform])=>
+      [`native-components (${runner}, ${platform})`, ['Qualify native maintenance changes before actual component acceptance',
+        'Test fresh target installation and both native upgrade states with retained user data', 'Preserve raw native component evidence']]),
+    ['accept-components', null],
+  ]);
+  for(const job of listing.jobs){
+    assert.ok(Number.isSafeInteger(job.id)&&job.id>0); assert.equal(job.run_id,run.id); assert.equal(job.head_sha,run.head_sha);
+    assert.ok(Number.isSafeInteger(job.run_attempt)&&job.run_attempt>0&&job.run_attempt<=run.run_attempt);
+    assert.equal(job.status,'completed'); assert.ok(expected.has(job.name),'Unexpected qualification producer');
+    const gates=expected.get(job.name); expected.delete(job.name);
+    assert.equal(job.conclusion,gates?'success':'failure'); assert.ok(Array.isArray(job.steps)&&job.steps.length>0);
+    if(gates) for(const name of gates){
+      const matches=job.steps.filter(step=>step.name===name); assert.equal(matches.length,1,`Missing qualification gate: ${name}`);
+      assert.equal(matches[0].status,'completed'); assert.equal(matches[0].conclusion,'success',`Unpassed qualification gate: ${name}`);
+    }
+    else assert.deepEqual(job.steps.filter(step=>step.conclusion==='failure').map(step=>step.name),
+      ['Accept only complete three-platform native evidence for these bytes'],'Only final evidence aggregation may have failed');
+  }
+  assert.equal(expected.size,0);
+  return {mode:'component-raw-evidence-requalified',sourceRunConclusion:run.conclusion,
+    producerJobIds:listing.jobs.filter(job=>job.name!=='accept-components').map(job=>job.id).sort((a,b)=>a-b),
+    failedSummaryJobId:listing.jobs.find(job=>job.name==='accept-components').id};
+}
 function verifyDelivery(run, artifacts, options) {
-  identity(run, artifacts, options, ['success']);
+  identity(run, artifacts, options, options.qualificationJobs ? ['failure'] : ['success']);
   assert.match(options.commit, /^[a-f0-9]{40}$/); assert.equal(run.head_sha, options.commit, 'Product source differs from release tag');
   assert.ok(['full', 'components'].includes(options.mode));
+  const qualification=options.qualificationJobs?componentQualification(run,options):null;
   const full = options.mode === 'full';
   assert.equal(run.path, `.github/workflows/${full ? 'build-integrated-launcher' : 'publish-component-update'}.yml`);
   const intermediate = full ? new Set(stageArtifacts(artifacts).map(item=>item.name)) : new Set();
   const names = artifacts.artifacts.filter(item=>!intermediate.has(item.name)).map(item => item.name).sort();
-  const expected = full ? fullNames : componentNames;
+  const expected = full ? fullNames : componentNames.filter(name=>!qualification||name!=='nora-component-acceptance');
   assert.deepEqual(names.filter(name => name !== 'nora-release-plan' && !(full && diagnostics.includes(name))), expected.filter(name => name !== 'nora-release-plan').sort(), 'Incomplete accepted delivery or unexpected artifact');
   if (!full) assert.ok(names.includes('nora-release-plan'), 'Component source must retain its change plan');
   return artifacts.artifacts.filter(item => !diagnostics.includes(item.name)&&!intermediate.has(item.name));
+}
+async function requalifyComponentAcceptance(delivery, acceptance, planRoot, commit, tag) {
+  assert.equal(reportFiles(acceptance,'component-acceptance.json').length,0,'An existing component receipt cannot be replaced');
+  const {sealComponentAcceptance}=await import('./component-acceptance.mjs');
+  const output=path.join(acceptance,'requalified-component-acceptance');fs.mkdirSync(output);
+  return sealComponentAcceptance({delivery,reports:acceptance,plan:oneReport(planRoot,'release-plan.json'),
+    output:path.join(output,'component-acceptance.json'),commit,tag});
 }
 function verifyState(run, artifacts, options) {
   identity(run, artifacts, options, ['success', 'failure', 'cancelled']);
@@ -442,6 +484,7 @@ async function materialize(run, artifacts, options, root, kind) {
   assert.ok(!fs.existsSync(root), 'Source directory already exists'); fs.mkdirSync(root, { recursive: true });
   const receipt = { schema: 'nora-publication-source/1', kind, sourceRun: run.id, sourceCommit: run.head_sha,
     publisherCommit: process.env.GITHUB_SHA || null, mode: options.mode || null, artifacts: [] };
+  if(kind==='delivery'&&options.qualificationJobs) receipt.qualification=componentQualification(run,options);
   const originalDeliveries = new Map();
   for (const item of accepted) {
     const archive = path.join(root, item.name + '.zip');
@@ -476,13 +519,16 @@ async function materialize(run, artifacts, options, root, kind) {
       receipt.historicalAcceptance = await verifyHistoricalAcceptance(path.join(root, 'acceptance'), path.join(root, 'plan'), options.publishedFacts,
         { ...options, targetTag: options.tag,targetDelivery:path.join(root,'delivery'),
           targetManifest:JSON.parse(fs.readFileSync(path.join(root,'delivery/release-manifest.json'))) });
-    } else receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
+    } else {
+      if(receipt.qualification) await requalifyComponentAcceptance(path.join(root,'delivery'),path.join(root,'acceptance'),path.join(root,'plan'),options.commit,options.tag);
+      receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
+    }
   }
   fs.writeFileSync(path.join(root, 'source-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);
   return receipt;
 }
-module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
+module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
 if (require.main === module) {
   if (process.argv[2] === 'baseline-selection') {
     const [, , , releasesFile, targetTag, repository, requestedTag, output, githubOutput, operation] = process.argv;
@@ -491,10 +537,11 @@ if (require.main === module) {
     if (githubOutput) fs.appendFileSync(githubOutput, `acceptance_baseline_tag=${selection.tag}\ninitial_release=${selection.initialRelease}\n`);
     process.exit(0);
   }
-  const [kind, runFile, artifactsFile, commit, repository, runId, mode, output, tag, deliveryRun, assetMode, receiptFile] = process.argv.slice(2);
+  const [kind, runFile, artifactsFile, commit, repository, runId, mode, output, tag, deliveryRun, assetMode, receiptFile, qualificationJobsFile] = process.argv.slice(2);
   assert.ok(['delivery', 'state'].includes(kind));
   materialize(JSON.parse(fs.readFileSync(runFile)), JSON.parse(fs.readFileSync(artifactsFile)),
     { commit, repository, runId, mode, tag, deliveryRun, assetMode,
+      qualificationJobs:qualificationJobsFile?JSON.parse(fs.readFileSync(qualificationJobsFile)):null,
       publishedFacts: kind === 'delivery' && mode === 'full' && deliveryRun ? JSON.parse(fs.readFileSync(deliveryRun)) : null,
       deliveryReceipt: receiptFile ? JSON.parse(fs.readFileSync(receiptFile)) : null }, path.resolve(output), kind).catch(error => { console.error(error); process.exitCode = 1; });
 }

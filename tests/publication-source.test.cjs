@@ -4,7 +4,7 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { captureChild, stopChild } = require('./deployment/launcher_test_lifecycle.cjs');
-const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
+const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, componentQualification, requalifyComponentAcceptance, verifyComponentAcceptance, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const stableRelease = tag_name => ({ id: 1, tag_name, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' });
 function writeGhFixture(bin, source) {
@@ -42,6 +42,57 @@ test('accepted product bytes are bound to their tag commit while a newer publish
 test('component delivery requires its successful source workflow, acceptance and persisted plan', () => {
   const f = fixture('components'); assert.equal(verifyDelivery(f.run, f.artifacts, f.options).length, 6);
   f.artifacts.artifacts.pop(); f.artifacts.total_count--; assert.throws(() => verifyDelivery(f.run, f.artifacts, f.options));
+});
+function qualificationFixture(){
+  const f=fixture('components','failure');f.run.run_attempt=1;
+  f.artifacts.artifacts=f.artifacts.artifacts.filter(item=>item.name!=='nora-component-acceptance');f.artifacts.total_count--;
+  const gates={
+    'build-components':['Verify release contracts and update preservation','Require chat backup safety tests','Require the selected component source regression',
+      'Build only shared application and updater components','Reuse verified environments and seal three system manifests','Verify the frozen component delivery before native acceptance','Preserve accepted component delivery'],
+    'accept-components':['Accept only complete three-platform native evidence for these bytes'],
+  };
+  for(const [runner,platform]of [['macos-15','darwin-arm64'],['macos-15-intel','darwin-x64'],['windows-latest','win32-x64']])
+    gates[`native-components (${runner}, ${platform})`]=['Qualify native maintenance changes before actual component acceptance',
+      'Test fresh target installation and both native upgrade states with retained user data','Preserve raw native component evidence'];
+  f.options.qualificationJobs={total_count:5,jobs:Object.entries(gates).map(([name,steps],index)=>({id:index+1,run_id:f.run.id,head_sha:f.run.head_sha,
+    run_attempt:1,name,status:'completed',conclusion:name==='accept-components'?'failure':'success',
+    steps:steps.map(step=>({name:step,status:'completed',conclusion:name==='accept-components'?'failure':'success'}))}))};return f;
+}
+test('only an explicitly API-proven failed component summary can reuse successful producers',()=>{
+  const f=qualificationFixture();assert.equal(verifyDelivery(f.run,f.artifacts,f.options).length,5);
+  assert.equal(componentQualification(f.run,f.options).sourceRunConclusion,'failure');
+  const ordinary={...f.options};delete ordinary.qualificationJobs;assert.throws(()=>verifyDelivery(f.run,f.artifacts,ordinary));
+});
+for(const [label,mutate]of [
+  ['failed build',f=>f.options.qualificationJobs.jobs[0].conclusion='failure'],
+  ['failed native',f=>f.options.qualificationJobs.jobs[2].conclusion='failure'],
+  ['skipped native gate',f=>f.options.qualificationJobs.jobs[2].steps[0].conclusion='skipped'],
+  ['missing data acceptance',f=>f.options.qualificationJobs.jobs[2].steps.pop()],
+  ['wrong summary failure',f=>f.options.qualificationJobs.jobs[1].steps[0].name='Run actions/download-artifact@v4'],
+  ['cancelled summary',f=>f.options.qualificationJobs.jobs[1].conclusion='cancelled'],
+  ['foreign job source',f=>f.options.qualificationJobs.jobs[2].head_sha='b'.repeat(40)],
+  ['foreign job run',f=>f.options.qualificationJobs.jobs[2].run_id++],
+  ['incomplete job list',f=>f.options.qualificationJobs.total_count++],
+  ['duplicate job',f=>f.options.qualificationJobs.jobs[2]=f.options.qualificationJobs.jobs[3]],
+  ['future attempt',f=>f.options.qualificationJobs.jobs[2].run_attempt++],
+  ['missing raw evidence',f=>{f.artifacts.artifacts.pop();f.artifacts.total_count--;}],
+  ['wrong workflow',f=>f.run.path='.github/workflows/build-integrated-launcher.yml'],
+  ['full product source',f=>f.options.mode='full'],
+])test(`component requalification refuses ${label} before downloading bytes`,()=>{
+  const f=qualificationFixture();mutate(f);assert.throws(()=>verifyDelivery(f.run,f.artifacts,f.options));
+});
+test('requalification reseals all raw evidence and cannot replace an existing receipt or bless changed data',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-requalify-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const {componentAcceptanceFixture}=await import('./helpers/component-acceptance-fixture.mjs');
+  const f=componentAcceptanceFixture(root);
+  await assert.rejects(requalifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit,f.tag),/existing component receipt/);
+  fs.unlinkSync(f.output);const file=path.join(f.reports,'nora-component-native-win32-x64/stopped/harness-result.json');
+  const original=fs.readFileSync(file),value=JSON.parse(original);value.userData='changed';fs.writeFileSync(file,JSON.stringify(value));
+  await assert.rejects(requalifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit,f.tag));
+  assert.equal(fs.existsSync(path.join(f.reports,'requalified-component-acceptance/component-acceptance.json')),false);
+  fs.rmSync(path.join(f.reports,'requalified-component-acceptance'),{recursive:true});fs.writeFileSync(file,original);
+  await requalifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit,f.tag);
+  assert.equal((await verifyComponentAcceptance(f.delivery,f.reports,f.planRoot,f.commit)).outcome,'passed');
 });
 test('old failed native diagnostics remain preserved but cannot enter a later accepted delivery', () => {
   const f = fixture(); f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], id: 8, name: 'nora-windows-failed-packaging-diagnostic' }); f.artifacts.total_count++;
@@ -168,26 +219,29 @@ test('flattening keeps old nested ZIP layouts compatible and refuses duplicate n
   assert.throws(() => flattenDelivery(source, output), /Duplicate delivery basename/);
   assert.equal(fs.readFileSync(path.join(output, 'release-manifest.json'), 'utf8'), 'original');
 });
-test('actual source CLI hashes artifact ZIP bytes before extracting complete native component evidence', async t => {
-  const f = fixture('components'), root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-download-'));
+for(const requalify of [false,true])test(`actual source CLI hashes ZIPs and verifies complete component evidence (requalify=${requalify})`, async t => {
+  const f = requalify?qualificationFixture():fixture('components'), root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-download-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const {componentAcceptanceFixture}=await import('./helpers/component-acceptance-fixture.mjs');
   const evidence=componentAcceptanceFixture(path.join(root,'inputs'),f.options.commit);
-  const payloads = [evidence.delivery,evidence.reports,evidence.planRoot,
-    ...['darwin-arm64','darwin-x64','win32-x64'].map(platform=>path.join(evidence.reports,`nora-component-native-${platform}`))];
-  for (const [index, directory] of payloads.entries()) {
-    const zip = path.join(root, `${index + 1}.zip`);
-    execFileSync('python3', ['-c', 'import pathlib,zipfile,sys\nroot=pathlib.Path(sys.argv[2])\nwith zipfile.ZipFile(sys.argv[1],"w") as z:\n for p in root.rglob("*"):\n  if p.is_file() and (sys.argv[3]!="receipt" or p.name=="component-acceptance.json"):z.write(p,p.relative_to(root))', zip, directory,index===1?'receipt':'all']);
-    const bytes = fs.readFileSync(zip); f.artifacts.artifacts[index].size_in_bytes = bytes.length; f.artifacts.artifacts[index].digest = 'sha256:' + hash(bytes);
+  for (const item of f.artifacts.artifacts) {
+    const directory=item.name==='nora-component-delivery'?evidence.delivery:item.name==='nora-component-acceptance'?evidence.reports:
+      item.name==='nora-release-plan'?evidence.planRoot:path.join(evidence.reports,item.name);
+    const zip = path.join(root, `${item.id}.zip`);
+    execFileSync('python3', ['-c', 'import pathlib,zipfile,sys\nroot=pathlib.Path(sys.argv[2])\nwith zipfile.ZipFile(sys.argv[1],"w") as z:\n for p in root.rglob("*"):\n  if p.is_file() and (sys.argv[3]!="receipt" or p.name=="component-acceptance.json"):z.write(p,p.relative_to(root))', zip, directory,item.name==='nora-component-acceptance'?'receipt':'all']);
+    const bytes = fs.readFileSync(zip); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
   }
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
   writeGhFixture(bin, `const id=process.argv.at(-1).split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`);
   const runFile = path.join(root, 'run.json'), artifactsFile = path.join(root, 'artifacts.json'); fs.writeFileSync(runFile, JSON.stringify(f.run));
+  const jobsFile=path.join(root,'jobs.json');if(requalify)fs.writeFileSync(jobsFile,JSON.stringify(f.options.qualificationJobs));
   const execute = output => spawnSync(process.execPath, [path.resolve(__dirname, '../tooling/release/publication-source.cjs'),
-    'delivery', runFile, artifactsFile, f.options.commit, f.options.repository, '123', 'components', output],
+    'delivery', runFile, artifactsFile, f.options.commit, f.options.repository, '123', 'components', output,
+    ...(requalify?[evidence.tag,'','','',jobsFile]:[])],
   { env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FIXTURE_ZIP_ROOT: root }, encoding: 'utf8' });
   fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts)); const accepted = path.join(root, 'accepted');
   const good = execute(accepted); assert.equal(good.status, 0, good.stderr);
+  if(requalify)assert.equal(JSON.parse(fs.readFileSync(path.join(accepted,'source-receipt.json'))).qualification.mode,'component-raw-evidence-requalified');
   assert.deepEqual(fs.readFileSync(path.join(accepted, 'delivery/release-manifest.json')),fs.readFileSync(path.join(evidence.delivery,'release-manifest.json')));
   f.artifacts.artifacts[0].digest = 'sha256:' + hash('wrong bytes'); fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts));
   const bad = path.join(root, 'rejected'), failure = execute(bad); assert.notEqual(failure.status, 0); assert.match(failure.stderr, /digest differs/);

@@ -701,11 +701,22 @@ test('actual shell entry refuses invalid promotion, shared baseline and rerun in
   const run = extra => spawnSync('bash', ['-c', script], { cwd: repository, env: { ...base, ...extra }, encoding: 'utf8' });
   for (const extra of [{ PUBLICATION_STAGE: 'promote' }, { ASSET_MODE: 'shared' },
     { REUSE_TAG: 'v2.4.3' }, { STATE_SOURCE_RUN: '123', ASSET_MODE: 'shared', REUSE_TAG: 'v2.4.3' },
-    { GITHUB_RUN_ATTEMPT: '2' }, { SOURCE_RUN: '123; touch forbidden' }, { RELEASE_TAG: '-invalid' }]) {
+    { GITHUB_RUN_ATTEMPT: '2' }, { SOURCE_RUN: '123; touch forbidden' }, { RELEASE_TAG: '-invalid' },
+    { REQUALIFY_COMPONENTS: 'true', DELIVERY_MODE: 'full' }]) {
     assert.notEqual(run(extra).status, 0, JSON.stringify(extra));
   }
   const valid = run({}); assert.equal(valid.status, 0, valid.stderr);
+  assert.equal(run({REQUALIFY_COMPONENTS:'true',DELIVERY_MODE:'components'}).status,0);
   assert.match(fs.readFileSync(base.GITHUB_OUTPUT, 'utf8'), /source_sha=[a-f0-9]{40}/);
+});
+test('component requalification is explicit and reads producer facts from the original source API',()=>{
+  assert.equal(publisher.on.workflow_dispatch.inputs.requalify_components.type,'boolean');
+  assert.equal(publisher.on.workflow_dispatch.inputs.requalify_components.default,'false');
+  const restore=publisher.jobs['publish-accepted'].steps.find(step=>step.name==='Restore accepted delivery with exact artifact ZIP hashes').run;
+  assert.match(restore,/if \[\[ "\$\{REQUALIFY_COMPONENTS:-false\}" == true \]\]/);
+  assert.match(restore,/actions\/runs\/\$SOURCE_RUN\/jobs\?filter=latest&per_page=100/);
+  assert.match(restore,/publication-source\.cjs delivery.*'' '' "\$qualification_jobs"/);
+  assert.ok(restore.indexOf('/jobs?filter=latest')<restore.indexOf('publication-source.cjs delivery'));
 });
 test('APP-only builds retain ordinary core gates and require real interactive historical APP evidence after sealing target bytes',()=>{
  assert.equal(full.on.workflow_dispatch.inputs.app_only.default,'false');

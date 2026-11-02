@@ -26,6 +26,20 @@ test('component publication consumes all raw native reports and exact frozen del
             assert.deepEqual(fs.readFileSync(path.join(output, name)), fs.readFileSync(path.join(f.delivery, entry.asset)));
     }
 });
+test('component publication accepts the actual multi-path upload layout without trusting the sidecar', async t => {
+    const f = fixture(t);
+    for (const platform of COMPONENT_PLATFORMS) {
+        const reports = path.join(f.reports, `nora-component-native-${platform}`);
+        const nested = path.join(reports, 'component-native-reports'); fs.mkdirSync(nested);
+        for (const name of ['baseline-source-receipt.json', 'fresh', 'running', 'stopped'])
+            fs.renameSync(path.join(reports, name), path.join(nested, name));
+        fs.writeFileSync(path.join(reports, 'native-test-impact.json'), '{"full":false}');
+    }
+    await verifyComponentAcceptance(f.delivery, f.reports, f.planRoot, f.commit);
+    const platform = COMPONENT_PLATFORMS[0], reports = path.join(f.reports, `nora-component-native-${platform}`);
+    fs.renameSync(path.join(reports, 'component-native-reports/stopped'), path.join(reports, 'stopped'));
+    await assert.rejects(verifyComponentAcceptance(f.delivery, f.reports, f.planRoot, f.commit));
+});
 for (const [label, change] of [
     ['missing Windows evidence', f => fs.rmSync(path.join(f.reports, 'nora-component-native-win32-x64'), { recursive: true })],
     ['missing stopped upgrade', f => fs.rmSync(path.join(f.reports, 'nora-component-native-darwin-x64/stopped'), { recursive: true })],
