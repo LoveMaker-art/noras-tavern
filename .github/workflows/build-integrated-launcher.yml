@@ -12,7 +12,7 @@ on:
         type: string
         default: ''
       target:
-        description: Build installers or check an existing sealed Windows package
+        description: Build installers, run preflight only, or check an existing sealed Windows package
         type: choice
         default: all
         options:
@@ -21,6 +21,7 @@ on:
           - darwin-x64
           - darwin-arm64
           - win32-package-check
+          - preflight-only
       package_source_run:
         description: Diagnostic only - run whose saved Windows package is checked without rebuilding
         type: string
@@ -301,7 +302,7 @@ jobs:
 
   reuse-windows:
     needs: preflight
-    if: needs.preflight.outputs.plan_mode != 'verification-only' && inputs.verified_windows_run != '' && inputs.package_source_run == ''
+    if: inputs.target != 'preflight-only' && needs.preflight.outputs.plan_mode != 'verification-only' && inputs.verified_windows_run != '' && inputs.package_source_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

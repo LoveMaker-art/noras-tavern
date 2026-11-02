@@ -181,7 +181,7 @@ test('component publication is an explicit validated input forwarded as quoted a
 test('native platform selectors preserve diagnostic, concurrency and publication boundaries', () => {
   const target = full.on.workflow_dispatch.inputs.target;
   assert.equal(target.default, 'all');
-  assert.deepEqual(target.options, ['all', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'win32-package-check']);
+  assert.deepEqual(target.options, ['all', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'win32-package-check', 'preflight-only']);
   assert.deepEqual(full.concurrency, {
     group: "nora-build-${{ github.sha }}-${{ inputs.target || 'all' }}",
     'cancel-in-progress': 'false',

@@ -173,11 +173,12 @@ test('actual build workflow routes package diagnostics independently, gates nati
   ['win32-package-check','','123','branch',false,all],['all','','123','branch',false,all],
   ['win32-x64','','123','branch',false,['win32-x64']],['all','123','125','tag',false,macs],
   ['darwin-x64','','123','branch',false,['darwin-x64']],['darwin-arm64','','123','branch',false,['darwin-arm64']],
+  ['preflight-only','','','branch',false,all],['preflight-only','123','','branch',false,macs],
   ['unknown-target','','','branch',false,all],
  ]) {
   const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success',outputs:{plan_mode:'full'}},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
   assert.equal(Boolean(evaluate(condition('package-check'),inputs,github,needs)),target==='win32-package-check'||packageSource!=='');
-  assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),reuse!==''&&packageSource==='');
+  assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),target!=='preflight-only'&&reuse!==''&&packageSource==='');
   assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);
   assert.deepEqual(JSON.parse(evaluate(matrixExpression,inputs,github)),expectedTargets.map(target=>tuples[target]));
   for(const result of ['failure','cancelled']) {needs.preflight.result=result;assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);}
