@@ -284,7 +284,6 @@ jobs:
     needs: [build-components, native-components]
     env:
       GH_TOKEN: ${{ github.token }}
-      COMPONENT_PLAN_FILE: ${{ runner.temp }}/component-plan/release-plan.json
       PRODUCT_COMMIT: ${{ needs.build-components.outputs.product_commit }}
       PRODUCT_TAG: ${{ needs.build-components.outputs.product_tag }}
       NORA_PRODUCT_SOURCE_RUN: ${{ inputs.product_source_run }}
@@ -312,6 +311,8 @@ jobs:
           name: nora-release-plan
           path: ${{ runner.temp }}/component-plan
       - name: Normalize the original or newly built component delivery
+        env:
+          COMPONENT_PLAN_FILE: ${{ runner.temp }}/component-plan/release-plan.json
         run: node tooling/release/publication-source.cjs unwrap-product "${{ runner.temp }}/component-delivery" "${{ runner.temp }}/component-original"
       - name: Accept only complete three-platform native evidence for these bytes
         shell: bash

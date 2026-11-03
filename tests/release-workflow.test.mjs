@@ -866,6 +866,7 @@ test('the earliest fixture audit rejects dangling steps and steps mixing command
  for(const step of [{name:'forgotten command'},{name:'mixed',run:'node check.mjs',uses:'actions/checkout@v4'}])
   assert.throws(()=>assertFixturePrerequisites({jobs:{check:{'runs-on':'ubuntu-24.04',steps:[step]}}}),/exactly one run or uses/);
  assert.throws(()=>assertFixturePrerequisites({env:{INPUT:'${{ runner.temp }}'},jobs:{}}),/Runner context/);
+ assert.throws(()=>assertFixturePrerequisites({jobs:{check:{env:{INPUT:'${{ runner.temp }}'},steps:[{run:'node check.mjs'}]}}}),/Runner context/);
  for(const [value,message] of [['${{ steps.missing.outputs.id }}',/missing step/],['${{ matrix.platform }}',/matrix strategy/]])
   assert.throws(()=>assertFixturePrerequisites({jobs:{check:{outputs:{input:value},steps:[{id:'actual',uses:'actions/checkout@v4'}]}}}),message);
 });
