@@ -229,6 +229,11 @@ test('publication rechecks component source API identity, attempt, baseline and 
  const transfer={...producer,id:40,name:'prepare-platform-inputs',started_at:'2026-11-02T00:00:00Z',completed_at:'2026-11-02T00:05:00Z',steps:stage.componentTransferGates.map(name=>({name,status:'completed',conclusion:'success'}))};
  const thinJobs={total_count:2,jobs:[producer,transfer]};
  assert.equal(check(thin,thinJobs,thinArtifacts).transferProducerId,40);
+ const carried={total_count:3,jobs:[...thinJobs.jobs,{...structuredClone(transfer),id:41,run_attempt:3}]};
+ assert.equal(check(thin,carried,thinArtifacts).transferProducerId,40,'Carried job IDs must retain the original successful execution');
+ for(const mutate of [x=>x.run_attempt=transfer.run_attempt,x=>x.started_at='2026-11-02T00:00:01Z',x=>x.steps[0].conclusion='skipped',x=>x.run_id++,x=>x.runner_name='different runner']){
+  const divergent=structuredClone(carried);mutate(divergent.jobs[2]);assert.throws(()=>check(thin,divergent,thinArtifacts),'Only exact cross-attempt execution copies may share an origin');
+ }
  assert.throws(()=>check(thin,jobs,thinArtifacts),/transfer producer/);
  const badProducer=structuredClone(thinJobs);badProducer.jobs[1].steps[0].conclusion='skipped';assert.throws(()=>check(thin,badProducer,thinArtifacts));
  assert.throws(()=>check(input,jobs,thinArtifacts),/fall back/);

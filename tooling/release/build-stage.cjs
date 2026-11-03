@@ -284,15 +284,23 @@ function verifyComponentSourceProof(input,run,artifacts,jobs,platform,baseline,p
         const created=Date.parse(deliveries[0].created_at);
         const candidates=jobs.jobs.filter(job=>job.name==='prepare-platform-inputs'&&Number.isFinite(created)
             &&created>=Date.parse(job.started_at)&&created<=Date.parse(job.completed_at));
-        assert.equal(candidates.length,1,'Missing or ambiguous platform transfer producer');transferProducer=candidates[0];
-        assert.ok(Number.isSafeInteger(transferProducer.id)&&transferProducer.id>0);
-        assert.equal(transferProducer.run_id,run.id);assert.equal(transferProducer.head_sha,run.head_sha);
-        assert.ok(Number.isSafeInteger(transferProducer.run_attempt)&&transferProducer.run_attempt>0&&transferProducer.run_attempt<=run.run_attempt);
-        assert.equal(transferProducer.status,'completed');assert.equal(transferProducer.conclusion,'success');
-        for(const gate of componentTransferGates){
-            const entries=transferProducer.steps.filter(step=>step.name===gate);assert.equal(entries.length,1);
-            assert.equal(entries[0].status,'completed');assert.equal(entries[0].conclusion,'success','Platform transfer gate did not pass');
+        assert.ok(candidates.length,'Missing platform transfer producer');
+        for(const producer of candidates){
+            assert.ok(Number.isSafeInteger(producer.id)&&producer.id>0);
+            assert.equal(producer.run_id,run.id);assert.equal(producer.head_sha,run.head_sha);
+            assert.ok(Number.isSafeInteger(producer.run_attempt)&&producer.run_attempt>0&&producer.run_attempt<=run.run_attempt);
+            assert.equal(producer.status,'completed');assert.equal(producer.conclusion,'success');
+            for(const gate of componentTransferGates){
+                const entries=producer.steps.filter(step=>step.name===gate);assert.equal(entries.length,1);
+                assert.equal(entries[0].status,'completed');assert.equal(entries[0].conclusion,'success','Platform transfer gate did not pass');
+            }
         }
+        // GitHub gives carried successes new IDs/attempts without executing them.
+        // Only identical execution facts may refer back to the earliest producer.
+        transferProducer=candidates.sort((a,b)=>a.run_attempt-b.run_attempt)[0];
+        assert.equal(new Set(candidates.map(job=>job.run_attempt)).size,candidates.length,'Ambiguous transfer producers in one attempt');
+        const execution=job=>[job.started_at,job.completed_at,job.steps,job.runner_id,job.runner_name];
+        for(const producer of candidates)assert.deepEqual(execution(producer),execution(transferProducer),'Ambiguous platform transfer executions');
     }
 
     verifyContext(input.receipt,expected,'source');
