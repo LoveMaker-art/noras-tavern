@@ -128,6 +128,8 @@ test('component delivery requires all three native platforms before the final pu
   ]);
   assert.deepEqual(accepted.needs, ['build-components', 'native-components']);
   assert.equal(accepted.if, undefined, 'A failed or skipped native matrix must not produce an accepted receipt');
+  const receipt=accepted.steps.find(step=>step.uses==='actions/upload-artifact@v4'&&step.with?.name==='nora-component-acceptance');
+  assert.equal(receipt.with.overwrite,'true','A retried final summary must replace its canonical CI slot');
   assert.equal(native.uses,'./.github/workflows/component-platform-stages.yml');
   const nativeSteps = componentNative.steps, downloaded = nativeSteps.find(step => step.uses === 'actions/download-artifact@v4');
   assert.equal(downloaded.with['artifact-ids'], '${{ inputs.delivery_artifact_id }}');

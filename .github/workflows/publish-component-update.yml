@@ -325,6 +325,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-component-acceptance
+          overwrite: true
           path: ${{ runner.temp }}/component-acceptance.json
           if-no-files-found: error
           retention-days: 90
