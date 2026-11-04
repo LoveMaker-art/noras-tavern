@@ -187,8 +187,9 @@ class RefinementTests(unittest.TestCase):
 
     def test_new_native_stop_receives_the_bound_port_and_requires_matching_proof(self):
         self.native_stop_fixture()
-        for reported in (self.args.port, 8799):
-            with self.subTest(reported=reported), patch.object(bridge, 'run_stream') as stop, \
+        for bound, reported in ((18997, 18997), (18997, 8799), (8799, 8799), (8799, 18997)):
+            self.args.port = bound
+            with self.subTest(bound=bound, reported=reported), patch.object(bridge, 'run_stream') as stop, \
                     patch.object(bridge, 'stop_liveware'), \
                     patch.object(bridge, 'python_command', return_value='fixture-python'), \
                     patch.object(bridge, 'run_json', return_value={
@@ -205,18 +206,20 @@ class RefinementTests(unittest.TestCase):
 
     def test_legacy_native_stop_uses_compatible_cli_and_checks_actual_absence(self):
         self.native_stop_fixture()
-        with patch.object(bridge, 'run_stream') as stop, patch.object(bridge, 'stop_liveware'), \
-                patch.object(bridge, 'python_command', return_value='fixture-python'), \
-                patch.object(bridge, 'run_json', return_value={
-                    'port': 8799, 'health': {'ok': False}, 'processes': {'native': False}}), \
-                patch.object(bridge, '_recovery_require_native_offline') as offline, \
-                patch.object(bridge, 'status_payload', return_value={}), \
-                patch.object(bridge, 'emit') as emit:
-            bridge.command_stop(self.args)
-        self.assertEqual(stop.call_args.args[0][-1], 'stop')
-        self.assertEqual(offline.call_args.args[0].port, self.args.port)
-        self.assertEqual(emit.call_args.kwargs['port'], self.args.port)
-        self.assertIs(emit.call_args.kwargs['tavernProcessRunning'], False)
+        for bound in (18997, 8799):
+            self.args.port = bound
+            with self.subTest(bound=bound), patch.object(bridge, 'run_stream') as stop, patch.object(bridge, 'stop_liveware'), \
+                    patch.object(bridge, 'python_command', return_value='fixture-python'), \
+                    patch.object(bridge, 'run_json', return_value={
+                        'port': 8799, 'health': {'ok': False}, 'processes': {'native': False}}), \
+                    patch.object(bridge, '_recovery_require_native_offline') as offline, \
+                    patch.object(bridge, 'status_payload', return_value={}), \
+                    patch.object(bridge, 'emit') as emit:
+                bridge.command_stop(self.args)
+            self.assertEqual(stop.call_args.args[0][-1], 'stop')
+            self.assertEqual(offline.call_args.args[0].port, self.args.port)
+            self.assertEqual(emit.call_args.kwargs['port'], self.args.port)
+            self.assertIs(emit.call_args.kwargs['tavernProcessRunning'], False)
 
     def test_nora_stop_rejects_a_replacement_gateway_after_initial_absence(self):
         with patch.object(bridge, 'stop_gateway'), patch.object(bridge, 'check_gateway_control') as check, \

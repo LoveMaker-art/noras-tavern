@@ -897,16 +897,15 @@ def command_stop(args) -> None:
                 if installed(args.install_root):
                     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
                     command = [python_command(args.hermes_home), "-B", str(lifecycle), "stop"]
-                    if args.port != 8799:
-                        # The previous native CLI did not accept --port for
-                        # stop. The new process proof field identifies the
-                        # CLI with the bound-port stop contract.
-                        try:
-                            native = _native_lifecycle_status(args.nora_home, args.hermes_home, args.install_root, args.port)
-                        except (OSError, subprocess.SubprocessError):
-                            native = {}
-                        if isinstance(native, dict) and 'process_running' in native:
-                            command += ['--port', str(args.port)]
+                    # Older native CLIs did not accept --port for stop.
+                    # New CLIs need the bound port even when it is the default,
+                    # since a stale run record can still refer to another port.
+                    try:
+                        native = _native_lifecycle_status(args.nora_home, args.hermes_home, args.install_root, args.port)
+                    except (OSError, subprocess.SubprocessError):
+                        native = {}
+                    if isinstance(native, dict) and 'process_running' in native:
+                        command += ['--port', str(args.port)]
                     run_stream(command,
                                env=env_for(args.nora_home, args.hermes_home, args.install_root), native_cli=True)
                 stop_liveware(args.hermes_home)
