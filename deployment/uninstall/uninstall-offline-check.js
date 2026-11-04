@@ -11,6 +11,8 @@ const resources=['launcher_bridge.py','nora_system.py','nora_profile.py','launch
   'error_diagnostics.py','operation_control.py','operation_evidence.py','operation-budget.json','model_config.py','hermes_model_state.py'];
 const SCHEMA='nora-uninstall-offline-check/1';
 const failed=(message,cause)=>Object.assign(new Error(message,cause?{cause}:undefined),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
+const unavailablePythonCodes=new Set(['ENOENT','ENOTDIR','EACCES','ENOEXEC','LOCK_CHILD_IDENTITY']);
+const managedPythonUnavailable=error=>unavailablePythonCodes.has(error?.code)&&error.exitCode==null&&!error.signal;
 const same=(left,right)=>process.platform==='win32'?left.toLowerCase()===right.toLowerCase():left===right;
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const cache=new Map();
@@ -58,11 +60,12 @@ function verify(check,expected){
       throw failed('当前启动器检查资源已变化，未删除文件。');
   }
 }
-function bounded(command,args,{environment={},timeout=15000}={}){
+function bounded(command,args,{environment={},timeout=15000,allowUnavailable=false}={}){
   const env={...process.env,...environment,PYTHONDONTWRITEBYTECODE:'1',LC_ALL:'C'};
   delete env.NODE_OPTIONS;delete env.PYTHONPATH;delete env.PYTHONHOME;
   for(const key of Object.keys(env))if(key.startsWith('NORA_OPERATION_'))delete env[key];
   const result=spawnSync(command,args,{env,encoding:'utf8',windowsHide:true,timeout,maxBuffer:4*1024*1024,killSignal:'SIGKILL'});
+  if(allowUnavailable&&result.error&&managedPythonUnavailable(result.error))return null;
   if(result.error||result.signal||result.status!==0)throw failed('无法完整核验卸载现场进程，未删除文件。',result.error);
   return result.stdout;
 }
@@ -303,21 +306,33 @@ function nativeOffline({root}){
       throw failed('候选诺拉后台的进程或实例归属已变化，未删除文件。');
   }
 }
-async function inspect({check,expected,hermesHome}){
+async function inspect({check,expected,hermesHome,allowUnavailable=false}){
   verify(check,expected);if(check.mode!=='native-root')await portOffline(check.port);
   const venv=path.join(hermesHome,'hermes-agent','venv');
-  const command=path.join(venv,process.platform==='win32'?'Scripts/python.exe':'bin/python');
-  if(check.mode==='port'&&fs.existsSync(command)){
-    const execution=require('./managed-python').resolveExecution(command,{managedPythonRoot:path.join(hermesHome,'python'),venvHome:venv});
-    const output=bounded(execution.command,['-B',check.resources['launcher_bridge.py'].path,'--nora-home',check.root,
-      '--hermes-home',check.hermesHome,'--install-root',check.installRoot,'--port',String(check.port),'repair-preflight','--offline-only'],
-      {environment:execution.env});
-    let results;try{results=output.trim().split('\n').map(line=>JSON.parse(line)).filter(value=>value.event==='result');}
-    catch{throw failed('服务离线检查未返回有效结果，未删除文件。');}
-    if(results.length!==1||results[0].offline!==true||results[0].running!==false||results[0].gatewayRunning!==false)
-      throw failed('服务离线状态尚未确认，未删除文件。');
-  }else nativeOffline({root:check.root});
+  const command=(process.platform==='win32'?['Scripts/python.exe']:['bin/python3','bin/python'])
+    .map(name=>path.join(venv,name)).find(file=>fs.existsSync(file));
+  let method='native-os';
+  if(check.mode==='port'&&command){
+    let execution;
+    try{execution=require('./managed-python').resolveExecution(command,{managedPythonRoot:path.join(hermesHome,'python'),venvHome:venv});}
+    catch(error){if(!allowUnavailable||!managedPythonUnavailable(error))throw error;}
+    if(execution){
+      const output=bounded(execution.command,['-B',check.resources['launcher_bridge.py'].path,'--nora-home',check.root,
+        '--hermes-home',check.hermesHome,'--install-root',check.installRoot,'--port',String(check.port),'repair-preflight','--offline-only'],
+        {environment:execution.env,allowUnavailable});
+      if(output!==null){
+        let results;try{results=output.trim().split('\n').map(line=>JSON.parse(line)).filter(value=>value.event==='result');}
+        catch{throw failed('服务离线检查未返回有效结果，未删除文件。');}
+        if(results.length!==1||results[0].offline!==true||results[0].running!==false||results[0].gatewayRunning!==false)
+          throw failed('服务离线状态尚未确认，未删除文件。');
+        method='managed-python';
+      }
+    }
+  }
+  // A bridge refusal or timeout is evidence about the instance, not a Python
+  // launch failure. Only the latter can take the independent OS proof path.
+  if(method==='native-os')nativeOffline({root:check.root});
   verify(check,expected);if(check.mode!=='native-root')await portOffline(check.port);
-  return {offline:true,mode:check.mode,method:check.mode==='port'&&fs.existsSync(command)?'managed-python':'native-os'};
+  return {offline:true,mode:check.mode,method};
 }
-module.exports={capture,inspect,windowsProcesses,macFiles,nativeOffline,portOffline,SCHEMA};
+module.exports={capture,inspect,managedPythonUnavailable,windowsProcesses,macFiles,nativeOffline,portOffline,SCHEMA};

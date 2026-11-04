@@ -1734,11 +1734,14 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
     // aborts the uninstall rather than deleting files underneath a live service.
     if (serviceMode === 'port' && findPython()) {
       let stopStarted = false;
+      let stopFailure;
       try {
         shutdownPending=runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
           await context.stage('applying');
           stopStarted = true;
-          const stopped=await runBridge('recovery-stop', { port, uninstall: true });
+          const stopped=await runBridge('recovery-stop', { port, uninstall: true }).catch(error=>{
+            stopFailure=error;throw error;
+          });
           if(stopped.offline!==true||stopped.running!==false||stopped.gatewayRunning!==false)
             throw launcherError('服务停止状态尚未确认，未开始卸载。',{code:'VERIFICATION_FAILED'});
           return {verification:'confirmed',value:stopped};
@@ -1746,9 +1749,14 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
         await awaitLifecycleStep(shutdownPending,30000,
           '停止服务尚未结束，尚未开始卸载。任务结束后可重试。','UNINSTALL_STATUS_PENDING');
       } catch (error) {
-        if (mode !== 'all' || stopStarted || error.code==='UNINSTALL_STATUS_PENDING') throw error;
-        port = null; serviceMode = 'native-root';
-        diagnostics.error('uninstall.native-root-handoff', error, { level: 'warning', reason: 'shutdown-admission-failed' });
+        if(mode==='keep'&&error.code!=='UNINSTALL_STATUS_PENDING'
+          &&require('./uninstall-offline-check').managedPythonUnavailable(stopFailure)){
+          diagnostics.error('uninstall.native-offline-handoff',error,{level:'warning',reason:'managed-python-unavailable'});
+        }else{
+          if (mode !== 'all' || stopStarted || error.code==='UNINSTALL_STATUS_PENDING') throw error;
+          port = null; serviceMode = 'native-root';
+          diagnostics.error('uninstall.native-root-handoff', error, { level: 'warning', reason: 'shutdown-admission-failed' });
+        }
       }
     }
     // Without Python, the handoff worker proves offline ownership under its

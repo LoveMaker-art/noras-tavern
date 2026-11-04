@@ -1175,6 +1175,7 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
   const targets = relatives.map(relative => contained(root, relative));
   if (plan.mode === 'keep') publishRetainedConfig(root, plan.tavern);
   const keepJournal=plan.mode==='keep'?retained.begin(plan):null;
+  if(keepJournal)retained.preserveMigrationBackup(plan,keepJournal);
   for (let index = 0; index < targets.length; index++) {
     onProgress({ stage: 'cleanup', current: index + 1, total: targets.length, path: targets[index] });
     remove(targets[index]);
@@ -1246,6 +1247,7 @@ async function worker(planFile, showMessage = notify) {
     // writer before deleting anything. This proof uses current APP resources,
     // never historical transaction completeness or deletion paths.
     serviceFacts=await require('./uninstall-offline-check').inspect({check:plan.serviceCheck,hermesHome:contained(root,plan.hermes),
+      allowUnavailable:plan.mode==='keep',
       expected:{root,hermesHome:contained(root,plan.hermes),installRoot:contained(root,plan.tavern),port:plan.port,mode:plan.serviceMode,
         executable:process.execPath,entry:__dirname.endsWith('.asar')?__dirname:__filename,resourcesRoot:path.dirname(__dirname)}});
     try{recordFailure=lifecycle?.prepare({home:root,budgetMs:1500});}catch{}

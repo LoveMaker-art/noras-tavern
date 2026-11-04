@@ -59,6 +59,43 @@ test('keep removes programs, retains credentials, chats, config and backups; rep
   assert.equal(fs.existsSync(path.join(f.home, RETAINED)), true);
 });
 
+test('KEEP moves only the engine migration backup before deletion and resumes after the move',t=>{
+  const f=fixture(t),plan=f.plan('keep'),retained=require('../installer/desktop/retained-installation');
+  const relative='tavern/apps/tavern-runtime/engine/sillytavern/backups';
+  f.write(relative+'/data/current.json','current migration backup');
+  const before=fs.statSync(path.join(f.home,relative),{bigint:true});
+  assert.throws(()=>cleanup(plan,()=>{throw Error('interrupted before program deletion');}),/interrupted/);
+  const pending=retained.inspect(f.home,{allowPending:true});
+  const entry=pending.entries.find(item=>item.from===relative),destination=path.join(f.home,entry.to);
+  assert.equal(fs.statSync(destination,{bigint:true}).ino,before.ino);
+  assert.equal(fs.readFileSync(path.join(destination,'data/current.json'),'utf8'),'current migration backup');
+  assert.equal(fs.existsSync(path.join(f.home,f.programs[0])),true);
+  cleanup(plan);
+  assert.equal(retained.inspect(f.home).state,'complete');
+  assert.equal(fs.existsSync(path.join(f.home,'tavern/apps')),false);
+  assert.equal(fs.readFileSync(path.join(destination,'data/current.json'),'utf8'),'current migration backup');
+  f.write(relative+'/fresh.json','new install backup');
+  assert.equal(retained.inspect(f.home,{allowProgramTree:true}).state,'complete');
+  assert.equal(fs.readFileSync(path.join(destination,'data/current.json'),'utf8'),'current migration backup');
+});
+
+test('KEEP stops before deletion when the migration backup cannot be moved intact',t=>{
+  const f=fixture(t),plan=f.plan('keep');
+  const relative='tavern/apps/tavern-runtime/engine/sillytavern/backups';
+  f.write(relative+'/data/current.json','keep original');
+  const rename=fs.renameSync;
+  fs.renameSync=function(from,to){
+    if(path.relative(plan.root,from).split(path.sep).join('/')===relative)
+      throw Object.assign(Error('fixture separate volume'),{code:'EXDEV'});
+    return rename.call(this,from,to);
+  };
+  try{assert.throws(()=>cleanup(plan),{code:'EXDEV'});}
+  finally{fs.renameSync=rename;}
+  assert.equal(fs.readFileSync(path.join(f.home,relative,'data/current.json'),'utf8'),'keep original');
+  for(const name of f.programs)assert.equal(fs.existsSync(path.join(f.home,name)),true,name);
+  cleanup(plan);
+});
+
 test('a completed keep uninstall is eligible for reinstall without presenting removed programs as damaged installation', t => {
   const f=fixture(t),root=fs.realpathSync(f.home),hermes=path.join(root,'hermes'),tavern=path.join(root,'tavern');
   const version='2.4.5',commit='a'.repeat(40);
@@ -566,6 +603,27 @@ test('failure to stop a service prevents creation of an uninstall plan', async t
   }
 });
 
+test('KEEP can hand off an unavailable old interpreter with the verified port still bound',async t=>{
+  for(const details of [{code:'ENOEXEC'},{code:'EACCES',exitCode:1},{code:'OPERATION_EXECUTOR_UNCONFIRMED'}]){
+    const f=wizard(t,[1]),roots=vm.runInContext('({noraHome:noraHome(),hermesHome:hermesHome(),installRoot:installRoot()})',f.context);
+    f.write('hermes/nora-instance.json',JSON.stringify({schema:1,...roots,port:18888}));
+    f.context.stopError=Object.assign(Error('stop fixture'),details);
+    vm.runInContext('findPython=()=>({});runBridge=async()=>{throw stopError;};',f.context);
+    if(details.code!=='ENOEXEC'){
+      await assert.rejects(f.run(),{code:details.code});
+      assert.equal(fs.existsSync(f.planFile),false);
+      assert.deepEqual(f.exits,[]);
+      continue;
+    }
+    assert.equal(await f.run(),true);
+    const plan=JSON.parse(fs.readFileSync(f.planFile));
+    assert.equal(plan.port,18888);
+    assert.equal(plan.serviceCheck.port,18888);
+    assert.equal(plan.serviceMode,'port');
+    assert.equal(fs.existsSync(path.join(f.home,f.programs[0])),true);
+  }
+});
+
 
 test('uninstall cannot delete files while a maintenance guard owns the installation',async t=>{
   const f=fixture(t),plan=f.plan('all');
@@ -923,6 +981,33 @@ function nativeOfflineHarness(run){
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   return context.module.exports;
 }
+
+test('KEEP native offline fallback admits an unavailable interpreter but not a bridge refusal or timeout',
+  {skip:process.platform!=='darwin'},async t=>{
+  const f=fixture(t),plan=f.plan('keep',{port:await idlePort()}),check=plan.serviceCheck;
+  const python=path.join(plan.root,'hermes/hermes-agent/venv/bin/python');
+  f.write('hermes/hermes-agent/venv/bin/python','old interpreter fixture');
+  const entry=require.resolve('../installer/desktop/uninstall');
+  const expected={root:plan.root,hermesHome:check.hermesHome,installRoot:check.installRoot,port:plan.port,
+    mode:plan.serviceMode,executable:plan.executable,entry,resourcesRoot:path.dirname(path.dirname(entry))};
+  for(const attempt of ['unavailable','running','timeout','failed']){
+    let nativeChecks=0;
+    const offline=nativeOfflineHarness((command,args)=>{
+      if(command==='/bin/ps'){
+        nativeChecks++;assert.ok(args.includes('pid=,uid=,comm='));
+        return {status:0,signal:null,stdout:'42 501 /App/checker\n',stderr:''};
+      }
+      assert.equal(command,python);
+      if(attempt==='running')return {status:0,signal:null,stdout:JSON.stringify({event:'result',offline:false,running:false,gatewayRunning:true})+'\n'};
+      if(attempt==='failed')return {status:1,signal:null,stdout:JSON.stringify({event:'error',code:'EACCES'})+'\n'};
+      return {status:null,signal:null,error:Object.assign(Error(attempt),{code:attempt==='unavailable'?'EACCES':'ETIMEDOUT'})};
+    });
+    const inspect=()=>offline.inspect({check,expected,hermesHome:check.hermesHome,allowUnavailable:true});
+    if(attempt==='unavailable')assert.equal((await inspect()).method,'native-os');
+    else await assert.rejects(inspect(),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
+    assert.equal(nativeChecks,attempt==='unavailable'?1:0);
+  }
+});
 
 function macHermesProofFixture(t,change=()=>{},prepare=()=>{}){
   const f=fixture(t),outside=path.join(f.directory,'Other home = safe');fs.mkdirSync(outside);

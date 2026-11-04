@@ -4,6 +4,7 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA=/^[a-f0-9]{64}$/;
 const fileName='nora-retained.json';
+const migrationBackup='tavern/apps/tavern-runtime/engine/sillytavern/backups';
 const completionWarning='安装已完成，保留数据卸载记录的收尾尚未完成。现有程序和数据已保留；请检查目录权限及磁盘空间后重新操作。';
 const archiveIo=new Set(['EACCES','EPERM','ENOSPC','EDQUOT','EBUSY','EIO','EROFS']);
 const error=(code='RETAINED_INSTALLATION_UNCONFIRMED')=>Object.assign(new Error(code==='RETAINED_UNINSTALL_INCOMPLETE'
@@ -49,6 +50,13 @@ function metadataSeal(file){
 }
 function verifyEntry(root,entry,completed=false,verifyRecreated){
  const from=safe(root,entry.from),to=safe(root,entry.to),atSource=present(from),atArchive=present(to);
+ if(entry.from===migrationBackup){
+  // The engine can create a new backup directory during a later install.
+  // That directory has no effect on the identity of the original archive.
+  if((completed?!atArchive:atSource===atArchive)||entry.identity?.kind!=='directory'
+   ||!same(identity(atArchive?to:from),entry.identity))throw error();
+  return {from,to,atSource};
+ }
  if(completed){
   // Completion seals the old archive, not permanent absence of a path that a
   // later first install must recreate. Nothing may replace the sealed archive.
@@ -107,7 +115,7 @@ function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}
   const verifyRecreated=(relative,source)=>recreatedReceipt(value,reinstall,relative,source);
   const seen=new Set();for(const entry of value.entries){if(seen.has(entry.from)
     ||!['installed.json','installed-manifest.json','nora-system.json','transaction.json'].map(name=>'tavern/tavern-updates/'+name)
-      .concat(['installer/system-update','installer/launcher-update']).includes(entry.from)&&!/^installer\/operations\/[0-9a-f-]{36}$/i.test(entry.from)
+      .concat(['installer/system-update','installer/launcher-update',migrationBackup]).includes(entry.from)&&!/^installer\/operations\/[0-9a-f-]{36}$/i.test(entry.from)
     ||entry.from.startsWith('installer/operations/')&&!ID.test(entry.from.slice('installer/operations/'.length))
     ||entry.to!==value.archive+'/history/'+entry.from)throw error();seen.add(entry.from);verifyEntry(root,entry,value.state==='complete',verifyRecreated);}
   const targetNames=new Set();for(const target of value.targets){if(targetNames.has(target.path)||!programs(root).concat(['cache','launcher']).includes(target.path))throw error();targetNames.add(target.path);safe(root,target.path);
@@ -133,7 +141,12 @@ function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}
  }catch(cause){if(cause.code?.startsWith('RETAINED_'))throw cause;throw Object.assign(error(),{cause});}
 }
 function begin(plan,{excludeOperationId}={}){
- const root=rootOf(plan.root),prior=inspect(root,{allowPending:true});if(prior?.state==='prepared')return prior;
+ const root=rootOf(plan.root),prior=inspect(root,{allowPending:true});
+ const backup=safe(root,migrationBackup);
+ if(prior?.state==='prepared'){
+  if(present(backup)&&!prior.entries.some(entry=>entry.from===migrationBackup))throw error();
+  return prior;
+ }
  const value={schema:2,id:crypto.randomUUID(),root,owner:owner(root),hermes:plan.hermes,tavern:plan.tavern,port:plan.port||8799,
   state:'prepared',createdAt:new Date().toISOString(),entries:[],targets:[]};
  if(value.hermes!=='hermes'||value.tavern!=='tavern')throw error();value.archive=`installer/retained/${value.id}`;
@@ -146,8 +159,30 @@ function begin(plan,{excludeOperationId}={}){
  // user backup/evidence directories retain their existing locations.
  const operations=safe(root,'installer/operations');if(present(operations))for(const name of fs.readdirSync(operations).filter(name=>ID.test(name)&&name!==excludeOperationId))sources.push('installer/operations/'+name);
  for(const relative of sources){const from=safe(root,relative);if(!present(from))continue;value.entries.push({from:relative,to:value.archive+'/history/'+relative,identity:identity(from),metadata:metadataSeal(from)});}
+ if(present(backup)){
+  const saved=identity(backup);
+  if(saved.kind!=='directory')throw error();
+  value.entries.push({from:migrationBackup,to:value.archive+'/history/'+migrationBackup,identity:saved});
+ }
  for(const relative of programs(root).concat(['cache','launcher'])){const file=safe(root,relative);value.targets.push({path:relative,identity:present(file)?identity(file):null});}
  atomic(safe(root,fileName),value);return value;
+}
+function preserveMigrationBackup(plan,value){
+ const entry=value.entries.find(item=>item.from===migrationBackup);
+ if(!entry)return;
+ const root=rootOf(plan.root);if(value.owner!==owner(root)||value.root!==root)throw error();
+ const {from,to,atSource}=verifyEntry(root,entry);
+ if(atSource){
+  fs.mkdirSync(path.dirname(to),{recursive:true,mode:0o700});
+  fs.renameSync(from,to);
+ }
+ verifyEntry(root,entry,true);
+ if(process.platform!=='win32'){
+  const sync=directory=>{const fd=fs.openSync(directory,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}};
+  if(present(path.dirname(from)))sync(path.dirname(from));
+  for(let directory=path.dirname(to);directory!==root;directory=path.dirname(directory))sync(directory);
+  sync(root);
+ }
 }
 function archive(plan,value){const root=rootOf(plan.root);if(value.owner!==owner(root)||value.root!==root)throw error();
  const changedHistory=value.entries.some(entry=>entry.from.startsWith('installer/operations/'));
@@ -320,4 +355,4 @@ function retryCompletion(home,context){
  const value=inspect(home,{operationId:context.operationId});if(!value?.reinstalled)return null;
  context.check();return archiveCompletion(value);
 }
-module.exports={inspect,begin,archive,complete,claim,release,consume,retryCompletion,upgradeLegacy,legacyHistory,absentPrograms,error,fileName};
+module.exports={inspect,begin,archive,preserveMigrationBackup,complete,claim,release,consume,retryCompletion,upgradeLegacy,legacyHistory,absentPrograms,error,fileName};
