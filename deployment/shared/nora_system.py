@@ -408,7 +408,8 @@ def verify_runtime(home, root, port, python, env):
     if result.returncode:
         reject_probe("Nora 跨平台实例入口检查失败", result)
     result = maintenance_run([python, "-B", str(home / "nora-clawchat-check.py")],
-                            cwd=home, env=env, capture_output=True, timeout=60)
+                            cwd=home, env=env, capture_output=True,
+                            timeout=180 if sys.platform == "win32" else 60)
     if result.returncode:
         reject_probe("ClawChat 插件、工具或 Liveware 运行环境检查失败", result)
     prompt_probe = '''

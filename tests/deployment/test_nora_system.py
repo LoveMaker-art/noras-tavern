@@ -198,6 +198,9 @@ class NoraSystemTests(unittest.TestCase):
                 return_value=SimpleNamespace(returncode=0)) as run, patch.object(sys, '_nora_operation_delegate',
                 SimpleNamespace(), create=True):
             result = system.verify_runtime(self.home, self.root, 18899, '/fixture/python', {'PRIVATE_KEY': 'private-value'})
+        component_probe = run.call_args_list[1]
+        self.assertEqual(Path(component_probe.args[0][-1]), self.home / 'nora-clawchat-check.py')
+        self.assertEqual(component_probe.kwargs['timeout'], 180 if sys.platform == 'win32' else 60)
         command = run.call_args.args[0]
         self.assertEqual(Path(command[1]), Path(system.__file__).resolve().with_name('mcp_probe.mjs'))
         self.assertTrue(Path(command[1]).is_absolute())
