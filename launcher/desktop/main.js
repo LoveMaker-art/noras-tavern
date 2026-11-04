@@ -1045,7 +1045,8 @@ async function reconcileRestoredHandoff() {
     const pending=await operations().snapshot();
     if(!pending?.handoffRef)return;
     if(pending.busy){await new Promise(resolve=>setTimeout(resolve,250));continue;}
-    if(pending.state==='interrupted')
+    if(pending.state==='interrupted'||pending.kind==='update'&&pending.target?.request?.launcherOnly===true
+      &&['awaiting-handoff','verifying','committing'].includes(pending.state))
       return operations().recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
     return;
   }
@@ -1319,8 +1320,29 @@ function appCoreIdentity(plan) {
   return {version:receipt.version,commit:receipt.commit,manifestSha256:hash};
 }
 
-async function runLauncherUpdate(context,{payload,event,networkPolicy,operationDirectory}) {
+async function launcherUpdateResult(core,{payload,event,applied}) {
+  // Runtime readiness is informational. APP completion verifies only its own replacement.
+  let current;
+  try {current=await runBridge('status',{port:payload.port},event.sender,payload.runId);}
+  catch(error){current={warning:diagnostics.clean(error.message)};}
+  const state=readInstallerState();
+  writeInstallerState({...state,phase:current.systemReady===true?'ready':'idle',error:'',task:'',resumeTarget:null});
+  diagnostics.finish('success');
+  return {verification:'confirmed',value:{...(core?{version:core.version,commit:core.commit}:{}),...current,
+    launcherVersion:app.getVersion(),appUpdateComplete:true,updateComplete:true,coreUpdateComplete:false,
+    ...(applied?{updateVerified:true}:{unchanged:true})}};
+}
+
+async function runLauncherUpdate(context,{payload,event,networkPolicy,operationDirectory,handoff}) {
   if(LOCAL_TEST)throw new Error('本地候选包不用于在线更新，请使用正式模式包。');
+  if(handoff){
+    await context.stage('verifying');
+    await launcherUpdate.finalize({...launcherRecoveryOptions(),job:handoff.job,operation:context.snapshot,
+      spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),appOnly:true,
+      version:app.getVersion(),target:context.target.releasePlan?.tag});
+    await context.effect('changed');
+    return launcherUpdateResult(context.target.appCoreIdentity,{payload,event,applied:true});
+  }
   let plan=context.target.releasePlan;
   releaseAbort=new AbortController();
   let prepared,core;
@@ -1357,23 +1379,19 @@ async function runLauncherUpdate(context,{payload,event,networkPolicy,operationD
     diagnostics.finish('restarting');await context.handoff(job);
     return {handoff:true,value:{restarting:true,job}};
   }
-  if(context.snapshot.handoffRef){
-    await context.stage('verifying');
-    await launcherUpdate.finalize({...launcherRecoveryOptions(),job:context.snapshot.handoffRef,operation:context.snapshot,
-      spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),appOnly:true,version:app.getVersion(),target:prepared.tag});
-    await context.effect('changed');
+  return launcherUpdateResult(core,{payload,event,applied:false});
+}
+
+async function dispatchLauncherHandoff(operation) {
+  try {
+    await launcherUpdate.launchHandoff({...launcherRecoveryOptions(),job:operation.handoffRef,
+      managedPythonRoot:path.join(hermesHome(),'python'),venvHome:path.join(hermesHome(),'hermes-agent','venv'),env:process.env});
+    quitReady=true;
+    setImmediate(()=>app.quit());
+    return operation;
+  } catch(error) {
+    return operations().failHandoff(operation.operationId,{job:operation.handoffRef,error,onFailure:rememberOperationFailure});
   }
-  // Runtime readiness is informational. APP completion never fabricates a core
-  // health result or rehashes editable skills to confirm its own replacement.
-  let current;
-  try {current=await runBridge('status',{port:payload.port},event.sender,payload.runId);}
-  catch(error){current={version:core.version,commit:core.commit,warning:diagnostics.clean(error.message)};}
-  const state=readInstallerState();
-  writeInstallerState({...state,phase:current.systemReady===true?'ready':'idle',error:'',task:'',resumeTarget:null});
-  diagnostics.finish('success');
-  return {verification:'confirmed',value:{...current,version:core.version,commit:core.commit,
-    launcherVersion:app.getVersion(),appUpdateComplete:true,updateComplete:true,coreUpdateComplete:false,
-    ...(!context.snapshot.handoffRef?{unchanged:true}:{})}};
 }
 
 function modelConfigScript() {
@@ -1979,6 +1997,8 @@ if (primaryInstance) {
     if (operationId) diagnostics.write('telemetry.operation', { telemetryOperationId:operationId });
     const work = async () => {
     try {
+      if(options.handoff&&payload.action==='update')
+        return await runLauncherUpdate(context,{payload,event,handoff:options.handoff});
       const completion=require('./retained-installation').retryCompletion(noraHome(),context);
       if(completion?.pending){
         diagnostics.write('retained.completion-pending',{operationId:context.operationId,code:completion.code});
@@ -2210,7 +2230,8 @@ if (primaryInstance) {
         if(mode!=='recover'||!legacyCore)throw launcherError('核心更新请在诺拉对话中重试或恢复。',{code:'CORE_UPDATE_CHAT_REQUIRED'});
         return await runSharedUpdate(event,{...selected.target.request,...payload,requestId:selected.requestId,action:'update'},{recover:true});
       }
-      const operation=await operations()[mode](payload.operationId,{...options,event});
+      let operation=await operations()[mode](payload.operationId,{...options,event});
+      if(mode==='resume'&&operation.state==='awaiting-handoff')operation=await dispatchLauncherHandoff(operation);
       finishOperationTelemetry(operation,{recover:mode==='recover'});
       if(['succeeded','rolled-back'].includes(operation.state))await registerCapabilities();
       return requireOperationResult(operation,{recover:mode==='recover'});
@@ -2245,18 +2266,9 @@ if (primaryInstance) {
       if(payload.action==='update')payload={...payload,launcherOnly:true};
       const request={action:payload.action};
       for(const name of ['port','tag','service','launcherOnly','skillRequestId'])if(payload[name]!==undefined)request[name]=payload[name];
-      const operation=await operations().start(payload.action,{target:{request},
+      let operation=await operations().start(payload.action,{target:{request},
         execute:context=>executeAction(context,{payload,event}),onFailure:rememberOperationFailure},payload.runId);
-      if(operation.state==='awaiting-handoff'){
-        try{
-          await launcherUpdate.launchHandoff({...launcherRecoveryOptions(),job:operation.handoffRef,
-            managedPythonRoot:path.join(hermesHome(),'python'),venvHome:path.join(hermesHome(),'hermes-agent','venv'),env:process.env});
-          quitReady=true;setImmediate(()=>app.quit());
-        }catch(error){
-          const failed=await operations().failHandoff(operation.operationId,{job:operation.handoffRef,error,onFailure:rememberOperationFailure});
-          finishOperationTelemetry(failed);return requireOperationResult(failed);
-        }
-      }
+      if(operation.state==='awaiting-handoff')operation=await dispatchLauncherHandoff(operation);
       finishOperationTelemetry(operation,{recover:payload.action==='recover'});
       if(['succeeded','rolled-back'].includes(operation.state))await registerCapabilities();
       return requireOperationResult(operation,{recover:payload.action==='recover'});
@@ -2471,14 +2483,22 @@ if (primaryInstance) {
           window.webContents.once('did-finish-load', async () => {
             let plan;
             try {
-              plan = launcherUpdate.resume(SELF_UPDATE_JOB, { home: noraHome(), executable: process.execPath, version: app.getVersion() });
+              const resumeOptions={home:noraHome(),executable:process.execPath,version:app.getVersion()};
+              plan = launcherUpdate.resume(SELF_UPDATE_JOB,resumeOptions);
               if (plan) {
-                await launcherUpdate.waitHandoff({...launcherRecoveryOptions(),job:SELF_UPDATE_JOB});
-                writeInstallerState({ ...readInstallerState(), resumeTarget: plan.target });
-                const before=await operations().snapshot(plan.operationId);
-                const operation=await operations().resume(plan.operationId,{snapshotSequence:before.snapshotSequence,
-                  handoff:{job:SELF_UPDATE_JOB,planDigest:plan.planDigest},event:{sender:window.webContents},
-                  runId:before.requestId,onFailure:rememberOperationFailure});
+                let before=await operations().snapshot(plan.operationId);
+                launcherUpdate.resume(SELF_UPDATE_JOB,{...resumeOptions,operation:before});
+                let operation=before;
+                if(before.busy===false&&before.state!=='succeeded'&&before.target?.request?.launcherOnly===true)
+                  operation=await operations().recheck(plan.operationId,{snapshotSequence:before.snapshotSequence});
+                if(operation.state!=='succeeded'){
+                  await launcherUpdate.waitHandoff({...launcherRecoveryOptions(),job:SELF_UPDATE_JOB});
+                  writeInstallerState({...readInstallerState(),resumeTarget:plan.target});
+                  before=await operations().snapshot(plan.operationId);
+                  operation=await operations().resume(plan.operationId,{snapshotSequence:before.snapshotSequence,
+                    handoff:{job:SELF_UPDATE_JOB,planDigest:plan.planDigest},event:{sender:window.webContents},
+                    runId:before.requestId,onFailure:rememberOperationFailure});
+                }
                 finishOperationTelemetry(operation);
                 const result=requireOperationResult(operation);
                 await registerCapabilities();

@@ -566,12 +566,19 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
   }
   async function reconcileHandoff(record,context){
     context.check();
-    if(record.state!=='awaiting-handoff'||!record.handoffRef||!maintenanceKinds.has(record.kind))return null;
+    const appOnly=record.kind==='update'&&record.target?.request?.launcherOnly===true;
+    if(!record.handoffRef||!maintenanceKinds.has(record.kind)||record.state!=='awaiting-handoff'&&!appOnly)return null;
     const app=await inspectLauncherOutcome(record.handoffRef,record,context);
+    if(app?.verification!=='confirmed'||app.busy!==false||app.workerOffline!==true
+      ||app.operationId!==record.operationId||app.planDigest!==record.planDigest||app.job!==record.handoffRef)return null;
+    if(appOnly&&app.status==='committed'&&app.effectState==='changed'
+      &&typeof app.version==='string'&&app.version===record.target.releasePlan?.launcherManifest?.version){
+      const core=record.target.appCoreIdentity;
+      return {...app,value:{...(core?{version:core.version,commit:core.commit}:{}),
+        launcherVersion:app.version,appUpdateComplete:true,updateVerified:true,updateComplete:true,coreUpdateComplete:false}};
+    }
     const untouched=app?.status==='cancelled'&&app.effectState==='untouched';
-    if(!(app?.status==='restored'&&app.effectState==='restored'||untouched)||app.verification!=='confirmed'
-      ||app.busy!==false||app.workerOffline!==true||app.operationId!==record.operationId
-      ||app.planDigest!==record.planDigest||app.job!==record.handoffRef)return null;
+    if(record.state!=='awaiting-handoff'||!(app.status==='restored'&&app.effectState==='restored'||untouched))return null;
     const effects=await observe(record,{launcherOutcome:app});
     const expectedEffect=untouched?'untouched':'restored',expectedRecovery=untouched?'not-required':'restored-and-verified';
     const settled=facts=>facts.effectState===expectedEffect&&(facts.recoveryOutcome===expectedRecovery

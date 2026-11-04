@@ -69,7 +69,7 @@ async function prepareHandoff({prepared,home,executable,python,helper,previousVe
     ||!/^[a-f0-9]{64}$/.test(operation.planDigest||'')||typeof spawnChild!=='function')
     throw launcherError('启动器替换缺少当前操作的执行协议，未修改程序。',{code:'OPERATION_CAPABILITY_REQUIRED'});
   const fixed=operation.target?.releasePlan;
-  releases().validatePlan(fixed,{launcherVersion:previousVersion,
+  releases().validatePlan(fixed,{launcherVersion:previousVersion,channel:prepared.releasePlan?.channel,
     operationDirectory:path.join(home,'installer','operations',operation.operationId)});
   if(!prepared.launcher||prepared.releasePlan?.planId!==fixed.planId
     ||crypto.createHash('sha256').update(JSON.stringify(operation.target)).digest('hex')!==operation.planDigest)
@@ -132,12 +132,15 @@ async function launchHandoff(options){
   },true);
 }
 
-function resume(job,{home,executable,version}){
+function resume(job,{home,executable,version,operation}){
   if(!job||path.dirname(path.resolve(job))!==path.resolve(home,'installer','launcher-update')||!/^job-[\w-]+$/.test(path.basename(job)))return null;
   ownedJob(job,{home,executable});
   const plan=JSON.parse(fs.readFileSync(path.join(job,'plan.json'),'utf8'));
   if(plan.schema!==2||plan.version!==version||!OPERATION_ID.test(plan.operationId||'')||!/^[a-f0-9]{64}$/.test(plan.planDigest||''))
     throw launcherError('旧更新记录不能安全续跑。现有数据与备份已保留，请重新安装新版启动器并检查原更新状态。',{code:'OPERATION_CAPABILITY_REQUIRED'});
+  if(operation===undefined)return plan;
+  if(operation?.operationId!==plan.operationId||operation.planDigest!==plan.planDigest||operation.handoffRef!==job)
+    throw launcherError('启动器交接与原操作记录不一致，未确认新版程序。',{code:'OPERATION_CAPABILITY_REQUIRED'});
   atomicJson(path.join(job,'ready.json'),{schema:'nora-launcher-handoff/1',token:plan.token,version,operationId:plan.operationId,planDigest:plan.planDigest});
   return plan;
 }
@@ -164,8 +167,11 @@ async function inspectOutcome(options){
   if(outcome?.operationId!==operation.operationId||outcome.planDigest!==operation.planDigest
     ||outcome.job!==job||outcome.verification!=='confirmed'
     ||!(outcome.status==='restored'&&outcome.effectState==='restored'
-      ||outcome.status==='cancelled'&&outcome.effectState==='untouched')
+      ||outcome.status==='cancelled'&&outcome.effectState==='untouched'
+      ||operation.target?.request?.launcherOnly===true&&outcome.status==='committed'
+        &&outcome.effectState==='changed'&&outcome.version===plan.version)
     ||outcome.workerOffline!==true||outcome.busy!==false)return null;
+  if(outcome.status==='committed')return outcome;
   return {...outcome,failure:helperError(outcome.diagnosticError,outcome.status==='cancelled'
     ?'启动器更新未能应用，原程序和数据已保留。请查看日志后重试。':'新版启动器启动失败，旧程序已恢复。')};
 }

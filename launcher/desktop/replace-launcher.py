@@ -2,6 +2,7 @@
 import hashlib
 import argparse
 from contextlib import contextmanager
+import errno
 import json
 import ntpath
 import os
@@ -226,7 +227,7 @@ def file_identity(path):
     return [value.st_dev, value.st_ino]
 
 
-def tree_digest(root, platform, *, on_progress=None):
+def tree_digest(root, platform, *, on_progress=None, scope=None):
     result = hashlib.sha256()
     count = 0
     def visit(file, relative):
@@ -248,7 +249,8 @@ def tree_digest(root, platform, *, on_progress=None):
         elif stat.S_ISDIR(value.st_mode):
             result.update(b'D' + relative.encode() + b'\0')
             if on_progress is not None: on_progress(0, 1)
-            for child in sorted(file.iterdir(), key=lambda item: item.name):
+            children = (file / name for name in scope[relative]) if scope is not None else sorted(file.iterdir(), key=lambda item: item.name)
+            for child in children:
                 visit(child, relative + '/' + child.name)
         elif stat.S_ISREG(value.st_mode):
             result.update(b'F' + relative.encode() + b'\0')
@@ -264,6 +266,72 @@ def tree_digest(root, platform, *, on_progress=None):
             raise ValueError('启动器程序含不支持的文件类型')
     visit(io_path(root), '')
     return result.hexdigest()
+
+
+def windows_program_paths(old, staged):
+    """Use the verified package layout to locate old program files without scanning old extras."""
+    paths = []
+
+    def match(current, packaged, prefix=''):
+        for source in sorted(packaged.iterdir(), key=lambda item: item.name):
+            target = current / source.name
+            try:
+                value = target.lstat()
+            except FileNotFoundError:
+                continue
+            relative = prefix + source.name
+            if getattr(value, 'st_file_attributes', 0) & 0x400 or not (
+                    stat.S_ISDIR(value.st_mode) if source.is_dir() else stat.S_ISREG(value.st_mode)):
+                raise ValueError('原启动器受管文件类型已变化: ' + relative)
+            paths.append(relative)
+            if source.is_dir():
+                match(target, source, relative + '/')
+
+    match(io_path(old), io_path(staged))
+    return sorted(paths)
+
+
+def previous_app_scope(ctx, old):
+    # Old jobs keep their exact original whole-tree contract.
+    if 'programPaths' not in old:
+        return None
+    paths = old['programPaths']
+    if (ctx['plan']['schema'] != 2 or ctx['plan']['platform'] != 'win32'
+            or not isinstance(paths, list) or not 1 <= len(paths) <= 100000
+            or any(not isinstance(item, str) for item in paths)
+            or paths != sorted(paths) or len({item.casefold() for item in paths}) != len(paths)
+            or ctx['executable'].as_posix() not in paths):
+        raise ValueError('启动器恢复计划的受管程序范围无效')
+    scope = {'': []}
+    for path in paths:
+        parent, _, name = path.rpartition('/')
+        parent = '/' + parent if parent else ''
+        if (path.startswith('/') or not name or name in ('.', '..') or name.endswith((' ', '.'))
+                or any(char in name for char in '\\:<>|?*"\x00') or parent not in scope):
+            raise ValueError('启动器恢复计划的受管程序路径无效')
+        relative = '/' + path
+        scope[parent].append(name)
+        scope[relative] = []
+    return scope
+
+
+def retire_previous_app(ctx, old):
+    backup = io_path(ctx['backup'])
+    if 'programPaths' not in old:
+        shutil.rmtree(backup)
+    else:
+        # Only remove the verified paths. rmdir atomically leaves any folder
+        # that still contains an old-only or user-created entry.
+        for path in reversed([backup, *(backup / path for path in old['programPaths'])]):
+            if stat.S_ISDIR(path.lstat().st_mode):
+                try:
+                    path.rmdir()
+                except OSError as error:
+                    if error.errno != errno.ENOTEMPTY and getattr(error, 'winerror', None) != 145:
+                        raise
+            else:
+                path.unlink()
+    fsync_directory(backup.parent)
 
 
 def context(job):
@@ -428,39 +496,51 @@ def validate_snapshot(ctx, *, full):
             raise ValueError('启动器恢复计划缺少原程序快照')
     if not old.get('version') or old.get('version') != plan.get('previousVersion'):
         raise ValueError('启动器恢复计划缺少旧版本')
-    current, backup, failed = (file_identity(ctx[key]) for key in ('app', 'backup', 'failed'))
+    old_scope = previous_app_scope(ctx, old)
+    current = file_identity(ctx['app'])
     if phase == 'committed':
         if current != incoming['identity'] or (full and tree_digest(ctx['app'], plan['platform']) != incoming['digest']):
             raise ValueError('已提交启动器的身份或内容已变化')
         return snapshot
+    backup, failed = (file_identity(ctx[key]) for key in ('backup', 'failed'))
     if failed is not None and (failed != incoming['identity'] or (full and tree_digest(ctx['failed'], plan['platform']) != incoming['digest'])):
         raise ValueError('失败程序现场身份或内容已变化，未覆盖证据')
     if backup is not None:
-        if backup != old['identity'] or (full and tree_digest(ctx['backup'], plan['platform']) != old['digest']):
+        if backup != old['identity'] or (full and tree_digest(ctx['backup'], plan['platform'], scope=old_scope) != old['digest']):
             raise ValueError('旧启动器备份身份或内容已变化，未覆盖程序')
         if current is not None and current != incoming['identity']:
             raise ValueError('当前启动器身份未知，未覆盖程序')
         if full and current is not None and tree_digest(ctx['app'], plan['platform']) != incoming['digest']:
             raise ValueError('当前启动器内容已变化，未覆盖程序')
-    elif current != old['identity'] or (full and tree_digest(ctx['app'], plan['platform']) != old['digest']):
+    elif current != old['identity'] or (full and tree_digest(ctx['app'], plan['platform'], scope=old_scope) != old['digest']):
         raise ValueError('旧启动器备份缺失，尚未确认已安全恢复')
     return snapshot
 
 
 def untouched(ctx, snapshot):
-    return (not exists(ctx['backup']) and file_identity(ctx['app']) == snapshot['old']['identity']
-        and tree_digest(ctx['app'], ctx['plan']['platform']) == snapshot['old']['digest'])
+    old = snapshot['old']
+    return (not exists(ctx['backup']) and file_identity(ctx['app']) == old['identity']
+        and tree_digest(ctx['app'], ctx['plan']['platform'], scope=previous_app_scope(ctx, old)) == old['digest'])
+
+
+def ready_acknowledged(ctx):
+    plan = ctx['plan']
+    expected = {'token': plan['token'], 'version': plan['version']}
+    if plan['schema'] == 2:
+        expected.update(schema='nora-launcher-handoff/1', operationId=plan['operationId'], planDigest=plan['planDigest'])
+    ready = ctx['job'] / 'ready.json'
+    return file_identity(ready) is not None and io_path(ready).is_file() and read_json(ready) == expected
 
 
 def inspect_outcome(job):
-    """Explicit full proof for a restored or untouched handoff, never status polling."""
+    """Explicit full proof of a terminal handoff, never status polling."""
     ctx = context(job)
     if ctx['plan']['schema'] != 2:
         return None
     with job_lock(ctx['job'], readonly=True):
         snapshot = validate_snapshot(ctx, full=True)
         phase = snapshot['phase']
-        if phase not in ('restored', 'cancelled'):
+        if phase not in ('committed', 'restored', 'cancelled'):
             return None
         if (type(snapshot.get('workerPid')) is not int or snapshot['workerPid'] <= 0
                 or type(snapshot.get('workerCreationTime')) not in (int, float)
@@ -468,6 +548,15 @@ def inspect_outcome(job):
             return None
         if parent_alive(snapshot['workerPid'], snapshot['workerCreationTime']):
             return None
+        if phase == 'committed':
+            if not ready_acknowledged(ctx):
+                return None
+            # Recovery is checkpointed before status.json. A cut between the
+            # writes leaves a valid commit with stale or missing display state.
+            return {'job': str(ctx['job']), 'status': phase, 'verification': 'confirmed',
+                    'effectState': 'changed', 'busy': False, 'workerOffline': True,
+                    'operationId': snapshot['operationId'], 'planDigest': snapshot['planDigest'],
+                    'version': snapshot['version']}
         if phase == 'cancelled' and (not untouched(ctx, snapshot) or exists(ctx['failed'])):
             return None
         status = read_json(ctx['job'] / 'status.json')
@@ -833,9 +922,12 @@ def finalize(job, *, target, version, verified, allow_legacy=False):
             raise ValueError('启动器尚未确认成功，旧备份继续保留')
         if ctx['plan']['schema'] == 2 and parent_alive(snapshot['workerPid'], snapshot['workerCreationTime']):
             raise ValueError('启动器替换助手尚未退出，旧备份继续保留')
+        if ctx['plan']['schema'] == 2 and not ready_acknowledged(ctx):
+            raise ValueError('新版启动器启动确认不匹配，旧备份继续保留')
         checkpoint(ctx, snapshot, 'committed')
-        try: shutil.rmtree(io_path(ctx['backup'])); fsync_directory(ctx['backup'].parent)
+        try: retire_previous_app(ctx, snapshot['old'])
         except OSError: return {'status': 'committed', 'retainedBackup': str(ctx['backup'])}
+        if exists(ctx['backup']): return {'status': 'committed', 'retainedBackup': str(ctx['backup'])}
         return {'status': 'committed'}
 
 
@@ -878,9 +970,13 @@ def prepare_context(ctx):
             incoming = stage
             resources = incoming / 'resources'
             # NSIS owns the existing uninstall registration and executable.
-            for uninstaller in io_path(app).glob('Uninstall*.exe'):
-                if uninstaller.is_symlink():
-                    raise ValueError('卸载程序不能是符号链接')
+            uninstallers = io_path(app).glob('Uninstall*.exe')
+            if plan['schema'] == 2:
+                uninstaller = io_path(app / f'Uninstall {executable.stem}.exe')
+                uninstallers = [uninstaller] if exists(uninstaller) else []
+            for uninstaller in uninstallers:
+                if file_identity(uninstaller) is None or not uninstaller.is_file():
+                    raise ValueError('卸载程序文件类型无效')
                 shutil.copy2(uninstaller, io_path(incoming / uninstaller.name))
         identity = read_json(resources / 'launcher-update-info.json')
         if (identity['version'] != plan['version'] or identity['platform'] != plan['platform']
@@ -889,9 +985,13 @@ def prepare_context(ctx):
         script = recovery_entry(ctx)
         if plan['platform'] == 'darwin' and list(io_path(stage).iterdir()) != [io_path(incoming)]:
             raise ValueError('更新包必须只包含受管应用')
+        old = {'identity': initial_identity, 'version': plan['previousVersion']}
+        if plan['schema'] == 2 and plan['platform'] == 'win32':
+            old['programPaths'] = windows_program_paths(app, incoming)
+        old['digest'] = tree_digest(app, plan['platform'], scope=previous_app_scope(ctx, old))
         snapshot = {key: plan.get(key) for key in ('token', 'home', 'appRoot', 'executable', 'platform', 'arch', 'version', 'target')}
         snapshot.update(schema='nora-launcher-recovery/1', homeIdentity=home_identity, helperDigest=digest(job / 'replace.py'),
-            old={'identity': initial_identity, 'digest': tree_digest(app, plan['platform']), 'version': plan['previousVersion']},
+            old=old,
             incoming={'identity': file_identity(incoming), 'digest': tree_digest(incoming, plan['platform'])},
             stageIdentity=file_identity(stage), stageDigest=tree_digest(stage, plan['platform']),
             incomingRelative='.' if incoming == stage else incoming.name)
@@ -944,11 +1044,9 @@ def replace(ctx, *, allow_legacy=False):
         options = {'executable': args[0]} if os.name == 'nt' else {}
         child = subprocess.Popen(args, cwd=launcher_cwd(home), env=launcher_environment(ctx), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != 'nt', **options)
-        expected_ack = {'token': plan['token'], 'version': plan['version']}
-        if plan['schema'] == 2: expected_ack.update(schema='nora-launcher-handoff/1', operationId=plan['operationId'], planDigest=plan['planDigest'])
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
-            if exists(job / 'ready.json') and read_json(job / 'ready.json') == expected_ack:
+            if ready_acknowledged(ctx):
                 checkpoint(ctx, snapshot, 'awaiting-system')
                 try: clean_stage(ctx, snapshot)
                 except (OSError, ValueError) as cleanup: checkpoint(ctx, snapshot, 'awaiting-system', cleanupError=error_data(cleanup))

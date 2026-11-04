@@ -48,6 +48,28 @@ for(const untouched of [false,true])test(`handoff closure requires only owned pr
   }
 });
 
+test('committed APP closure binds the sealed version without inspecting independent core state',async t=>{
+  let app;
+  const unrelated=()=>assert.fail('APP commit must not inspect independent core state');
+  const f=setup(t,{inspectLauncherOutcome:async()=>app,inspectRuntime:unrelated,inspectLegacy:unrelated,bridge:unrelated});
+  Object.assign(f.record,{kind:'update',state:'verifying',handoffRef:'/owned/job',planDigest:'a'.repeat(64),
+    target:{request:{launcherOnly:true},releasePlan:{launcherManifest:{version:'2.6.0'}},
+      appCoreIdentity:{version:'2.5.7',commit:'old-core'}}});
+  const proof={status:'committed',verification:'confirmed',effectState:'changed',busy:false,
+    workerOffline:true,operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef,version:'2.6.0'};
+  app=proof;
+  assert.deepEqual((await f.policy.reconcileHandoff(f.record,f.context)).value,{
+    version:'2.5.7',commit:'old-core',launcherVersion:'2.6.0',
+    appUpdateComplete:true,updateVerified:true,updateComplete:true,coreUpdateComplete:false,
+  });
+  for(const mismatch of [{busy:true},{workerOffline:false},{operationId:'foreign'},{version:'2.5.9'},{version:undefined}]){
+    app={...proof,...mismatch};
+    assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null);
+  }
+  delete f.record.target.releasePlan;
+  assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null);
+});
+
 for(const filesOnly of [false,true])test(`APP restoration closes independently of core acceptance (separate service failure=${filesOnly})`,async t=>{
   let app;
   const f=setup(t,{systemEffects:async()=>filesOnly?{effectState:'restored',recoveryOutcome:'files-restored-start-failed'}:{effectState:'untouched',recoveryOutcome:'not-required'},

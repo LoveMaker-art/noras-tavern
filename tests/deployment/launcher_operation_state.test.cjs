@@ -150,6 +150,33 @@ test('recheck closes a verified restored handoff durably and admits a subsequent
   assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'after-restore')).state,'succeeded');
 });
 
+test('recheck completes the original APP task when replacement committed before its result was saved',async t=>{
+  const prepare=async context=>{
+    await context.plan(context.target);
+    await context.handoff('/owned/app-job');
+    return {handoff:true};
+  };
+  const f=fixture(t,prepare,{executors:{update:prepare},observeEffects:async()=>({effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false}),
+    verifyRestoredHandoff:async(record,context)=>{
+      context.check();
+      return {operationId:record.operationId,planDigest:record.planDigest,job:record.handoffRef,
+        status:'committed',verification:'confirmed',effectState:'changed',
+        value:{launcherVersion:'2.3.0',appUpdateComplete:true,updateVerified:true,coreUpdateComplete:false}};
+    }});
+  const target={request:{action:'update',launcherOnly:true},releasePlan:{launcherManifest:{version:'2.3.0'}}};
+  const pending=await f.controller.start('update',{target},'app-commit-crash');
+  const file=path.join(f.directory,'operations',pending.operationId,'operation.json');
+  const record=JSON.parse(fs.readFileSync(file));
+  fs.writeFileSync(file,JSON.stringify({...record,state:'verifying',stageId:'verifying'}));
+  const restarted=createOperationController(f.options);
+  const done=await restarted.recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
+  assert.equal(done.state,'succeeded');
+  assert.equal(done.operationId,pending.operationId);
+  assert.equal(done.effectState,'changed');
+  assert.equal(done.recoveryOutcome,'not-required');
+  assert.equal(done.result.updateVerified,true);
+});
+
 test('recheck ends an untouched cancelled handoff as failed and preserves its original error',async t=>{
   const original=Object.assign(new Error('Directory is being used by another process'),{code:'EACCES'});
   const f=fixture(t,async context=>{await context.handoff('/owned/job');return {handoff:true};},

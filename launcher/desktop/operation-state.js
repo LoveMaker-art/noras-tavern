@@ -706,7 +706,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     try{
       const record=read(id);
       if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
-      if(record.state==='awaiting-handoff'&&record.handoffRef&&verifyRestoredHandoff){
+      const appOnly=record.kind==='update'&&record.target?.request?.launcherOnly===true;
+      if(record.handoffRef&&verifyRestoredHandoff&&(record.state==='awaiting-handoff'||appOnly&&!TERMINAL.has(record.state))){
         const check=()=>{
           lease.assertActive?.();
           const current=read(id);
@@ -719,9 +720,18 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         const context={lease,operationId:id,ownerEpoch,get snapshot(){return dto(record);},get target(){return record.target;},
           observe:message=>saved?.observe(message),delivery:summary=>evidence?.updateDelivery(id,summary),check};
         const outcome=await verifyRestoredHandoff(record,context);check();
+        if(appOnly&&outcome?.status==='committed'&&outcome.verification==='confirmed'&&outcome.effectState==='changed'
+          &&outcome.operationId===id&&outcome.planDigest===record.planDigest&&outcome.job===record.handoffRef
+          &&outcome.value?.appUpdateComplete===true&&outcome.value.launcherVersion===record.target.releasePlan?.launcherManifest?.version){
+          Object.assign(record,{ownerEpoch,state:'succeeded',stageId:'verifying',verification:'confirmed',
+            effectState:'changed',recoveryOutcome:'not-required',currentFailure:null,result:outcome.value});
+          saved?.finish({outcome:'succeeded'});
+          await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence},capture:saved});
+          return dto(record);
+        }
         const untouched=outcome?.status==='cancelled'&&outcome.effectState==='untouched'
           &&outcome.value?.notAppliedVerification==='confirmed';
-        if((outcome?.status==='restored'||untouched)&&outcome.verification==='confirmed'
+        if(record.state==='awaiting-handoff'&&(outcome?.status==='restored'||untouched)&&outcome.verification==='confirmed'
           &&outcome.operationId===id&&outcome.planDigest===record.planDigest&&outcome.job===record.handoffRef){
           const terminal=untouched?'failed':'rolled-back';
           const error=outcome.failure||fail('LAUNCHER_START_FAILED',untouched

@@ -302,7 +302,7 @@ const deadline=Date.now()+10000,t=setInterval(()=>{if(fs.existsSync(path.join(ro
         app = root / 'application'
         app.mkdir()
         (app / 'launcher.exe').write_text('old')
-        (app / 'Uninstall Nora.exe').write_text('uninstaller')
+        (app / 'Uninstall launcher.exe').write_text('uninstaller')
         job = home / 'installer/launcher-update/job-test'
         job.mkdir(parents=True)
         shutil.copy2(SOURCE, job / 'replace.py')
@@ -343,7 +343,7 @@ const deadline=Date.now()+10000,t=setInterval(()=>{if(fs.existsSync(path.join(ro
             else:
                 worker.run(job, allow_legacy=True)
         self.assertEqual((home / 'world.json').read_text(), 'user-world')
-        self.assertEqual((app / 'Uninstall Nora.exe').read_text(), 'uninstaller')
+        self.assertEqual((app / 'Uninstall launcher.exe').read_text(), 'uninstaller')
         self.assertEqual((app / 'launcher.exe').read_text(), 'old' if fail else 'new')
         self.assertEqual(json.loads((job / 'status.json').read_text())['status'], 'restored' if fail else 'awaiting-system')
         self.assertEqual(len(calls), 2 if fail else 1)
@@ -389,7 +389,7 @@ class DurableReplacementTests(unittest.TestCase):
         home, app = root / 'data', root / 'application'
         worker.io_path(app).mkdir()
         worker.io_path(app / 'launcher.exe').write_text('old')
-        worker.io_path(app / 'Uninstall Nora.exe').write_text('uninstaller')
+        worker.io_path(app / 'Uninstall launcher.exe').write_text('uninstaller')
         job = home / 'installer/launcher-update/job-test'
         worker.io_path(job).mkdir(parents=True)
         shutil.copy2(worker.io_path(SOURCE), worker.io_path(job / 'replace.py'))
@@ -456,6 +456,14 @@ def launch(args,**options):
   raise RuntimeError('Fixture launcher birth ACK deadline expired; preserve the fixture')
  return real_popen(args,**options)
 w.subprocess.Popen=launch
+
+if edge=='unowned-lock':
+ real_open=Path.open
+ def locked(path,*args,**options):
+  if path.name=='clawchat.lock':
+   error=PermissionError(13,'fixture byte-range lock',str(path));error.winerror=33;raise error
+  return real_open(path,*args,**options)
+ Path.open=locked
 
 def rename(source,target):
  real_replace(source,target)
@@ -543,7 +551,7 @@ else: w.recover(job,allow_legacy=True)
     def assert_preserved(self, f, old=True):
         self.assertEqual(worker.io_path(f['home'] / 'world.json').read_text(), 'user-world')
         self.assertEqual(worker.io_path(f['app'] / 'launcher.exe').read_text(), 'old' if old else 'new')
-        self.assertEqual(worker.io_path(f['app'] / 'Uninstall Nora.exe').read_text(), 'uninstaller')
+        self.assertEqual(worker.io_path(f['app'] / 'Uninstall launcher.exe').read_text(), 'uninstaller')
 
     def test_real_ack_retains_backup_until_verified_combined_commit(self):
         f = self.fixture()
@@ -1110,6 +1118,106 @@ class OperationReplacementTests(unittest.TestCase):
             state = worker.assess(f['job'])
         self.assertEqual(state['effectState'], 'untouched'); self.assertFalse(state['workerOffline']); self.assertFalse(state['canRecover'])
         self.assertEqual((f['job'] / 'recovery.json').read_bytes(), before)
+
+    def fixture_with_app_asar(self):
+        f = self.fixture(); f['plan']['parentCreationTime'] -= 100
+        resources = f['app'] / 'resources'
+        resources.mkdir()
+        (resources / 'app.asar').write_bytes(b'old package')
+        with zipfile.ZipFile(f['plan']['archive'], 'a') as archive:
+            archive.writestr('resources/app.asar', b'new package')
+        f['plan']['sha256'] = worker.digest(f['plan']['archive'])
+        worker.write_json(f['job'] / 'plan.json', f['plan'])
+        return f
+
+    def test_unowned_windows_file_lock_does_not_block_update_and_backup_retirement_preserves_unknown_files(self):
+        f = self.fixture_with_app_asar()
+        resources = f['app'] / 'resources'
+        (resources / 'clawchat').mkdir()
+        (resources / 'clawchat' / 'clawchat.lock').write_bytes(b'external lock')
+        (f['app'] / 'Uninstall other.exe').write_bytes(b'unowned executable')
+        real_open = Path.open
+
+        def locked(path, *args, **kwargs):
+            if path.name == 'clawchat.lock':
+                error = PermissionError(13, 'fixture byte-range lock', str(path))
+                error.winerror = 33
+                raise error
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', locked):
+            worker.prepare(f['job'])
+            f['owner'].execute(f, edge='unowned-lock')
+            outcome = worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
+        self.assertEqual(outcome['status'], 'committed')
+        backup = Path(outcome['retainedBackup'])
+        self.assertEqual((backup / 'resources' / 'clawchat' / 'clawchat.lock').read_bytes(), b'external lock')
+        self.assertEqual((backup / 'Uninstall other.exe').read_bytes(), b'unowned executable')
+        self.assertFalse((backup / 'resources' / 'app.asar').exists())
+        self.assertFalse((f['app'] / 'Uninstall other.exe').exists())
+        self.assertEqual((resources / 'app.asar').read_bytes(), b'new package')
+        f['owner'].assert_preserved(f, old=False)
+
+    def test_recovery_checks_managed_old_program_and_keeps_latest_unknown_file(self):
+        f = self.fixture_with_app_asar()
+        relative = Path('resources/clawchat.lock')
+        (f['app'] / relative).write_bytes(b'old lock bytes')
+        worker.prepare(f['job']); f['owner'].execute(f, edge='unowned-lock')
+        backup = worker.context(f['job'])['backup']
+        (backup / relative).write_bytes(b'latest lock bytes')
+        old_identity = worker.file_identity(backup / relative)
+        asar = backup / 'resources/app.asar'
+        asar.write_bytes(b'damaged old program')
+        result = f['owner'].execute(f, mode='recover', edge='unowned-lock', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('旧启动器备份身份或内容已变化', result.stderr)
+        self.assertEqual((f['app'] / 'resources/app.asar').read_bytes(), b'new package')
+        asar.write_bytes(b'old package')
+        f['owner'].execute(f, mode='recover', edge='unowned-lock')
+        self.assertEqual((f['app'] / relative).read_bytes(), b'latest lock bytes')
+        self.assertEqual(worker.file_identity(f['app'] / relative), old_identity)
+        self.assertEqual((f['app'] / 'resources/app.asar').read_bytes(), b'old package')
+        self.assertEqual(worker.inspect_outcome(f['job'])['status'], 'restored')
+
+    def test_committed_outcome_survives_cut_before_status_and_requires_bound_ready_and_exact_program(self):
+        f = self.fixture(); f['plan']['parentCreationTime'] -= 100
+        worker.write_json(f['job'] / 'plan.json', f['plan']); worker.prepare(f['job']); f['owner'].execute(f)
+        status = f['job'] / 'status.json'
+        stale_status = status.read_bytes()
+        real_write = worker.write_json
+
+        def cut(path, value):
+            if path == status and value.get('status') == 'committed':
+                raise OSError('cut after durable commit before updating status')
+            return real_write(path, value)
+
+        with patch.object(worker, 'write_json', side_effect=cut):
+            with self.assertRaisesRegex(OSError, 'cut after durable commit'):
+                worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
+        recovery = f['job'] / 'recovery.json'
+        committed_snapshot = recovery.read_bytes()
+        self.assertEqual(worker.read_json(recovery)['phase'], 'committed')
+        result = subprocess.run([sys.executable, '-B', str(f['job'] / 'replace.py'), '--inspect-outcome', str(f['job'])],
+            check=True, capture_output=True, text=True, encoding='utf-8', timeout=10)
+        self.assertEqual(json.loads(result.stdout), {'job': str(f['job']), 'status': 'committed', 'verification': 'confirmed',
+            'effectState': 'changed', 'busy': False, 'workerOffline': True, 'operationId': f['plan']['operationId'],
+            'planDigest': f['plan']['planDigest'], 'version': f['plan']['version']})
+        self.assertEqual(status.read_bytes(), stale_status)
+        self.assertEqual(recovery.read_bytes(), committed_snapshot)
+        status.unlink()
+        self.assertEqual(worker.inspect_outcome(f['job'])['status'], 'committed')
+        with patch.object(worker, 'parent_alive', return_value=True):
+            self.assertIsNone(worker.inspect_outcome(f['job']))
+        ready = f['job'] / 'ready.json'
+        exact_ack = worker.read_json(ready)
+        worker.write_json(ready, dict(exact_ack, planDigest='b' * 64))
+        self.assertIsNone(worker.inspect_outcome(f['job']))
+        ready.unlink()
+        self.assertIsNone(worker.inspect_outcome(f['job']))
+        worker.write_json(ready, exact_ack)
+        (f['app'] / 'launcher.exe').write_text('bad')
+        with self.assertRaisesRegex(ValueError, '已提交启动器的身份或内容已变化'):
+            worker.inspect_outcome(f['job'])
 
     def test_successor_gate_can_prepare_recovery_and_finalize_same_plan_but_not_another_operation(self):
         f = self.fixture(); f['plan']['parentCreationTime'] -= 100

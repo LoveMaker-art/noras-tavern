@@ -13,6 +13,28 @@ walk(parse(source,{ecmaVersion:'latest'}));
 function definition(name){const node=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id?.name===name||node.type==='VariableDeclarator'&&node.id?.name===name);assert.ok(node,name);return node.type==='VariableDeclarator'?`const ${source.slice(node.start,node.end)};`:source.slice(node.start,node.end);}
 const failure=(message,details)=>Object.assign(new Error(message),details);
 function continuation(){const node=nodes.find(node=>node.type==='AssignmentExpression'&&node.left?.name==='continueDesktopUpdate');assert.ok(node);return source.slice(node.start,node.end);}
+test('the visible same-operation APP retry launches its prepared replacement helper',async()=>{
+  const handler=nodes.find(node=>node.type==='CallExpression'&&node.callee.name==='handle'
+    &&node.arguments[0]?.quasis?.[0]?.value?.raw==='nora:operation-');
+  assert.ok(handler);
+  const calls=[],operationId='11111111-1111-4111-8111-111111111111';
+  const selected={operationId,snapshotSequence:2,kind:'update',target:{request:{launcherOnly:true}}};
+  const context=vm.createContext({activeRun:false,modelBusy:false,cancelled:false,activeOperationContext:null,
+    launcherError:failure,operationRequest:()=>({}),desktopSequenceForOperation:()=>null,sharedUpdateJob:()=>null,
+    operations:()=>({snapshot:async()=>selected,resume:async()=>({...selected,state:'awaiting-handoff',handoffRef:'/test/job'})}),
+    finishOperationTelemetry(){},registerCapabilities:async()=>{},requireOperationResult:value=>value,
+    launcherUpdate:{launchHandoff:async options=>calls.push(['helper',options.job])},launcherRecoveryOptions:()=>({}),
+    hermesHome:()=>'/isolated/hermes',path,process,quitReady:false,
+    setImmediate:callback=>callback(),app:{quit:()=>calls.push(['quit'])}});
+  const dispatcher=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id?.name==='dispatchLauncherHandoff');
+  if(dispatcher)vm.runInContext(source.slice(dispatcher.start,dispatcher.end),context);
+  const callback=handler.arguments[1];
+  const retry=vm.runInContext(`const mode='resume';(${source.slice(callback.start,callback.end)})`,context);
+  const result=await retry({sender:null},{operationId,snapshotSequence:2});
+  assert.equal(result.state,'awaiting-handoff');
+  assert.deepEqual(calls,[['helper','/test/job'],['quit']]);
+  assert.equal(context.quitReady,true);
+});
 for(const flags of [{},{includeLauncher:true},{launcherOnly:false},{launcherOnly:true}])
 test(`GUI updates always submit only the APP (${JSON.stringify(flags)})`,async()=>{
   const calls=[];
@@ -67,16 +89,18 @@ test('APP completion preserves modified skills and unhealthy core without claimi
     launcherUpdate:{prepare:async()=>({tag:plan.tag,manifest:plan.releaseManifest,launcher:null}),
       finalize:async options=>{calls.push('finalize');assert.equal(options.appOnly,true);assert.equal(options.systemReady,undefined);assert.equal(options.updateVerified,undefined);}},
     launcherRecoveryOptions:()=>({}),releaseMetadataCache:()=>({}),updateFetch:null,sendBridgeEvent(){}});
-  for(const name of ['appCoreIdentity','runLauncherUpdate','executeAction'])vm.runInContext(definition(name),context);
+  for(const name of ['appCoreIdentity','launcherUpdateResult','runLauncherUpdate','executeAction'])vm.runInContext(definition(name),context);
   const {createOperationController}=realRequire('./operation-state');
   const controllerOptions={directory:path.join(home,'installer'),lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),
     executors:{update:vm.runInContext('executeAction',context)},projectResult:result=>result.value??result,verifyHandoff:async()=>true};
   const controller=createOperationController(controllerOptions);
   const pending=await controller.start('update',{target:{request:{action:'update',launcherOnly:true},releasePlan:plan,currentVersion:'2.5.7'},
     execute:async context=>{await context.handoff('/isolated/job');return {handoff:true};}},'app-test');
+  fs.unlinkSync(path.join(directory,'installed-manifest.json'));
   const result=await controller.resume(pending.operationId,{handoff:{job:pending.handoffRef,planDigest:pending.planDigest}});
   assert.equal(result.state,'succeeded');assert.equal(result.verification,'confirmed');assert.equal(result.result.appUpdateComplete,true);
   assert.equal(result.result.version,'2.5.7');assert.equal(result.result.systemReady,false);assert.equal(result.result.coreUpdateComplete,false);
+  assert.equal(result.result.updateVerified,true);
   assert.equal(result.effectState,'changed','the canonical task must report the confirmed APP replacement');
   assert.equal((await createOperationController(controllerOptions).snapshot(pending.operationId)).effectState,'changed');
   assert.deepEqual(calls,['finalize','status']);assert.deepEqual(inventory(),before);assert.equal(state.resumeTarget,null);
