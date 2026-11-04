@@ -1400,7 +1400,8 @@ def recover_standalone(home, root, *, helper=None):
         service = module_at('standalone_service_manager', HERE / 'service_manager.py').ManagedService.discover(
             root, Path(root) / 'apps/tavern-runtime')
         if before['running']:
-            start_old(home, root, service, snapshot, prepare_assets=bool(plan.get('state')))
+            start_old(home, root, service, snapshot,
+                      prepare_assets=bool(plan.get('state')) and not plan['state'].get('preserveActive'))
         elif service and snapshot:
             service.restore(snapshot)
     def verify(_plan, _backup):
@@ -1766,6 +1767,72 @@ def reconcile_setup_metadata(journal, managed, root, manifest):
         reconcile()
 
 
+def python_only_repair_origin(home, root, manifest, manifest_sha256, recovery):
+    """Find the committed runtime bootstrap for this guarded repair, if any."""
+    gate = getattr(sys, '_nora_operation_delegate', None)
+    if gate is None:
+        return None
+    gate.assert_active()
+    identifier = gate.operation_id
+    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', identifier, re.I):
+        raise RuntimeError('Python 修复操作归属无法核验。')
+    nora = root.parent
+    operation = recovery.safe_path(nora, f'installer/operations/{identifier}')
+    runtime_file = recovery.safe_path(operation, 'runtime-bootstrap.json')
+    try:
+        runtime = recovery._history_object(runtime_file, 4 * 1024 * 1024)
+    except FileNotFoundError:
+        return None
+    origin = runtime.get('originalPartial') or {}
+    missing = origin.get('missing') if isinstance(origin, dict) else None
+    if (not isinstance(missing, dict) or any(type(value) is not bool for value in missing.values())
+            or missing != {'nativeRuntime': False, 'nativeLifecycle': False, 'python': True}):
+        return None
+    request = recovery._history_object(recovery.safe_path(operation, 'operation.json'), 256 * 1024)
+    target = request.get('target') or {}
+    fixed = target.get('releasePlan') or {}
+    directory = recovery.safe_path(operation, 'runtime')
+    backup = recovery.safe_path(directory, 'previous')
+    live_marker = recovery._history_object(
+        recovery.safe_path(home, 'hermes-agent/.hermes-bootstrap-complete'), 65536)
+    receipt = recovery._history_object(recovery.safe_path(root, 'tavern-updates/installed.json'), 65536)
+    expected_paths = {'noraHome': nora, 'hermesHome': home, 'directory': directory,
+                      'backup': backup, 'journalReference': runtime_file}
+    paths = runtime.get('paths') or {}
+    runtime_target = runtime.get('target') or {}
+    identities = runtime.get('identities') or {}
+    def directory_identity(path):
+        value = recovery.identity(path)
+        if value is None or not Path(filesystem_path(path)).is_dir():
+            return None
+        return {'device': str(value[0]), 'inode': str(value[1])}
+    previous, live = directory_identity(backup), directory_identity(home)
+    if (runtime.get('schema') != 'nora-runtime-bootstrap/1' or runtime.get('status') != 'committed'
+            or request.get('schema') != 'nora-operation/1' or request.get('state') != 'applying'
+            or request.get('kind') not in ('repair', 'update') or request.get('planSelected') is not True
+            or (target.get('request') or {}).get('action') != request.get('kind')
+            or any(value.get('operationId') != identifier or value.get('ownerEpoch') != gate.owner_epoch
+                   for value in (request, runtime))
+            or any(Path(paths.get(name, '')) != path for name, path in expected_paths.items())
+            or previous is None or live is None or previous == live
+            or identities.get('previous') != previous or identities.get('next') != live
+            or (runtime.get('previousSeal') or {}).get('schema') != 'nora-runtime-tree-seal/1'
+            or live_marker.get('schema') != 1 or live_marker.get('source') != 'nora-integrated-runtime'
+            or live_marker.get('operationId') != identifier
+            or not re.fullmatch(r'[a-f0-9]{64}', str(runtime_target.get('sha256', '')))
+            or any(live_marker.get(key) != runtime_target.get(key) for key in ('sha256', 'platform', 'arch'))
+            or origin.get('schema') != 'nora-managed-partial-installation/1'
+            or origin.get('version') != receipt.get('version') or origin.get('commit') != receipt.get('commit')
+            or target.get('currentVersion') != receipt.get('version')
+            or fixed.get('schema') != 'nora-release-plan/1' or fixed.get('mode') != 'install'
+            or not re.fullmatch(r'[a-f0-9]{64}', str(manifest_sha256))
+            or fixed.get('manifestSha256') != manifest_sha256
+            or fixed.get('version') != manifest.get('versions', {}).get('tavern')
+            or fixed.get('commit') != manifest.get('commit')):
+        raise RuntimeError('Python 修复记录与当前操作归属不一致，未替换程序。')
+    return origin
+
+
 def install(args):
     managed_home = getattr(args, "managed_home", None)
     def resolve(*, validate_partial=True):
@@ -1814,13 +1881,17 @@ def install(args):
             source = work / "source"
             manifest = read_bundle(args.release_dir, args.manifest_sha256,
                                    candidate=getattr(args, "allow_candidate", False))
+            python_only = (python_only_repair_origin(
+                hermes_home, install_root, manifest, args.manifest_sha256, recovery_module())
+                           if instance and not partial else None)
+            snapshot_repair = bool(partial or python_only)
             roots = installed_roots(install_root)
             old_app = roots["app"]
             old_mcp = roots["nora-mcp"]
             # Missing native markers can coexist with obsolete Python program
             # files. Repair preserves the existing state; only an ordinary
             # legacy upgrade may migrate or archive it.
-            layout = None if partial else python_layout(old_app)
+            layout = None if snapshot_repair else python_layout(old_app)
             bundle_report = extract_bundle(args.release_dir, source, manifest, roots=roots)
             version = manifest["versions"]["tavern"]
             changed = set(bundle_report["changedModules"])
@@ -1924,12 +1995,18 @@ def install(args):
                         or any(before_state.get(key) is not False for key in
                                ('systemReady', 'running', 'gatewayRunning', 'clawchatConnected'))):
                     raise RuntimeError('部分安装修复尚未核验原状态及停服证据，未修改现有安装。')
+                if python_only and (before_state.get('version') != python_only['version']
+                        or before_state.get('commit') != python_only['commit']
+                        or before_state.get('systemReady') is not True
+                        or any(before_state.get(key) is not False for key in
+                               ('running', 'gatewayRunning', 'clawchatConnected'))):
+                    raise RuntimeError('Python 修复后的原程序或停服状态无法核验，未替换程序。')
             backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             # Admission precedes host snapshots and shutdown. Existing backups
             # are never deleted to manufacture free space.
             check_update_space(update_space_tasks(
                 hermes_home, install_root, backup, work, managed=bool(managed),
-                runtime_changed=runtime_changed, migration=bool(layout), partial_repair=bool(partial),
+                runtime_changed=runtime_changed, migration=bool(layout), partial_repair=snapshot_repair,
                 service_snapshot=service_snapshot, swaps=swaps))
             Path(filesystem_path(backup)).mkdir(parents=True)
             record_backup(install_root, backup, "prepared")
@@ -1955,7 +2032,7 @@ def install(args):
                 journal = recovery_helper.Journal.create(
                     hermes_home, install_root, backup, swaps, version=version,
                     before=before_state,
-                    state=state_root(install_root) if layout or partial else None,
+                    state=state_root(install_root) if layout or snapshot_repair else None,
                     data_root=state_root(install_root),
                     lifecycle=json.loads(os.environ["NORA_UPDATE_LIFECYCLE"]) if managed else None,
                 )
@@ -2002,7 +2079,7 @@ def install(args):
                     # metadata, whose backup already occupies disk space.
                     check_update_space(update_space_tasks(
                         hermes_home, install_root, backup, work, managed=bool(managed),
-                        runtime_changed=True, migration=bool(layout), partial_repair=bool(partial),
+                        runtime_changed=True, migration=bool(layout), partial_repair=snapshot_repair,
                         restore_only=True, journal=journal, service_snapshot=service_snapshot))
                     if layout:
                         # Only the stopped installation is an authoritative
@@ -2050,6 +2127,13 @@ def install(args):
                         journal.save()
                         verify_preserved_worlds(source / "app", state_backup, story_inventory, story_worlds,
                                                 exact=True)
+                    elif python_only:
+                        # This explicit repair's prior program is usable. The
+                        # KEEP history reader needs its offline snapshot and
+                        # read-only world evidence as the successor proof.
+                        journal.snapshot_state()
+                        journal.plan['worlds'] = verify_worlds(old_app, journal.state_backup())
+                        journal.save()
                 else:
                     log("应用非运行时更新，Tavern 保持运行")
                 if managed:

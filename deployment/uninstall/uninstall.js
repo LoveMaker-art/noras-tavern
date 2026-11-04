@@ -180,7 +180,7 @@ function transactionCatalog(root,plan){
   return {operations,system,systemFile,appJobs,legacy};
 }
 function runtimeEffects(root,plan,catalog){
-  const inspect=require('./runtime-transaction').inspect;
+  const {inspect,verifyRetainedProgramBackup}=require('./runtime-transaction');
   const facts=new Map(catalog.operations.filter(item=>item.runtime).map(item=>[item.id,
     inspect({noraHome:root,hermesHome:contained(root,plan.hermes),operationId:item.id})]));
   // A later committed swap must actually seal the current tree and link its
@@ -197,8 +197,13 @@ function runtimeEffects(root,plan,catalog){
     &&(item.record.kind==='install'||['update','repair'].includes(item.record.kind)
       &&item.record.target?.request?.action===item.record.kind&&item.record.target?.releasePlan?.mode==='install'
       &&item.runtime?.originalPartial?.schema==='nora-managed-partial-installation/1'&&item.runtime.identities?.previous)
-    &&item.runtime?.schema==='nora-runtime-bootstrap/1'&&item.runtime.operationId===item.id
-    &&epoch(item.record.ownerEpoch)&&item.runtime.ownerEpoch===item.record.ownerEpoch
+    &&(item.runtime?.schema==='nora-runtime-bootstrap/1'
+      ||item.runtime?.schema==='nora-runtime-bootstrap/2'&&item.record.kind==='install'&&item.runtime.originalRetained)
+    &&item.runtime.operationId===item.id
+    &&epoch(item.record.ownerEpoch)
+    &&(item.runtime.schema==='nora-runtime-bootstrap/1'?item.runtime.ownerEpoch===item.record.ownerEpoch
+      :epoch(item.runtime.ownerEpoch)&&item.runtime.ownerEpoch<=item.record.ownerEpoch
+        &&item.record.target?.releasePlan?.mode==='install'&&item.first?.status==='installed')
     &&item.record.verification==='confirmed'&&item.runtime.paths?.noraHome===root
     &&item.runtime.paths?.hermesHome===contained(root,plan.hermes);
   const completedRuntime=item=>bound(item)&&item.record.state==='succeeded'&&item.record.effectState==='changed'
@@ -212,14 +217,18 @@ function runtimeEffects(root,plan,catalog){
     const seen=new Set([item.id]);
     while(predecessor){
       const old=catalog.operations.find(value=>!seen.has(value.id)&&value.record?.state==='succeeded'
-        &&value.runtime?.status==='committed'&&value.runtime.schema==='nora-runtime-bootstrap/1'
+        &&value.runtime?.status==='committed'&&['nora-runtime-bootstrap/1','nora-runtime-bootstrap/2'].includes(value.runtime.schema)
         &&value.runtime.operationId===value.id&&value.runtime.paths?.noraHome===root
         &&value.runtime.paths?.hermesHome===contained(root,plan.hermes)
         &&facts.get(value.id)?.reason!=='RUNTIME_JOURNAL_INVALID'
-        &&value.runtime.identities?.next?.device===predecessor.device&&value.runtime.identities.next.inode===predecessor.inode);
+        &&value.runtime.identities?.next?.device===predecessor.device&&value.runtime.identities.next.inode===predecessor.inode
+        &&(value.runtime.schema==='nora-runtime-bootstrap/1'
+          ||authenticated&&completedRuntime(value)
+            &&verifyRetainedProgramBackup(value.runtime,contained(root,path.relative(root,successor.runtime.paths.backup)))));
       if(!old)break;
       superseded.add(old.id);seen.add(old.id);
-      authenticated=authenticated&&completedRuntime(old)&&facts.get(old.id)?.reason==='directory-identity-unconfirmed'
+      authenticated=authenticated&&completedRuntime(old)
+        &&(old.runtime.schema==='nora-runtime-bootstrap/2'||facts.get(old.id)?.reason==='directory-identity-unconfirmed')
         &&old.record.ownerEpoch<successor.record.ownerEpoch&&time(old.record.updatedAt)<time(successor.record.createdAt);
       if(authenticated)committedAncestors.add(old.id);
       successor=old;predecessor=old.runtime.identities.previous;

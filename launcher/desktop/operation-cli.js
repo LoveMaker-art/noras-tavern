@@ -318,7 +318,8 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
       const original=context.target.releasePlan;
       const managed=client==='updater'&&!receipt.managedInstallation?null:require('./operation-policy').inspectManagedInstallation({noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,
         installRoot:receipt.installRoot,port:receipt.port,platform:receipt.platform});
-      const ownRuntime=require('./runtime-transaction').inspect({noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,operationId:context.operationId});
+      const runtimeTransaction=require('./runtime-transaction');
+      const ownRuntime=runtimeTransaction.inspect({noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,operationId:context.operationId});
       const stagedInspection=managed?.missing.python&&['update','repair'].includes(route.kind)&&ownRuntime.effectState==='untouched'
         &&sharedPolicy.inspectPartial?await sharedPolicy.inspectPartial(context,managed):null;
       const facts=stagedInspection?{...stagedInspection.effects,
@@ -453,6 +454,9 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
             await context.effect('unknown');
             await runner(context,path.join(__dirname,'runtime-worker.js'),[payload,receipt.noraHome,receipt.hermesHome,'--repair-managed'],
               {node:true,stdin:Buffer.from(JSON.stringify(managed))});
+          }else if(runtimeContinuation&&runtimeTransaction.isPythonOnlyRepairOrigin(ownRuntime.originalPartial)){
+            await runner(context,path.join(__dirname,'runtime-worker.js'),
+              [payload,receipt.noraHome,receipt.hermesHome,'--adopt-committed-python-repair'],{node:true});
           }
           const originalOffline=await bridge(managed?.missing.nativeRuntime||managed?.missing.nativeLifecycle?'repair-preflight':'status');
           Object.assign(before,originalOffline);

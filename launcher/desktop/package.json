@@ -80,6 +80,7 @@
       "managed-python.js",
       "runtime-transaction.js",
       "runtime-retained-data.js",
+      "runtime-retained-programs.js",
       "tree-integrity.js",
       "operation-cli.js",
       "launcher-capability.js"

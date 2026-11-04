@@ -18,6 +18,7 @@ function fixture(){
   const root=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-transaction-')));
   const payload=path.join(root,'payload'),home=path.join(root,'home'),hermes=path.join(home,'hermes');
   const source=path.join(root,'source/hermes-runtime');fs.mkdirSync(path.join(source,'hermes-agent'),{recursive:true});
+  fs.mkdirSync(path.join(source,'node'));fs.writeFileSync(path.join(source,'node/program.txt'),'new node');
   fs.mkdirSync(path.join(source,'logs'));fs.writeFileSync(path.join(source,'logs/new-stage.log'),'new failure evidence');
   fs.writeFileSync(path.join(source,'hermes-agent/program.txt'),'new-program');fs.mkdirSync(payload);
   const archive=path.join(payload,'runtime.tar.gz');
@@ -35,13 +36,39 @@ function fixture(){
   const tools=path.join(root,'fixture-tools.cjs');
   fs.writeFileSync(tools,`const runtime=require(${JSON.stringify(path.join(desktop,'runtime.js'))});module.exports={...runtime,
     initializeHome(home,manifest){if(process.env.NORA_FIXTURE_PREPARE_FAILURE==='1')throw Object.assign(new Error('copy fixture denied'),{code:'EPERM'});runtime.initializeHome(home,manifest);},
-    async repairRuntimeAsync(){},async validateRuntimeAsync(home){if(process.env.NORA_FIXTURE_VERIFY_FAILURE==='1')throw Object.assign(new Error('restored runtime probe failed'),{code:'VERIFICATION_FAILED'});if(!require('node:fs').existsSync(require('node:path').join(home,'hermes-agent/program.txt')))throw new Error('fixture program missing');return 'runtime-fixture';}};`);
+    async repairRuntimeAsync(){},async validateRuntimeAsync(home){if(process.env.NORA_FIXTURE_VERIFY_FAILURE==='1'&&(process.env.NORA_FIXTURE_LATE_USER_WRITE!=='1'||home===process.argv[4]))throw Object.assign(new Error('restored runtime probe failed'),{code:'VERIFICATION_FAILED'});if(!require('node:fs').existsSync(require('node:path').join(home,'hermes-agent/program.txt')))throw new Error('fixture program missing');return 'runtime-fixture';}};`);
   const worker=path.join(root,'runtime-worker.js');
   fs.writeFileSync(worker,`const [payloadRoot,noraHome,hermesHome,mode,killAt]=process.argv.slice(2);
     const {connect}=require(${JSON.stringify(path.join(desktop,'operation-delegate.js'))});
     const transaction=require(${JSON.stringify(path.join(desktop,'runtime-transaction.js'))});
     (async()=>{const delegate=await connect();const {operationId,ownerEpoch}=delegate.context;
-      const onEvent=event=>{process.stdout.write(JSON.stringify(event)+'\\n');if(event.phase===killAt)process.kill(process.pid,'SIGKILL');};
+      if(killAt==='runtime.scoped-attempt-archived'){
+        const fs=require('node:fs'),path=require('node:path'),rename=fs.renameSync;
+        const owned=transaction.paths({noraHome,hermesHome,operationId});
+        fs.renameSync=(source,target)=>{
+          const result=rename(source,target);
+          if(source===owned.directory&&target.includes(path.sep+'runtime-history'+path.sep))process.kill(process.pid,'SIGKILL');
+          return result;
+        };
+      }
+      if(killAt==='runtime.scoped-default-linked'){
+        const fs=require('node:fs'),path=require('node:path'),link=fs.linkSync;
+        fs.linkSync=(source,target)=>{
+          const result=link(source,target);
+          if(target===path.join(hermesHome,'config.yaml'))process.kill(process.pid,'SIGKILL');
+          return result;
+        };
+      }
+      const onEvent=event=>{
+        if(event.phase==='runtime.next-activated'&&process.env.NORA_FIXTURE_LATE_USER_WRITE==='1'){
+          const fs=require('node:fs'),path=require('node:path');
+          fs.writeFileSync(path.join(hermesHome,'.env'),'latest user settings\\n');
+          fs.unlinkSync(path.join(hermesHome,'logs/old-record.log'));
+          fs.mkdirSync(path.join(hermesHome,'sessions'),{recursive:true});
+          fs.writeFileSync(path.join(hermesHome,'sessions/story.jsonl'),'latest story');
+        }
+        process.stdout.write(JSON.stringify(event)+'\\n');if(event.phase===killAt)process.kill(process.pid,'SIGKILL');
+      };
       const verifyOffline=async()=>{const retained=require(${JSON.stringify(path.join(desktop,'retained-installation.js'))}).inspect(noraHome,{operationId});
         const offline=require(${JSON.stringify(path.join(desktop,'uninstall-offline-check.js'))});await offline.portOffline(retained.port);
         offline.nativeOffline({root:transaction.paths({noraHome,hermesHome,operationId}).noraHome});await offline.portOffline(retained.port);
@@ -375,6 +402,37 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
   });
 });
 
+test('KEEP rollback after runtime activation preserves new edits and removals in the retained home',{timeout:40000},async t=>{
+  const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));
+  const home=fs.realpathSync(f.home),hermes=path.join(home,'hermes'),tavern=path.join(home,'tavern');
+  const uninstall=require('../installer/desktop/uninstall'),retained=require('../installer/desktop/retained-installation');
+  const server=require('node:net').createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=server.address().port;await new Promise(resolve=>server.close(resolve));
+  uninstall.cleanup(uninstall.makePlan({home,hermesHome:hermes,installRoot:tavern,mode:'keep',port}));
+  const original=fs.statSync(hermes,{bigint:true});
+  const controller=require('../installer/desktop/operation-state').createOperationController({directory:path.join(home,'installer'),
+    lock:require('../installer/desktop/operation-lock'),projectResult:value=>value.value});
+  const target={request:{action:'install',port},releasePlan:{schema:'nora-bundled-plan/1',mode:'install',tag:'v2.4.6',commit:'a'.repeat(40)}};
+  let workerOutput='';
+  const result=await controller.start('install',{target,execute:async context=>{
+    await context.plan(context.target);retained.claim(home,context.operationId);await context.stage('applying');
+    const child=context.lease.spawn(process.execPath,[f.worker,f.payload,home,hermes,'install',''],
+      {kind:'runtime-bootstrap',env:{...process.env,NORA_FIXTURE_LATE_USER_WRITE:'1',NORA_FIXTURE_VERIFY_FAILURE:'1'}});
+    child.stdout.on('data',value=>workerOutput+=value);child.stderr.on('data',value=>workerOutput+=value);
+    const [code]=await once(child,'close');assert.equal(code,2,workerOutput);assert.match(workerOutput,/restored runtime probe failed/);
+    assert.match(workerOutput,/runtime\.next-activated/);
+    return {verification:'confirmed',value:{}};
+  }},crypto.randomUUID());
+  assert.equal(result.state,'succeeded',workerOutput+'\n'+JSON.stringify(result));
+  const observed=transaction.inspect({noraHome:home,hermesHome:hermes,operationId:result.operationId});
+  assert.equal(observed.effectState,'restored',JSON.stringify(observed));
+  assert.equal(fs.statSync(hermes,{bigint:true}).ino,original.ino);
+  assert.equal(fs.readFileSync(path.join(hermes,'.env'),'utf8'),'latest user settings\n');
+  assert.equal(fs.readFileSync(path.join(hermes,'sessions/story.jsonl'),'utf8'),'latest story');
+  assert.equal(fs.existsSync(path.join(hermes,'logs/old-record.log')),false);
+  assert.equal(fs.existsSync(path.join(hermes,'hermes-agent')),false);
+});
+
 test('KEEP data survives real reinstall preparation failure and committed runtime rollback before another reinstall',{timeout:40000},async t=>{
   const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));
   const home=fs.realpathSync(f.home),hermes=path.join(home,'hermes'),tavern=path.join(home,'tavern');
@@ -414,7 +472,8 @@ test('KEEP data survives real reinstall preparation failure and committed runtim
     if(failure==='system'){
       const journal=JSON.parse(fs.readFileSync(path.join(home,'installer/operations',result.operationId,'runtime-bootstrap.json')));
       assert.equal(journal.recoveryVerification,'retained-data-confirmed');
-      assert.equal(fs.readFileSync(path.join(journal.paths.failed,'logs/new-stage.log'),'utf8'),'new failure evidence');
+      assert.equal(fs.readFileSync(path.join(journal.paths.stage,'logs/new-stage.log'),'utf8'),'new failure evidence');
+      assert.equal(fs.readFileSync(path.join(journal.paths.failed,'hermes-agent/program.txt'),'utf8'),'new-program');
     }
   }
   const blocked=await controller.start('install',{target:target(),execute:async context=>{await context.plan(context.target);throw Error('unchanged third attempt must not execute');}},crypto.randomUUID());
@@ -435,8 +494,64 @@ test('KEEP data survives real reinstall preparation failure and committed runtim
   assert.equal(final.state,'succeeded');assert.deepEqual(fs.readFileSync(path.join(hermes,'.env')),data);assert.equal(retained.inspect(home),null);
   assert.ok(fs.existsSync(path.join(home,keep.archive,'reinstalled-'+final.operationId+'.json')));
   assert.equal(fs.statSync(path.join(home,'installer/operations/.writer.lock'),{bigint:true}).ino,writer.ino);
+  await keepCommittedFixture(f,port);
+  assert.notEqual(retained.inspect(home).id,keep.id);
+  assert.equal(fs.existsSync(path.join(hermes,'hermes-agent')),false);
+  assert.deepEqual(fs.readFileSync(path.join(hermes,'.env')),data);
   // This proves transaction/data lifetime with a tiny program probe, not a
   // complete system install or the final packaged GUI acceptance.
+});
+
+test('KEEP resumes an interrupted program activation, rollback and retry without moving the retained home',{timeout:40000},async t=>{
+  const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));
+  const {home,hermes}=f,tavern=path.join(home,'tavern');
+  const uninstall=require('../installer/desktop/uninstall'),retained=require('../installer/desktop/retained-installation');
+  const server=require('node:net').createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=server.address().port;await new Promise(resolve=>server.close(resolve));
+  uninstall.cleanup(uninstall.makePlan({home,hermesHome:hermes,installRoot:tavern,mode:'keep',port}));
+  const original=fs.statSync(hermes,{bigint:true});
+  const controller=require('../installer/desktop/operation-state').createOperationController({directory:path.join(home,'installer'),
+    lock:require('../installer/desktop/operation-lock'),projectResult:value=>value.value});
+  const target={request:{action:'install',port},releasePlan:{schema:'nora-bundled-plan/1',mode:'install',tag:'v2.4.6',commit:'a'.repeat(40)}};
+  let output='';
+  const result=await controller.start('install',{target,execute:async context=>{
+    await context.plan(context.target);retained.claim(home,context.operationId);await context.stage('applying');
+    const inspect=()=>transaction.inspect({noraHome:home,hermesHome:hermes,operationId:context.operationId});
+    async function worker(mode,phase=''){
+      const child=context.lease.spawn(process.execPath,[f.worker,f.payload,home,hermes,mode,phase],{kind:'runtime-bootstrap',env:process.env});
+      child.stdout.on('data',value=>output+=value);child.stderr.on('data',value=>output+=value);
+      return once(child,'close');
+    }
+    assert.notEqual((await worker('install','runtime.retained-program-activated'))[0],0,output);
+    assert.equal(fs.existsSync(path.join(hermes,'hermes-agent/program.txt')),true);
+    assert.equal(fs.existsSync(path.join(hermes,'node')),false);
+    assert.equal(inspect().canRecover,true);
+    fs.writeFileSync(path.join(hermes,'.env'),'during interrupted activation\n');
+    assert.notEqual((await worker('recover','runtime.retained-program-archived'))[0],0,output);
+    assert.equal(inspect().canRecover,true);
+    fs.writeFileSync(path.join(hermes,'.env'),'during interrupted recovery\n');
+    assert.equal((await worker('recover'))[0],0,output);
+    assert.equal(inspect().effectState,'restored');
+    assert.notEqual((await worker('install','runtime.scoped-attempt-archived'))[0],0,output);
+    assert.equal(inspect().effectState,'restored');
+    assert.notEqual((await worker('install','runtime.scoped-default-linked'))[0],0,output);
+    const config=path.join(hermes,'config.yaml');
+    assert.equal(fs.readFileSync(config,'utf8'),'{}\n');
+    fs.writeFileSync(config,'user: latest\n');
+    const privateConfig=path.join(transaction.paths({noraHome:home,hermesHome:hermes,operationId:context.operationId}).stage,'config.yaml');
+    assert.equal(fs.statSync(config,{bigint:true}).ino,fs.statSync(privateConfig,{bigint:true}).ino);
+    assert.equal((await worker('recover'))[0],0,output);
+    assert.equal(fs.existsSync(privateConfig),false);
+    assert.equal(fs.readFileSync(config,'utf8'),'user: latest\n');
+    assert.equal((await worker('install'))[0],0,output);
+    assert.equal(inspect().canResume,true);
+    return {verification:'confirmed',value:{}};
+  }},crypto.randomUUID());
+  assert.equal(result.state,'succeeded',output+'\n'+JSON.stringify(result));
+  assert.equal(fs.statSync(hermes,{bigint:true}).ino,original.ino);
+  assert.equal(fs.readFileSync(path.join(hermes,'.env'),'utf8'),'during interrupted recovery\n');
+  assert.equal(fs.readFileSync(path.join(hermes,'config.yaml'),'utf8'),'user: latest\n');
+  assert.equal(fs.readFileSync(path.join(hermes,'node/program.txt'),'utf8'),'new node');
 });
 
 test('a preparation failure preserves the old runtime, its data and its original failure evidence',{timeout:20000},async()=>{

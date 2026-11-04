@@ -218,7 +218,7 @@ function validateRuntime(home, manifest) {
   return (result.stdout || result.stderr || '').trim();
 }
 
-function validateRuntimeLinks(home) {
+function validateRuntimeLinks(home,programRoots) {
   const base = diskFs.realpathSync(home);
   const walk = (directory) => {
     for (const entry of diskFs.readdirSync(directory, { withFileTypes: true })) {
@@ -231,7 +231,13 @@ function validateRuntimeLinks(home) {
       } else if (entry.isDirectory()) walk(file);
     }
   };
-  walk(home);
+  if(!programRoots)return walk(home);
+  for(const relative of programRoots){
+    const file=contained(home,relative);
+    const stat=diskFs.lstatSync(file);
+    if(stat.isSymbolicLink())throw new Error(`运行时程序路径已重定向：${relative}`);
+    if(stat.isDirectory())walk(file);
+  }
 }
 
 // Production maintenance is asynchronous and every executable belongs to the
@@ -289,12 +295,17 @@ async function repairRuntimeAsync(home,manifest,delegate){
   await checkedRun(delegate,runtimePython(home,manifest),['-I','-c',source],
     {...pythonOptions(home,manifest),timeoutMs:60000},'无法重建 Windows 本地命令入口');
 }
-async function validateRuntimeAsync(home,manifest,delegate){
-  validateRuntimeLinks(home);
+async function validateRuntimeAsync(home,manifest,delegate,{programRoots,profileHome=home,programOnly=false}={}){
+  validateRuntimeLinks(home,programRoots);
   const node=contained(home,path.join(manifest.nodeBin,process.platform==='win32'?'node.exe':'node'));
   const npm=contained(home,process.platform==='win32'?'node/node_modules/npm/bin/npm-cli.js':'node/lib/node_modules/npm/bin/npm-cli.js');
-  await checkedRun(delegate,node,[npm,'--version'],{purpose:'node',runtimeRoot:home,timeoutMs:15000},'内置 Node.js / npm 不完整或无法执行');
-  const environment={...process.env,HOME:home,HERMES_HOME:home,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
+  const profile=programOnly?{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
+    HOME:profileHome,USERPROFILE:profileHome,HERMES_HOME:profileHome,NORA_HERMES_HOME:profileHome,
+    APPDATA:path.join(profileHome,'appdata'),LOCALAPPDATA:path.join(profileHome,'localappdata'),
+    TMPDIR:profileHome,TMP:profileHome,TEMP:profileHome,XDG_CACHE_HOME:path.join(profileHome,'.cache')}:null;
+  await checkedRun(delegate,node,[npm,'--version'],{purpose:'node',runtimeRoot:home,timeoutMs:15000,
+    ...(profile?{env:profile}:{})},'内置 Node.js / npm 不完整或无法执行');
+  const environment={...(profile||process.env),HOME:profileHome,HERMES_HOME:profileHome,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
     PYTHONPATH:path.join(home,'hermes-agent'),PYTHONNOUSERSITE:'1',PYTHONDONTWRITEBYTECODE:'1',
     PATH:[path.dirname(runtimePython(home,manifest)),path.join(home,manifest.nodeBin),process.env.PATH||''].join(path.delimiter)};
   // The console-script Windows trampoline can outlive its handle. Run the real
@@ -302,6 +313,7 @@ async function validateRuntimeAsync(home,manifest,delegate){
   const result=await checkedRun(delegate,runtimePython(home,manifest),['-B','-c',
     'from hermes_cli._startup_fast import print_fast_version_info;print_fast_version_info(check_updates=False)'],
     {...pythonOptions(home,manifest),env:environment,timeoutMs:30000},'Hermes 运行时校验失败');
+  if(programOnly)return (result.stdout||result.stderr||'').trim();
   await checkedRun(delegate,runtimePython(home,manifest),['-B',contained(home,manifest.componentProbe)],
     {...pythonOptions(home,manifest),timeoutMs:60000,env:{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
       HOME:home,USERPROFILE:home,HERMES_HOME:home,APPDATA:path.join(home,'appdata'),LOCALAPPDATA:path.join(home,'localappdata'),

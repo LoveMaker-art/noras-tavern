@@ -77,7 +77,7 @@ class StandaloneRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'未覆盖现有文件'):
                 helper.copy_startup_backup(source,target,helper.digest(source))
 
-    def test_settings_backup_rotation_preserves_bytes_and_interrupted_recovery_is_resumable(self):
+    def test_migration_recovery_preserves_settings_backup_across_restart_interruption(self):
         for cut in (False, True):
             with self.subTest(cut=cut), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve() / 'installation'
@@ -98,7 +98,11 @@ class StandaloneRecoveryTests(unittest.TestCase):
                 prepared = root / 'prepared'; prepared.mkdir(); (prepared/'program.txt').write_text('new program')
                 journal = helper.Journal.create(root,root,backup,[('app',prepared,app)],version='2.5.2',
                     before={'scope':'standalone-tavern','version':'2.4.2','running':True},state=state)
-                journal.seal_offline({'offline':True}); journal.snapshot_state(); journal.swap('app')
+                journal.seal_offline({'offline':True})
+                converted=root/'converted-state'
+                helper.shutil.copytree(state,converted)
+                journal.apply_state(converted)
+                journal.swap('app')
                 def resume(_plan, _backup):
                     automatic.unlink(missing_ok=True)
                     if cut: raise SystemExit('cut after old runtime rotates settings backup')

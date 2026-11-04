@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class PartialUpdateTransactionTests(unittest.TestCase):
     def transaction(self, *, missing_app=True, fail=False, mutate_config=False, mutate_story=False,
-                    bad_preflight=False, bad_stop=False, legacy_entry=None):
+                    bad_preflight=False, bad_stop=False, legacy_entry=None, python_bootstrap=False,
+                    foreign_bootstrap=False):
         with tempfile.TemporaryDirectory(prefix='nora-partial-update-') as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / 'existing Nora'
             home, tavern = root / 'hermes', root / 'tavern'
@@ -65,6 +66,7 @@ class PartialUpdateTransactionTests(unittest.TestCase):
             write(story, '{"worldId":"story"}')
             write(chat, '{"message":"keep","variables":{"score":7}}\n')
             write(native_config, '# user settings\nport: 18899\n')
+            state_identity = state.stat().st_ino
             old_files = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
             args = SimpleNamespace(nora_home=root, hermes_home=home, install_root=tavern, port=18899)
             snapshot = bridge.partial_installation_snapshot(args)
@@ -73,6 +75,44 @@ class PartialUpdateTransactionTests(unittest.TestCase):
             lifecycle_plan = {**instance, 'bridge': 'test-only-bridge', 'before': before, 'partialRepair': snapshot}
             manifest = {'schema': 'tavern-release/v2', 'versions': {'tavern': '2.4.6'},
                         'commit': 'b' * 40, 'artifacts': {}}
+            if python_bootstrap:
+                before.update(systemReady=True, commit=old_manifest['commit'])
+                del lifecycle_plan['partialRepair']
+                operation_id = 'cb059314-923b-417f-a246-28e7b0a953dc'
+                epoch = 2
+                operation = root / 'installer/operations' / operation_id
+                runtime = operation / 'runtime'
+                previous = runtime / 'previous'
+                previous.parent.mkdir(parents=True)
+                home.rename(previous)
+                shutil.copytree(previous, home)
+                def identity(directory):
+                    current = directory.stat()
+                    return {'device': str(current.st_dev), 'inode': str(current.st_ino)}
+                target = {'sha256': 'c' * 64, 'platform': 'win32' if os.name == 'nt' else 'darwin',
+                          'arch': 'x64'}
+                write(home / 'hermes-agent/.hermes-bootstrap-complete', {
+                    **target, 'schema': 1, 'source': 'nora-integrated-runtime', 'operationId': operation_id})
+                write(home / 'hermes-agent/venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python3'),
+                      'candidate Python fixture')
+                write(operation / 'operation.json', {
+                    'schema': 'nora-operation/1', 'operationId': operation_id, 'ownerEpoch': epoch,
+                    'state': 'applying', 'kind': 'repair', 'planSelected': True,
+                    'target': {'currentVersion': before['version'], 'request': {'action': 'repair'}, 'releasePlan': {
+                        'schema': 'nora-release-plan/1', 'mode': 'install', 'version': '2.4.6', 'commit': 'b' * 40,
+                        'manifestSha256': 'd' * 64}},
+                })
+                write(operation / 'runtime-bootstrap.json', {
+                    'schema': 'nora-runtime-bootstrap/1', 'operationId': operation_id,
+                    'ownerEpoch': epoch + int(foreign_bootstrap), 'status': 'committed', 'originalPartial': snapshot,
+                    'partialPort': instance['port'], 'paths': {'noraHome': str(root), 'hermesHome': str(home),
+                        'directory': str(runtime), 'backup': str(previous),
+                        'journalReference': str(operation / 'runtime-bootstrap.json')},
+                    'target': target, 'identities': {'previous': identity(previous), 'next': identity(home)},
+                    'previousSeal': {'schema': 'nora-runtime-tree-seal/1'},
+                })
+                stack.enter_context(patch.object(sys, '_nora_operation_delegate', SimpleNamespace(
+                    operation_id=operation_id, owner_epoch=epoch, assert_active=lambda: None), create=True))
             def extract(_release, source, _manifest, **_kwargs):
                 write(source / 'app/native-runtime.json', '{"new":true}')
                 write(source / 'app/native_lifecycle.py', 'pass\n')
@@ -154,7 +194,7 @@ class PartialUpdateTransactionTests(unittest.TestCase):
             stack.enter_context(patch.object(update, 'configure_update_check_job', return_value={'id': 'new'}))
             stack.enter_context(patch.object(first_install, 'extract_dependency_bundle', return_value=None))
             legacy_stop = stack.enter_context(patch.object(first_install, 'stop_install_runtime',
-                side_effect=AssertionError('missing old native controller must not be invoked')))
+                side_effect=None if python_bootstrap else AssertionError('missing old native controller must not be invoked')))
             stack.enter_context(patch.object(nora_system, 'seed_clawchat_skills'))
             stack.enter_context(patch.object(nora_system, 'verify_runtime', side_effect=proof))
             no_install = stack.enter_context(patch.object(first_install, 'install',
@@ -164,6 +204,13 @@ class PartialUpdateTransactionTests(unittest.TestCase):
             stack.enter_context(patch('sys.stdout', new_callable=io.StringIO))
             invocation = SimpleNamespace(home=home, install_root=tavern, managed_home=root,
                 release_dir=root / 'payload', manifest_sha256='d' * 64)
+            if foreign_bootstrap:
+                with self.assertRaisesRegex(RuntimeError, 'Python.*归属'):
+                    update.install(invocation)
+                self.assertFalse((tavern / 'tavern-updates/transaction.json').exists())
+                self.assertEqual((tavern / 'apps/tavern-runtime/native-runtime.json').read_text(), '{"old":true}')
+                self.assertFalse(calls)
+                return
             if bad_preflight:
                 with self.assertRaisesRegex(RuntimeError, '停服证据'):
                     update.install(invocation)
@@ -195,22 +242,46 @@ class PartialUpdateTransactionTests(unittest.TestCase):
                 update.install(invocation)
                 record = json.loads((tavern / 'tavern-updates/transaction.json').read_text())
                 self.assertEqual(record['status'], 'committed')
-                self.assertEqual(record['recoveryPlan']['lifecycle']['partialRepair'], snapshot)
-                self.assertEqual(record['recoveryPlan']['partialBaseline']['partialRepair'], snapshot)
+                plan = record['recoveryPlan']
+                if python_bootstrap:
+                    self.assertNotIn('partialRepair', plan['lifecycle'])
+                    self.assertNotIn('partialBaseline', plan)
+                    saved = Path(record['backup'], 'state')
+                    self.assertEqual(plan['state']['phase'], 'saved')
+                    self.assertEqual(plan['state']['mode'], 'copy')
+                    self.assertEqual(plan['state']['savedDigest'], update.recovery_module().digest(saved))
+                    self.assertEqual(plan['state']['storyInventory'], update.recovery_module().story_inventory(saved))
+                    self.assertEqual(plan['worlds'], {'default-user': [{'worldId': 'story', 'sessions': ['story-session']}]})
+                    self.assertEqual(world_apps, [tavern / 'apps/tavern-runtime'])
+                    self.assertEqual(state.stat().st_ino, state_identity)
+                    legacy_stop.assert_called_once_with(tavern)
+                else:
+                    self.assertEqual(plan['lifecycle']['partialRepair'], snapshot)
+                    self.assertEqual(plan['partialBaseline']['partialRepair'], snapshot)
                 self.assertEqual(json.loads((tavern / 'tavern-updates/installed.json').read_text())['version'], '2.4.6')
-                for file in (story, chat, native_config, home / 'config.yaml', home / '.env', home / 'sessions/keep.json'):
+                files = (story, chat, native_config, home / '.env', home / 'sessions/keep.json')
+                if not python_bootstrap:
+                    files += (home / 'config.yaml',)
+                for file in files:
                     self.assertEqual(file.read_bytes(), old_files[file])
                 self.assertEqual(calls, ['preflight', 'stop', 'verify'])
             if not bad_stop:
                 self.assertTrue(world_apps)
             no_install.assert_not_called()
-            legacy_stop.assert_not_called()
+            if not python_bootstrap:
+                legacy_stop.assert_not_called()
 
     def test_missing_native_tree_repair_commits_and_preserves_worlds_sessions_configuration(self):
         self.transaction()
 
     def test_missing_python_repair_uses_existing_native_tree_and_same_journal(self):
         self.transaction(missing_app=False)
+
+    def test_completed_python_bootstrap_keeps_historical_successor_proof_without_switching_data(self):
+        self.transaction(missing_app=False, python_bootstrap=True)
+
+    def test_python_only_bootstrap_evidence_must_belong_to_the_current_writer(self):
+        self.transaction(missing_app=False, python_bootstrap=True, foreign_bootstrap=True)
 
     def test_partial_repair_with_legacy_program_residue_never_migrates_user_data(self):
         for entry in ('server.py', 'backend/server.py'):

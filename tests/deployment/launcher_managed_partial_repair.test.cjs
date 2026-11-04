@@ -73,6 +73,83 @@ test('canonical partial restoration checks exact bindings and missing set instea
   assert.equal(transaction.partialStateMatches(original,f.args),false);
  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
+test('a resumed Python-only repair adopts the committed runtime before core apply',async()=>{
+ const f=fixture();try{
+  const cli=require('../installer/desktop/operation-cli'),releases=require('../installer/desktop/releases'),
+   {createOperationController}=require('../installer/desktop/operation-state'),release=releaseFixture();
+  const bridge=path.join(f.root,'app/launcher_bridge.py'),native=path.join(f.tavern,'apps/tavern-runtime');
+  f.write('app/launcher_bridge.py','fixture bridge execution boundary');
+  f.write('tavern/apps/tavern-runtime/native-runtime.json','{}');
+  f.write('tavern/apps/tavern-runtime/native_lifecycle.py','fixture lifecycle');
+  const stat=fs.lstatSync(native,{bigint:true}),managed=f.facts(),partial={...f.snapshot(),programs:{
+   app:{identity:[String(stat.dev),String(stat.ino)],digest:transaction.programDigest(native)},ops:null,'nora-mcp':null}};
+  const installerDirectory=path.join(f.root,'installer'),lock=require('./launcher_operation_test_lock.cjs').createTestOperationLock();
+  const receipt={...f.args,installerDirectory,resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,
+   channel:'stable',launcherVersion:'2.1.3',resources:{'launcher_bridge.py':{path:bridge},
+    'first_install.py':{path:path.join(f.root,'app/first_install.py')},'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{}};
+  const releaseOptions={mode:'install',launcherVersion:receipt.launcherVersion,cacheRoot:path.join(f.root,'cache/releases'),fetcher:release.fetcher};
+  const selected=await releases.selectPlan(releaseOptions);
+  const payload=await releases.prepareInstall({...releaseOptions,selectedPlan:selected});
+  const bundleAt=directory=>{
+   const manifestPath=path.join(directory,'nora-hermes-runtime.json'),manifest=JSON.parse(fs.readFileSync(manifestPath,'utf8'));
+   return {manifestPath,manifest,archive:path.join(directory,manifest.archive)};
+  };
+  const runtimeBundle=bundleAt(payload);
+  const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const python=process.platform==='win32'?'hermes-agent/venv/Scripts/python.exe':'hermes-agent/venv/bin/python';
+  const offline={offline:true,running:false,gatewayRunning:false,clawchatConnected:false};
+  const owned=context=>({...f.args,operationId:context.operationId,ownerEpoch:context.ownerEpoch,
+   delegate:{context:{operationId:context.operationId,ownerEpoch:context.ownerEpoch},assertActive:()=>context.check()}});
+  const request={action:'repair',port:f.args.port};
+  const controller=createOperationController({directory:installerDirectory,lock});
+  const interrupted=await controller.start('repair',{target:{request},execute:async context=>{
+   const operationDirectory=path.join(installerDirectory,'operations',context.operationId);
+   const sealed=releases.sealPlan(selected,{...releaseOptions,operationDirectory,assertOwner:()=>context.check()});
+   await context.plan({request,releasePlan:sealed,currentVersion:partial.version});
+   await context.stage('prepared');await context.effect('changed');
+   await transaction.install({...owned(context),payloadRoot:payload,partialRepair:managed,
+    preflightPartial:async()=>({partialRepair:partial,...offline}),verifyOffline:async()=>offline,
+    tools:{findBundledRuntime:()=>runtimeBundle,sha256File:sha,extractArchiveAsync:async(_,directory)=>{
+     f.write(path.relative(f.root,path.join(directory,'hermes-runtime',python)),'new Python');
+    },validateRuntimeLinks(){},initializeHome(){},repairRuntimeAsync:async()=>{},relocateTextFiles(){},validateRuntimeAsync:async()=> 'fixture'}});
+   throw Object.assign(new Error('interrupted after runtime commit, before core journal'),{code:'EPIPE'});
+  }},crypto.randomUUID());
+  assert.equal(interrupted.state,'failed');
+  const locations=transaction.paths({...f.args,operationId:interrupted.operationId});
+  const initial=JSON.parse(fs.readFileSync(locations.journalReference,'utf8'));
+  assert.equal(initial.status,'committed');assert.equal(initial.ownerEpoch,interrupted.ownerEpoch);
+  const liveSeal=treeSeal(f.home),backupSeal=treeSeal(locations.backup),calls=[];
+  const current={...f.args,version:partial.version,commit:partial.commit,systemReady:true,...offline};
+  const next={...current,version:release.version,commit:release.commit,updateVerified:true};
+  let applied=false;
+  const result=await cli.execute({receiptPath:'fixture',request:{schema:'nora-cli-request/1',kind:'repair',
+   argv:[bridge,'--nora-home',f.root,'repair'],stdin:'',operationId:interrupted.operationId,snapshotSequence:interrupted.snapshotSequence}},
+  {validate:async()=>receipt,lock,telemetry:false,fetcher:release.fetcher,run:async(context,target,args,options)=>{
+   if(options.node){
+    assert.equal(path.basename(target),'runtime-worker.js');
+    assert.deepEqual(args.slice(3),['--adopt-committed-python-repair']);
+    calls.push('adopt');
+    const proof=owned(context),bundle=bundleAt(args[0]);
+    const before=fs.readFileSync(locations.journalReference);
+    assert.throws(()=>transaction.adoptCommittedPythonRepair({...proof,bundle:{...bundle,
+     manifest:{...bundle.manifest,sha256:'0'.repeat(64)}}}),{code:'RUNTIME_PARTIAL_UNCONFIRMED'});
+    assert.deepEqual(fs.readFileSync(locations.journalReference),before);
+    return transaction.adoptCommittedPythonRepair({...proof,bundle});
+   }
+   if(args.includes('operation-effects'))return {effects:applied?{operationId:interrupted.operationId,status:'committed',
+    effectState:'changed',recoveryOutcome:'not-required',canResume:true}:{effectState:'untouched',recoveryOutcome:'not-required'}};
+   if(options.readonly)return applied?next:current;
+   assert.ok(args.includes('update'));calls.push('apply');
+   const adopted=JSON.parse(fs.readFileSync(locations.journalReference,'utf8'));
+   assert.equal(adopted.ownerEpoch,context.ownerEpoch);assert.ok(adopted.ownerEpoch>initial.ownerEpoch);
+   assert.deepEqual(adopted.identities,initial.identities);
+   applied=true;return next;
+  }});
+  assert.equal(result.state,'succeeded',JSON.stringify(result));
+  assert.equal(result.operationId,interrupted.operationId);assert.deepEqual(calls,['adopt','apply']);
+  assert.deepEqual(treeSeal(f.home),liveSeal);assert.deepEqual(treeSeal(locations.backup),backupSeal);
+ }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
 test('partial runtime preflight happens before the original tree can move; rejection preserves full seal',async()=>{
  const f=fixture();try{
   const operationId=crypto.randomUUID(),ownerEpoch=1,delegate={context:{operationId,ownerEpoch},active:true,assertActive(){}};

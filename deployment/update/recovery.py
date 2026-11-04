@@ -17,6 +17,8 @@ import uuid
 RECEIPT = 'nora-update-backup.json'
 MAX_TRANSACTION_BYTES = 64 * 1024 * 1024
 RECOVERABLE_STATES = ('prepared', 'recovery-failed')
+LEGACY_MANAGED_EXTENSIONS = ('JS-Slash-Runner', 'ST-Prompt-Template', 'nora-mvu', 'nora-ui', 'nora-ledger',
+                             'nora-shell', 'nora-character-status')
 SKILLS = {'creative/tavern','creative/tavern-ops','creative/nora-cardforge',
           'system/tavern-updater','system/model-provider-config','creative/nora-skill-library'}
 RETIRED = {'tavern-world','tavern-runtime-plugins','tavern-continuity',
@@ -520,8 +522,10 @@ def _volume_workspace(root, backup, target, *, create=False):
     receipt = directory / 'owner.json'
     expected = {'schema': 1, 'installRoot': str(root), 'backup': str(backup), 'target': str(target)}
     if create and not _io_path(directory).exists():
-        _io_path(directory).mkdir(mode=0o700, parents=True)
-        atomic_json(receipt, expected)
+        temporary = safe_path(target.parent, '.nora-maintenance-prepare-' + uuid.uuid4().hex)
+        _io_path(temporary).mkdir(mode=0o700, parents=True)
+        atomic_json(temporary / 'owner.json', expected)
+        _recovery_rename(temporary, directory)
     if _io_path(directory).exists() and (linked(directory) or read_object(receipt) != expected):
         raise RuntimeError('目标卷的维护目录归属无法确认，未覆盖文件。')
     return directory
@@ -537,6 +541,20 @@ def _stage_tree(source, staged):
         shutil.copy2(_io_path(source), _io_path(staged), follow_symlinks=False)
     if digest(source) != digest(staged):
         raise RuntimeError('目标卷暂存内容校验失败，未替换原文件。')
+
+
+def _recovery_rename(source, target):
+    source, target = _io_path(source), _io_path(target)
+    if os.path.lexists(target):
+        raise RuntimeError('恢复目标已重新出现，已保留现有文件')
+    os.rename(source, target)
+    if os.name != 'nt':
+        for parent in dict.fromkeys((source.parent, target.parent)):
+            descriptor = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
 
 class Journal:
@@ -773,11 +791,124 @@ class Journal:
         if state is not None and not isinstance(state,dict):raise RuntimeError('剧情状态恢复计划格式无效')
         if state:
             if state.get('verifiedBeforeResume') is not None:self.story_writes_released()
-            active=self.state_root();saved=self.state_backup()
-            if state.get('phase') in ('pending','copying','untouched'):
-                if identity(active)!=state.get('oldIdentity'):raise RuntimeError('未完成状态备份且原数据身份已变化')
-            else:self.check_tree(state,active,saved,state=True,full=full)
+            if self.preserves_legacy_state():
+                self.legacy_state_paths()
+            else:
+                active=self.state_root();saved=self.state_backup()
+                if state.get('phase') in ('pending','copying','untouched'):
+                    if identity(active)!=state.get('oldIdentity'):raise RuntimeError('未完成状态备份且原数据身份已变化')
+                else:self.check_tree(state,active,saved,state=True,full=full)
         return self
+
+    def preserves_legacy_state(self):
+        state = self.plan.get('state') or {}
+        lifecycle = self.plan.get('lifecycle') or {}
+        return (state.get('mode') == 'copy' and state.get('newIdentity') is None
+                and state.get('phase') in ('pending', 'copying', 'saved', 'restoring', 'restored', 'untouched')
+                and (self.record.get('status') in RECOVERABLE_STATES or state.get('preserveActive') is True)
+                and 'partialBaseline' not in self.plan
+                and not lifecycle.get('partialRepair') and not self.plan['before'].get('partialRepair'))
+
+    def legacy_state_paths(self):
+        state = self.plan['state']
+        target = self.state_root()
+        current = identity(target)
+        failed = None
+        if current is None and state.get('phase') in ('restoring', 'restored'):
+            failed = self.tree_storage(state, 'failed', state=True)
+            archived = identity(failed)
+            if archived is None or archived != state.get('oldIdentity') or not _io_path(failed).is_dir():
+                raise RuntimeError('旧恢复移动的数据目录归属无法确认，已保留现场')
+        return target, failed
+
+    def preserve_legacy_state(self, *, data_released):
+        state = self.plan['state']
+        target, failed = self.legacy_state_paths()
+        if failed is None and state.get('phase') in ('restoring', 'restored') and not data_released:
+            try:
+                failed = self.tree_storage(state, 'failed', state=True)
+                archived = identity(failed)
+                saved = self.state_backup()
+            except (OSError, RuntimeError):
+                archived = None  # The optional archive never replaces an extant current tree.
+            if (archived is not None and archived == state.get('oldIdentity')
+                    and _io_path(failed).is_dir()
+                    and identity(target) == state.get('savedIdentity')
+                    and not os.path.lexists(_io_path(saved))):
+                try:
+                    untouched_snapshot = digest(target) == state.get('savedDigest')
+                except (OSError, RuntimeError):
+                    untouched_snapshot = False
+                if untouched_snapshot:
+                    state['comparePublishedCopy'] = True
+                    self.save()
+                    if identity(target) != state.get('savedIdentity'):
+                        raise RuntimeError('活动数据目录已变化，已保留现有文件')
+                    _recovery_rename(target, saved)
+                else:
+                    failed = None
+            else:
+                failed = None
+        if failed is not None:
+            source = failed
+            if state.get('comparePublishedCopy') is True:
+                saved = self.state_backup()
+                if identity(saved) != state.get('savedIdentity'):
+                    raise RuntimeError('暂存的活动数据目录归属无法确认，已保留现场')
+                try:
+                    unchanged = digest(saved) == state.get('savedDigest')
+                except (OSError, RuntimeError):
+                    unchanged = False
+                if not unchanged:
+                    source = saved
+            _recovery_rename(source, target)
+        state.update(phase='untouched', preserveActive=True)
+        if not data_released:
+            state['legacyExtensions'] = 'pending'
+        state.pop('comparePublishedCopy', None)
+        state.pop('verifiedBeforeResume', None)
+        self.save()
+
+    def restore_legacy_extensions(self):
+        app = next((item for item in self.plan['targets'] if item['name'] == 'app'
+                    and item.get('phase') == 'restored' and item.get('oldIdentity') is not None), None)
+        if app is None:
+            return
+        program = self.target(app)
+        self.check_tree(app, program, self.tree_storage(app))
+        source = safe_path(program, 'native-extensions')
+        if not _io_path(source).is_dir():
+            source = safe_path(program, 'native/extensions')
+        if not _io_path(source).is_dir():
+            return
+        for name in LEGACY_MANAGED_EXTENSIONS:
+            asset = safe_path(source, name)
+            target = safe_path(self.state_root(), 'native/default-user/extensions/' + name)
+            expected = digest(asset) if _io_path(asset).is_dir() else None
+            current = identity(target)
+            if expected is None and current is None:
+                continue
+            if current is not None and _io_path(target).is_dir() and digest(target) == expected:
+                continue
+            workspace = _volume_workspace(self.root, self.backup, target, create=True)
+            previous = safe_path(workspace, 'previous')
+            staged = safe_path(workspace, 'verified-asset')
+            if current is not None and (os.path.lexists(_io_path(previous)) or not _io_path(target).is_dir()):
+                raise RuntimeError('旧扩展恢复目标已变化，已保留当前目录')
+            if expected is not None:
+                if not _io_path(staged).exists():
+                    reject_links(asset)
+                    temporary = safe_path(workspace, 'prepare-' + uuid.uuid4().hex)
+                    _stage_tree(asset, temporary)
+                    _recovery_rename(temporary, staged)
+                if digest(staged) != expected:
+                    raise RuntimeError('旧扩展恢复来源已变化，已保留现场')
+            if identity(target) != current:
+                raise RuntimeError('旧扩展恢复来源或目标已变化，已保留现场')
+            if current is not None:
+                _recovery_rename(target, previous)
+            if expected is not None:
+                _recovery_rename(staged, target)
 
     def check_tree(self,item,target,saved,*,state=False,full=True):
         verify_current=full and not (state and self.story_writes_released())
@@ -1357,7 +1488,7 @@ def effects(home,root):
             if identity(saved) is not None and digest(saved)!=item.get('oldDigest'):
                 raise RuntimeError('旧程序恢复备份已变化')
         state=plan.get('state')
-        if state and state.get('savedDigest'):
+        if state and state.get('savedDigest') and not journal.preserves_legacy_state():
             saved=journal.state_backup()
             if identity(saved) is not None and digest(saved)!=state['savedDigest']:
                 raise RuntimeError('剧情状态恢复备份已变化')
@@ -1371,7 +1502,9 @@ def effects(home,root):
                 ('pending','moving-old','installing-new','applied','restoring','restored') for value in phases):
             raise RuntimeError('更新变更意图缺少可核验记录')
         state_phase=state.get('phase') if state else 'untouched'
-        if metadata=='pending' and all(value=='pending' for value in phases) and state_phase in ('pending','copying','saved','untouched'):
+        if state and state.get('legacyExtensions')=='pending':
+            effect='changed'
+        elif metadata=='pending' and all(value=='pending' for value in phases) and state_phase in ('pending','copying','saved','untouched'):
             effect='untouched'
         elif metadata=='restored' and all(value in ('pending','restored') for value in phases) and state_phase in ('pending','copying','untouched','restored'):
             effect='restored'
@@ -1397,6 +1530,7 @@ def recover(home,root,*,stop,resume,verify,verify_files=None):
     reason=recovery_block_reason(journal.record.get('status'))
     if reason:raise RuntimeError(reason)
     original_effect=effects(home,root)['effectState']
+    preserve_active=journal.preserves_legacy_state()
     data_released=journal.story_writes_released()
     if data_released:journal.mark_story_verified()
     try:
@@ -1408,7 +1542,12 @@ def recover(home,root,*,stop,resume,verify,verify_files=None):
         for item in reversed(plan['targets']) if original_effect!='untouched' else []:
             journal.restore_tree(item,journal.target(item),journal.tree_storage(item),
                                  journal.tree_storage(item,'failed',create=True))
-        if plan.get('state') and original_effect!='untouched':
+        if preserve_active:
+            journal.preserve_legacy_state(data_released=data_released)
+            if plan['state'].get('legacyExtensions')=='pending':
+                journal.restore_legacy_extensions()
+                plan['state']['legacyExtensions']='restored';journal.save()
+        elif plan.get('state') and original_effect!='untouched':
             journal.restore_tree(plan['state'],journal.state_root(),journal.state_backup(),
                                  journal.tree_storage(plan['state'],'failed',state=True,create=True),state=True)
         elif plan.get('state'):
@@ -1418,11 +1557,11 @@ def recover(home,root,*,stop,resume,verify,verify_files=None):
         # Authoritative backup and managed bytes are checked while services are
         # offline. Running code may legitimately create cache/generated files.
         journal.validate()
-        if verify_files is not None and not data_released:verify_files(plan,backup)
-        journal.preserve_startup_backups()
+        if verify_files is not None and not data_released and not preserve_active:verify_files(plan,backup)
+        if not preserve_active:journal.preserve_startup_backups()
         journal.mark_story_verified()
         plan['phase']='resuming-services';journal.save();resume(plan,backup)
-        journal.preserve_startup_backups(restore=True)
+        if not preserve_active:journal.preserve_startup_backups(restore=True)
         proof=verify(plan,backup)
         before=plan['before']
         if not isinstance(proof,dict) or proof.get('version')!=before['version']:

@@ -86,7 +86,7 @@ class CloudVolumeRecoveryTests(unittest.TestCase):
         self.assertEqual(self.recover()['status'],'restored')
         self.assertEqual(self.config.read_bytes(),original)
         self.assertEqual(self.story.read_text(),'original story')
-        self.assertFalse((self.state/'new-cache.txt').exists())
+        self.assertEqual((self.state/'new-cache.txt').read_text(),'runtime change')
         for path in (self.app,self.skill):self.assertEqual((path/'code.txt').read_text(),'old code')
         self.assertNotEqual(self.root.stat().st_dev,self.state.stat().st_dev)
         self.assertFalse((self.root/'tavern-state').exists())

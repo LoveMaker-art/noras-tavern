@@ -47,17 +47,21 @@ try {
     if(!value)throw new Error('修复检查未返回实际状态');delete value.event;return value;
   };
   let inspector;
-  const verifyOffline=async()=>{
+  const verifyOffline=async({retainedPrograms=false}={})=>{
     if(inspector&&fs.existsSync(inspector.root))return preflight(inspector.root,inspector.manifest,true);
     const saved=require('./retained-installation').inspect(noraHome,{operationId});
-    if(saved?.reinstallOperationId===operationId&&require('./retained-installation').absentPrograms(noraHome,saved)){
+    if(saved?.reinstallOperationId===operationId&&(retainedPrograms||require('./retained-installation').absentPrograms(noraHome,saved))){
       const offline=require('./uninstall-offline-check');await offline.portOffline(saved.port);offline.nativeOffline({root:noraHome});await offline.portOffline(saved.port);
       return {offline:true,running:false,gatewayRunning:false,clawchatConnected:false};
     }
     const bundle=runtime.findBundledRuntime(payloadRoot);return preflight(hermesHome,bundle.manifest,true);
   };
   const transaction=require('./runtime-transaction');let result;
-  if(options.includes('--inspect-managed')){
+  if(options.includes('--adopt-committed-python-repair')){
+    const bundle=runtime.findBundledRuntime(payloadRoot);
+    if(!bundle||runtime.sha256File(bundle.archive)!==bundle.manifest.sha256)throw new Error('原 Python 修复的固定运行时校验失败。');
+    result=transaction.adoptCommittedPythonRepair({noraHome,hermesHome,operationId,ownerEpoch,delegate,bundle});
+  }else if(options.includes('--inspect-managed')){
     const bundle=runtime.findBundledRuntime(payloadRoot);
     if(!bundle||runtime.sha256File(bundle.archive)!==bundle.manifest.sha256)throw new Error('只读检查运行时校验失败');
     const owned=transaction.paths({noraHome,hermesHome,operationId}),{directory,stage}=owned;

@@ -856,6 +856,134 @@ class CronMetadataClassificationTests(unittest.TestCase):
 
 
 class InterruptedRecoveryTests(unittest.TestCase):
+    def test_historical_copy_recovery_keeps_current_story_when_snapshot_has_drifted(self):
+        journal=self.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+        (self.state/'chat.txt').write_text('current chat after failed update')
+        (self.backup/'state/chat.txt').write_text('modified historical copy')
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'changed')
+        result=self.run_recover()
+        self.assertEqual(result['status'],'restored')
+        self.assertEqual((self.old/'program.txt').read_text(),'old program')
+        self.assertEqual((self.state/'chat.txt').read_text(),'current chat after failed update')
+        self.assertEqual((self.backup/'state/chat.txt').read_text(),'modified historical copy')
+
+    def test_historical_copy_reattaches_the_original_inode_if_old_recovery_moved_it(self):
+        for copied_tree_published, user_edited in ((False, False), (True, False), (True, True)):
+            with self.subTest(published=copied_tree_published, edited=user_edited):
+                self.setUp()
+                journal=self.journal()
+                journal.snapshot_state()
+                journal.swap('app')
+                (self.state/'chat.txt').write_text('latest original chat')
+                failed=journal.tree_storage(journal.plan['state'],'failed',state=True,create=True)
+                failed.parent.mkdir(exist_ok=True)
+                journal.plan['state']['phase']='restoring'
+                journal.save('recovery-failed')
+                self.state.rename(failed)
+                if copied_tree_published:
+                    journal.state_backup().rename(self.state)
+                if user_edited:
+                    (self.state/'chat.txt').write_text('newer chat after snapshot became active')
+                self.assertEqual(self.run_recover()['status'],'restored')
+                if user_edited:
+                    self.assertEqual((self.state/'chat.txt').read_text(),'newer chat after snapshot became active')
+                    self.assertEqual((failed/'chat.txt').read_text(),'latest original chat')
+                else:
+                    self.assertEqual((self.state/'chat.txt').read_text(),'latest original chat')
+                    self.assertEqual((journal.state_backup()/'chat.txt').read_text(),'old chat')
+                    self.assertFalse(failed.exists())
+
+    def test_historical_recovery_repairs_only_extensions_owned_by_the_old_program(self):
+        source=self.old/'native-extensions/nora-ui'
+        source.mkdir(parents=True)
+        (source/'version').write_text('old managed bytes')
+        extensions=self.state/'native/default-user/extensions'
+        for name in ('nora-ui','nora-ledger','MyPlugin'):
+            target=extensions/name
+            target.mkdir(parents=True)
+            (target/'version').write_text('current '+name)
+        config=self.state/'native-runtime/config.yaml'
+        config.parent.mkdir()
+        config.write_text('latest personal configuration')
+        journal=self.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+        real_rename=recovery.os.rename
+        def cut_after_moving_extension(source, target):
+            real_rename(source,target)
+            if Path(source)==Path(first_install.filesystem_path(extensions/'nora-ui')):
+                raise KeyboardInterrupt('interrupted after archiving managed extension')
+        with patch.object(recovery.os,'rename',side_effect=cut_after_moving_extension), self.assertRaises(KeyboardInterrupt):
+            self.run_recover()
+        self.assertEqual(recovery.effects(self.home,self.root)['recoveryOutcome'],'recovery-required')
+        self.assertEqual(self.run_recover()['status'],'restored')
+        self.assertEqual((extensions/'nora-ui/version').read_text(),'old managed bytes')
+        self.assertFalse((extensions/'nora-ledger').exists())
+        self.assertEqual((extensions/'MyPlugin/version').read_text(),'current MyPlugin')
+        self.assertEqual(config.read_text(),'latest personal configuration')
+
+    def test_historical_copy_rechecks_snapshot_after_archive_and_restart(self):
+        journal=self.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+        (self.state/'chat.txt').write_text('original directory last chat')
+        failed=journal.tree_storage(journal.plan['state'],'failed',state=True,create=True)
+        failed.parent.mkdir(exist_ok=True)
+        journal.plan['state']['phase']='restoring'
+        journal.save('recovery-failed')
+        self.state.rename(failed)
+        saved=journal.state_backup()
+        saved.rename(self.state)
+        real_rename=recovery.os.rename
+        def cut_after_archiving_copy(source, target):
+            real_rename(source,target)
+            if Path(target)==Path(first_install.filesystem_path(saved)):
+                (saved/'chat.txt').write_text('new write through former active file')
+                raise KeyboardInterrupt('interrupted between the two directory moves')
+        with patch.object(recovery.os,'rename',side_effect=cut_after_archiving_copy), self.assertRaises(KeyboardInterrupt):
+            self.run_recover()
+        self.assertEqual(self.run_recover()['status'],'restored')
+        self.assertEqual((self.state/'chat.txt').read_text(),'new write through former active file')
+        self.assertEqual((failed/'chat.txt').read_text(),'original directory last chat')
+
+    def test_historical_asset_workspace_can_retry_if_owner_record_was_not_published(self):
+        source=self.old/'native-extensions/nora-ui'
+        source.mkdir(parents=True)
+        (source/'version').write_text('old managed bytes')
+        journal=self.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+        original_write=recovery.atomic_json
+        def cut(path, value):
+            if Path(path).name=='owner.json':
+                raise KeyboardInterrupt('cut before workspace ownership publication')
+            original_write(path,value)
+        with patch.object(recovery,'atomic_json',side_effect=cut), self.assertRaises(KeyboardInterrupt):
+            self.run_recover()
+        self.assertEqual(self.run_recover()['status'],'restored')
+        target=self.state/'native/default-user/extensions/nora-ui/version'
+        self.assertEqual(target.read_text(),'old managed bytes')
+
+    def test_historical_copy_already_reopened_keeps_its_active_directory(self):
+        journal=self.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+        (self.state/'chat.txt').write_text('original data preserved in archive')
+        failed=journal.tree_storage(journal.plan['state'],'failed',state=True,create=True)
+        failed.parent.mkdir(exist_ok=True)
+        self.state.rename(failed)
+        journal.state_backup().rename(self.state)
+        journal.plan['state']['phase']='restored'
+        journal.mark_story_verified()
+        journal.save('recovery-failed')
+        active=recovery.identity(self.state)
+        self.assertEqual(self.run_recover()['status'],'restored')
+        self.assertEqual(recovery.identity(self.state),active)
+        self.assertEqual((self.state/'chat.txt').read_text(),'old chat')
+        self.assertEqual((failed/'chat.txt').read_text(),'original data preserved in archive')
+
     def test_confirmed_recovery_does_not_freeze_normal_story_edits_in_status(self):
         journal=self.journal();journal.snapshot_state();journal.swap('app')
         self.run_recover();record=(self.root/'tavern-updates/transaction.json').read_bytes()
@@ -905,7 +1033,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
                 self.assertIsNone(nora_system.update_recovery(self.root,self.home))
 
     def test_completed_recovery_keeps_edits_but_rejects_foreign_roots_and_corrupt_checkpoints(self):
-        journal=self.journal();journal.snapshot_state();journal.swap('app');self.run_recover()
+        journal=self.journal();self.apply_data_migration(journal);journal.swap('app');self.run_recover()
         (self.state/'chat.txt').write_text('normal edited story')
         recovery.load(self.home,self.root,full=True)
         record=json.loads(journal.file.read_text())
@@ -983,7 +1111,7 @@ if(mode==='capture'){
                 if kind=='invalid-record':
                     metadata=backups/f'.nora-chat/{automatic}.json';value=json.loads(metadata.read_text())
                     value['version']=True;metadata.write_text(json.dumps(value))
-                journal=self.journal();journal.snapshot_state();journal.swap('app')
+                journal=self.journal();self.apply_data_migration(journal);journal.swap('app')
                 def mutate(*_):
                     if kind=='changed-automatic':target.write_text('changed')
                     elif kind=='damaged-archive':
@@ -1460,8 +1588,8 @@ if(mode==='capture'){
         self.run_recover(); self.assert_restored()
         self.assertEqual((self.backup/'state/partial').read_text(),'partial')
 
-    def test_state_archive_interruption_restores_snapshot_exactly(self):
-        journal=self.journal();journal.snapshot_state();journal.swap('app')
+    def test_migration_state_archive_interruption_restores_original_exactly(self):
+        journal=self.journal();self.apply_data_migration(journal);journal.swap('app')
         (self.state/'chat.txt').write_text('changed by new runtime')
         self.interrupt_replace(self.run_recover,self.backup/'failed-new/state')
         self.run_recover();self.assert_restored()
@@ -1537,7 +1665,7 @@ if(mode==='capture'){
                 self.setUp()
                 document=self.state/'native/default-user'/directory/'saved.json'
                 document.parent.mkdir(parents=True);document.write_text('original user data')
-                journal=self.journal();journal.snapshot_state();journal.swap('app')
+                journal=self.journal();self.apply_data_migration(journal);journal.swap('app')
                 original=recovery.Journal.restore_metadata
                 def damage(current):
                     original(current);document.write_text('damaged before verified reopening')
@@ -1547,6 +1675,11 @@ if(mode==='capture'){
                 self.assertEqual(recovery.effects(self.home,self.root)['recoveryOutcome'],'recovery-required')
                 self.assertEqual(json.loads(journal.file.read_text())['status'],'recovery-failed')
                 self.assertEqual((self.old/'program.txt').read_text(),'old program')
+
+    def apply_data_migration(self, journal):
+        prepared=self.base/'migrated-state'
+        shutil.copytree(self.state,prepared)
+        journal.apply_state(prepared)
 
     def test_assessment_does_not_hash_program_or_state_trees(self):
         journal=self.journal();journal.snapshot_state();journal.swap('app')
