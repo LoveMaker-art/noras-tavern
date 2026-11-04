@@ -38,7 +38,8 @@ def load_updater():
 
 
 def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resume_writes=False,
-                    write_during_start=None, replace_operations=False):
+                    write_during_start=None, replace_operations=False, config_before_backup=None,
+                    checker_receipt_failure=False, checker_after_stage_edit=False):
     """Run the real managed transaction, substituting only release/services."""
     updater=load_updater();base=Path(base).resolve();home=base/'hermes';root=base/'tavern'
     (home/'skills').mkdir(parents=True);(root/'apps/tavern-runtime').mkdir(parents=True)
@@ -53,7 +54,8 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         file=base/relative;file.parent.mkdir(parents=True,exist_ok=True);file.write_bytes(content)
     (root/'tavern-updates').mkdir()
     (root/'tavern-updates/installed.json').write_text('{"version":"2.3.17"}')
-    (root/'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
+    if not checker_receipt_failure:
+        (root/'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
     (home/'config.yaml').write_text(MANAGED_CONFIG);(home/'AGENTS.md').write_text('old agents')
     (home/'SOUL.md').write_text('old soul')
     if success:
@@ -65,10 +67,20 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         cron.write_text(json.dumps({'jobs':[{'id':'daily','script':'check.py','enabled':True,
             'schedule':{'kind':'cron','expr':'0 9 * * *'},'state':'scheduled',
             'fire_claim':{'by':'fixture-gateway'},'last_run_at':None}], 'updated_at':'before'}))
+    if checker_receipt_failure:
+        for name in updater.UPDATE_CHECK_FILES:
+            target=home/'scripts'/name;target.parent.mkdir(exist_ok=True)
+            target.write_text('old checker '+name)
+        cron=home/'cron/jobs.json';cron.parent.mkdir()
+        cron.write_text(json.dumps({'jobs':[
+            {'id':'existing-check','name':updater.UPDATE_CHECK_JOB_NAME,'script':updater.UPDATE_CHECK_SCRIPT,
+             'enabled':True,'no_agent':False,'deliver':'local','schedule':{'kind':'cron','expr':'0 8 * * *'}},
+            {'id':'user-task','script':'custom.py','prompt':'custom definition'},
+        ]}))
     before={'version':'2.3.17','running':True,'gatewayRunning':False,
             'clawchatConnected':False,'systemReady':True}
     instance={'schema':1,'noraHome':str(base),'hermesHome':str(home),'installRoot':str(root),'port':8799}
-    (home/'nora-instance.json').write_text(json.dumps(instance))
+    if not checker_receipt_failure:(home/'nora-instance.json').write_text(json.dumps(instance))
     lifecycle={**instance,'before':before,'bridge':'unused-test-bridge'}
     manifest={'versions':{'tavern':'2.4.2'},'commit':'a'*40,'artifacts':{}}
     phases=[]
@@ -79,6 +91,10 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         if replace_operations:
             (source/'ops/installer').mkdir()
             (source/'ops/installer/mcp_probe.mjs').write_text('new probe')
+        if checker_receipt_failure:
+            for name in updater.UPDATE_CHECK_FILES:
+                target=source/'ops/scripts'/name;target.parent.mkdir(exist_ok=True)
+                target.write_text('new checker '+name)
         return {'changedModules':['nora-runtime']}
     def service(phase,*_):
         phases.append(phase)
@@ -128,6 +144,8 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
             managed_source=Path(path)
         return helper if name=='tavern_update_recovery' else modules.get(name) or original_loader(name,path)
     original_replace=helper.os.replace
+    original_copy_host=updater.copy_host_backup
+    receipt_failed=False
     def start_candidate(*_args, **_kwargs):
         if write_during_start is not None:
             write_during_start(root/'tavern-state')
@@ -135,10 +153,33 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
             raise RuntimeError('new runtime failed')
         return {'native_pid':None,'health':{'ok':True}}
 
+    def copy_host(*args):
+        (home/'config.yaml').write_bytes(config_before_backup)
+        return original_copy_host(*args)
+
+    def cron_command(command, **options):
+        assert list(map(str,command))[1:4]==['cron','edit','existing-check']
+        target=Path(options['env']['HERMES_HOME'])/'cron/jobs.json'
+        value=json.loads(target.read_text())
+        value['jobs'][0].update(no_agent=True,prompt='',schedule={'kind':'cron','expr':updater.UPDATE_CHECK_SCHEDULE})
+        target.write_text(json.dumps(value))
+        if checker_after_stage_edit:
+            active=json.loads(cron.read_text())
+            active['jobs'][1]['prompt']='latest custom definition'
+            cron.write_text(json.dumps(active))
+
     def replace(source,target):
+        nonlocal receipt_failed
+        if checker_receipt_failure and not receipt_failed and Path(target)==root/'tavern-updates/installed.json':
+            assert (home/'scripts'/updater.UPDATE_CHECK_SCRIPT).read_text().startswith('new checker')
+            assert json.loads(cron.read_text())['jobs'][0]['no_agent'] is True
+            receipt_failed=True
+            raise PermissionError('injected later receipt publish failure')
         original_replace(source,target)
-        if interrupt and Path(first_install.filesystem_path(target))==Path(first_install.filesystem_path(root/'apps/tavern-runtime')):
+        if interrupt is True and Path(first_install.filesystem_path(target))==Path(first_install.filesystem_path(root/'apps/tavern-runtime')):
             os._exit(91)
+        if interrupt=='metadata' and Path(target)==Path(first_install.filesystem_path(home/'config.yaml')):
+            os._exit(92)
     with ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ,{'NORA_UPDATE_LIFECYCLE':json.dumps(lifecycle),'NORA_OPERATION_ID':'11111111-1111-4111-8111-111111111111','NORA_INSTALLER_DIRECTORY':str(base/'installer')}))
         stack.enter_context(patch.dict(sys.modules,{'bundle':bundle}))
@@ -148,26 +189,42 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         stack.enter_context(patch.object(bundle,'read_bundle',return_value=manifest))
         stack.enter_context(patch.object(bundle,'extract_bundle',side_effect=extract))
         stack.enter_context(patch.object(updater,'prepare_dependencies',return_value={}))
-        stack.enter_context(patch.object(updater,'changed_roots',return_value={'app','ops'} if replace_operations else {'app'}))
+        stack.enter_context(patch.object(updater,'changed_roots',return_value={'app','ops'} if replace_operations or checker_receipt_failure else {'app'}))
         stack.enter_context(patch.object(updater,'roots_with_unmanaged_files',return_value=set()))
         stack.enter_context(patch.object(updater,'prepare_skills',return_value={}))
         stack.enter_context(patch.object(updater,'prepare_host_hook_swap',return_value=None))
-        stack.enter_context(patch.object(updater,'render_mcp',return_value=MANAGED_CONFIG.encode()))
+        if config_before_backup is None:
+            candidate=MANAGED_CONFIG+'mcp_servers: {}\n' if interrupt=='metadata' else MANAGED_CONFIG
+            stack.enter_context(patch.object(updater,'render_mcp',return_value=candidate.encode()))
+        else:
+            stack.enter_context(patch.object(updater,'copy_host_backup',side_effect=copy_host))
         stack.enter_context(patch.object(updater,'managed_lifecycle',side_effect=service))
         stack.enter_context(patch.object(updater,'verify_worlds',return_value={}))
         if not resume_writes:
             stack.enter_context(patch.object(updater,'verify_preserved_worlds',return_value={'status':'verified'}))
         stack.enter_context(patch.object(updater,'dependency_marker',return_value={}))
-        stack.enter_context(patch.object(updater,'install_update_check',return_value={'status':'installed'}))
+        if checker_receipt_failure:
+            stack.enter_context(patch.object(updater,'_standalone_execution',{'home':home,'root':root,'lock':None,'guarded':True}))
+            stack.enter_context(patch.object(updater,'instance_paths',return_value=None))
+            stack.enter_context(patch.object(updater,'standalone_snapshot',return_value={'scope':'standalone-tavern','version':'2.3.17','running':False}))
+            stack.enter_context(patch.object(updater,'standalone_runtime',return_value=SimpleNamespace(status=lambda:{'health':{'ok':False},'processes':{'native':False}})))
+            stack.enter_context(patch.object(updater,'stop_unmanaged'))
+            stack.enter_context(patch.object(updater,'process_rows',return_value=[]))
+            stack.enter_context(patch.object(updater,'refresh_liveware',return_value={'status':'unchanged'}))
+            stack.enter_context(patch.object(updater,'restore_standalone_running_state'))
+            stack.enter_context(patch.object(updater,'hermes_command',return_value=home/'unused-cron-leaf'))
+            stack.enter_context(patch.object(updater,'run',side_effect=cron_command))
+        else:
+            stack.enter_context(patch.object(updater,'install_update_check',return_value={'status':'installed'}))
         stack.enter_context(patch.object(updater,'install_runtime',side_effect=start_candidate))
         stack.enter_context(patch.object(helper.os,'replace',side_effect=replace))
-        updater.install(SimpleNamespace(home=home,install_root=root,managed_home=base,
+        updater.install(SimpleNamespace(home=home,install_root=root,managed_home=None if checker_receipt_failure else base,
             release_dir=base/'release',manifest_sha256=None))
     return phases
 
 
 @contextmanager
-def interrupted_install_fixture():
+def interrupted_install_fixture(interrupt=True):
     base = Path(tempfile.mkdtemp(prefix='nora-managed-update-interrupted-')).resolve()
     process = None
     primary = None
@@ -175,7 +232,7 @@ def interrupted_install_fixture():
     started = False
     try:
         process = multiprocessing.get_context('spawn').Process(
-            target=install_fixture, args=(str(base),), kwargs={'interrupt': True})
+            target=install_fixture, args=(str(base),), kwargs={'interrupt': interrupt})
         start_attempted = True
         process.start()
         started = True
@@ -208,6 +265,64 @@ def interrupted_install_fixture():
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def test_config_changed_between_mcp_render_and_backup_stays_active(self):
+        with tempfile.TemporaryDirectory(prefix='nora-mcp-input-') as temporary:
+            base=Path(temporary)
+            current=b'model: {default: latest-user-model}\nuser_option: retain-current\n'
+            with self.assertRaisesRegex(RuntimeError,'配置.*变化') as caught:
+                install_fixture(base,success=True,config_before_backup=current)
+            self.assertEqual(caught.exception.code,'CONDITIONS_CHANGED')
+            self.assertEqual((base/'hermes/config.yaml').read_bytes(),current)
+            self.assertEqual((base/'tavern/apps/tavern-runtime/program.txt').read_text(),'old program')
+
+    def test_mcp_publish_cut_restores_owned_bytes_but_keeps_foreign_bytes(self):
+        for foreign in (False,True):
+            with self.subTest(foreign=foreign),interrupted_install_fixture('metadata') as (base,process):
+                process.join(20)
+                self.assertFalse(process.is_alive())
+                self.assertEqual(process.exitcode,92)
+                root=base/'tavern';home=base/'hermes';target=home/'config.yaml'
+                self.assertIn('mcp_servers',target.read_text())
+                if foreign:target.write_text('model: {default: latest-user-model}\n')
+                def reopen():
+                    return recovery.recover(home,root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
+                        verify=lambda plan,_:dict(plan['before']))
+                if foreign:
+                    with self.assertRaisesRegex(RuntimeError,'当前配置已保留'):reopen()
+                    self.assertEqual(target.read_text(),'model: {default: latest-user-model}\n')
+                else:
+                    self.assertEqual(reopen()['status'],'restored')
+                    self.assertEqual((root/'apps/tavern-runtime/program.txt').read_text(),'old program')
+                    self.assertEqual(target.read_text(),MANAGED_CONFIG)
+
+    def test_standalone_checker_and_custom_cron_after_later_receipt_failure(self):
+        with tempfile.TemporaryDirectory(prefix='nora-standalone-checker-') as temporary:
+            base=Path(temporary)
+            with self.assertRaisesRegex(RuntimeError,'injected later receipt publish failure.*recovery=restored'):
+                install_fixture(base,success=True,checker_receipt_failure=True)
+            updater=load_updater()
+            for name in updater.UPDATE_CHECK_FILES:
+                self.assertEqual((base/'hermes/scripts'/name).read_text(),'old checker '+name)
+            checker,custom=json.loads((base/'hermes/cron/jobs.json').read_text())['jobs']
+            self.assertFalse(checker['no_agent'])
+            self.assertEqual(checker['schedule']['expr'],'0 8 * * *')
+            self.assertEqual(custom,{'id':'user-task','script':'custom.py','prompt':'custom definition'})
+            self.assertEqual((base/'tavern/apps/tavern-runtime/program.txt').read_text(),'old program')
+
+    def test_standalone_checker_preserves_cron_changed_while_preparing(self):
+        with tempfile.TemporaryDirectory(prefix='nora-standalone-checker-conflict-') as temporary:
+            base=Path(temporary)
+            with self.assertRaisesRegex(RuntimeError,'当前配置已保留.*recovery=restored') as caught:
+                install_fixture(base,success=True,checker_receipt_failure=True,checker_after_stage_edit=True)
+            self.assertEqual(caught.exception.code,'CONDITIONS_CHANGED')
+            updater=load_updater()
+            for name in updater.UPDATE_CHECK_FILES:
+                self.assertEqual((base/'hermes/scripts'/name).read_text(),'old checker '+name)
+            checker,custom=json.loads((base/'hermes/cron/jobs.json').read_text())['jobs']
+            self.assertFalse(checker['no_agent'])
+            self.assertEqual(custom['prompt'],'latest custom definition')
+            self.assertEqual((base/'tavern/apps/tavern-runtime/program.txt').read_text(),'old program')
+
     def test_installed_operations_tree_owns_the_probe_after_program_exchange(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-probe-') as temporary:
             base=Path(temporary)
@@ -1310,7 +1425,6 @@ if(mode==='capture'){
         shutil.copy2(self.backup/'agents-rollback/AGENTS.md',self.home/'AGENTS.md')
         journal=self.journal(metadata_changes=False)
         journal.mark_metadata([target]);target.write_text('owned failed configuration');journal.finish_metadata([target])
-        if legacy:journal.plan.pop('metadataWrites');journal.save()
         journal.snapshot_state();journal.swap('app')
         interruptions=[]
         if point=='move':
@@ -1334,6 +1448,9 @@ if(mode==='capture'){
             with self.assertRaises(KeyboardInterrupt):self.run_recover()
         self.assertEqual(interruptions,[point])
         self.assertFalse(target.exists())
+        if legacy:
+            journal=recovery.load(self.home,self.root)
+            journal.plan.pop('metadataWrites');journal.save()
         return journal,target
 
     def test_metadata_restore_retry_after_owned_archive_move_restores_original_configuration(self):
@@ -1373,9 +1490,35 @@ if(mode==='capture'){
         journal=self.journal(); journal.snapshot_state(); journal.swap('app')
         def fail(*_): raise RuntimeError('service restore failed')
         with self.assertRaisesRegex(RuntimeError,'service restore failed'):self.run_recover(resume=fail)
+        self.assert_restored()
+        facts = recovery.effects(self.home, self.root)
+        self.assertEqual(facts['recoveryOutcome'], 'files-restored-start-failed')
+        self.assertEqual(facts['status'], 'restored')
+        self.assertFalse(facts['canRecover'])
         inode=self.old.stat().st_ino
         self.run_recover(); self.assert_restored()
         self.assertEqual(self.old.stat().st_ino,inode)
+        self.assertEqual(recovery.effects(self.home, self.root)['recoveryOutcome'], 'restored-and-verified')
+
+    def test_interrupted_service_resume_keeps_verified_program_terminal(self):
+        journal = self.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+
+        def interrupted(*_):
+            raise KeyboardInterrupt('interrupted service startup')
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_recover(resume=interrupted)
+        self.assert_restored()
+        self.assertEqual(recovery.effects(self.home, self.root)['recoveryOutcome'], 'files-restored-start-failed')
+        # Reading the durable result cannot replay service startup. An explicit
+        # recovery request may finish only the service side of the transaction.
+        self.assertFalse(recovery.assess(self.home, self.root)['canRecover'])
+        self.assertEqual(self.resume_calls, [])
+        self.run_recover()
+        self.assertEqual(self.resume_calls, [True])
+        self.assertEqual(recovery.effects(self.home, self.root)['recoveryOutcome'], 'restored-and-verified')
 
     def test_recovery_requires_explicit_offline_proof_before_restoring_files(self):
         journal=self.journal();journal.snapshot_state();journal.swap('app')
@@ -1484,9 +1627,27 @@ if(mode==='capture'){
         self.assertEqual((self.backup/'managed/targets/cron/jobs.json').read_bytes(),original)
         self.assertEqual(json.loads(journal.file.read_text())['status'],'recovery-failed')
 
-    def test_schema_one_legacy_journal_without_write_receipts_keeps_existing_recovery_contract(self):
+    def test_schema_one_legacy_journal_without_receipts_closes_with_already_original_configuration(self):
         journal=self.journal();journal.plan.pop('metadataWrites');journal.save()
+        shutil.copy2(self.backup/'host/config.yaml',self.home/'config.yaml')
+        shutil.copy2(self.backup/'agents-rollback/AGENTS.md',self.home/'AGENTS.md')
         journal.snapshot_state();journal.swap('app');self.run_recover();self.assert_restored()
+
+    def assert_legacy_config_is_preserved(self, *, explicit_intents):
+        journal=self.journal();journal.plan.pop('metadataWrites')
+        if not explicit_intents:journal.plan.pop('metadataIntents')
+        journal.save();journal.swap('app')
+        target=self.home/'config.yaml';target.write_text('latest user-owned configuration')
+        self.assertEqual(self.run_recover()['status'],'restored')
+        self.assertEqual(target.read_text(),'latest user-owned configuration')
+        self.assertEqual((self.old/'program.txt').read_text(),'old program')
+        self.assertEqual((self.backup/'host/config.yaml').read_text(),'old config')
+
+    def test_legacy_journal_without_write_receipts_keeps_current_user_configuration(self):
+        self.assert_legacy_config_is_preserved(explicit_intents=True)
+
+    def test_legacy_journal_without_write_intents_keeps_current_user_configuration(self):
+        self.assert_legacy_config_is_preserved(explicit_intents=False)
 
     def test_retry_after_metadata_restored_does_not_overwrite_new_user_configuration(self):
         journal=self.journal();journal.snapshot_state();journal.swap('app')

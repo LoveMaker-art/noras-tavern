@@ -30,6 +30,7 @@ UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
 UPDATE_CHECK_SCHEDULE = "0 9 * * *"
 UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py", "nora-instance.py")
+UPDATE_CHECK_PATHS = (*(f'scripts/{name}' for name in UPDATE_CHECK_FILES), 'cron/jobs.json')
 NORA_USER_CHAR_LIMIT = 2000
 HOST_HOOK = Path("hooks/tavern-liveware-register")
 MANAGED_BACKUP_FILES = ("SOUL.md", "SOUL.nora-tavern.example.md",
@@ -178,7 +179,7 @@ def check_update_space(copies, *, disk_usage=None, volume_identity=None):
     return report
 
 
-def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
+def update_space_tasks(hermes_home, install_root, backup, work, *, managed, standalone_checker=False,
                        runtime_changed, migration, partial_repair=False, restore_only=False, journal=None,
                        service_snapshot=None, swaps=()):
     """Match the actual backup copies and possible metadata restore temporaries.
@@ -198,8 +199,11 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
     if managed:
         pairs += [(hermes_home / name, backup / 'managed/targets' / name)
                   for name in MANAGED_BACKUP_FILES]
-        pairs += [(hermes_home / 'scripts' / name, backup / 'managed/targets/scripts' / name)
-                  for name in UPDATE_CHECK_FILES]
+    if standalone_checker:
+        pairs.append((hermes_home / 'cron/jobs.json', backup / 'managed/targets/cron/jobs.json'))
+    if managed or standalone_checker:
+        pairs += [(hermes_home / relative, backup / 'managed/targets' / relative)
+                  for relative in UPDATE_CHECK_PATHS if relative != 'cron/jobs.json']
     # A stopped managed cron store may have a new run timestamp. The journal
     # seals that logical equivalent in a separate snapshot before any write.
     tasks = []
@@ -208,10 +212,18 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
         if source is not None and device(source) != device(Path(target).parent):
             tasks.append({'source': source, 'destination': Path(target).parent / '.nora-space-stage',
                           'label': 'target-volume-stage', 'links': 'preserve'})
-    if managed and not restore_only:
+    if (managed or standalone_checker) and not restore_only:
         tasks.append({'source': hermes_home / 'cron/jobs.json',
                       'destination': backup / 'runtime-state/cron-jobs.json',
                       'label': 'cron-offline-snapshot', 'optional': True})
+    if standalone_checker and not restore_only:
+        for relative in ('config.yaml', 'cron/jobs.json'):
+            tasks.append({'source': hermes_home / relative, 'destination': work / 'update-check-home' / relative,
+                          'label': 'checker-staging', 'optional': True})
+        for name in UPDATE_CHECK_FILES:
+            tasks.append({'source': work / 'source/ops/scripts' / name,
+                          'destination': work / 'update-check-home/scripts' / name,
+                          'label': 'checker-staging', 'optional': True})
     if restore_only and journal is not None:
         pairs = [(target, journal.metadata_saved(target, saved))
                  for target, saved in journal.metadata_items()]
@@ -250,7 +262,7 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
     return tasks
 
 
-def atomic(path, data, mode=0o600):
+def atomic(path, data, mode=0o600, *, before_replace=None):
     path = Path(filesystem_path(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
@@ -260,14 +272,37 @@ def atomic(path, data, mode=0o600):
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary, mode)
+        if before_replace is not None:
+            before_replace()
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
 
-def json_write(path, value):
-    atomic(path, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode())
+def json_write(path, value, *, journal=None):
+    data = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
+    if journal is None:
+        atomic(path, data)
+    else:
+        write_metadata(journal, path, data)
+
+
+def write_metadata(journal, path, data, mode=0o600, *, check_input=None):
+    verify, unchanged = journal.prepare_metadata_file(path, data)
+
+    def check():
+        verify()
+        if check_input is not None:
+            check_input()
+
+    if unchanged:
+        # A greeting swap may already have installed the same helper file.
+        check()
+        os.chmod(filesystem_path(path), mode)
+    else:
+        atomic(path, data, mode=mode, before_replace=check)
+    journal.finish_metadata([path])
 
 
 def module_at(name, path):
@@ -1096,13 +1131,28 @@ def fallback_python_state(install_root, work, reason):
     return prepared, report
 
 
-def render_mcp(hermes_home, install_root, port=8799):
+def read_optional_bytes(path):
+    try:
+        return Path(filesystem_path(path)).read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def require_config_input(path, source):
+    if read_optional_bytes(path) != source:
+        error = RuntimeError('生成 MCP 配置后输入已变化，当前配置已保留。请重新检查并准备更新。')
+        error.code = 'CONDITIONS_CHANGED'
+        raise error
+
+
+def render_mcp(hermes_home, install_root, port=8799, *, config_source=...):
     try:
         import yaml
     except ImportError as error:
         raise RuntimeError("Hermes Python 缺少 PyYAML，无法写入 MCP 配置") from error
-    path = hermes_home / "config.yaml"
-    value = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if config_source is ...:
+        config_source = read_optional_bytes(hermes_home / 'config.yaml')
+    value = yaml.safe_load(config_source.decode('utf-8')) if config_source is not None else {}
     value = {} if value is None else value
     if not isinstance(value, dict):
         raise RuntimeError("Hermes 配置格式无效，未修改配置")
@@ -1244,9 +1294,10 @@ def copy_host_backup(hermes_home, install_root, backup, service_snapshot):
             shutil.copy2(source, receipts / name)
 
 
-def restore_host(hermes_home, install_root, backup):
+def restore_host(hermes_home, install_root, backup, *, restore_config):
     host = Path(filesystem_path(backup / "host"))
-    for name in ("config.yaml",):
+    if restore_config:
+        name = 'config.yaml'
         saved = host / name
         target = hermes_home / name
         if saved.is_file():
@@ -1578,6 +1629,20 @@ def install_update_check(home, ops_root):
         "schedule": UPDATE_CHECK_SCHEDULE,
         "mode": "no-agent",
     }
+
+
+def prepare_update_check(home, ops_root, work):
+    """Run the Hermes cron writer against a private copy before publication."""
+    stage = work / 'update-check-home'
+    stage.mkdir(mode=0o700)
+    cron_source = read_optional_bytes(home / 'cron/jobs.json')
+    for relative, content in [('config.yaml', read_optional_bytes(home / 'config.yaml')),
+                              ('cron/jobs.json', cron_source)]:
+        if content is not None:
+            atomic(stage / relative, content)
+    report = install_update_check(stage, ops_root)
+    files = [(relative, (stage / relative).read_bytes()) for relative in UPDATE_CHECK_PATHS]
+    return report, files, cron_source
 
 
 def managed_lifecycle(phase, home, root, version):
@@ -1921,13 +1986,17 @@ def install(args):
             skills = prepare_skills(source, work / "skills", local=bool(instance))
             agents_bytes = (source / "ops/skills/agents-tavern.md").read_bytes()
             desired_agents = merged_agents(hermes_home, agents_bytes)
-            mcp_config = render_mcp(hermes_home, install_root, port)
+            config_path = hermes_home / 'config.yaml'
+            config_source = read_optional_bytes(config_path)
             if partial:
                 # Snapshot admission already authenticated every existing MCP
                 # binding. Preserve comments, formatting and operator settings.
-                mcp_config = (hermes_home / 'config.yaml').read_bytes()
+                if config_source is None:raise FileNotFoundError(config_path)
+                mcp_config = config_source
+            else:
+                mcp_config = render_mcp(hermes_home, install_root, port, config_source=config_source)
             agents_changed = not (hermes_home / "AGENTS.md").is_file() or (hermes_home / "AGENTS.md").read_bytes() != desired_agents
-            config_changed = not (hermes_home / "config.yaml").is_file() or (hermes_home / "config.yaml").read_bytes() != mcp_config
+            config_changed = config_source != mcp_config
             migration = {"status": "not-required"}
             prepared_state = None
             service_module = module_at("simple_service_manager", source / "ops/updater/service_manager.py")
@@ -1985,6 +2054,7 @@ def install(args):
             resolve()
             before_state = {}
             standalone_journal = _standalone_execution is not None and layout is None
+            standalone_checker = standalone_journal and ops_changed and not managed
             if standalone_journal:
                 before_state = standalone_snapshot(install_root)
             if managed:
@@ -2006,11 +2076,15 @@ def install(args):
             # are never deleted to manufacture free space.
             check_update_space(update_space_tasks(
                 hermes_home, install_root, backup, work, managed=bool(managed),
+                standalone_checker=standalone_checker,
                 runtime_changed=runtime_changed, migration=bool(layout), partial_repair=snapshot_repair,
                 service_snapshot=service_snapshot, swaps=swaps))
             Path(filesystem_path(backup)).mkdir(parents=True)
             record_backup(install_root, backup, "prepared")
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
+            if config_changed:
+                require_config_input(backup / 'host/config.yaml', config_source)
+                require_config_input(config_path, config_source)
             agents_backup = Path(filesystem_path(backup / "agents-rollback"))
             snapshot_agents(hermes_home, agents_backup)
             if managed:
@@ -2021,6 +2095,10 @@ def install(args):
                 if instance.get("missingSystemReceipt"):
                     setup_completed = (before_state.get("modelConfigured") is True
                                        and before_state.get("clawchatProfileReady") is True)
+            elif standalone_checker:
+                helpers = module_at('update_install_helpers', HERE.parent / 'installer/first_install.py')
+                helpers.snapshot_targets(hermes_home, [hermes_home / relative for relative in UPDATE_CHECK_PATHS],
+                                         backup / 'managed')
             applied = []
             state_swapped = False
             runtime_stopped = False
@@ -2040,6 +2118,7 @@ def install(args):
             else:
                 json_write(transaction_file, transaction)
             committed = False
+            config_published = False
             try:
                 if runtime_changed:
                     log("备份旧版本并停止 Tavern")
@@ -2172,13 +2251,25 @@ def install(args):
                             raise
                         state_swapped = True
                 if agents_changed:
-                    if journal is not None:journal.mark_metadata([hermes_home/'AGENTS.md',hermes_home/'AGENTS.md.bak'])
-                    install_agents(hermes_home, desired_agents)
-                    if journal is not None:journal.finish_metadata([hermes_home/'AGENTS.md',hermes_home/'AGENTS.md.bak'])
+                    if journal is None:
+                        install_agents(hermes_home, desired_agents)
+                    else:
+                        agents_path = hermes_home / 'AGENTS.md'
+                        saved_agents = agents_backup / 'AGENTS.md'
+                        previous_agents = read_optional_bytes(saved_agents)
+                        if previous_agents is not None and previous_agents != desired_agents:
+                            journal.check_metadata_before_write([(agents_path, saved_agents)])
+                            write_metadata(journal, hermes_home / 'AGENTS.md.bak', previous_agents)
+                        if previous_agents != desired_agents:
+                            write_metadata(journal, agents_path, desired_agents)
                 if config_changed:
-                    if journal is not None:journal.mark_metadata([hermes_home/'config.yaml'])
-                    atomic(hermes_home / "config.yaml", mcp_config, mode=0o600)
-                    if journal is not None:journal.finish_metadata([hermes_home/'config.yaml'])
+                    def check_config_input():
+                        require_config_input(config_path, config_source)
+                    if journal is not None:
+                        write_metadata(journal, config_path, mcp_config, check_input=check_config_input)
+                    else:
+                        atomic(config_path, mcp_config, before_replace=check_config_input)
+                        config_published = True
                 if managed:
                     log("更新诺拉技能、定时任务并核对当前实例")
                     # The supported ClawChat seeder also normalizes MCP's Node
@@ -2197,12 +2288,10 @@ def install(args):
                     managed.record_files_ready(hermes_home)
                     journal.finish_metadata([hermes_home/'nora-installation.json'])
                 if app_changed:
-                    if journal is not None:journal.mark_metadata([state_root(install_root) / 'native-runtime/dependencies.json'])
-                    json_write(
-                        state_root(install_root) / "native-runtime/dependencies.json",
-                        dependency_marker(install_root / "apps/tavern-runtime"),
-                    )
-                    if journal is not None:journal.finish_metadata([state_root(install_root) / 'native-runtime/dependencies.json'])
+                    marker = state_root(install_root) / 'native-runtime/dependencies.json'
+                    dependencies_value = dependency_marker(install_root / 'apps/tavern-runtime')
+                    if journal is None:json_write(marker, dependencies_value)
+                    else:json_write(marker, dependencies_value, journal=journal)
                 if runtime_changed:
                     log("启动新版 Tavern")
                     if standalone_journal:journal.preserve_startup_backups()
@@ -2246,9 +2335,24 @@ def install(args):
                     journal.finish_metadata([update_root/'nora-system.json'])
                 elif ops_changed:
                     try:
-                        update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
+                        if standalone_checker:
+                            update_check, checker_files, cron_source = prepare_update_check(
+                                hermes_home, install_root / 'apps/tavern-ops', work)
+                        else:
+                            update_check = install_update_check(hermes_home, install_root / 'apps/tavern-ops')
                     except Exception as update_check_error:
                         update_check = {"status": "pending", "warnings": [str(update_check_error)]}
+                    else:
+                        if standalone_checker:
+                            def check_cron_input():
+                                if read_optional_bytes(hermes_home / 'cron/jobs.json') != cron_source:
+                                    error = RuntimeError('生成更新提醒后定时任务已变化，当前配置已保留。')
+                                    error.code = 'CONDITIONS_CHANGED'
+                                    raise error
+                            for relative, data in checker_files:
+                                write_metadata(journal, hermes_home / relative, data,
+                                    mode=0o755 if relative.startswith('scripts/') else 0o600,
+                                    check_input=check_cron_input if relative=='cron/jobs.json' else None)
                 else:
                     update_check = {"status": "unchanged"}
                 installed = {
@@ -2268,10 +2372,12 @@ def install(args):
                     "clawchatGreeting": gateway_report,
                     "worldVerification": world_verification,
                 }
-                if journal is not None:journal.mark_metadata([update_root/'installed.json',update_root/'installed-manifest.json'])
-                json_write(update_root / "installed.json", installed)
-                json_write(update_root / "installed-manifest.json", manifest)
-                if journal is not None:journal.finish_metadata([update_root/'installed.json',update_root/'installed-manifest.json'])
+                if journal is None:
+                    json_write(update_root / 'installed.json', installed)
+                    json_write(update_root / 'installed-manifest.json', manifest)
+                else:
+                    json_write(update_root / 'installed.json', installed, journal=journal)
+                    json_write(update_root / 'installed-manifest.json', manifest, journal=journal)
                 if managed:
                     with reconcile_setup_metadata(journal, managed, install_root, manifest):
                         verified_state = managed_lifecycle("verify", hermes_home, install_root, version)
@@ -2342,14 +2448,28 @@ def install(args):
                     raise RuntimeError(f"更新已验证提交，但结果传递或收尾失败；请检查状态，不要重装：{error}; backup={backup}") from error
                 log("更新未完成，恢复旧版本")
                 if journal is not None:
+                    def rollback_failure(recovery_error):
+                        secondary = [recovery_error]
+                        try:
+                            observed = recovery_helper.effects(hermes_home, install_root)
+                        except Exception as inspection_error:
+                            observed = {}
+                            secondary.append(inspection_error)
+                        program_restored = (observed.get('status') == 'restored'
+                                            and observed.get('recoveryOutcome') == 'files-restored-start-failed')
+                        detail = '旧版本程序已恢复，服务尚未就绪' if program_restored else '旧版本恢复未完成'
+                        status = 'files-restored-start-failed' if program_restored else 'incomplete'
+                        failure = RuntimeError(f'更新失败：{error}; {detail}：{recovery_error}; recovery={status}; backup={backup}')
+                        failure.code = getattr(error, 'code', None)
+                        failure._bridge_diagnostic_message = f'更新失败，{detail}；请保留日志和备份。'
+                        failure.secondary_errors = secondary
+                        return failure
+
                     if standalone_journal:
                         try:
                             recover_standalone(hermes_home, install_root, helper=recovery_helper)
                         except BaseException as recovery_error:
-                            failure = RuntimeError('更新失败：'+str(error)+'; 恢复未完成：'+str(recovery_error)+'; backup='+str(backup))
-                            failure.code = getattr(error, 'code', None)
-                            failure.secondary_errors = [recovery_error]
-                            raise failure from error
+                            raise rollback_failure(recovery_error) from error
                         failure = RuntimeError(str(error)+'; recovery=restored; backup='+str(backup))
                         failure.code = getattr(error, 'code', None)
                         raise failure from error
@@ -2372,11 +2492,7 @@ def install(args):
                     except BaseException as recovery_error:
                         _operation_evidence.freeze(recovery_error, nora_home=managed_home or os.environ.get('NORA_TAVERN_HOME') or install_root.parent,
                             install_root=install_root if managed_home else install_root / 'apps', context={'stage': 'restoring'})
-                        failure = RuntimeError(f"更新失败：{error}; 恢复未完成：{recovery_error}; recovery=incomplete; backup={backup}")
-                        failure.code = getattr(error,'code',None)
-                        failure._bridge_diagnostic_message = "更新失败，旧版本恢复未完成；请保留日志和备份。"
-                        failure.secondary_errors = [recovery_error]
-                        raise failure from error
+                        raise rollback_failure(recovery_error) from error
                     failure=RuntimeError(f"{error}; recovery=restored; backup={backup}")
                     failure.code=getattr(error,'code',None)
                     raise failure from error
@@ -2400,7 +2516,8 @@ def install(args):
                             failed_root.mkdir(parents=True, exist_ok=True)
                             os.replace(active_state, failed_root / "state")
                         os.replace(backup / "state", active_state)
-                    restore_host(hermes_home, install_root, backup)
+                    restore_host(hermes_home, install_root, backup,
+                                 restore_config=config_published and read_optional_bytes(config_path)==mcp_config)
                     restore_agents(hermes_home, agents_backup)
                 except BaseException as restore_error:
                     raise RuntimeError(f"更新失败：{error}; 文件恢复失败：{restore_error}; recovery=incomplete; backup={backup}") from restore_error

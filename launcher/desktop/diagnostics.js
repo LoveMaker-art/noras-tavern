@@ -104,6 +104,21 @@ function errorDetails(error, seen = new Set()) {
   return details;
 }
 
+function redactDiagnosticText(value, secrets = []) {
+  let result = String(value);
+  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+    for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])) {
+      result = result.split(form).join('[REDACTED]');
+    }
+  }
+  return result
+    .replace(/\b(?:sk|sk-ant)-[A-Za-z0-9_-]+/g, '[REDACTED]')
+    .replace(/\b(Bearer|Basic)\s+[^\s"'<>]+/gi, '$1 [REDACTED]')
+    .replace(/(\b(?:[\w-]*(?:api[_-]?key|token|secret|password|pair[_-]?code)|authorization|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1[REDACTED]')
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
+    .replace(/([?&][\w.-]+=)[^\s&#"'<>]+/g, '$1[REDACTED]');
+}
+
 function createDiagnostics({ primary, fallback }) {
   const secrets = new Set();
   const scopes = new AsyncLocalStorage();
@@ -115,23 +130,9 @@ function createDiagnostics({ primary, fallback }) {
   let recordOrder = 0;
   const sensitive = /^(?:.*[_-])?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|cookie|pair[_-]?code)$/i;
   function addSecret(value) { if (typeof value === 'string' && value) secrets.add(value); }
-  function text(value) {
-    let result = String(value);
-    for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
-      for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])) {
-        result = result.split(form).join('[REDACTED]');
-      }
-    }
-    return result
-      .replace(/\b(?:sk|sk-ant)-[A-Za-z0-9_-]+/g, '[REDACTED]')
-      .replace(/\b(Bearer|Basic)\s+[^\s"'<>]+/gi, '$1 [REDACTED]')
-      .replace(/((?:[\w-]*(?:api[_-]?key|token|secret|password|pair[_-]?code)|authorization|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1[REDACTED]')
-      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
-      .replace(/([?&][\w.-]+=)[^\s&#"'<>]+/g, '$1[REDACTED]');
-  }
   function clean(value, key = '') {
     if (sensitive.test(key) || key === 'code' && typeof value === 'string' && !/^[A-Z_]+$/.test(value)) return '[REDACTED]';
-    if (typeof value === 'string') return text(value);
+    if (typeof value === 'string') return redactDiagnosticText(value, secrets);
     if (Array.isArray(value)) return value.map((item, index) => {
       if (key === 'command' && index > 0 && /^--?(?:key|api-key|token|password|code|pair-code)$/.test(String(value[index - 1]))) return '[REDACTED]';
       return clean(item);
@@ -194,23 +195,31 @@ function createDiagnostics({ primary, fallback }) {
     // earlier fallback output in the next batch.
     function peek(reader){
       if(reader.head)return reader.head;
-      let newline=reader.buffer.indexOf(10);
-      while(newline<0&&reader.buffer.length<maximum&&reader.position+reader.buffer.length<reader.size){
-        const bytes=Buffer.alloc(Math.min(4096,maximum-reader.buffer.length,reader.size-reader.position-reader.buffer.length));
-        const length=fs.readSync(reader.fd,bytes,0,bytes.length,reader.position+reader.buffer.length);
-        if(!length)break;reader.buffer=Buffer.concat([reader.buffer,bytes.subarray(0,length)]);newline=reader.buffer.indexOf(10);
+      let newline=reader.buffer.indexOf(10), buffered=reader.buffer.length;
+      const recordLimit=reader.dropping?maximum:MAX_LOG_BYTES, chunks=[reader.buffer];
+      // A single legacy record can exceed the request's batching budget.
+      // Read it at most once per request and search only the newly read chunk.
+      while(newline<0&&buffered<recordLimit&&reader.position+buffered<reader.size){
+        const bytes=Buffer.alloc(Math.min(64*1024,recordLimit-buffered,reader.size-reader.position-buffered));
+        const length=fs.readSync(reader.fd,bytes,0,bytes.length,reader.position+buffered);
+        if(!length)break;
+        const chunk=bytes.subarray(0,length), boundary=chunk.indexOf(10);
+        if(boundary>=0)newline=buffered+boundary;
+        chunks.push(chunk);
+        buffered+=length;
       }
-      if(newline<0&&reader.buffer.length<maximum){if(reader.buffer.length)pendingTail=true;return null;}
-      const bytes=newline<0?maximum:newline+1;
+      if(chunks.length>1)reader.buffer=Buffer.concat(chunks,buffered);
+      if(newline<0&&buffered<recordLimit){if(buffered)pendingTail=true;return null;}
+      const bytes=newline<0?recordLimit:newline+1;
       let record,reason;
       if(reader.dropping||newline<0)reason='console_record_too_large';
       else try{record=JSON.parse(reader.buffer.subarray(0,newline).toString('utf8'));}
-      catch{reason='log_record_invalid';}
+      catch{reason=bytes>maximum?'console_record_too_large':'log_record_invalid';}
       if(record?.event==='log.fragment'||record?.event==='log.history-trimmed')reason='log_history_trimmed';
       const legacyTime=Date.parse(record?.timestamp);
       const order=Number.isSafeInteger(record?.recordOrder)?record.recordOrder:Number.isFinite(legacyTime)?legacyTime*1024:-Infinity;
       if(record&&!Number.isFinite(order))reason='log_record_invalid';
-      return reader.head={record,reason,order,bytes,dropping:newline<0};
+      return reader.head={record,reason,order,bytes,cost:Math.min(bytes,maximum),dropping:newline<0};
     }
     let hasMore=false;
     try{
@@ -219,13 +228,19 @@ function createDiagnostics({ primary, fallback }) {
         if(!heads.length)break;
         heads.sort((a,b)=>a.head.order-b.head.order);
         const {reader,head}=heads[0];
-        if(head.bytes>budget){hasMore=true;break;}
+        if(head.cost>budget){hasMore=true;break;}
         if(head.record?.operationId===id&&!Number.isSafeInteger(head.record.recordOrder)
           &&heads.some(value=>value.reader!==reader&&value.head.record?.operationId===id&&value.head.order===head.order))missing.add('log_order_unknown');
-        const position=reader.position;reader.position+=head.bytes;reader.buffer=reader.buffer.subarray(head.bytes);reader.dropping=head.dropping;reader.head=null;budget-=head.bytes;
+        const position=reader.position;reader.position+=head.bytes;reader.buffer=reader.buffer.subarray(head.bytes);reader.dropping=head.dropping;reader.head=null;budget-=head.cost;
         if(head.reason){missing.add(head.reason);continue;}
         if(head.record?.operationId!==id)continue;
         const item=consoleRecord(clean(head.record));
+        if(item.text.length>16384){
+          let end=16384;const last=item.text.charCodeAt(end-1);
+          if(last>=0xd800&&last<=0xdbff)end--;
+          item.text=item.text.slice(0,end)+'\n[本条显示已截断；完整记录保留在本地日志]';
+          item.truncated=true;missing.add('console_record_truncated');
+        }
         records.push({id:head.record.recordId||`${reader.identity}:${position}`,...item,
           upload:head.record.event!=='log'||head.record.uploadScope==='maintenance'});
       }
@@ -271,4 +286,4 @@ function createDiagnostics({ primary, fallback }) {
   };
 }
 
-module.exports = { createDiagnostics, errorDetails };
+module.exports = { createDiagnostics, errorDetails, redactDiagnosticText };

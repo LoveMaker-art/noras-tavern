@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import sys
 import types
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,81 @@ SPEC.loader.exec_module(CHECK)
 
 
 class ClawchatBundleTests(unittest.TestCase):
+    def _run_probe_with_isolated_components(self, failure_step=None):
+        """Exercise the real probe ordering without loading Hermes or running binaries."""
+        class Progress(io.StringIO):
+            flushes = 0
+
+            def flush(self):
+                self.flushes += 1
+                super().flush()
+
+        def check_step(step):
+            if step == failure_step:
+                raise RuntimeError('synthetic probe interruption')
+
+        async def wait_ready():
+            check_step('liveware_ready')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / 'nora-components.json').write_text(json.dumps({
+                'liveware': {'path': 'clawchat/liveware/liveware'}, 'files': {}}))
+            manager = types.SimpleNamespace(
+                discover_and_load=lambda: check_step('plugin_discovery'),
+                list_plugins=lambda: [{'name': 'clawchat', 'enabled': True, 'error': None,
+                                       'tools': 1, 'hooks': 1, 'version': 'fixture'}])
+            modules = {
+                'hermes_cli': types.ModuleType('hermes_cli'),
+                'hermes_cli.plugins_cmd': types.SimpleNamespace(
+                    cmd_enable=lambda *args, **kwargs: check_step('plugin_enable')),
+                'hermes_cli.plugins': types.SimpleNamespace(get_plugin_manager=lambda: manager),
+                'clawchat_gateway': types.ModuleType('clawchat_gateway'),
+                'clawchat_gateway.adapter': types.SimpleNamespace(ClawChatAdapter=object),
+                'clawchat_gateway.liveware_cli': types.SimpleNamespace(
+                    wait_liveware_cli_ready=wait_ready,
+                    resolve_liveware_path=lambda: str(home / 'clawchat/liveware/liveware')),
+            }
+            # Keep the probe's platform branch isolated from the host's real sys module.
+            isolated_sys = types.SimpleNamespace(platform='win32', path=[], addaudithook=lambda fn: None)
+            stdout, stderr = io.StringIO(), Progress()
+            isolated_sys.stderr = stderr
+            with patch.dict(sys.modules, modules), patch.object(CHECK, 'sys', isolated_sys), \
+                    patch.object(CHECK, 'check_files', side_effect=lambda *args: check_step('components_files')), \
+                    patch.object(CHECK, 'check_terminal', side_effect=lambda *args: check_step('windows_terminal')), \
+                    patch.object(CHECK.subprocess, 'run', side_effect=lambda *args, **kwargs:
+                                 (check_step('liveware_help'), types.SimpleNamespace(returncode=0))[1]), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                if failure_step:
+                    with self.assertRaisesRegex(RuntimeError, 'synthetic probe interruption'):
+                        CHECK.check(home)
+                else:
+                    CHECK.check(home)
+            return stdout.getvalue(), stderr.getvalue(), stderr.flushes, str(home)
+
+    def test_probe_flushes_the_last_fixed_stage_before_an_interrupted_check(self):
+        stages = ['components_files', 'liveware_help', 'windows_terminal', 'plugin_enable',
+                  'plugin_discovery', 'adapter_import', 'liveware_ready']
+        for failed in ['components_files', 'liveware_help', 'windows_terminal',
+                       'plugin_discovery', 'liveware_ready']:
+            with self.subTest(failed=failed):
+                stdout, stderr, flushes, home = self._run_probe_with_isolated_components(failed)
+                expected = [f'NORA_BUNDLE_STEP={step}' for step in stages[:stages.index(failed) + 1]]
+                self.assertEqual(stderr.splitlines(), expected)
+                self.assertEqual(flushes, len(expected))
+                self.assertEqual(stdout, '')
+                self.assertNotIn(home, stderr)
+
+    def test_probe_progress_does_not_replace_the_final_result_or_disclose_runtime_paths(self):
+        stdout, stderr, flushes, home = self._run_probe_with_isolated_components()
+        stages = ['components_files', 'liveware_help', 'windows_terminal', 'plugin_enable',
+                  'plugin_discovery', 'adapter_import', 'liveware_ready', 'liveware_resolve', 'complete']
+        self.assertEqual(stderr.splitlines(), [f'NORA_BUNDLE_STEP={step}' for step in stages])
+        self.assertEqual(flushes, len(stages))
+        self.assertEqual(json.loads(stdout), {'ok': True, 'clawchat': 'fixture', 'liveware': 'ready',
+                                             'tools': 1, 'hooks': 1})
+        self.assertNotIn(home, stderr)
+
     def test_windows_terminal_must_be_sealed_before_backend_is_imported(self):
         for metadata in ({'files': {}}, {'terminal': {'kind': 'git-bash',
                 'command': 'hermes-agent/vendor/git/bin/bash.exe'}, 'files': {}}):

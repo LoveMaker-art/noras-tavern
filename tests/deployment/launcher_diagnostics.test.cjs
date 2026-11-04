@@ -886,6 +886,92 @@ test('child failure remains primary when progress persistence also failed', t =>
   assert.equal(result.secondaryCodes.includes('EPERM'), false, 'presentation warnings do not become transaction failures');
 });
 
+{
+const {PassThrough}=require('node:stream');
+const {once}=require('node:events');
+const desktop=path.join(__dirname,'../installer/desktop');
+const actual=createRequire(path.join(desktop,'runtime-worker.js'));
+const runtime=actual('./runtime');
+const {consumeLines}=actual('./process-output');
+const {errorDetails}=actual('./diagnostics');
+async function verifierFailure(t,{stdout='',stderr='',deadline=true,outputTruncated=false}={}){
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-diagnostic-'));
+  t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const python=process.platform==='win32'?'hermes-agent/venv/Scripts/python.exe':'hermes-agent/venv/bin/python';
+  for(const name of [python,'nora-clawchat-check.py']){
+    const file=path.join(home,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'non-executed fixture');
+  }
+  const calls=[];
+  const cause=deadline?Object.assign(new Error('Maintenance command exceeded its deadline'),{code:'ETIMEDOUT'}):undefined;
+  let failure;
+  try{await runtime.validateRuntimeAsync(home,{venvPython:python,nodeBin:'node/bin',componentProbe:'nora-clawchat-check.py'},
+    {assertActive(){},run:async(command,args,options)=>{calls.push({command,args,options});
+      return calls.length===3?{status:deadline?null:1,signal:deadline?'SIGKILL':null,stdout,stderr,error:cause,outputTruncated}
+        :{status:0,stdout:'fixture version',stderr:''};}});
+  }catch(error){failure=error;}
+  assert.equal(calls.length,3);assert.equal(calls[2].options.timeoutMs,60000,'retain the actual component-probe deadline');
+  assert.ok(failure);if(deadline)assert.equal(failure.cause,cause);
+  return failure;
+}
+async function workerFailure(failure){
+  const stream=new PassThrough(),messages=[],errors=[],writes=[];
+  consumeLines(stream,line=>messages.push(JSON.parse(line)),error=>errors.push(error));
+  let close;const closed=new Promise(resolve=>{close=resolve;});
+  const local={'./runtime':{installBundledHermes:async()=>{throw failure;}},'./diagnostics':{errorDetails},
+    './operation-delegate':{connect:async()=>({context:{operationId:'fixture',ownerEpoch:1},assertActive(){},close})},
+    './retained-installation':{inspect:()=>null}};
+  const proc={argv:['node','worker','payload','home','hermes'],env:{},cwd:()=>desktop,
+    stdout:{write:value=>{writes.push(value);stream.write(value);}},stderr:{write(){}},exitCode:0};
+  vm.runInNewContext(fs.readFileSync(path.join(desktop,'runtime-worker.js'),'utf8'),{
+    require:name=>Object.hasOwn(local,name)?local[name]:actual(name),process:proc,console});
+  await closed;const ended=once(stream,'end');stream.end();await ended;
+  return {messages,errors,bytes:Buffer.byteLength(writes.join('')),exitCode:proc.exitCode};
+}
+test('a runtime deadline retains its captured stderr and original cause through the real bounded worker reader',async t=>{
+  const stdout='first phase\n'+'x'.repeat(300*1024)+'\nlast phase',stderr='component probe: plugin load pending\n';
+  const failure=await verifierFailure(t,{stdout,stderr});
+  const observed=await workerFailure(failure);
+  assert.equal(observed.exitCode,1);assert.deepEqual(observed.errors,[]);
+  assert.ok(observed.bytes<64*1024,'do not replace the deadline diagnostic with an oversized-record error');
+  const diagnostic=observed.messages.find(message=>message.event==='diagnostic').error;
+  assert.equal(diagnostic.cause.code,'ETIMEDOUT');assert.equal(diagnostic.signal,'SIGKILL');
+  assert.equal(diagnostic.context.stderr,stderr);assert.equal(diagnostic.context.stdoutBytes,Buffer.byteLength(stdout));
+  assert.equal(diagnostic.context.stderrBytes,Buffer.byteLength(stderr));assert.equal(diagnostic.context.outputTruncated,true);
+  assert.ok(diagnostic.context.stdout.startsWith('first phase'));assert.ok(diagnostic.context.stdout.endsWith('last phase'));
+  assert.equal(diagnostic.context.timeoutMs,60000);assert.equal(diagnostic.context.purpose,'python');
+  assert.equal(observed.messages.find(message=>message.event==='error').code,'ETIMEDOUT');
+});
+test('a large failing child message is bounded without turning a failure into a successful runtime check',async t=>{
+  const stderr='first error\n'+'错'.repeat(120*1024)+'\nlast error';
+  const failure=await verifierFailure(t,{stderr,deadline:false});const observed=await workerFailure(failure);
+  assert.equal(observed.exitCode,1);assert.deepEqual(observed.errors,[]);assert.ok(observed.bytes<64*1024);
+  const diagnostic=observed.messages.find(message=>message.event==='diagnostic').error;
+  assert.equal(diagnostic.exitCode,1);assert.equal(diagnostic.context.stderrBytes,Buffer.byteLength(stderr));
+  assert.equal(diagnostic.context.outputTruncated,true);assert.ok(diagnostic.context.stderr.endsWith('last error'));
+  assert.match(diagnostic.message,/ClawChat/);assert.equal(observed.messages.some(message=>message.event==='result'),false);
+});
+test('runtime output redacts a credential before bounded excerpts can split it',async t=>{
+  const secret='PRIVATE_OUTPUT_CREDENTIAL_'.repeat(300);
+  const stderr=`first probe\napi_key=${secret}\nlast probe`;
+  const failure=await verifierFailure(t,{stderr,deadline:false});
+  const observed=await workerFailure(failure);
+  const diagnostic=observed.messages.find(message=>message.event==='diagnostic').error;
+  assert.equal(diagnostic.context.stderrBytes,Buffer.byteLength(stderr));
+  assert.equal(diagnostic.context.stderr.includes('PRIVATE_OUTPUT_CREDENTIAL'),false);
+  assert.equal(diagnostic.message.includes('PRIVATE_OUTPUT_CREDENTIAL'),false);
+  assert.match(diagnostic.context.stderr,/api_key=\[REDACTED\]/);
+  assert.match(diagnostic.context.stderr,/last probe$/);
+});
+test('empty or already-truncated captures are reported as capture facts without inventing child output',async t=>{
+  for(const outputTruncated of [false,true]){
+    const failure=await verifierFailure(t,{outputTruncated});
+    assert.equal(failure.cause.code,'ETIMEDOUT');assert.equal(failure.context.stdout,'');assert.equal(failure.context.stderr,'');
+    assert.equal(failure.context.stdoutBytes,0);assert.equal(failure.context.stderrBytes,0);
+    assert.equal(failure.context.outputTruncated,outputTruncated);assert.equal(failure.context.timeoutMs,60000);
+  }
+});
+}
+
 test('runtime worker business guidance survives a real child process boundary', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'nora-worker-guidance-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));

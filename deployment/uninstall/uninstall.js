@@ -745,17 +745,20 @@ async function inspectExecutorHistory(plan){
 }
 const INSPECTION_POLICY=Object.freeze({idleMs:120000,maxMs:30*60*1000,pollMs:1000});
 const inspectionFailure=(code,message)=>Object.assign(new Error(message),{code});
+const managedInspectorUnavailable=error=>error?.code!=='LOCK_CHILD_IDENTITY'
+  &&require('./uninstall-offline-check').managedPythonUnavailable(error);
 async function inspectionStartup(promise){
   let timer;
   try{return await Promise.race([promise,new Promise((_,reject)=>{
     timer=setTimeout(()=>reject(inspectionFailure('UNINSTALL_INSPECTION_STALLED','启动器校验连续 120 秒未完成，未删除文件。')),INSPECTION_POLICY.idleMs);
   })]);}finally{clearTimeout(timer);}
 }
-function runPythonInspection(execution,input,policy=INSPECTION_POLICY){
+function runPythonInspection(execution,input,policy=INSPECTION_POLICY,isolated=false){
   return new Promise((resolve,reject)=>{
     const started=performance.now();let lastProgress=started,sequence=0,bytes=0,entries=0;
     let stdout='',pending='',diagnostic='',failure=null,closed=false;
-    const child=spawn(execution.command,['-B','-c',PYTHON_TRANSACTION_FACTS],
+    const args=[...(isolated?['-I','-X','utf8']:[]),'-B','-c',PYTHON_TRANSACTION_FACTS];
+    const child=spawn(execution.command,args,
       {env:{...execution.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'},windowsHide:true,stdio:['pipe','pipe','pipe']});
     // Every failure waits for close: no caller may release the writer or
     // delete files while a timed-out inspector is still running.
@@ -787,7 +790,11 @@ function runPythonInspection(execution,input,policy=INSPECTION_POLICY){
       }
       if(pending.length>8192){if(pending.startsWith('{"schema"'))stop(failed('只读检查进度记录超过限制，未删除文件。'));pending=pending.slice(-1024);}
     });
-    child.on('error',error=>stop(failed(`无法运行只读检查：${error.message}`)));
+    child.on('error',error=>{
+      const problem=failed(`无法运行只读检查：${error.message}`);
+      if(!child.pid&&managedInspectorUnavailable(error))problem.cause=error;
+      stop(problem);
+    });
     child.stdin.on('error',error=>stop(failed(`无法传入只读检查计划：${error.message}`)));
     const timer=setInterval(()=>{
       const now=performance.now();
@@ -832,7 +839,6 @@ async function inspectSealedTransactions(plan,{captureContext}={}){
   const command=path.join(venv,process.platform==='win32'?'Scripts/python.exe':'bin/python');
   const environment={...process.env,PYTHONDONTWRITEBYTECODE:'1'};
   delete environment.NODE_OPTIONS;for(const key of Object.keys(environment))if(key.startsWith('NORA_OPERATION_'))delete environment[key];
-  const execution=require('./managed-python').resolveExecution(command,{managedPythonRoot:path.join(capability.hermesHome,'python'),venvHome:venv,env:environment});
   const input={root,hermesHome:capability.hermesHome,installRoot:capability.installRoot,
     first:catalog.operations.filter(item=>item.first).map(item=>({id:item.id,file:item.firstFile,
       record:item.record?{operationId:item.record.operationId,state:item.record.state}:null})),
@@ -842,7 +848,21 @@ async function inspectSealedTransactions(plan,{captureContext}={}){
     partialOrigins:partialRuntimes.map(item=>item.old.runtime.originalPartial),legacy:catalog.legacy,
     appJobs:catalog.appJobs,requiredHandoffs:handoffs,executable:process.execPath,
     resources:capability.resources};
-  const facts=await runPythonInspection(execution,JSON.stringify(input));
+  const encoded=JSON.stringify(input);
+  let facts;
+  try{
+    const execution=require('./managed-python').resolveExecution(command,
+      {managedPythonRoot:path.join(capability.hermesHome,'python'),venvHome:venv,env:environment});
+    facts=await runPythonInspection(execution,encoded);
+  }catch(error){
+    const launchCause=error.code==='UNINSTALL_PYTHON_INSPECTION_FAILED'?error.cause:error;
+    if(plan.mode!=='keep'||!managedInspectorUnavailable(launchCause))throw error;
+    // The same sealed resources and proof still apply. A rejected or timed-out
+    // inspection never reaches this path, and no private cache is published.
+    const runtime=await require('./app-helper-runtime').resolve({home:root,executable:process.execPath,
+      resourcesRoot:capability.resourcesRoot,descriptorSha256:require('./package.json').noraAppHelperRuntimeSha256,materialize:false});
+    facts=await runPythonInspection(runtime,encoded,INSPECTION_POLICY,true);
+  }
   try{
     if(handoffs.length&&(facts.handoffs?.count!==handoffs.length
       ||facts.handoffs.sha256!==crypto.createHash('sha256').update(JSON.stringify(objectContent(handoffs))).digest('hex')))throw recoveryRequired();

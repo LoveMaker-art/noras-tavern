@@ -197,11 +197,47 @@ function mainHandler(channel, values) {
   }
   const ast = parse(mainSource,{ecmaVersion:'latest'}); visit(ast);
   const cancellation = ast.body.find(n=>n.id?.name==='taskCancellation');
-  const projection = ast.body.filter(n=>['desktopSequenceOptions','desktopSequenceForOperation','projectDesktopOperation'].includes(n.id?.name))
+  const projection = ast.body.filter(n=>['desktopSequenceOptions','desktopSequenceForOperation','ownsDesktopOperation','projectDesktopOperation'].includes(n.id?.name))
     .map(n=>mainSource.slice(n.start,n.end)).join('\n');
   return vm.runInNewContext(`${mainSource.slice(cancellation.start,cancellation.end)}\n${projection}\n(${mainSource.slice(callback.start,callback.end)})`,
     {require:mainRequire,updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,desktopUpdateNotice:null,...values});
 }
+
+test('main projects a pending APP executor independently of unavailable core status',async()=>{
+  const operation={operationId:'app-update-fixture',kind:'update',target:{request:{launcherOnly:true}},busy:true};
+  const reason='APP worker close remains unconfirmed';
+  for(const mode of ['active','reopened','unreadable-history']){
+    const reopened=mode!=='active';
+    const status=mainHandler('nora:status',{
+      quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,
+      activeOperationContext:reopened?null:{executorPendingReason:reason,snapshot:operation},
+      operations:()=>({snapshot:async(_id,options)=>{
+        assert.equal(options.appOnly,true);
+        if(mode==='unreadable-history')throw new Error('fixture damaged operation history');
+        return operation;
+      }}),
+      readLauncherRecovery:async()=>{assert.equal(reopened,true);return {busy:true,operationId:operation.operationId,reason};},
+      runBridge:async()=>assert.fail('the APP wait state should not need the core query'),diagnostics:{error(){}},
+    });
+    const result=await status();
+    assert.equal(result.operation?.operationId,mode==='unreadable-history'?undefined:operation.operationId);
+    assert.equal(result.executorPendingReason,reason);
+    assert.equal(result.canCancel,false);
+    assert.equal(result.statusUnavailable,true);
+    assert.equal(result.busy,true);
+  }
+});
+
+test('the pending APP executor rejects a stale cancellation request',async()=>{
+  const reason='APP worker close remains unconfirmed';
+  const cancel=mainHandler('nora:cancel',{
+    activeOperationContext:{executorPendingReason:reason,lease:{cancel(){assert.fail('must not cancel pending executor');}}},
+    releaseAbort:{abort(){assert.fail('must not abort pending executor');}},
+  });
+  const result=await cancel();
+  assert.equal(result.ok,false);
+  assert.equal(result.warning,reason);
+});
 
 test('main status failures return unavailable instead of invented stopped or broken-installation facts', async t => {
   for(const mode of ['bridge-failed','missing-python','empty-install','healthy','retained-invalid','retained-owner-invalid','operation-invalid']) {

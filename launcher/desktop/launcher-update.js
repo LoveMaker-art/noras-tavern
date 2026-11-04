@@ -186,9 +186,9 @@ async function inspectOutcome(options){
   const outcome=await callHelper(options,options.helper,['--inspect-outcome',job],job,
     {spawnChild:options.spawnChild});
   if(outcome?.status==='committed'&&!appOperation(operation))return null;
-  return projectOutcome(outcome,operation,plan,job);
+  return projectOutcome(outcome,operation,plan,job,{home:options.home});
 }
-function projectOutcome(outcome,operation,plan,job,{checkTarget=false}={}){
+function projectOutcome(outcome,operation,plan,job,{checkTarget=false,home}={}){
   if(outcome?.operationId!==operation.operationId||outcome.planDigest!==operation.planDigest
     ||outcome.job!==job||outcome.verification!=='confirmed'
     ||!(outcome.status==='restored'&&outcome.effectState==='restored'
@@ -197,9 +197,16 @@ function projectOutcome(outcome,operation,plan,job,{checkTarget=false}={}){
         &&outcome.version===plan.version&&(!checkTarget||outcome.target===plan.target))
     ||outcome.workerOffline!==true||outcome.busy!==false)return null;
   const sharing=outcome.sharingFailure;
-  if(sharing!==undefined&&(outcome.status!=='cancelled'||plan.platform!=='win32'||plan.releasePlan?.client!=='app'
-    ||sharing?.schema!=='nora-app-sharing-failure/1'||sharing.phase!=='moving-old'||![32,33].includes(sharing.winerror)
-    ||Object.keys(sharing).sort().join(',')!=='phase,schema,winerror'||!sameSealedTarget(operation,plan)))return null;
+  if(sharing!==undefined){
+    if(outcome.status!=='cancelled'||plan.platform!=='win32'||plan.releasePlan?.client!=='app'
+      ||sharing?.schema!=='nora-app-sharing-failure/1'||sharing.phase!=='moving-old'||![32,33].includes(sharing.winerror)
+      ||Object.keys(sharing).sort().join(',')!=='phase,schema,winerror'||!sameSealedTarget(operation,plan)
+      ||!operation.target.releasePlan.manifestRef)return null;
+    try{
+      releases().validateAppPlan(operation.target.releasePlan,{launcherVersion:outcome.version,platform:plan.platform,arch:plan.arch,
+        channel:plan.releasePlan.channel,tag:plan.target,operationDirectory:path.join(home,'installer','operations',operation.operationId)});
+    }catch{return null;}
+  }
   if(outcome.status==='committed')return outcome;
   return {...outcome,failure:helperError(outcome.diagnosticError,outcome.status==='cancelled'
     ?'启动器更新未能应用，原程序和数据已保留。请查看日志后重试。':'新版启动器启动失败，旧程序已恢复。')};
@@ -589,7 +596,7 @@ async function read(options){
   if(!result||result.job!==job||!['idle','pending','terminal','unknown'].includes(result.kind))
     throw launcherError('APP助手没有返回有效的程序事实。',{code:'VERIFICATION_FAILED'});
   if(result.kind==='terminal'){
-    const outcome=operation?projectOutcome(result.outcome,operation,plan,job,{checkTarget:true}):result.outcome;
+    const outcome=operation?projectOutcome(result.outcome,operation,plan,job,{checkTarget:true,home:options.home}):result.outcome;
     if(outcome)return {kind:'terminal',job,outcome};
     return {kind:'unknown',job,effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false,
       reason:'APP终态文件或原任务绑定尚未确认。'};

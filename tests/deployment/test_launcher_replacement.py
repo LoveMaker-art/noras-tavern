@@ -159,6 +159,50 @@ const deadline=Date.now()+10000,t=setInterval(()=>{if(fs.existsSync(path.join(ro
                         on_progress=lambda size, entries: events.append((size, entries))), expected)
                     self.assertEqual(events, [(0, 1), (0, 1), (1024 * 1024, 0), (len(b'last-block'), 0), (0, 1), (0, 1)])
 
+    def test_windows_tree_digest_accepts_only_stable_empty_files_without_reading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            locked = worker.io_path(root / 'run.lock')
+            locked.touch()
+            expected = hashlib.sha256(b'D\0F/run.lock\x000\0').hexdigest()
+            original_open = Path.open
+
+            def deny_read(file, *args, **options):
+                if file == locked:
+                    error = PermissionError(13, 'controlled deny-read on a program file')
+                    error.winerror = 33
+                    raise error
+                return original_open(file, *args, **options)
+
+            with patch.object(Path, 'open', deny_read):
+                for scope in (None, {'': ['run.lock']}):
+                    self.assertEqual(worker.tree_digest(root, 'win32', scope=scope), expected)
+            original_lstat = Path.lstat
+            for mutation in ('growth', 'replacement'):
+                locked.write_bytes(b'')
+                replacement = root / 'replacement.lock'
+                replacement.touch()
+                reads = 0
+
+                def mutate_before_recheck(file):
+                    nonlocal reads
+                    if file == locked:
+                        reads += 1
+                        if reads == 2:
+                            if mutation == 'growth':
+                                locked.write_bytes(b'new content')
+                            else:
+                                replacement.replace(locked)
+                    return original_lstat(file)
+
+                with self.subTest(mutation=mutation), patch.object(Path, 'lstat', mutate_before_recheck):
+                    with self.assertRaisesRegex(ValueError, '空文件.*变化'):
+                        worker.tree_digest(root, 'win32')
+            locked.write_bytes(b'nonempty content')
+            with patch.object(Path, 'open', deny_read):
+                with self.assertRaises(PermissionError):
+                    worker.tree_digest(root, 'win32')
+
     def test_digest_progress_does_not_count_unread_bytes_on_read_failure(self):
         class InterruptedRead:
             def __enter__(self): return self
@@ -664,6 +708,35 @@ else: w.recover(job,allow_legacy=True)
 
 
 class OperationReplacementTests(unittest.TestCase):
+    def test_legacy_full_tree_cancel_retains_sealed_program_and_denied_empty_runtime_lock(self):
+        f = self.fixture()
+        locked = worker.io_path(f['app'] / '.sentry-native/run.lock')
+        locked.parent.mkdir(); locked.touch()
+        worker.prepare(f['job'])
+        snapshot = worker.read_json(f['job'] / 'recovery.json')
+        self.assertNotIn('.sentry-native/run.lock', snapshot['old']['programPaths'])
+        # Recreate a previously shipped whole-tree snapshot without changing its contract.
+        snapshot['old'].pop('programPaths')
+        snapshot['old']['digest'] = worker.tree_digest(f['app'], 'win32')
+        worker.write_json(f['job'] / 'recovery.json', snapshot)
+        sealed = {name: (f['job'] / name).read_bytes() for name in ('replace.py', 'plan.json')}
+        original_open = Path.open
+
+        def deny_read(file, *args, **options):
+            if file == locked:
+                error = PermissionError(13, 'controlled legacy Sentry deny-read')
+                error.winerror = 33
+                raise error
+            return original_open(file, *args, **options)
+
+        with patch.object(Path, 'open', deny_read):
+            result = worker.recover(f['job'])
+        self.assertTrue(result['untouched'])
+        self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['old'], snapshot['old'])
+        self.assertEqual({name: (f['job'] / name).read_bytes() for name in sealed}, sealed)
+        self.assertEqual((f['app'] / 'launcher.exe').read_text(), 'old')
+        self.assertEqual(locked.stat().st_size, 0)
+
     def test_uninstall_pending_launcher_reports_phase_effects_and_reason(self):
         import io
         from contextlib import redirect_stdout

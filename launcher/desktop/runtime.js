@@ -4,6 +4,7 @@ const diskFs = process.versions.electron ? require('original-fs') : fs;
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { launcherError } = require('./launcher-errors');
+const { redactDiagnosticText } = require('./diagnostics');
 
 const RUNTIME_MANIFEST = 'nora-hermes-runtime.json';
 const TOKENS = {
@@ -51,10 +52,22 @@ function extractionCommand(archive, destination, platform = process.platform, sy
   };
 }
 
-function commandFailure(message, result, command) {
-  return Object.assign(new Error(message, { cause: result.error }), {
+function diagnosticText(value) {
+  const captured=value==null?'':Buffer.isBuffer(value)?value.toString('utf8'):String(value);
+  const text=redactDiagnosticText(captured);
+  const bytes=Buffer.byteLength(captured),maximum=4096;
+  if(Buffer.byteLength(text)<=maximum)return {text,bytes,truncated:false};
+  const buffer=Buffer.from(text);
+  return {text:buffer.subarray(0,maximum/2).toString('utf8')+'\n[output truncated]\n'
+    +buffer.subarray(-maximum/2).toString('utf8'),bytes,truncated:true};
+}
+
+function commandFailure(message, result, command, context={}) {
+  const stdout=diagnosticText(result.stdout),stderr=diagnosticText(result.stderr);
+  return Object.assign(new Error(diagnosticText(message).text, { cause: result.error }), {
     exitCode: result.status, signal: result.signal,
-    context: { command, stdout: result.stdout, stderr: result.stderr },
+    context: { command,stdout:stdout.text,stderr:stderr.text,stdoutBytes:stdout.bytes,stderrBytes:stderr.bytes,
+      outputTruncated:Boolean(result.outputTruncated||stdout.truncated||stderr.truncated),...context },
   });
 }
 
@@ -246,7 +259,8 @@ async function checkedRun(delegate,command,args,options,message) {
   delegate.assertActive();
   const result=await delegate.run(command,args,{kind:'runtime-helper',windowsHide:true,...options});
   delegate.assertActive();
-  if(result.error||result.status!==0)throw commandFailure(`${message}：${result.error?.message||result.stderr||result.stdout||'进程退出但未成功'}`,result,[command,...args]);
+  if(result.error||result.status!==0)throw commandFailure(`${message}：${result.error?.message||result.stderr||result.stdout||'进程退出但未成功'}`,result,[command,...args],
+    {purpose:options.purpose,timeoutMs:options.timeoutMs});
   return result;
 }
 async function extractArchiveAsync(bundle,destination,delegate,onEvent=()=>{}) {

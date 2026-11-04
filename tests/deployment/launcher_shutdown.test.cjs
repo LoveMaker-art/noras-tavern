@@ -60,6 +60,27 @@ test('cancellation availability describes the actual backend boundary, including
   state.cancelled=true;assert.equal(read().canCancel,false);assert.match(read().cancelReason,/正在取消/);
 });
 
+test('planned APP handoff does not report late renderer or child exits as crashes',()=>{
+  const listeners=new Map();
+  function visit(node){
+    if(!node||typeof node!=='object')return;
+    if(node.type==='CallExpression'&&['render-process-gone','child-process-gone'].includes(node.arguments[0]?.value))
+      listeners.set(node.arguments[0].value,node.arguments[1]);
+    for(const value of Object.values(node))if(Array.isArray(value))value.forEach(visit);else visit(value);
+  }
+  visit(ast);
+  assert.equal(listeners.size,2);
+  const crashes=[];
+  const state=vm.createContext({quitReady:true,quitting:false,recordNativeFailure:(...args)=>crashes.push(args),
+    setTimeout:()=>({unref(){}})});
+  const callbacks=[...listeners.values()].map(node=>vm.runInContext(`(${source.slice(node.start,node.end)})`,state));
+  for(const callback of callbacks)callback({}, {reason:'killed',exitCode:1});
+  assert.deepEqual(crashes,[]);
+  state.quitReady=false;
+  for(const callback of callbacks)callback({}, {reason:'killed',exitCode:1});
+  assert.deepEqual(crashes.map(([kind])=>kind),['renderer','child']);
+});
+
 test('full exit awaits stopping both services before allowing Electron to quit', async () => {
   let finish;
   const f = fixture({ runBridge: (command, options) => {

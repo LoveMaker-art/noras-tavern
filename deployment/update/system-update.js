@@ -1,13 +1,14 @@
-// Supported schema-1 recovery only. New updates use the Python file journal.
+// Read historical schema-1 evidence. New updates use the Python file journal.
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
-const {treeSeal,sameSeal}=require('./tree-integrity');
-const fsp=fs.promises,NAMES=['hermes','tavern'];
+const NAMES=['hermes','tavern'];
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 const equal=(a,b)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
-const RECOVERY_POINT='恢复更新前备份；较新的数据保留在故障目录，不会自动合并。';
+// Product 1.48 keeps current user data active during program recovery. A
+// whole-tree snapshot proves neither ownership nor a program-only write set.
+const DATA_BOUNDARY='旧更新仅有整份程序和用户数据备份，无法核验准确的程序写集，不能自动恢复，以免回退当前聊天、配置或凭据。当前目录、备份、故障目录和记录均已保留。';
 function canonical(file){if(fs.existsSync(file))return fs.realpathSync(file);const parent=path.dirname(file);return parent===file?file:path.join(canonical(parent),path.basename(file));}
 function safePath(root,relative){
  const target=path.resolve(root,relative);
@@ -91,55 +92,29 @@ function assess(home){
 function pending(home){const state=read(home);return Boolean(state&&!['committed','rolled-back'].includes(state.phase));}
 function inspect(home){
  try{
+  const state=read(home);if(!state||['committed','rolled-back'].includes(state.phase))return null;
   const value=assess(home);if(!value||value.state.phase==='rolled-back')return null;
-  return {kind:'legacy',status:value.state.phase,canRecover:true,journalReference:value.location.journal,
+  return {kind:'legacy',status:value.state.phase,canRecover:false,code:'LEGACY_RECOVERY_DATA_BOUNDARY',journalReference:value.location.journal,
    journalDigest:value.journalDigest,currentJournalDigest:value.currentJournalDigest,restoreVersion:value.ownership.restoreVersion,
    restoreCommit:value.ownership.restoreCommit,restorePoint:value.state.snapshotAt||value.state.createdAt||null,
-   backup:value.location.directory,dataPolicy:'restore-backup-preserve-current',backupVerification:'verify-on-recovery',
-   reason:RECOVERY_POINT};
+   backup:value.location.directory,dataPolicy:'preserve-current-no-automatic-restore',backupVerification:'program-boundary-unproven',
+   reason:DATA_BOUNDARY};
  }catch(error){return {kind:'legacy',status:'unknown',canRecover:false,reason:error.code==='ENOENT'?'旧备份或安装记录不完整，请保留当前安装、数据和日志。':error.message};}
 }
-async function save(location,value){
- const temporary=`${location.journal}.${crypto.randomUUID()}.tmp`,fd=await fsp.open(temporary,'wx',0o600);
- try{await fd.writeFile(JSON.stringify(value));await fd.sync();}finally{await fd.close();}
- try{await fsp.rename(temporary,location.journal);if(process.platform!=='win32'){const directory=await fsp.open(location.directory,'r');try{await directory.sync();}finally{await directory.close();}}}
- finally{await fsp.rm(temporary,{force:true});}
-}
-async function recover(home,{delegate,journalDigest,offlineProof,onEvent=()=>{}}={}){
+async function recover(home,{delegate,journalDigest,offlineProof}={}){
  delegate?.assertActive();
  if(!delegate?.active)throw fail('OPERATION_CAPABILITY_REQUIRED','旧版本恢复缺少有效执行授权。');
  if(offlineProof?.operationId!==delegate.context.operationId||offlineProof.ownerEpoch!==delegate.context.ownerEpoch
   ||offlineProof.offline!==true||offlineProof.running!==false||offlineProof.gatewayRunning!==false)
   throw fail('VERIFICATION_FAILED','尚未确认服务停止，未恢复旧版本文件。');
+ const state=read(home);
+ if(!state||['committed','rolled-back'].includes(state.phase))throw fail('LEGACY_RECOVERY_UNSUPPORTED','旧更新已结束或没有可恢复的记录，未重放历史恢复。');
  const value=assess(home);if(!value)throw fail('LEGACY_RECOVERY_UNSUPPORTED','没有可核验的旧版本恢复记录。');
  if(!/^[a-f0-9]{64}$/.test(journalDigest||'')||journalDigest!==value.journalDigest)throw fail('CONDITIONS_CHANGED','旧更新记录已变化，请重新检查恢复条件。');
- const {location,ownership}=value;let state=value.state;
- const steps=value.steps.map((item,index)=>({...item,phase:value.phases[index]}));
- // Integrity is checked before preserving either active tree. No chat/config
- // content is stored in this journal; only the full-tree digest is persisted.
- for(const item of steps){
-  const source=path.join(item.phase==='restored'?location.root:location.directory,item.name),seal=treeSeal(source);
-  if(item.backupSeal&&!sameSeal(item.backupSeal,seal))throw fail('LEGACY_RECOVERY_UNSUPPORTED','旧备份内容已变化，未替换当前安装。');
-  item.backupSeal=seal;delegate.assertActive();await new Promise(setImmediate);
- }
- state={...state,phase:'restoring',sourceJournalDigest:value.journalDigest,adapterOwner:ownership.owner,restoreSteps:steps};
- await save(location,state);delegate.assertActive();
- for(const item of steps){
-  item.phase=phase(location,item);if(item.phase==='restored')continue;
-  if(item.phase==='prepared'&&item.currentIdentity){
-   await fsp.rename(path.join(location.root,item.name),path.join(location.directory,item.failedName));
-   item.phase='preserved';await save(location,state);delegate.assertActive();
-   onEvent({event:'task',phase:`legacy.${item.name}-preserved`,task:'保留当前版本和较新的数据'});
-  }
-  await fsp.rename(path.join(location.directory,item.name),path.join(location.root,item.name));
-  item.phase='restored';await save(location,state);delegate.assertActive();
-  onEvent({event:'task',phase:`legacy.${item.name}-restored`,task:'恢复更新前的备份文件'});
- }
- // Actual service/content acceptance belongs to the subsequent Python check.
- await save(location,{...state,phase:'rolled-back',filesRestoredAt:new Date().toISOString()});
- return {legacyFilesRestored:true,effectState:'restored',recoveryVerification:'files-only',dataMerged:false,
-  restoreVersion:ownership.restoreVersion,restoreCommit:ownership.restoreCommit,port:ownership.port,
-  journalReference:location.journal,preservedDirectories:steps.filter(item=>item.currentIdentity).map(item=>path.join(location.directory,item.failedName)),
-  restorePoint:state.snapshotAt||state.createdAt||null,dataPolicy:'restore-backup-preserve-current',reason:RECOVERY_POINT};
+ delegate.assertActive();
+ // Preserve interrupted checkpoints too. Continuing their next whole-root
+ // rename would still activate old user data; a live delegate cannot widen
+ // the recovery data boundary. No journal write or rename is authorized here.
+ throw fail('LEGACY_RECOVERY_DATA_BOUNDARY',DATA_BOUNDARY);
 }
 module.exports={pending,inspect,recover};

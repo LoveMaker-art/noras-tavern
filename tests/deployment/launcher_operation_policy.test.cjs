@@ -584,3 +584,57 @@ test('an unconfirmed model deletion must not become untouched just because it is
  observed=await f.policy.observe(f.record);
  assert.equal(observed.effectState,'restored');assert.equal(observed.recoveryOutcome,'restored-and-verified');
 });
+
+test('automatic core failure closes verified restored files without replaying startup',async t=>{
+  const calls=[];
+  const f=setup(t,{systemEffects:async()=>({effectState:'restored',recoveryOutcome:'files-restored-start-failed',
+    status:'restored',operationId:id,canRecover:false}),
+    bridge:async command=>{calls.push(command);throw Error('Unexpected replay of '+command);}});
+  const journal=path.join(f.options.installRoot,'tavern-updates/transaction.json');
+  fs.mkdirSync(path.dirname(journal),{recursive:true});
+  fs.writeFileSync(journal,'fixture');
+  f.record.kind='update';
+  const result=await f.policy.recover(f.context,{error:Error('core startup failed')});
+  assert.equal(result.filesRestored,true);
+  assert.equal(result.verification,'failed');
+  assert.equal(result.value.recoveryVerification,'files-only');
+  assert.deepEqual(calls,[]);
+});
+
+test('rechecking an interrupted core task accepts only its own restored program proof',async t=>{
+  let programOwner=null;
+  const f=setup(t,{systemEffects:async()=>({effectState:'restored',recoveryOutcome:'files-restored-start-failed',
+    status:'restored',operationId:programOwner,canRecover:false})});
+  const directory=path.join(f.home,'installer');
+  const options={directory,lock:createTestOperationLock(),observeEffects:f.policy.observe,
+    recheckers:{update:f.policy.recheck},recoverers:{update:f.policy.recover}};
+  const controller=createOperationController(options);
+  const operation=await controller.start('update',{target:{request:{action:'update'}},
+    execute:async()=>({verification:'confirmed'})},'interrupted-after-files');
+  const file=path.join(directory,'operations',operation.operationId,'operation.json');
+  const persisted=JSON.parse(fs.readFileSync(file,'utf8'));
+  fs.writeFileSync(file,JSON.stringify({...persisted,state:'recovering',effectState:'changed',verification:'unconfirmed'}));
+  const reopened=createOperationController(options);
+  assert.equal((await reopened.recheck(operation.operationId)).state,'recovering');
+  programOwner=operation.operationId;
+  const settled=await reopened.recheck(operation.operationId);
+  assert.equal(settled.state,'rolled-back');
+  assert.equal(settled.recoveryOutcome,'files-restored-start-failed');
+  assert.equal(settled.currentFailure,null);
+  assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'start-after-crash')).state,'succeeded');
+});
+
+test('a restored core never restarts or finalizes before its runtime recovery is verified',async t=>{
+  const calls=[];
+  const f=setup(t,{systemEffects:async()=>({effectState:'restored',recoveryOutcome:'files-restored-start-failed',
+    status:'restored',operationId:id,canRecover:false}),
+    inspectRuntime:()=>({effectState:'restored',recoveryOutcome:'recovery-required',partialOrigin:true}),
+    bridge:async command=>{calls.push(command);throw Error('Unexpected '+command);},
+    runRuntime:async()=>{calls.push('runtime');throw Error('runtime remains unconfirmed');}});
+  const journal=path.join(f.options.installRoot,'tavern-updates/transaction.json');
+  fs.mkdirSync(path.dirname(journal),{recursive:true});
+  fs.writeFileSync(journal,'fixture');
+  f.record.kind='update';
+  await assert.rejects(f.policy.recover(f.context,{error:Error('core startup failed')}),/runtime remains unconfirmed/);
+  assert.deepEqual(calls,['runtime']);
+});

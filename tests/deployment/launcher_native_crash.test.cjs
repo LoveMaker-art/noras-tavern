@@ -46,6 +46,40 @@ test('native collector rejects linked evidence and discloses incomplete dumps wi
   assert.equal(events[0].stackStatus,'unavailable');
 });
 
+test('crash reporter startup retains a bounded failure stage and system code without private error text',t=>{
+  const {createNativeCrashDiagnostics}=require('../installer/desktop/native-crash');
+  for(const stage of ['crash_directory','crash_path','crash_reporter']){
+    const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-crash-start-')));
+    t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const failure=Object.assign(new Error('PRIVATE_TOKEN and private-path must stay local'),{code:'EACCES',path:'PRIVATE_PATH'});
+    const recorded=[],originalMkdir=fs.mkdirSync;
+    const collector=createNativeCrashDiagnostics({directory:root,onEvidence:()=>assert.fail('no dump read'),
+      diagnostic:(code,details)=>recorded.push({code,details})});
+    try{
+      if(stage==='crash_directory')fs.mkdirSync=function(file,...args){if(file===root)throw failure;return originalMkdir.call(this,file,...args);};
+      const started=collector.start({app:{setPath(){if(stage==='crash_path')throw failure;}},
+        crashReporter:{start(){if(stage==='crash_reporter')throw failure;}}});
+      assert.equal(started,false);assert.equal(recorded.length,1);
+      assert.deepEqual(recorded[0],{code:'native_crash_collection_unavailable',details:{stage,systemCode:'EACCES'}});
+      assert.doesNotMatch(JSON.stringify(recorded),/PRIVATE_TOKEN|PRIVATE_PATH|private-path/);
+    }finally{fs.mkdirSync=originalMkdir;}
+  }
+});
+
+test('main preserves the safe crash startup metadata supplied by the native collector',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../installer/desktop/main.js'),'utf8'),nodes=[];
+  function walk(node){if(!node||typeof node!=='object')return;if(node.type)nodes.push(node);
+    for(const value of Object.values(node))if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);}
+  walk(parse(source,{ecmaVersion:'latest'}));
+  const call=nodes.find(node=>node.type==='CallExpression'&&node.callee.property?.name==='createNativeCrashDiagnostics');
+  assert.ok(call);const callback=call.arguments[0].properties.find(item=>item.key.name==='diagnostic').value,records=[];
+  const diagnostic=vm.runInNewContext(`(${source.slice(callback.start,callback.end)})`,{
+    diagnostics:{write:(event,fields)=>records.push({event,fields})}});
+  diagnostic('native_crash_collection_unavailable',{stage:'crash_path',systemCode:'EACCES'});
+  assert.deepEqual(JSON.parse(JSON.stringify(records)),[{event:'native-crash.diagnostic',
+    fields:{code:'native_crash_collection_unavailable',stage:'crash_path',systemCode:'EACCES'}}]);
+});
+
 test('Windows x64 and ARM64 instruction contexts produce module offsets without exporting other registers',async t=>{
   const {createNativeCrashDiagnostics}=require('../installer/desktop/native-crash');
   for(const arch of [9,12]){

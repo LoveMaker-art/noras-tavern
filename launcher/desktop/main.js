@@ -797,7 +797,8 @@ function parseJsonLine(line) {
   }
 }
 
-function taskCancellation() {
+function taskCancellation(executorPendingReason = activeOperationContext?.executorPendingReason) {
+  if (executorPendingReason) return {canCancel:false,cancelReason:executorPendingReason,executorPendingReason};
   const canCancel = !updatingSystem && !cancelled && Boolean(releaseAbort && !releaseAbort.signal.aborted
     || activeProcess && activeProcess.cancelSafe !== false && activeOperationContext);
   return {canCancel, cancelReason: cancelled ? '正在取消，请等待任务结束。'
@@ -1167,7 +1168,10 @@ async function recoverLauncher({expectedOperationId}={}) {
         telemetry?.begin('repair',{operationId:context.operationId});telemetry?.stage('rollback');
         return launcherUpdate.restore({...launcherRecoveryOptions(),job:pending.job,context,
           spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
-          onEvent:message=>diagnostics.event(message)});
+          onEvent:message=>{
+            if(message.event==='executor-pending')context.executorPendingReason=message.reason;
+            diagnostics.event(message);
+          }});
       }});
     if(operation.state!=='awaiting-handoff'){
       finishOperationTelemetry(operation,{recover:true});return requireOperationResult(operation,{recover:true});
@@ -1382,7 +1386,10 @@ async function runLauncherUpdate(context,{payload,event,networkPolicy,operationD
       isPackaged:app.isPackaged,localTest:LOCAL_TEST,signal:releaseAbort.signal,metadataCache:releaseMetadataCache(),
       closeCancellation:()=>{releaseAbort=null;},
       localRelease:localReleaseDirectory,spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
-      onEvent:message=>sendBridgeEvent(event.sender,payload.runId,message)});
+      onEvent:message=>{
+        if(message.event==='executor-pending')context.executorPendingReason=message.reason;
+        sendBridgeEvent(event.sender,payload.runId,message);
+      }});
     if(result.handoff)diagnostics.finish('restarting');
     else{
       writeInstallerState({...readInstallerState(),phase:'idle',error:'',task:'',resumeTarget:null});
@@ -1649,7 +1656,7 @@ function createWindow() {
   });
   win.loadFile(uiPath, { query: MOCK_SCENARIO ? { mock: MOCK_SCENARIO } : { desktop: '1' } });
   win.webContents.on('render-process-gone', (_event, details) => {
-    if (!quitting && details.reason !== 'clean-exit') {
+    if (!quitting && !quitReady && details.reason !== 'clean-exit') {
       void recordNativeFailure('renderer',{reason:details.reason,exitCode:details.exitCode});
       const timer=setTimeout(()=>nativeCrashes.collect(),1500);timer.unref();
     }
@@ -1841,7 +1848,7 @@ if (primaryInstance) {
   // Start before the first renderer or Electron-as-Node guard is created.
   nativeCrashes=require('./native-crash').createNativeCrashDiagnostics({
     directory:path.join(app.getPath('userData'),'diagnostics','native-crashes'),
-    diagnostic:code=>diagnostics.write('native-crash.diagnostic',{code}),
+    diagnostic:(code,details={})=>diagnostics.write('native-crash.diagnostic',{code,...details}),
     onEvidence:evidence=>recordNativeFailure('native',evidence),
   });
   nativeCrashes.start({app,crashReporter});
@@ -1872,7 +1879,7 @@ if (primaryInstance) {
   const nativeCrashTimer=setInterval(()=>nativeCrashes.collect(),30000);nativeCrashTimer.unref();
   app.on('will-quit',()=>clearInterval(nativeCrashTimer));
   app.on('child-process-gone',(_event,details)=>{
-    if(details.reason==='clean-exit'||quitting)return;
+    if(details.reason==='clean-exit'||quitting||quitReady)return;
     void recordNativeFailure('child',{type:details.type,reason:details.reason,exitCode:details.exitCode});
     const timer=setTimeout(()=>nativeCrashes.collect(),1500);timer.unref();
   });
@@ -1905,16 +1912,31 @@ if (primaryInstance) {
   });
   handle('nora:recover-launcher',recoverLauncher);
   handle('nora:status', async () => {
+    const cancellation=taskCancellation();
+    if (cancellation.executorPendingReason) return {statusUnavailable:true,busy:true,...cancellation,
+      operation:projectDesktopOperation({...activeOperationContext.snapshot,busy:true,allowedActions:['wait','logs']})};
     if (quitting || shutdownPending || uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), ...taskCancellation(), busy: true,
       operation:projectDesktopOperation(activeOperationContext?{...activeOperationContext.snapshot,busy:true,allowedActions:['wait','logs']}:await operations().snapshot()),
       launcherRecovery:await readLauncherRecovery() };
     if (statusRequest) return statusRequest;
     statusRequest = (async () => {
       const launcherRecovery=await readLauncherRecovery();
+      if (launcherRecovery?.busy === true) {
+        let appOperation=null;
+        try{appOperation=await operations().snapshot(launcherRecovery.operationId,{appOnly:true,inspectEffects:false});}
+        catch(error){diagnostics.error('update.launcher-pending-operation-unavailable',error);}
+        return {statusUnavailable:true,busy:true,launcherRecovery,operation:projectDesktopOperation(appOperation),
+          ...taskCancellation(launcherRecovery.reason||'启动器更新或恢复正在进行，请等待完成。')};
+      }
       let operation, readingOperation=true;
     try {
       operation=activeOperationContext?.snapshot||await operations().snapshot();
       readingOperation=false;
+      if (operation?.busy === true && operation.target?.request?.launcherOnly === true
+        && [operation.currentFailure?.code,operation.primaryFailure?.code].includes('OPERATION_EXECUTOR_UNCONFIRMED')) {
+        return {statusUnavailable:true,busy:true,launcherRecovery,operation:projectDesktopOperation(operation),
+          ...taskCancellation('APP助手尚未确认退出，请保留原任务并重新查询状态。')};
+      }
       const retained=require('./retained-installation').inspect(noraHome(),{allowPending:true,operationId:operation?.operationId});
       if(retained?.state==='prepared')
         return {...nodeStatus('',operation),...taskCancellation(),launcherRecovery,operation:projectDesktopOperation(operation)};
@@ -2055,7 +2077,9 @@ if (primaryInstance) {
         if(['install','update','repair','recover'].includes(payload.action))
           throw launcherError(completion.warning,{code:'RETAINED_COMPLETION_PENDING'});
       }
-      const legacyRecovery=systemUpdate.inspect(noraHome());
+      // An uncertain historical program write can gate startup or
+      // maintenance; stopping an independently verified service is still safe.
+      const legacyRecovery=payload.action==='stop'?null:systemUpdate.inspect(noraHome());
       if(legacyRecovery){
         await context.effect(legacyRecovery.canRecover?'changed':'unknown');
         throw launcherError('旧核心更新尚未恢复，原安装与备份已保留，请使用独立核心更新器。',{code:'UPDATE_RECOVERY_REQUIRED'});
@@ -2310,6 +2334,7 @@ if (primaryInstance) {
     },
   });
   handle('nora:cancel', async () => {
+    if (activeOperationContext?.executorPendingReason) return {ok:false,warning:activeOperationContext.executorPendingReason};
     if (updatingSystem) return { ok: false, warning: '正在替换并检查程序文件，当前阶段不能取消，请等待结果。' };
     if (releaseAbort) { cancelled = true; releaseAbort.abort(); return { ok: true }; }
     if (!activeProcess) return { ok: false, warning: '当前没有正在运行的任务。' };

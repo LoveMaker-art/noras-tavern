@@ -101,7 +101,7 @@ class UpdateErrorDiagnosticTests(unittest.TestCase):
         tree.body[0].body[0].handlers[0].body = [branch]
         ast.fix_missing_locations(tree)
         namespace = {'fail_start': fail_start, 'journal': object(), 'standalone_journal': False,
-                     'recovery_helper': SimpleNamespace(recover=fail_restore),
+                     'recovery_helper': SimpleNamespace(recover=fail_restore, effects=lambda *_: {'status': 'recovery-failed'}),
                      '_operation_evidence': SimpleNamespace(freeze=Mock()), 'managed_home': Path('/fixture'),
                      'hermes_home': Path('/fixture/hermes'), 'install_root': Path('/fixture/tavern'),
                      'version': '2.4.2', 'backup': Path('/fixture/backup')}

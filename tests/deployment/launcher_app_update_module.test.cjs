@@ -37,7 +37,7 @@ elif p['phase']=='cancelled':
     os.replace(app,ctx['stage']);os.replace(ctx['backup'],app);r.checkpoint(ctx,snapshot,'cancelled')
 print(json.dumps({'phase':r.read_json(job/'recovery.json')['phase']}))
 `;
-function fixture(t,{phase='committed',launcherOnly=true,releasePlan}={}){
+function fixture(t,{phase='committed',launcherOnly=true,releasePlan,platform=process.platform,arch=process.arch}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-module-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const home=path.join(root,'data'),app=path.join(root,'app'),job=path.join(home,'installer/launcher-update/job-fixture');
   fs.mkdirSync(job,{recursive:true});fs.mkdirSync(app);
@@ -56,21 +56,21 @@ function fixture(t,{phase='committed',launcherOnly=true,releasePlan}={}){
   for(const name of protectedPaths){const file=path.join(home,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'current content including malformed core metadata: '+name);}
   const before=protectedPaths.map(name=>fs.readFileSync(path.join(home,name)));
   const helper=path.join(desktop,'replace-launcher.py');
-  execFileSync(python,['-B','-c',setup],{encoding:'utf8',input:JSON.stringify({home,app,job,helper,relative,operation,phase,platform:process.platform,arch:process.arch})});
+  execFileSync(python,['-B','-c',setup],{encoding:'utf8',input:JSON.stringify({home,app,job,helper,relative,operation,phase,platform,arch})});
   return {home,app,job,executable,operation,helper,python,operationDirectory,assertPreserved:()=>protectedPaths.forEach((name,i)=>assert.deepEqual(fs.readFileSync(path.join(home,name)),before[i]))};
 }
-function publication(t){
+function publication(t,{platform=process.platform,arch=process.arch}={}){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-publication-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('offline APP archive fixture'),version='1.1.0',asset=`Nora-Tavern-Launcher-${version}-${process.platform}-${process.arch}-update.zip`;
+  const bytes=Buffer.from('offline APP archive fixture'),version='1.1.0',asset=`Nora-Tavern-Launcher-${version}-${platform}-${arch}-update.zip`;
   const manifest={schema:'tavern-release/v2',commit:'a'.repeat(40),versions:{tavern:'2.6.0'},
     launcherVersion:version,launcherCapabilities:{...releases.LAUNCHER_CAPABILITIES},bootstrap:{malformedCore:'outside APP admission'}};
-  const item={schema:'nora-launcher/v1',version,platform:process.platform,arch:process.arch,asset,
+  const item={schema:'nora-launcher/v1',version,platform,arch,asset,
     sha256:crypto.createHash('sha256').update(bytes).digest('hex'),size:bytes.length};
   fs.writeFileSync(path.join(root,'release-manifest.json'),JSON.stringify(manifest));
-  fs.writeFileSync(path.join(root,`nora-launcher-${process.platform}-${process.arch}.json`),JSON.stringify(item));
+  fs.writeFileSync(path.join(root,`nora-launcher-${platform}-${arch}.json`),JSON.stringify(item));
   fs.writeFileSync(path.join(root,asset),bytes);
   return {fetcher:createLocalRelease(root),channel:'stable',networkPolicy:{maxAttempts:1,totalBudgetMs:3000,attemptTimeoutMs:1000,backoffMs:[0]},
-    platform:process.platform,arch:process.arch,launcherVersion:'1.0.0'};
+    platform,arch,launcherVersion:'1.0.0'};
 }
 function contextFor(operation){
   const stages=[],effects=[],handoffs=[];
@@ -118,6 +118,20 @@ for(const phase of ['restored','cancelled'])test(`APP ${phase} survives a lost s
   const result=await update.reconcileAppHandoff(f);
   assert.equal(result.status,phase);
   assert.equal(result.value[phase==='restored'?'recoveryVerification':'notAppliedVerification'],'confirmed');
+  f.assertPreserved();
+});
+test('APP sharing proof checks the original sealed manifest bytes before permitting retry',async t=>{
+  const platform='win32',arch='x64',releasePlan=await releases.selectAppPlan(publication(t,{platform,arch}));
+  const f=fixture(t,{phase:'cancelled',releasePlan,platform,arch}),file=path.join(f.job,'recovery.json');
+  const sharing={schema:'nora-app-sharing-failure/1',phase:'moving-old',winerror:33};
+  const snapshot=JSON.parse(fs.readFileSync(file));
+  fs.writeFileSync(file,JSON.stringify({...snapshot,failurePhase:'moving-old',sharingFailure:sharing}));
+  const before=await update.observeApp(f);
+  assert.deepEqual(before.sharingFailure,sharing);assert.equal(before.workerOffline,true);
+  const manifest=path.join(f.operationDirectory,f.operation.target.releasePlan.manifestRef.file);
+  const bytes=fs.readFileSync(manifest);bytes[bytes.indexOf('a'.repeat(40))]='b'.charCodeAt(0);fs.writeFileSync(manifest,bytes);
+  const after=await update.observeApp(f);
+  assert.equal(after.effectState,'unknown');assert.equal(after.sharingFailure,undefined);
   f.assertPreserved();
 });
 test('APP facts never settle a whole legacy combined operation',async t=>{

@@ -208,6 +208,19 @@ class NoraSystemTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['cwd'], self.root / 'apps/nora-mcp')
         self.assertTrue(all(result.values()))
 
+    def test_runtime_checker_failure_preserves_bounded_concrete_cause(self):
+        from types import SimpleNamespace
+        for index in range(3):
+            outputs = [SimpleNamespace(returncode=0, stderr=b'') for _ in range(index)]
+            outputs.append(SimpleNamespace(returncode=1, stderr=b'prefix ' * 1000 + b'\nMissing managed object: scripts/nora-instance.py'))
+            with self.subTest(index=index), patch.object(system, 'managed_problems', return_value=[]), \
+                    patch.object(system, 'maintenance_run', side_effect=outputs):
+                with self.assertRaises(RuntimeError) as raised:
+                    system.verify_runtime(self.home, self.root, 18899, '/fixture/python', {})
+                self.assertIsNotNone(raised.exception.__cause__)
+                self.assertIn('scripts/nora-instance.py', str(raised.exception.__cause__))
+                self.assertLessEqual(len(str(raised.exception.__cause__)), 1200)
+
     def test_verified_install_is_not_yet_paired_and_configured(self):
         self.initialize()
         result = system.inspect(self.home, self.root, 18899)

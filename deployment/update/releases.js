@@ -642,6 +642,7 @@ async function selectAppPlan({fetcher=fetch,signal,launcherVersion,platform=proc
     if(preferred)sourceContext.rememberAssetResponse(url,preferred);
     const item=await requestJson(url,fetcher,signal,{...request,networkPolicy:{...request.networkPolicy,sourceContext},
       conditionIdentity:appCatalogueIdentity(candidate.assets.find(asset=>asset.name==='release-manifest.json'))});
+    evidence.push(item);
     return {...item,url,preferredSource:sourceContext.preferredSource(url)};
   };
   let metadata=await readManifest(release);
@@ -655,7 +656,7 @@ async function selectAppPlan({fetcher=fetch,signal,launcherVersion,platform=proc
     if(core.schema!=='tavern-release/v2'||core.candidate||Object.hasOwn(core,'coreRelease')
       ||publicationTag(core)!==anchor.tag_name||compare(core.versions?.tavern,anchor.tag_name)!==0
       ||!/^[a-f0-9]{40}$/.test(core.commit||''))throw new Error('当前稳定核心发布身份无法核验。');
-    evidence.push(catalogue,original);
+    evidence.push(catalogue);
     const matches=(candidate,item)=>{
       const product=discoveryManifest(candidate,item),ref=coreReference(product,platform,arch);
       if(!ref||ref.tag!==anchor.tag_name||ref.commit!==core.commit||product.versions?.tavern!==core.versions.tavern)return false;
@@ -671,7 +672,6 @@ async function selectAppPlan({fetcher=fetch,signal,launcherVersion,platform=proc
     for(const candidate of candidates.slice(1)){
       if(matched||compare(candidate.tag_name,anchor.tag_name)!==1)break;
       const item=await readManifest(candidate);
-      evidence.push(item);
       if(matches(candidate,item)){release=candidate;metadata=item;matched=true;}
     }
     if(!matched){release=anchor;metadata=original;}
@@ -688,6 +688,7 @@ async function selectAppPlan({fetcher=fetch,signal,launcherVersion,platform=proc
     const descriptor=release.assets.find(item=>item.name===name);
     launcherMetadata=await requestJson(url,fetcher,signal,{withEvidence:true,metadataCache,networkPolicy,channel,
       conditionIdentity:{expectedVersion:metadata.value.launcherVersion,...appCatalogueIdentity(descriptor)}});
+    evidence.push(launcherMetadata);
   }
   const plan={schema:'nora-release-plan/1',client:'app',mode:'update',tag:release.tag_name,channel,platform,arch,
     release:releaseSnapshot(release),commit:metadata.value.commit,version:metadata.value.launcherVersion,

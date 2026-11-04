@@ -143,6 +143,10 @@
   function renderConsoleStatus() {
     if (!logsOpen) return;
     const operation = snapshot.operation;
+    if (snapshot.executorPendingReason && (busy || snapshot.busy) && (!logOperationId || operation?.operationId === logOperationId)) {
+      $('consoleStatus').textContent = snapshot.executorPendingReason;
+      return;
+    }
     if (!logOperationId) { $('consoleStatus').textContent = '正在读取本次操作日志…'; return; }
     const outcomes={succeeded:'操作已完成',success:'操作已完成',failed:'操作失败',error:'操作失败',cancelled:'操作已取消',interrupted:'操作中断'};
     if(outcomes[logOutcome]) { $('consoleStatus').textContent=outcomes[logOutcome]; return; }
@@ -350,6 +354,14 @@
     try {
       const value = await api.status();
       if (query !== statusQuerySequence) throw new Error('状态查询已更新，请重新查询状态。');
+      if (value.busy === true && value.executorPendingReason) {
+        syncState({busy:true,canCancel:false,executorPendingReason:value.executorPendingReason,cancelReason:value.executorPendingReason,
+          ...(Object.hasOwn(value,'operation') ? {operation:value.operation} : {}),
+          ...(Object.hasOwn(value,'launcherRecovery') ? {launcherRecovery:value.launcherRecovery} : {})});
+        statusUnknown = true;
+        return value;
+      }
+      snapshot.executorPendingReason = null;
       if (Object.hasOwn(value, 'launcherRecovery')) {
         // The launcher backup assessment is independent of runtime status.
         snapshot = { ...snapshot, launcherRecovery: value.launcherRecovery };
@@ -396,14 +408,21 @@
       && (!snapshot.operation || snapshot.operation.readOnly === true) && !snapshot.installer?.startedAt
       && !snapshot.installed && !snapshot.hermesInstalled && !snapshot.noraInstalled && !serviceRunning();
     const restrictedChoices = (statusUnknown || freshInstall) && (uninstallChoiceAvailable || launcherUpdateCheckAvailable);
-    $('management').hidden = freshInstall && !launcherUpdateCheckAvailable || recoveryView || view === 'error' && !snapshot.retainedUninstallPending && !restrictedChoices
+    const failureView = view === 'error' || view === 'recovery';
+    const knownUninstall = !statusUnknown && typeof api.uninstall === 'function'
+      && Boolean(snapshot.installed || snapshot.hermesInstalled || snapshot.managedInstallation || snapshot.retainedUninstallPending);
+    const logsAvailable = hasLogs();
+    $('management').hidden = freshInstall && !launcherUpdateCheckAvailable
+      || failureView && !snapshot.retainedUninstallPending && !restrictedChoices
+        && !logsAvailable && !knownUninstall && !launcherUpdateCheckAvailable
       || view !== 'daily' && (busy || Boolean(snapshot.busy));
-    if (freshInstall && !launcherUpdateCheckAvailable) hideMenu();
+    if ($('management').hidden) hideMenu();
     document.querySelectorAll('#management [data-action]').forEach(control => {
       const action = control.dataset.action;
-      control.hidden = restrictedChoices ? !(action === 'uninstall' && uninstallChoiceAvailable || action === 'update' && launcherUpdateCheckAvailable)
-        : !complete() && !['uninstall', 'logs', 'update'].includes(action);
-      if (!restrictedChoices && action === 'logs') control.hidden = !hasLogs();
+      if (restrictedChoices) control.hidden = !(action === 'uninstall' && uninstallChoiceAvailable || action === 'update' && launcherUpdateCheckAvailable);
+      else if (failureView) control.hidden = !(action === 'logs' && logsAvailable
+        || action === 'uninstall' && knownUninstall || action === 'update' && launcherUpdateCheckAvailable);
+      else control.hidden = action === 'logs' ? !logsAvailable : !complete() && !['uninstall', 'update'].includes(action);
     });
     $('launchbar').hidden = recoveryView || !complete() || view !== 'daily';
     $('status').hidden = !recoveryView && complete() && !statusUnknown && view !== 'error';
@@ -636,6 +655,14 @@
       const note = document.createElement('p'); note.className = 'note'; note.textContent = appRestored;
       $('inline').prepend(note);
     }
+    if (snapshot.busy && snapshot.executorPendingReason) {
+      view = 'monitor'; clearInline(); setupStage(stage);
+      say('APP助手退出尚未确认。', snapshot.executorPendingReason);
+      if (hasLogs()) $('inline').append(button('查看日志', openLogs, false));
+      if (typeof renderConsoleStatus === 'function') renderConsoleStatus();
+      controls();
+      return;
+    }
     if (statusUnknown && (!launcherRecoveryConfirmed || uninstallChoiceAvailable)) {
       if (lastFailure?.error) fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);
       else fail('状态暂时无法确认，请等待查询恢复后再继续。', 'status', refreshFailure);
@@ -839,7 +866,7 @@
       if (now - lastProgressAt >= 180000 && (!taskProgress?.total || taskProgress.current < taskProgress.total)) {
         notes.push('下载已连续 3 分钟无进展，请检查网络或代理。');
       }
-    } else if (taskStage !== 'cancel' && now - lastEvent > 20000) {
+    } else if (!['cancel','executor-pending'].includes(taskStage) && now - lastEvent > 20000) {
       notes.push('正在等待处理结果。');
     }
     if (snapshot.canCancel === false && snapshot.cancelReason && taskStage !== 'cancel') notes.push(snapshot.cancelReason);
@@ -847,6 +874,18 @@
     if (typeof renderConsoleStatus === 'function') renderConsoleStatus();
   }
   function onEvent(event) {
+    if (event.event === 'executor-pending') {
+      const reason=event.reason||'原任务仍在等待执行者关闭；已保留写入保护，请保留窗口并查看日志。';
+      syncState({canCancel:false,cancelReason:reason,executorPendingReason:reason,
+        ...(event.operation ? {operation:event.operation} : {})});
+      currentTask=event.task||'APP助手退出尚未确认';
+      taskStage='executor-pending'; taskProgress=null; lastEvent=Date.now();
+      document.querySelector('.meter')?.classList.add('indeterminate');
+      if ($('jobPercent')) $('jobPercent').textContent='';
+      updateTask(); controls();
+      return;
+    }
+    if (taskStage === 'executor-pending' && ['task','milestone','progress','heartbeat'].includes(event.event)) return;
     if (typeof event.canCancel === 'boolean') { syncState({canCancel:event.canCancel,cancelReason:event.cancelReason}); controls(); }
     if (operationCancelled && ['task','milestone','progress'].includes(event.event)) return;
     if (event.operation) syncState({ operation: event.operation });
@@ -1601,11 +1640,11 @@
   }
   document.querySelectorAll('[data-action]').forEach(control => { control.onclick = () => {
     const action = control.dataset.action;
+    if (action === 'logs' && hasLogs()) { hideMenu(); openLogs({ currentTarget: control }); return; }
     if (statusUnknown) {
       if (action === 'update' && !launcherUpdateCheckAvailable || action === 'uninstall' && !uninstallChoiceAvailable) return;
       if ((uninstallChoiceAvailable || launcherUpdateCheckAvailable) && !['update','uninstall'].includes(action)) return;
     }
-    if (action === 'logs' && hasLogs()) { hideMenu(); openLogs({ currentTarget: control }); return; }
     if (busy) return; hideMenu();
     if (['model','claw','community','update','settings'].includes(action)) pageReturnFocus = control.closest('#more') ? $('moreButton') : control;
     if (action === 'model') modelSettings();
@@ -1641,6 +1680,7 @@
     if (!busy && !refreshing) {
       refreshing = true;
       const wasUnknown = statusUnknown;
+      const beforePendingReason = snapshot.executorPendingReason;
       try {
         const beforeOperation = JSON.stringify(snapshot.operation);
         const before = JSON.stringify([snapshot.running, snapshot.tavernProcessRunning, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]);
@@ -1651,7 +1691,9 @@
         const beforeRecovery = recoveryView ? recoverySignature() : '';
         const detailsOpen = recoveryView && $('inline').querySelector('.recovery-details')?.open === true;
         await readStatus();
-        if (!busy && recoveryView && view === 'recovery' && beforeRecovery !== recoverySignature()) {
+        if (!busy && (snapshot.executorPendingReason || beforePendingReason)
+          && (view !== 'monitor' || beforePendingReason !== snapshot.executorPendingReason)) route();
+        else if (!busy && recoveryView && view === 'recovery' && beforeRecovery !== recoverySignature()) {
           route();
           const details = view === 'recovery' && $('inline').querySelector('.recovery-details');
           if (details && detailsOpen) details.open = true;
@@ -1664,7 +1706,8 @@
         controls();
         void checkVersionsInBackground();
       } catch (error) {
-        if (!busy && launcherRecoveryConfirmed && ['loading', 'error'].includes(view)) route();
+        if (!busy && beforePendingReason && !snapshot.executorPendingReason) route();
+        else if (!busy && launcherRecoveryConfirmed && ['loading', 'error'].includes(view)) route();
         else if (view === 'loading') fail(error, 'status', () => { view = 'loading'; poll(); });
         else if (!busy && view === 'recovery') route();
         else if (!busy && view === 'error' && !wasUnknown && lastFailure) fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);

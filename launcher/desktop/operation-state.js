@@ -68,6 +68,14 @@ function appSharingRetryTime(record){
   const finished=Date.parse(record.updatedAt);
   return Number.isFinite(finished)?finished+APP_SHARING_RETRY_DELAY_MS:null;
 }
+function appRetryAdmission(record){
+  // Only an unchanged-condition refusal before execution can expose an older
+  // attempt. A real failure or an unresolved handoff still takes precedence.
+  return isAppUpdate(record)&&record.state==='blocked'&&record.stageId==='selecting'
+    &&record.effectState==='untouched'&&!record.handoffRef&&!record.archived
+    &&(!record.recoveryOutcome||record.recoveryOutcome==='not-required')
+    &&(record.currentFailure||record.primaryFailure)?.code==='RETRY_CONDITIONS_UNCHANGED';
+}
 
 function createOperationController({directory,lock,executors={},recoverers={},recheckers={},captureConditions,identifyFailureCondition,evidence,
   observeEffects,observeAppEffects=observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
@@ -284,8 +292,54 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     const until=last+SERVICE_RETRY_WINDOW_MS;
     return last&&until>Date.parse(now())?until:null;
   }
+  function latestAppAttempt(record,exclude){
+    if(!isAppUpdate(record)||record.target.releasePlan?.client!=='app')return null;
+    const target=retryIdentity(record.target);
+    return records().filter(item=>item.operationId!==exclude&&isAppUpdate(item)&&!appRetryAdmission(item)
+      &&retryIdentity(item.target)===target).at(-1);
+  }
+  function appSharingRetry(record,{admitting=false}={}){
+    if(!admitting&&!appRetryAdmission(record)&&appSharingRetryTime(record)===null)return null;
+    const source=latestAppAttempt(record,admitting?record.operationId:undefined);
+    if(!source||source.conditionFingerprint!==record.conditionFingerprint
+      ||!admitting&&!appRetryAdmission(record)&&source.operationId!==record.operationId)return null;
+    const retryAt=appSharingRetryTime(source);
+    return retryAt===null?null:{source,retryAt};
+  }
+  async function verifyClosedApp(source,expected){
+    const observed=observeAppEffects&&await observeAppEffects(source);
+    const sharing=source.result?.appSharingFailure;
+    if(observed?.status!==expected||observed.effectState!==source.effectState
+      ||observed.workerOffline!==true||observed.busy!==false||observed.operationId!==source.operationId
+      ||observed.planDigest!==source.planDigest||observed.job!==source.handoffRef
+      ||sharing&&(!observed.sharingFailure||digest(canonical(observed.sharingFailure))!==digest(canonical(sharing))))
+      throw fail('UPDATE_RECOVERY_REQUIRED','The previous APP handoff is not confirmed safe to retry');
+  }
+  function appSharingAttemptFields(record,source){
+    return {attempt:source.attempt+1,primaryFailure:source.primaryFailure,
+      journalRefs:[...new Set([...(record.journalRefs||[]),...(source.journalRefs||[]),source.handoffRef])]};
+  }
+  async function requireNoBlockingEffects(kind,appOnly,exclude){
+    // A positively owned stop remains available while files need recovery.
+    // It still acquires the same native lock and may not guess process identity.
+    if(['stop','shutdown'].includes(kind))return;
+    for(const unfinished of records().filter(value=>value.operationId!==exclude
+      &&(!appOnly||mayAffectApp(value))&&(!TERMINAL.has(value.state)
+      ||['recovery-required','files-restored-start-failed'].includes(value.recoveryOutcome)))){
+      const inspect=appOnly?observeAppEffects:observeEffects;
+      const effects=inspect?await inspect(unfinished):{effectState:unfinished.effectState==='untouched'?'untouched':'unknown'};
+      if(appOnly&&!isAppUpdate(unfinished)&&effects.appSegmentSettled===true)continue;
+      const servicesOnly=TERMINAL.has(unfinished.state)&&unfinished.effectState==='restored'
+        &&effects.effectState==='restored'&&effects.recoveryOutcome==='files-restored-start-failed';
+      if(!['untouched','restored'].includes(effects.effectState)
+        ||effects.recoveryOutcome==='recovery-required'||effects.recoveryOutcome==='files-restored-start-failed'&&!servicesOnly){
+        const error=fail('UPDATE_RECOVERY_REQUIRED','Existing active effects require inspection before another operation');
+        error.operation=dto({...unfinished,state:'interrupted',...effects});throw error;
+      }
+    }
+  }
   function dto(record,fields={},recoveryClosurePending=false){
-    const appSharingRetryAt=appSharingRetryTime(record);
+    const appSharingRetryAt=appSharingRetry(record)?.retryAt??null;
     let allowedActions;
     if(record.archived)allowedActions=['logs'];
     else if(fields.busy)allowedActions=['wait','logs'];
@@ -295,10 +349,10 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     else if(record.effectState==='unknown')allowedActions=['recheck','logs'];
     else if(record.canResume===true)allowedActions=['resume','recheck','logs'];
     else if(record.handoffRef&&['awaiting-handoff','interrupted'].includes(record.state))allowedActions=['recheck','logs'];
+    else if(appSharingRetryAt!==null&&appSharingRetryAt<=Date.parse(now()))allowedActions=['retry','recheck','logs'];
     else if(record.state==='blocked')allowedActions=['recheck','logs'];
     else if(record.state==='interrupted')allowedActions=record.effectState==='untouched'?['resume','recheck','logs']:['recheck','logs'];
     else if(record.effectState==='changed')allowedActions=['recheck','logs'];
-    else if(appSharingRetryAt!==null&&appSharingRetryAt<=Date.parse(now()))allowedActions=['retry','recheck','logs'];
     else if(record.state==='failed'||record.state==='cancelled'||record.state==='rolled-back')allowedActions=record.attempt>=2?['recheck','logs']:['retry','recheck','logs'];
     else allowedActions=['recheck','logs'];
     if(record.kind==='pair'||record.kind==='model'&&record.target?.request?.mode==='configure')
@@ -356,7 +410,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         if(observed.busy||['changed','unknown'].includes(observed.effectState)
           ||observed.recoveryOutcome==='files-restored-start-failed')return observed;
       }
-      id=history.at(-1)?.operationId;
+      const latest=history.at(-1),attempt=appRetryAdmission(latest)&&latestAppAttempt(latest);
+      id=(attempt&&attempt.attempt>=3&&attempt.updatedAt>=latest.updatedAt?attempt:latest)?.operationId;
     }
     const record=id?read(id):null;
     if(!record)return null;
@@ -448,8 +503,15 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         const previous=records().filter(value=>value.operationId!==record.operationId&&value.kind===record.kind
           &&(value.retryTargetDigest||retryIdentity(value.target))===retryTargetDigest
           &&value.conditionFingerprint===record.conditionFingerprint).at(-1);
-        await update({target:JSON.parse(JSON.stringify(target)),planDigest,retryTargetDigest,planSelected:true,attempt:failedAttempt(previous)?previous.attempt+1:1});
-        if(record.kind!=='pair'&&!serviceCommand(record)&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
+        const sharing=appSharingRetry({...record,target},{admitting:true});
+        const sharingReady=sharing&&sharing.retryAt<=Date.parse(now());
+        if(sharingReady){
+          await requireNoBlockingEffects(record.kind,true,record.operationId);
+          await verifyClosedApp(sharing.source,'cancelled');
+        }
+        await update({target:JSON.parse(JSON.stringify(target)),planDigest,retryTargetDigest,planSelected:true,
+          attempt:failedAttempt(previous)?previous.attempt+1:1,...(sharingReady?appSharingAttemptFields(record,sharing.source):{})});
+        if(!sharingReady&&record.kind!=='pair'&&!serviceCommand(record)&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
           const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
           const ownFailure=(record.currentFailure||record.primaryFailure)&&Date.parse(record.createdAt)>Date.parse(previous.createdAt);
           error.retryConditionTarget=ownFailure?failureCondition(record):failureCondition(previous);throw error;
@@ -617,22 +679,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       }
       const appOnly=isAppUpdate({kind,target});
       await reclaim(kind,lease,{appOnly});
-      // A positively owned stop remains available while files need recovery.
-      // It still acquires the same native lock and may not guess process identity.
-      for(const unfinished of ['stop','shutdown'].includes(kind)?[]:records().filter(value=>
-        (!appOnly||mayAffectApp(value))&&(!TERMINAL.has(value.state)
-        ||['recovery-required','files-restored-start-failed'].includes(value.recoveryOutcome)))){
-        const inspect=appOnly?observeAppEffects:observeEffects;
-        const effects=inspect?await inspect(unfinished):{effectState:unfinished.effectState==='untouched'?'untouched':'unknown'};
-        if(appOnly&&!isAppUpdate(unfinished)&&effects.appSegmentSettled===true)continue;
-        const servicesOnly=TERMINAL.has(unfinished.state)&&unfinished.effectState==='restored'
-          &&effects.effectState==='restored'&&effects.recoveryOutcome==='files-restored-start-failed';
-        if(!['untouched','restored'].includes(effects.effectState)
-          ||effects.recoveryOutcome==='recovery-required'||effects.recoveryOutcome==='files-restored-start-failed'&&!servicesOnly){
-          const error=fail('UPDATE_RECOVERY_REQUIRED','Existing active effects require inspection before another operation');
-          error.operation=dto({...unfinished,state:'interrupted',...effects});throw error;
-        }
-      }
+      await requireNoBlockingEffects(kind,appOnly);
       const retryTargetDigest=retryIdentity(target);
       const candidates=records().filter(value=>value.kind===kind&&(value.retryTargetDigest||retryIdentity(value.target))===retryTargetDigest);
       record={schema:SCHEMA,operationId,requestId,kind,target:JSON.parse(JSON.stringify(target)),planDigest:targetDigest,requestDigest:targetDigest,
@@ -686,7 +733,11 @@ function createOperationController({directory,lock,executors={},recoverers={},re
           await write(record,lease,{expected:null});await lease.release();return dto(record);
         }
       }
-      if(kind!=='pair'&&!serviceCommand(record)&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
+      const sharing=appSharingRetry(record,{admitting:true});
+      if(sharing&&sharing.retryAt<=Date.parse(now())){
+        await verifyClosedApp(sharing.source,'cancelled');
+        Object.assign(record,appSharingAttemptFields(record,sharing.source));
+      }else if(kind!=='pair'&&!serviceCommand(record)&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
         const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
         record.state='blocked';record.primaryFailure={code:'RETRY_CONDITIONS_UNCHANGED',site:'launcher.operation',
           guidance:presentError(error,{action:kind})};
@@ -698,7 +749,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     }catch(error){await lease.release();throw error;}
     return execute(record,options,lease,'start',initialConditions);
   }
-  async function continueOperation(id,mode,options={}){
+  async function continueOperation(id,mode,options={},admission){
     const before=await snapshot(id);
     if(before.busy)throw fail('OPERATION_BUSY','The existing writer is still active');
     if(options.snapshotSequence!==undefined&&options.snapshotSequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
@@ -714,23 +765,29 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(!handoff&&!recoveryHandoff&&!before.allowedActions.includes(mode)&&!(mode==='resume'&&before.allowedActions.includes('retry'))
       &&!(mode==='recover'&&before.allowedActions.includes('start-restored')))
       throw fail('OPERATION_ACTION_UNAVAILABLE','This operation cannot perform the requested action');
+    if(mode==='resume'&&!handoff&&before.state==='blocked'){
+      const blocked=read(id),sharing=appRetryAdmission(blocked)&&appSharingRetry(blocked);
+      if(sharing&&sharing.retryAt<=Date.parse(now())){
+        if(blocked.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The admission record changed; inspect it again');
+        return continueOperation(sharing.source.operationId,mode,{...options,snapshotSequence:sharing.source.sequence},
+          {operationId:id,sequence:blocked.sequence});
+      }
+      if(isAppUpdate(blocked))throw fail('OPERATION_ACTION_UNAVAILABLE','The original APP attempt is no longer eligible for retry');
+    }
     const ownerEpoch=nextEpoch(id);
     const lease=await lock.acquire({directory:typeof directory==='function'?directory():directory,operationId:id,ownerEpoch});
     let record;
     try{
     record=read(id);
     if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
+    if(admission&&read(admission.operationId).sequence!==admission.sequence)
+      throw fail('OPERATION_SNAPSHOT_CHANGED','The admission record changed; inspect it again');
     if(mode==='resume'&&!handoff&&isAppUpdate(record)&&record.handoffRef&&TERMINAL.has(record.state)){
-      const expected=closedAppHandoff(record),retryAt=appSharingRetryTime(record);
-      if(!expected||record.attempt>=2&&(retryAt===null||retryAt>Date.parse(now())))
+      const expected=closedAppHandoff(record),sharing=appSharingRetry(record);
+      if(!expected||record.attempt>=2&&(!sharing||sharing.retryAt>Date.parse(now())))
         throw fail('OPERATION_ACTION_UNAVAILABLE','The previous APP handoff is not eligible for retry');
-      const observed=observeAppEffects&&await observeAppEffects(record);
-      const sharing=record.result?.appSharingFailure;
-      if(observed?.status!==expected||observed.effectState!==record.effectState
-        ||observed.workerOffline!==true||observed.busy!==false||observed.operationId!==id
-        ||observed.planDigest!==record.planDigest||observed.job!==record.handoffRef
-        ||sharing&&(!observed.sharingFailure||digest(canonical(observed.sharingFailure))!==digest(canonical(sharing))))
-        throw fail('UPDATE_RECOVERY_REQUIRED','The previous APP handoff is not confirmed safe to retry');
+      if(sharing)await requireNoBlockingEffects(record.kind,true,id);
+      await verifyClosedApp(record,expected);
       record.journalRefs=[...new Set([...(record.journalRefs||[]),record.handoffRef])];
       record.handoffRef=null;record.result=null;record.verification='unconfirmed';record.effectState='untouched';
     }
@@ -810,6 +867,17 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       const verify=recheckers[record.kind];
       if(!verify)return dto(record);
       const proof=await verify(record,{lease,...options,conditionTarget:failureCondition(record)});
+      // The acquired writer has ruled out orphaned executors. Close only a
+      // program result owned by this exact core operation, without starting it.
+      if(record.kind==='update'&&!appOnly&&!record.handoffRef&&record.state!=='rolled-back'
+        &&proof?.completion==='rolled-back'&&proof.operationId===id&&proof.effectState==='restored'
+        &&proof.recoveryOutcome==='files-restored-start-failed'){
+        Object.assign(record,{ownerEpoch,state:'rolled-back',stageId:'verifying',effectState:'restored',
+          verification:'failed',recoveryOutcome:proof.recoveryOutcome,currentFailure:null,
+          result:{updateRecovered:true,recoveryVerification:'files-only'}});
+        await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence}});
+        return dto(record);
+      }
       // A model helper may commit fully before its reply/final read fails.
       // Only its exact, unchanged native checkpoint can close that task; a
       // readable list or another task's success never authorizes this closure.

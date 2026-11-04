@@ -27,7 +27,7 @@ function create(options={}){
     // closure is intentionally outside standalone Tavern update authority.
     return require('./operation-history').inspect(path.resolve(value(home))).references;
   }
-  async function recover(context){
+  async function recover(context,{error:originalError}={}){
     context.check();await context.stage('recovering');
     const facts=await systemEffects(context.snapshot);
     if(facts.effectState==='untouched')return {effectState:'untouched',verification:'confirmed',value:{untouched:true}};
@@ -36,8 +36,23 @@ function create(options={}){
       if(current?.standalone!==true||current.systemReady!==true)throw fail('恢复后的原酒馆尚未通过实际检查。');
       return {effectState:'restored',verification:'confirmed',value:{...current,updateRecovered:true,recoveryVerification:'confirmed'}};
     }
-    if(facts.effectState==='unknown'||facts.canRecover!==true)throw fail('独立更新恢复来源无法核验，现有文件与备份已保留。');
-    const result=await bridge('recover-update',{operationId:context.operationId},context);
+    const filesOnly=value=>value.operationId===context.operationId&&value.status==='restored'
+      &&value.effectState==='restored'&&value.recoveryOutcome==='files-restored-start-failed';
+    const restoredWithServiceFailure=error=>({effectState:'restored',filesRestored:true,verification:'failed',
+      value:{updateRecovered:true,recoveryVerification:'files-only'},
+      ...(error?{secondaryErrors:[{operation:'restore-service',error}]}:{})});
+    // An automatic failure handoff records already-restored files without
+    // starting the same service again. An explicit request may retry services.
+    if(filesOnly(facts)&&originalError)return restoredWithServiceFailure();
+    if(facts.effectState==='unknown'||facts.canRecover!==true&&!filesOnly(facts))
+      throw fail('独立更新恢复来源无法核验，现有文件与备份已保留。');
+    let result;
+    try{result=await bridge('recover-update',{operationId:context.operationId},context);}
+    catch(error){
+      const after=await systemEffects(context.snapshot);
+      if(filesOnly(after))return restoredWithServiceFailure(error);
+      throw error;
+    }
     context.check();const after=await systemEffects(context.snapshot);
     if(result?.updateRecovered!==true||result.recoveryVerification!=='confirmed'
       ||after.effectState!=='restored'||after.recoveryOutcome!=='restored-and-verified')

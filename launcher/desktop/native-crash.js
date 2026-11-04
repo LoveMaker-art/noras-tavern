@@ -3,6 +3,7 @@ const path=require('node:path');
 const {createHash,randomUUID}=require('node:crypto');
 
 const MAX_DUMP=64*1024*1024,MAX_DUMPS=10,MAX_RETAINED=128*1024*1024;
+const SETUP_ERROR_CODES=new Set(['EACCES','EPERM','ENOENT','ENOSPC','EIO','EBUSY','ENOTDIR','EEXIST','ERR_FAILED']);
 // Read only the exception and module table. Stack memory, process annotations,
 // environment and command line in the minidump never enter automatic uploads.
 function crashLocation(buffer){
@@ -65,11 +66,16 @@ function createNativeCrashDiagnostics({directory,onEvidence,diagnostic=()=>{}}){
   }
   function start({app,crashReporter}){
     if(!crashReporter?.start)return false;
+    let stage='crash_directory';
     try{
-      safeDirectory();app.setPath('crashDumps',directory);
+      safeDirectory();stage='crash_path';app.setPath('crashDumps',directory);
+      stage='crash_reporter';
       crashReporter.start({uploadToServer:false,productName:'Nora Tavern Launcher'});
       return true;
-    }catch{diagnostic('native_crash_collection_unavailable');return false;}
+    }catch(error){
+      diagnostic('native_crash_collection_unavailable',{stage,systemCode:SETUP_ERROR_CODES.has(error?.code)?error.code:'UNKNOWN'});
+      return false;
+    }
   }
   async function collect(){
     if(collecting)return;collecting=true;

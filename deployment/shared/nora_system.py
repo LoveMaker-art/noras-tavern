@@ -387,17 +387,30 @@ def inspect(home, root, port):
 def verify_runtime(home, root, port, python, env):
     """Exercise Hermes loaders, the MCP handshake and its live instance binding."""
     import yaml
+
+    def reject_probe(message, result):
+        detail = getattr(result, 'stderr', None)
+        if isinstance(detail, bytes):
+            detail = detail.decode('utf-8', errors='replace')
+        detail = detail.replace('\x00', '').strip() if isinstance(detail, str) else ''
+        if len(detail) > 1200:
+            boundary = detail.find('\n', len(detail) - 1200)
+            detail = detail[boundary + 1:] if boundary >= 0 else detail[:1200]
+        if detail:
+            raise RuntimeError(message) from RuntimeError(detail)
+        raise RuntimeError(message)
+
     problems = managed_problems(home, root, port)
     if problems:
         raise RuntimeError("；".join(problems))
     result = maintenance_run([python, "-B", str(home / "scripts/nora-instance.py"), "check"],
                             cwd=home, env=env, capture_output=True, timeout=30)
     if result.returncode:
-        raise RuntimeError("Nora 跨平台实例入口检查失败")
+        reject_probe("Nora 跨平台实例入口检查失败", result)
     result = maintenance_run([python, "-B", str(home / "nora-clawchat-check.py")],
                             cwd=home, env=env, capture_output=True, timeout=60)
     if result.returncode:
-        raise RuntimeError("ClawChat 插件、工具或 Liveware 运行环境检查失败")
+        reject_probe("ClawChat 插件、工具或 Liveware 运行环境检查失败", result)
     prompt_probe = '''
 from pathlib import Path
 from agent.prompt_builder import load_soul_md, build_context_files_prompt, build_skills_system_prompt
@@ -423,7 +436,7 @@ with patch.object(handle.__globals__["subprocess"], "Popen") as spawn:
 '''
     result = maintenance_run([python, "-B", "-c", prompt_probe], cwd=home, env=env, capture_output=True, timeout=60)
     if result.returncode:
-        raise RuntimeError("Hermes 未能加载完整 Nora 身份、指令或技能；初始化未完成。")
+        reject_probe("Hermes 未能加载完整 Nora 身份、指令或技能；初始化未完成。", result)
     config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     mcp = config["mcp_servers"]["nora"]
     if mcp["env"].get("NORA_MCP_BASE_URL") != f"http://127.0.0.1:{port}":

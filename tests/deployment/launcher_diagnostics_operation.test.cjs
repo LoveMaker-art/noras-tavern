@@ -157,6 +157,22 @@ test('partial and oversized records preserve cursor boundaries and disclose miss
   assert.deepEqual(result.records.map(record=>record.text),['complete after append']);assert.equal(result.pendingTail,false);
 });
 
+test('a valid long diagnostic record remains visible with bounded text and an advancing cursor',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-long-operation-record-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const file=path.join(root,'install.log'),diagnostics=createDiagnostics({primary:()=>file});
+  const id=diagnostics.begin('long-record',{action:'update'});
+  diagnostics.event({event:'log',line:'Concrete checker failure: '+ '字😀'.repeat(70000)+' api_key=fixture-hidden',uploadScope:'maintenance'});
+  diagnostics.finish('failed');
+  const records=[],missing=new Set();let result,cursor,reads=0;
+  do{result=diagnostics.readOperation(id,cursor);cursor=result.cursor;records.push(...result.records);
+    result.missing.forEach(value=>missing.add(value));assert.ok(++reads<10,'cursor must advance');}while(result.hasMore);
+  const long=records.find(record=>record.text.startsWith('Concrete checker failure:'));
+  assert.ok(long,'a large valid record must not silently disappear');
+  assert.equal(long.truncated,true);assert.ok(long.text.length<20000);assert.ok(missing.has('console_record_truncated'));
+  assert.doesNotMatch(JSON.stringify(records),/fixture-hidden/);
+  assert.deepEqual(diagnostics.readOperation(id,cursor).records,[]);
+});
+
 test('an independent check keeps its log identity without stealing a running installation', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-log-scope-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

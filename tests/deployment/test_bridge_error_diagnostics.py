@@ -267,6 +267,63 @@ console.log(JSON.stringify(packets.packet(error, { action: 'stop', history: [] }
         self.assertGreater(len(messages), 1)
         self.assertEqual(messages, [f'cause level {level}' for level in range(len(messages))])
 
+    def test_marker_access_denial_allows_stop_to_finish_only_with_independent_offline_proof(self):
+        with tempfile.TemporaryDirectory(prefix='nora-marker-stop-') as temporary:
+            root = Path(temporary)
+            args = SimpleNamespace(service='tavern', nora_home=root, hermes_home=root / 'hermes',
+                                   install_root=root / 'tavern', port=18899)
+            lifecycle = args.install_root / 'apps/tavern-runtime/native_lifecycle.py'
+            lifecycle.parent.mkdir(parents=True)
+            lifecycle.touch()
+            marker = lifecycle.with_name('native-runtime.json')
+            lock = args.install_root / 'apps/tavern-ops/updater/runtime_lock.py'
+            lock.parent.mkdir(parents=True)
+            lock.write_text('from contextlib import nullcontext\n'
+                            'def installation_lock(*args): return nullcontext()\n', encoding='utf-8')
+            real_stat = Path.stat
+
+            def deny_marker(path, *args, **kwargs):
+                if path == marker:
+                    raise PermissionError(errno.EACCES, 'runtime marker denied', str(marker))
+                return real_stat(path, *args, **kwargs)
+
+            for offline_error in (None, RuntimeError('bound process or listener still present')):
+                with self.subTest(offline=offline_error is None), \
+                     patch.object(Path, 'stat', deny_marker), \
+                     patch.object(bridge, '_recovery_require_native_offline', side_effect=offline_error) as proof, \
+                     patch.object(bridge, 'run_stream') as native, \
+                     patch.object(bridge, 'stop_liveware') as tunnel, \
+                     patch.object(bridge, 'emit') as emit:
+                    if offline_error is None:
+                        bridge.command_stop(args)
+                        tunnel.assert_called_once_with(args.hermes_home)
+                        result = emit.call_args.kwargs
+                        self.assertIs(result['tavernProcessRunning'], False)
+                        self.assertIs(result['running'], False)
+                        self.assertTrue(result['statusUnavailable'])
+                    else:
+                        with self.assertRaises(RuntimeError) as failure:
+                            bridge.command_stop(args)
+                        self.assertIs(failure.exception.__cause__, offline_error)
+                        self.assertFalse(any(call.args[0] == 'result' for call in emit.call_args_list))
+                    proof.assert_called()
+                    native.assert_not_called()
+
+    def test_stop_does_not_treat_a_denied_controller_as_a_marker_only_failure(self):
+        root = Path('/fixture/nora')
+        args = SimpleNamespace(service='tavern', nora_home=root, hermes_home=root / 'hermes',
+                               install_root=root / 'tavern', port=18899)
+        controller = args.install_root / 'apps/tavern-runtime/native_lifecycle.py'
+        denied = PermissionError(errno.EACCES, 'runtime controller denied', str(controller))
+        with patch.object(bridge, 'installed', side_effect=denied), \
+             patch.object(bridge, '_recovery_require_native_offline') as proof, \
+             patch.object(bridge, 'stop_liveware') as tunnel, patch.object(bridge, 'emit'):
+            with self.assertRaises(RuntimeError) as failure:
+                bridge.command_stop(args)
+        self.assertIs(failure.exception.__cause__, denied)
+        proof.assert_not_called()
+        tunnel.assert_not_called()
+
     def test_stop_preserves_original_errors_before_status_inspection(self):
         args = Mock(service='all', nora_home=Path('/fixture/nora'),
                     hermes_home=Path('/fixture/nora/hermes'),

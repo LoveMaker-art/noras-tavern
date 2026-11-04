@@ -62,3 +62,20 @@ test('standalone policy does not accept restored file labels without actual runt
   await assert.rejects(f.policy.recover({operationId:'a52065fa-dd93-4b01-8b11-cfe5c72c1400',
     snapshot:{kind:'update'},check(){},stage:async()=>{}}),/实际检查/);
 });
+
+test('standalone service failure closes old file recovery and only retries services on explicit request',async t=>{
+  const f=fixture(t),directory=path.join(f.home,'installer');
+  const controller=createOperationController({directory,lock:createTestOperationLock(),
+    observeEffects:f.policy.observe,recoverers:{update:f.policy.recover}});
+  const original=await controller.start('update',{target:{request:{action:'update'}},execute:async context=>{
+    f.setEffects({effectState:'restored',recoveryOutcome:'files-restored-start-failed',canRecover:false,
+      operationId:context.operationId,status:'restored'});
+    await context.effect('changed');throw Error('service did not start after rollback');
+  }},'standalone-service-failure');
+  assert.equal(original.state,'rolled-back');
+  assert.equal(original.recoveryOutcome,'files-restored-start-failed');
+  assert.equal(f.recovered(),0);
+  const restarted=await controller.recover(original.operationId);
+  assert.equal(restarted.recoveryOutcome,'restored-and-verified');
+  assert.equal(f.recovered(),1);
+});

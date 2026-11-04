@@ -10,6 +10,12 @@ import shutil
 import sys
 
 
+def _progress(step):
+    # Call sites use fixed stage literals only: no paths, config, or credentials.
+    # Flush before each check so a deadline still identifies the pending stage.
+    print("NORA_BUNDLE_STEP=" + step, file=sys.stderr, flush=True)
+
+
 def check_terminal(home, components):
     """Exercise Hermes' actual Windows backend without installing host software."""
     terminal = components.get("terminal", {})
@@ -40,9 +46,11 @@ def check_files(home, components):
 
 
 def check(home):
+    _progress("components_files")
     components = json.loads((home / "nora-components.json").read_text(encoding="utf-8"))
     check_files(home, components)
     liveware = home / components["liveware"]["path"]
+    _progress("liveware_help")
     result = subprocess.run([str(liveware), "--help"], capture_output=True, timeout=15)
     if result.returncode:
         raise RuntimeError("Bundled Liveware cannot execute")
@@ -59,24 +67,31 @@ def check(home):
         sys.addaudithook(offline)
         sys.path.insert(0, str(home / "hermes-agent"))
         if sys.platform == "win32":
+            _progress("windows_terminal")
             check_terminal(home, components)
+        _progress("plugin_enable")
         from hermes_cli.plugins_cmd import cmd_enable
         cmd_enable("clawchat", allow_tool_override=False)
+        _progress("plugin_discovery")
         from hermes_cli.plugins import get_plugin_manager
         manager = get_plugin_manager()
         manager.discover_and_load()
         plugin = next((p for p in manager.list_plugins() if p["name"] == "clawchat"), None)
         if not plugin or not plugin["enabled"] or plugin["error"] or not plugin["tools"] or not plugin["hooks"]:
             raise RuntimeError("ClawChat registration failed: " + json.dumps(plugin))
+        _progress("adapter_import")
         sys.path.insert(0, str(home / "plugins/clawchat"))
         from clawchat_gateway.adapter import ClawChatAdapter
         from clawchat_gateway.liveware_cli import resolve_liveware_path, wait_liveware_cli_ready
+        _progress("liveware_ready")
         runner.run(wait_liveware_cli_ready())
     if network_attempts:
         raise RuntimeError("ClawChat attempted network access during offline registration")
+    _progress("liveware_resolve")
     resolved = resolve_liveware_path()
     if Path(shutil.which(resolved or '') or resolved or "").resolve() != liveware.resolve():
         raise RuntimeError("Liveware did not resolve to the bundled executable")
+    _progress("complete")
     print(json.dumps({"ok": True, "clawchat": plugin["version"], "liveware": "ready",
                       "tools": plugin["tools"], "hooks": plugin["hooks"]}))
 

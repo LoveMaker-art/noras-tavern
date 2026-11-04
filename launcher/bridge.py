@@ -882,11 +882,24 @@ def command_stop(args) -> None:
         except Exception as error:
             errors.append(error)
             error_messages.append(str(error))
+    marker_denied = False
     if service != "nora":
         from contextlib import nullcontext
         try:
             lock = nullcontext()
-            if installed(args.install_root):
+            lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
+            try:
+                present = installed(args.install_root)
+            except PermissionError as error:
+                marker = lifecycle.with_name("native-runtime.json")
+                if not error.filename or Path(error.filename) != marker or not lifecycle.is_file():
+                    raise
+                # The installed stop controller also needs the denied marker.
+                # Only independent proof of an already offline runtime can let
+                # shutdown proceed without it.
+                marker_denied = True
+                present = False
+            if present or marker_denied:
                 spec = importlib.util.spec_from_file_location(
                     "launcher_registration_lock", args.install_root / "apps/tavern-ops/updater/runtime_lock.py")
                 locks = importlib.util.module_from_spec(spec)
@@ -894,8 +907,9 @@ def command_stop(args) -> None:
                 lock = locks.installation_lock(args.install_root / "tavern-state", "liveware-registration.lock")
             # Serialize against registration, then stop the tunnel after the local runtime.
             with lock:
-                if installed(args.install_root):
-                    lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
+                if marker_denied:
+                    _recovery_require_native_offline(args)
+                elif installed(args.install_root):
                     command = [python_command(args.hermes_home), "-B", str(lifecycle), "stop"]
                     # Older native CLIs did not accept --port for stop.
                     # New CLIs need the bound port even when it is the default,
@@ -922,7 +936,11 @@ def command_stop(args) -> None:
         raise failure from errors[0]
     facts = {}
     if service != 'nora':
-        facts['tavern'] = _tavern_service_status(args.nora_home, args.hermes_home, args.install_root, args.port, prove_absence=True)
+        if marker_denied:
+            _recovery_require_native_offline(args)
+            facts['tavern'] = {'running': False, 'tavernProcessRunning': False, 'port': args.port}
+        else:
+            facts['tavern'] = _tavern_service_status(args.nora_home, args.hermes_home, args.install_root, args.port, prove_absence=True)
         if facts['tavern']['tavernProcessRunning'] is not False:
             fail('尚未确认酒馆进程已停止，请重试。')
     if service != 'tavern':

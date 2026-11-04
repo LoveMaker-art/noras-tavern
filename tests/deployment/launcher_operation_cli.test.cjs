@@ -422,7 +422,7 @@ test('an APP handoff routes independent resume and recovery to the GUI before an
   }
 });
 
-test('known legacy recovery uses a real guarded worker and reports files restored without claiming service success', {timeout:20000},async t=>{
+test('the public CLI preserves both copies of an ambiguous legacy recovery instead of dispatching a writer', {timeout:20000},async t=>{
   const f=fixture(t),calls=[],write=(name,value)=>{
     const file=path.join(f.home,name);fs.mkdirSync(path.dirname(file),{recursive:true});
     fs.writeFileSync(file,typeof value==='string'?value:JSON.stringify(value));
@@ -444,47 +444,19 @@ test('known legacy recovery uses a real guarded worker and reports files restore
   const failed=await controller.start('update',{target:{request:{action:'update',port:8799}},execute:async context=>{
     await context.effect('changed');throw Object.assign(new Error('legacy update interrupted'),{code:'EPIPE'});
   }},randomUUID());
-  let workerIdentity;
+  const journal=fs.readFileSync(path.join(directory,'journal.json'));
+  const inspected=require('../installer/desktop/system-update').inspect(f.home);
+  assert.equal(inspected.code,'LEGACY_RECOVERY_DATA_BOUNDARY');
   const recoveryRequest={...f.request('recover-update',['--operation-id',failed.operationId]),kind:'recover'};
-  const deps={
-    validate:async()=>f.receipt,lock,telemetry:false,run:async(context,target,args,options)=>{
-      if(options.node){
-        assert.equal(path.basename(target),'legacy-recovery-worker.js');
-        const child=context.lease.spawn(process.execPath,[target,...args],{kind:'legacy-recovery',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}});
-        let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);
-        child.stdin.end(options.stdin);
-        const [code]=await require('node:events').once(child,'close');assert.equal(code,0,stdout+stderr);
-        workerIdentity=(await context.lease.snapshot()).jobs.at(-1);
-        return stdout.trim().split('\n').map(JSON.parse).find(event=>event.event==='result');
-      }
-      calls.push(args[8]);
-      if(args[8]==='recovery-stop')return {offline:true,running:false,gatewayRunning:false};
-      if(args[8]==='verify-current-update'){
-        assert.equal(args[args.indexOf('--version')+1],'2.4.0','service continuation must verify the restored fixed version');
-        return {version:'2.4.0',updateVerified:true,systemReady:true};
-      }
-      if(args[8]==='start')return {running:true,systemReady:true,version:'2.4.0'};
-      throw new Error('unexpected bridge operation');
-    }
-  };
-  const result=await cli.execute({receiptPath:'fixture',request:recoveryRequest},deps);
-  assert.equal(result.operationId,failed.operationId);assert.equal(result.state,'rolled-back');
-  assert.equal(result.recoveryOutcome,'files-restored-start-failed');assert.equal(result.verification,'failed');
-  assert.equal(result.result.legacyFilesRestored,true);assert.equal(result.result.systemReady,undefined);
-  assert.equal(result.result.originalServiceState,'unrecorded');assert.deepEqual(calls,['recovery-stop']);
-  assert.equal(cli.terminalResult(result).ok,false);
-  assert.equal(workerIdentity.delegation.identityStatus,'reported');assert.ok(workerIdentity.closedAt);
-  assert.equal(fs.readFileSync(path.join(f.home,'tavern/story.json'),'utf8'),'old user data');
-  const journal=JSON.parse(fs.readFileSync(path.join(directory,'journal.json')));
-  assert.equal(fs.readFileSync(path.join(directory,journal.restoreSteps[1].failedName,'story.json'),'utf8'),'current user data');
-  const restoredJournal=fs.readFileSync(path.join(directory,'journal.json'));
-  const confirmed=await cli.execute({receiptPath:'fixture',request:recoveryRequest},deps);
-  assert.equal(confirmed.state,'rolled-back');assert.equal(confirmed.verification,'confirmed');
-  assert.equal(confirmed.result.legacyServicesVerified,true);
-  assert.equal(cli.terminalResult(confirmed).ok,true);
-  assert.equal(confirmed.kind,'update');assert.equal(confirmed.primaryFailure.code,'EPIPE');
-  assert.deepEqual(calls,['recovery-stop','verify-current-update','start']);
-  assert.deepEqual(fs.readFileSync(path.join(directory,'journal.json')),restoredJournal,'service continuation cannot restore files a second time');
+  const deps={validate:async()=>f.receipt,lock,telemetry:false,run:async(...args)=>{calls.push(args);}};
+  await assert.rejects(cli.execute({receiptPath:'fixture',request:recoveryRequest},deps),
+    {code:'OPERATION_ACTION_UNAVAILABLE'});
+  assert.deepEqual(calls,[]);
+  assert.equal(fs.readFileSync(path.join(f.home,'tavern/story.json'),'utf8'),'current user data');
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'current local configuration');
+  assert.equal(fs.readFileSync(path.join(directory,'tavern/story.json'),'utf8'),'old user data');
+  assert.equal(fs.readFileSync(path.join(directory,'hermes/.env'),'utf8'),'old local configuration');
+  assert.deepEqual(fs.readFileSync(path.join(directory,'journal.json')),journal);
 });
 
 test('explicit recovery reports under the original operation and persists real delivery ACK',async t=>{

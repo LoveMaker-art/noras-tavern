@@ -118,7 +118,8 @@ test('the visible same-operation APP retry launches its prepared replacement hel
   assert.deepEqual(calls,[['helper','/test/job'],['quit']]);
   assert.equal(context.quitReady,true);
 });
-test('the desktop retry reopens the fixed APP task, retains the closed handoff and dispatches a new prepared job',async t=>{
+for(const entry of ['original task','latest block','fresh request'])
+test(`the desktop retry keeps the fixed APP target and closed handoffs via ${entry}`,async t=>{
   const f=fixture(t),{createOperationController}=realRequire('./operation-state');
   const {createTestOperationLock}=require('./launcher_operation_test_lock.cjs');
   const updates=path.join(f.home,'installer','launcher-update');fs.mkdirSync(updates,{recursive:true});
@@ -133,7 +134,7 @@ test('the desktop retry reopens the fixed APP task, retains the closed handoff a
     value:{notAppliedVerification:'confirmed',appSharingFailure:sharing},sharingFailure:sharing,
     failure:Object.assign(new Error('original APP share violation'),{code:'EACCES'})});
   const runtime={command:'/fixture/app-python'};
-  const start=appStartFixture({releases:()=>({validateAppPlan:fixed=>fixed}),
+  const start=appStartFixture({releases:()=>({validateAppPlan:fixed=>fixed,selectAppPlan:async()=>plan,sealPlan:()=>plan}),
     require:name=>{assert.equal(name,'./app-helper-runtime');return {isVerified:value=>value===runtime};},
     ownedJob:job=>job,reconcile:async options=>({kind:'terminal',outcome:helperOutcome(options.operation)}),
     prepare:async options=>{assert.deepEqual(options.selectedPlan,plan);return {launcher:plan.launcherManifest};},
@@ -170,12 +171,34 @@ test('the desktop retry reopens the fixed APP task, retains the closed handoff a
   const again=await recheck(second);
   assert.equal(again.appSharingRetryAt,now+30000);assert.equal(again.allowedActions.includes('retry'),false);
   await assert.rejects(retry(again),{code:'OPERATION_ACTION_UNAVAILABLE'});
+  now+=1;
+  const blocked=await controller.start('update',{target:again.target},'second-desktop-request');
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.allowedActions.includes('retry'),false);
   now+=30000;
-  const third=await retry(await controller.snapshot(again.operationId));
+  let third;
+  if(entry==='fresh request'){
+    const request=await controller.start('update',{target:{request:again.target.request}},'fresh-request-after-cooldown');
+    assert.equal(request.state,'awaiting-handoff');
+    assert.notEqual(request.operationId,again.operationId);
+    third=await vm.runInContext('dispatchLauncherHandoff',context)(request);
+  }else{
+    const ready=await controller.recheck(entry==='latest block'?blocked.operationId:again.operationId);
+    assert.equal(ready.allowedActions.includes('retry'),true,'the original attempt must be available after cooldown');
+    evidenceTrusted=false;
+    await assert.rejects(retry(ready),{code:'UPDATE_RECOVERY_REQUIRED'});
+    evidenceTrusted=true;
+    third=await retry(ready);
+    assert.equal(third.operationId,again.operationId);
+  }
   assert.equal(third.attempt,3);assert.ok(third.journalRefs.includes(second.handoffRef));
   now+=60000;
   const exhausted=await recheck(third);
+  assert.equal((await controller.snapshot()).operationId,third.operationId,'an old admission block must not hide the actual outcome');
   await assert.rejects(retry(exhausted),{code:'OPERATION_ACTION_UNAVAILABLE'});
+  await assert.rejects(retry(await controller.snapshot(again.operationId)),{code:'OPERATION_ACTION_UNAVAILABLE'});
+  const fourth=await controller.start('update',{target:{request:again.target.request}},'fresh-request-after-exhaustion');
+  assert.equal(fourth.state,'blocked');
+  assert.equal(fourth.allowedActions.includes('retry'),false);
   assert.deepEqual(dispatched,preparedJobs);assert.equal(dispatched.length,2);
   assert.equal(fs.readFileSync(marker,'utf8'),'first fault remains');
   assert.equal(exhausted.primaryFailure.code,'EACCES');
@@ -343,4 +366,27 @@ test(`APP installability is based on the independent APP query (${fault})`,async
     if(fault==='core-query')assert.match(checked.error,/core-only query failed/);
     if(fault==='incompatible-core')assert.equal(checked.compatibilityError,'core-only compatibility failure');
   }
+});
+
+test('ordinary stop still reaches owned service verification during ambiguous historical recovery',async()=>{
+  const calls=[],effects=[];
+  const context=vm.createContext({path,fs,os,process,CHANNEL:'stable',cancelled:false,activeOperationContext:null,
+    require:()=>({createReleaseSourceContext:()=>({}),retryCompletion:()=>null}),launcherError:failure,
+    formatUserError:error=>error.message,app:{getVersion:()=> '2.2.8'},telemetry:null,
+    installerDirectory:()=>'/isolated/installer',noraHome:()=>'/isolated',hermesHome:()=>'/isolated/hermes',
+    installRoot:()=>'/isolated/tavern',payloadDirectory:()=>'/isolated/payload',installationPort:()=>8799,
+    readInstallerState:()=>({phase:'ready',milestones:[]}),writeInstallerState:value=>value,
+    diagnostics:{addSecret(){},begin(){},write(){},finish(){},error(){}},
+    systemUpdate:{inspect:()=>({kind:'legacy',canRecover:false,code:'LEGACY_RECOVERY_DATA_BOUNDARY'})},
+    runBridge:async action=>{calls.push(action);return {running:false,tavernProcessRunning:false};},
+    verifyWorkflowResult:({action,result})=>action==='stop'&&result.tavernProcessRunning===false});
+  vm.runInContext(definition('executeAction'),context);
+  const execute=vm.runInContext('executeAction',context);
+  const task=action=>({operationId:'owned-stop',target:{request:{action,service:'tavern'}},
+    stage:async()=>{},effect:async value=>{effects.push(value);}});
+  assert.equal((await execute(task('stop'),{})).verification,'confirmed');
+  assert.deepEqual(calls,['stop']);
+  assert.deepEqual(effects,[]);
+  await assert.rejects(execute(task('start'),{}),{code:'UPDATE_RECOVERY_REQUIRED'});
+  assert.deepEqual(calls,['stop']);
 });

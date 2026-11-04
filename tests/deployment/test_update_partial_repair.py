@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class PartialUpdateTransactionTests(unittest.TestCase):
     def transaction(self, *, missing_app=True, fail=False, mutate_config=False, mutate_story=False,
                     bad_preflight=False, bad_stop=False, legacy_entry=None, python_bootstrap=False,
-                    foreign_bootstrap=False):
+                    foreign_bootstrap=False, late_config=False, early_config=False):
         with tempfile.TemporaryDirectory(prefix='nora-partial-update-') as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / 'existing Nora'
             home, tavern = root / 'hermes', root / 'tavern'
@@ -146,6 +146,8 @@ class PartialUpdateTransactionTests(unittest.TestCase):
                     return {**before, 'offline': not ((phase == 'preflight' and bad_preflight)
                             or (phase == 'stop' and bad_stop)), 'partialRepair': snapshot}
                 if phase == 'recover-stop':
+                    if early_config:
+                        native_config.write_text('# user edit before rollback samples the state\n')
                     return {'offline': True}
                 if phase in ('rollback', 'recover-verify'):
                     self.assertEqual(bridge.partial_installation_snapshot(args), snapshot)
@@ -162,12 +164,28 @@ class PartialUpdateTransactionTests(unittest.TestCase):
                 if name == 'simple_service_manager':
                     return SimpleNamespace(ManagedService=SimpleNamespace(discover=lambda *_: None))
                 if name == 'simple_skill_names': return SimpleNamespace(RETIRED=[])
-                return original_module(name, file)
+                loaded = original_module(name, file)
+                if late_config and name == 'tavern_update_recovery':
+                    original_save = loaded.Journal.save
+                    def save(journal, *args, **kwargs):
+                        result = original_save(journal, *args, **kwargs)
+                        entry = journal.plan.get('state')
+                        if entry and entry.get('phase') == 'restoring' and not injected:
+                            previous = native_config.stat().st_ino
+                            native_config.write_text('# user edit just before exchange\n')
+                            self.assertEqual(native_config.stat().st_ino, previous)
+                            injected.append(True)
+                        return result
+                    loaded.Journal.save = save
+                return loaded
+            injected = []
             def start(*_args, **_kwargs):
                 if mutate_config: native_config.write_text('damaged config')
                 if mutate_story: write(state / 'native/default-user/chats/new/new.jsonl', 'unexpected story')
                 return {'health': {'ok': True}}
             def proof(*_args):
+                if late_config or early_config:
+                    raise RuntimeError('injected candidate runtime failure')
                 if fail:
                     story.unlink()
                     chat.write_text('damaged session')
@@ -220,7 +238,32 @@ class PartialUpdateTransactionTests(unittest.TestCase):
                 legacy_stop.assert_not_called()
                 no_install.assert_not_called()
                 return
-            if fail or mutate_config or mutate_story or bad_stop:
+            if early_config or mutate_config:
+                original_error = 'injected candidate runtime failure' if early_config else '部分安装修复改变了原有配置'
+                with self.assertRaisesRegex(RuntimeError, original_error):
+                    update.install(invocation)
+                expected = '# user edit before rollback samples the state\n' if early_config else 'damaged config'
+                self.assertEqual(native_config.read_text(), expected)
+                self.assertEqual(state.stat().st_ino, state_identity)
+                self.assertEqual(story.read_bytes(), old_files[story])
+                self.assertEqual(chat.read_bytes(), old_files[chat])
+                return
+            if late_config:
+                with self.assertRaisesRegex(RuntimeError, 'injected candidate runtime failure'):
+                    update.install(invocation)
+                self.assertEqual(injected, [True])
+                self.assertEqual(native_config.read_text(), '# user edit just before exchange\n')
+                recovery = update.recovery_module()
+                with self.assertRaisesRegex(RuntimeError, '配置在恢复期间已变化'):
+                    recovery.recover(home, tavern, stop=lambda *_: {'offline': True},
+                                     resume=lambda *_: self.fail('conflicting data must not be started'),
+                                     verify=lambda *_: self.fail('conflicting data must not be accepted'))
+                self.assertEqual(native_config.read_text(), '# user edit just before exchange\n')
+                self.assertEqual(state.stat().st_ino, state_identity)
+                self.assertEqual(story.read_bytes(), old_files[story])
+                self.assertEqual(chat.read_bytes(), old_files[chat])
+                return
+            if fail or mutate_story or bad_stop:
                 with self.assertRaisesRegex(RuntimeError, 'recovery=restored'):
                     update.install(invocation)
                 for file, content in old_files.items(): self.assertEqual(file.read_bytes(), content, str(file))
@@ -292,8 +335,14 @@ class PartialUpdateTransactionTests(unittest.TestCase):
     def test_candidate_failure_restores_exact_partial_state_without_claiming_old_ready(self):
         self.transaction(fail=True)
 
-    def test_partial_repair_rejects_config_change_and_restores_original_bytes(self):
+    def test_partial_repair_rejects_unattributed_config_change_without_overwriting_it(self):
         self.transaction(mutate_config=True)
+
+    def test_partial_repair_keeps_config_edited_before_rollback(self):
+        self.transaction(missing_app=False, early_config=True)
+
+    def test_partial_repair_keeps_config_edited_at_the_state_exchange(self):
+        self.transaction(missing_app=False, late_config=True)
 
     def test_partial_repair_rejects_added_story_and_restores_original_inventory(self):
         self.transaction(mutate_story=True)

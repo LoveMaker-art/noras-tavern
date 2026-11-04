@@ -746,7 +746,7 @@ class Journal:
                 raise RuntimeError('配置恢复备份缺失或已变化')
         metadata_items=self.metadata_items()  # Validate before stopping or changing files.
         runtime=self.plan.get('runtimeMetadata',{})
-        if (not isinstance(runtime,dict) or any(key!='hermes:cron/jobs.json' for key in runtime)
+        if (not isinstance(runtime,dict) or not set(runtime)<={self.metadata_key(self.home/'cron/jobs.json')}
                 or not set(runtime)<=set(self.metadata_key(target) for target,_ in metadata_items)):
             raise RuntimeError('运行状态恢复快照无效')
         for target,saved in metadata_items:
@@ -762,19 +762,23 @@ class Journal:
             if entry is not None:
                 if entry['archive'] in archives:raise RuntimeError('配置恢复归档路径重复')
                 archives.add(entry['archive'])
+        if 'metadataWrites' in self.plan and 'metadataIntents' not in self.plan:
+            raise RuntimeError('配置写入收据缺少变更意图')
         if 'metadataIntents' in self.plan:
             intents=self.plan['metadataIntents']
             allowed={self.metadata_key(target) for target,_ in metadata_items}
             if not isinstance(intents,list) or len(intents)!=len(set(intents)) or any(key not in allowed for key in intents):
                 raise RuntimeError('配置恢复变更意图无效')
             writes=self.plan.get('metadataWrites')
-            if writes is not None:
+            if 'metadataWrites' in self.plan:
                 if not isinstance(writes,dict) or set(writes)!=set(intents):
                     raise RuntimeError('配置写入收据与变更意图不一致')
                 for key,entry in writes.items():
-                    if (not isinstance(entry,dict) or set(entry)-{'before','after','afterDefinitionDigest','completed'}
+                    if (not isinstance(entry,dict) or set(entry)-{'before','after','afterDefinitionDigest','expectedAfter','completed'}
                             or 'before' not in entry or 'after' not in entry
                             or type(entry.get('completed')) is not bool
+                            or 'expectedAfter' in entry and (not isinstance(entry['expectedAfter'],str)
+                                or entry['after']!=(entry['expectedAfter'] if entry['completed'] else None))
                             or any(value is not None and not re.fullmatch('[a-f0-9]{64}',str(value)) for name,value in entry.items() if name!='completed')):
                         raise RuntimeError('配置写入收据无效')
         self.setup_metadata_intent()
@@ -790,6 +794,11 @@ class Journal:
         state=self.plan.get('state')
         if state is not None and not isinstance(state,dict):raise RuntimeError('剧情状态恢复计划格式无效')
         if state:
+            if 'nativeConfigRestoreDigest' in state:
+                before_config = state['nativeConfigRestoreDigest']
+                if (state.get('mode') != 'copy' or not self.plan.get('partialBaseline')
+                        or before_config is not None and not re.fullmatch('[a-f0-9]{64}', str(before_config))):
+                    raise RuntimeError('部分安装的配置恢复凭证无效')
             if state.get('verifiedBeforeResume') is not None:self.story_writes_released()
             if self.preserves_legacy_state():
                 self.legacy_state_paths()
@@ -1087,7 +1096,7 @@ class Journal:
 
     def metadata_role(self,target):
         key=self.metadata_key(target)
-        if key=='hermes:cron/jobs.json':return 'hermes-cron','task-definitions-and-runtime-state'
+        if target==self.home/'cron/jobs.json':return 'hermes-cron','task-definitions-and-runtime-state'
         if key.startswith(('install:', 'state:')):return 'nora-updater','installation-receipt'
         if key in ('hermes:config.yaml','hermes:AGENTS.md','hermes:AGENTS.md.bak'):
             return 'user','user-configuration'
@@ -1096,7 +1105,7 @@ class Journal:
     def metadata_saved(self,target,saved):
         entry=self.plan.get('runtimeMetadata',{}).get(self.metadata_key(target))
         if entry is None:return saved
-        if (self.metadata_key(target)!='hermes:cron/jobs.json' or not isinstance(entry,dict)
+        if (target!=self.home/'cron/jobs.json' or not isinstance(entry,dict)
                 or set(entry)!= {'snapshot','digest','definitionDigest'}
                 or entry.get('snapshot')!='runtime-state/cron-jobs.json'):
             raise RuntimeError('运行状态恢复快照无效')
@@ -1125,7 +1134,7 @@ class Journal:
             original=digest(saved) if _io_path(saved).exists() else None
             if current!=original:
                 key=self.metadata_key(target);owner,kind=self.metadata_role(target)
-                if offline and key=='hermes:cron/jobs.json' and key not in self.plan.get('runtimeMetadata',{}):
+                if offline and target==self.home/'cron/jobs.json' and key not in self.plan.get('runtimeMetadata',{}):
                     try:before=cron_definition(saved);after=cron_definition(target)
                     except (OSError,ValueError,RuntimeError):before=after=None
                     if before is not None and before==after:
@@ -1211,7 +1220,7 @@ class Journal:
             raise
         return intent
 
-    def mark_metadata(self,targets):
+    def mark_metadata(self,targets,*,postimages=None):
         items={self.metadata_key(target):(target,saved) for target,saved in self.metadata_items()}
         keys=[self.metadata_key(Path(target).absolute()) for target in targets]
         if any(key not in items for key in keys):raise RuntimeError('配置变更目标超出受管范围')
@@ -1221,9 +1230,28 @@ class Journal:
             for key in keys:
                 target,_=items[key]
                 if key in self.plan['metadataWrites']:self.check_owned_metadata(target)
-                self.plan['metadataWrites'][key]={'before':digest(target) if _io_path(target).exists() else None,'after':None,'completed':False}
+                entry={'before':digest(target) if _io_path(target).exists() else None,'after':None,'completed':False}
+                if postimages is not None and key in postimages:entry['expectedAfter']=postimages[key]
+                self.plan['metadataWrites'][key]=entry
         self.plan.setdefault('metadataIntents',[]).extend(fresh)
         self.plan['metadataPhase']='applying';self.save()
+
+    def prepare_metadata_file(self,target,content):
+        """Seal this exact file before allowing its atomic publication."""
+        physical=_io_path(target)
+        original=identity(target)
+        before=digest(target) if original is not None else None
+        expected=hashlib.sha256(b'F\0'+content).hexdigest()
+        key=self.metadata_key(target)
+        self.mark_metadata([target],postimages={key:expected})
+
+        def verify():
+            if (self.plan['metadataWrites'][key]['before']!=before or identity(target)!=original
+                    or (digest(target) if physical.exists() else None)!=before):
+                error=RuntimeError('配置发布前已发生变化，当前配置已保留。')
+                error.code='CONDITIONS_CHANGED';raise error
+
+        return verify,before==expected
 
     def finish_metadata(self,targets):
         """Record successful owned-writer outputs, not unverified future changes."""
@@ -1232,8 +1260,12 @@ class Journal:
             target=Path(target).absolute();key=self.metadata_key(target)
             if key not in self.plan.get('metadataIntents',[]):raise RuntimeError('配置写入缺少变更意图')
             entry=self.plan['metadataWrites'].setdefault(key,{'before':None,'after':None,'completed':False})
-            entry['after']=digest(target) if _io_path(target).exists() else None
-            if key=='hermes:cron/jobs.json' and _io_path(target).exists():
+            after=digest(target) if _io_path(target).exists() else None
+            if 'expectedAfter' in entry and after!=entry['expectedAfter']:
+                error=RuntimeError('配置发布后出现未归属的变化，当前配置已保留。')
+                error.code='CONDITIONS_CHANGED';raise error
+            entry['after']=after
+            if target==self.home/'cron/jobs.json' and _io_path(target).exists():
                 # Old stores can contain a noncanonical/invalid document. Its exact
                 # owned write remains recoverable; it gains no semantic exemption.
                 entry.pop('afterDefinitionDigest',None)
@@ -1273,9 +1305,9 @@ class Journal:
             return safe_path(_volume_workspace(self.root,self.backup,target,create=create),'metadata-original')
         return safe_path(self.backup,entry['archive'])
 
-    def check_owned_metadata(self,target):
+    def check_owned_metadata(self,target,*,current=...):
         key=self.metadata_key(target)
-        current=digest(target) if _io_path(target).exists() else None
+        if current is ...:current=digest(target) if _io_path(target).exists() else None
         for candidate,saved in self.metadata_items():
             if candidate==target:
                 restoring,archived=self.metadata_restore_entry(target,saved);break
@@ -1293,14 +1325,15 @@ class Journal:
         entry=self.plan['metadataWrites'].get(key)
         if entry is None:raise RuntimeError('配置恢复缺少写入收据，当前配置已保留。')
         setup_intent=self.setup_metadata_intent()
-        if current==entry['before'] or entry['completed'] and current==entry['after']:return
+        if (current==entry['before'] or entry['completed'] and current==entry['after']
+                or 'expectedAfter' in entry and current==entry['expectedAfter']):return
         if key==SETUP_METADATA_KEY and setup_intent is not None and current==setup_intent['after']:return
         for candidate,saved in self.metadata_items():
             if candidate==target:
                 saved=self.metadata_saved(target,saved)
                 if current==(digest(saved) if _io_path(saved).exists() else None):return
                 break
-        if key=='hermes:cron/jobs.json' and entry.get('afterDefinitionDigest'):
+        if target==self.home/'cron/jobs.json' and entry.get('afterDefinitionDigest'):
             try:
                 if cron_definition(target)==entry['afterDefinitionDigest']:return
             except (OSError,ValueError,RuntimeError):pass
@@ -1329,6 +1362,18 @@ class Journal:
         item.update(savedIdentity=identity(saved),savedDigest=digest(saved),storyInventory=story_inventory(saved),phase='installing-new')
         self.save();os.replace(_io_path(source),_io_path(target));item['phase']='applied';self.save()
 
+    def partial_native_config_digest(self, root):
+        config = _io_path(safe_path(root, 'native-runtime/config.yaml'))
+        return digest(config) if config.exists() else None
+
+    def check_partial_exchange_config(self, item, current):
+        if 'nativeConfigRestoreDigest' not in item:
+            return
+        if self.partial_native_config_digest(current) != item['nativeConfigRestoreDigest']:
+            error = RuntimeError('部分安装的配置在恢复期间已变化，当前配置和旧备份已保留。')
+            error.code = 'CONDITIONS_CHANGED'
+            raise error
+
     def restore_tree(self,item,target,saved,failed,*,state=False):
         if item.get('phase')=='restored':self.check_tree(item,target,saved,state=state);return
         if state and item.get('phase') in ('pending','copying','untouched'):
@@ -1340,8 +1385,20 @@ class Journal:
         item['phase']='restoring';self.save()
         if identity(target) is not None:
             if _io_path(failed).exists():raise RuntimeError('失败现场目标已存在且当前目标未恢复，未覆盖证据')
-            _io_path(failed).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(target),_io_path(failed))
+            _io_path(failed).parent.mkdir(parents=True,exist_ok=True)
+            self.check_partial_exchange_config(item, target)
+            os.replace(_io_path(target),_io_path(failed))
         if identity(saved) is not None:
+            failed_identity = identity(failed) if 'nativeConfigRestoreDigest' in item else None
+            if failed_identity is not None:
+                if failed_identity not in (item.get('oldIdentity'), item.get('newIdentity')):
+                    raise RuntimeError('部分安装的暂存数据目录身份无法核验，已保留现场。')
+                try:
+                    self.check_partial_exchange_config(item, failed)
+                except (OSError, RuntimeError):
+                    if identity(target) is None:
+                        _recovery_rename(failed, target)
+                    raise
             _io_path(target).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(saved),_io_path(target))
         item['phase']='restored';self.save()
 
@@ -1375,12 +1432,23 @@ class Journal:
         # Check all configuration first. A later conflict must not partially overwrite
         # other user changes before it is noticed.
         if self.plan.get('metadataPhase')=='restored':return
-        for target,_ in self.metadata_items():
-            if self.metadata_key(target) in self.plan.get('metadataIntents',[]):self.check_owned_metadata(target)
+        items=[]
         for index,(target,saved) in enumerate(self.metadata_items()):
             if 'metadataIntents' in self.plan and self.metadata_key(target) not in self.plan['metadataIntents']:continue
             saved=self.metadata_saved(target,saved)
-            key=self.metadata_key(target);entry,archived=self.metadata_restore_entry(target,saved)
+            key=self.metadata_key(target)
+            entry,archived=self.metadata_restore_entry(target,saved)
+            if ('metadataWrites' not in self.plan and target.is_relative_to(self.home)
+                    and target not in {self.root/'tavern-updates'/name for name in
+                                       ('installed.json','installed-manifest.json','nora-system.json')}
+                    and target!=self.state_root()/'native-runtime/dependencies.json'
+                    and not archived):
+                # A legacy target list and backup prove scope and old bytes,
+                # but cannot identify a current home write as the updater's.
+                continue
+            self.check_owned_metadata(target)
+            items.append((index,target,saved,key,entry,archived))
+        for index,target,saved,key,entry,archived in items:
             if entry is not None and entry['phase']=='restored':continue
             if _io_path(target).exists() and _io_path(saved).exists() and digest(target)==digest(saved):
                 restore_permissions(saved,target)
@@ -1390,9 +1458,12 @@ class Journal:
                 if entry is not None:entry['phase']='restored';self.save()
                 continue
             if entry is None:
+                current_identity=identity(target)
+                current_digest=digest(target) if current_identity is not None else None
+                self.check_owned_metadata(target,current=current_digest)
                 entry={'archive':'failed-new/metadata/'+uuid.uuid4().hex+'/'+str(index),
-                    'currentDigest':digest(target) if _io_path(target).exists() else None,
-                    'currentIdentity':identity(target),'savedDigest':digest(saved) if _io_path(saved).exists() else None,
+                    'currentDigest':current_digest,
+                    'currentIdentity':current_identity,'savedDigest':digest(saved) if _io_path(saved).exists() else None,
                     'phase':'intent'}
                 if filesystem_device(target.parent) != filesystem_device(self.backup):
                     entry['targetVolume'] = True
@@ -1510,8 +1581,9 @@ def effects(home,root):
             effect='restored'
         else: effect='changed'
         data_pending=state and state.get('phase')=='restored' and not journal.story_writes_released()
+        services_unverified = journal.record.get('serviceVerification') in ('pending', 'failed')
         outcome=('not-required' if effect=='untouched' else 'recovery-required' if data_pending
-                 else 'restored-and-verified' if journal.record.get('status')=='restored'
+                 else 'restored-and-verified' if journal.record.get('status')=='restored' and not services_unverified
                  else 'files-restored-start-failed' if effect=='restored' else 'recovery-required')
         return {'effectState':effect,'recoveryOutcome':outcome,'reason':'',
                 'canRecover':journal.record.get('status') in RECOVERABLE_STATES,
@@ -1520,13 +1592,76 @@ def effects(home,root):
         return {'effectState':'unknown','recoveryOutcome':'recovery-required','canRecover':False,'reason':str(error)}
 
 
+def _restored_installation_receipt(journal):
+    active = safe_path(journal.root, 'tavern-updates/installed.json')
+    saved = safe_path(journal.backup, 'host/update-receipts/installed.json')
+    return _io_path(active).is_file() and digest(active) == digest(saved)
+
+
+def _resume_restored_services(journal, resume, verify, *, restore_backups):
+    plan, backup = journal.plan, journal.backup
+    before = plan['before']
+    try:
+        resume(plan, backup)
+        if restore_backups:
+            journal.preserve_startup_backups(restore=True)
+        proof = verify(plan, backup)
+        if not isinstance(proof, dict) or proof.get('version') != before['version']:
+            raise RuntimeError('恢复后的旧版本核验失败')
+        standalone = before.get('scope') == 'standalone-tavern'
+        for key in (('running',) if standalone else ('running','gatewayRunning','clawchatConnected')):
+            if type(proof.get(key)) is not bool:
+                raise RuntimeError('恢复后缺少明确服务状态：' + key)
+        for key in (('running',) if standalone else ('running','gatewayRunning')):
+            if before[key] != proof[key]:
+                raise RuntimeError('未恢复原服务状态：' + key)
+        if before.get('clawchatConnected') and not proof['clawchatConnected']:
+            raise RuntimeError('未恢复原服务状态：clawchatConnected')
+    except Exception as error:
+        # Partial repair verifies its data baseline through the lifecycle
+        # callback. Do not separate that proof from program recovery.
+        if plan.get('partialBaseline') or (plan.get('lifecycle') or {}).get('partialRepair'):
+            raise
+        try:
+            if _restored_installation_receipt(journal):
+                journal.validate(full=False)
+                plan['phase'] = 'restored'
+                journal.record.update(recovery='restored', serviceVerification='failed', error=str(error)[-2000:])
+                journal.save('restored')
+                journal.receipt_status('restored')
+        except (OSError, ValueError, RuntimeError) as saving:
+            error.secondary_errors = [*getattr(error, 'secondary_errors', ()), saving]
+        raise
+    # Identity remains strict after start, without whole-tree byte checks.
+    journal.validate(full=False)
+    plan['phase'] = 'restored'
+    journal.record['recovery'] = 'restored'
+    journal.record.pop('error', None)
+    journal.record.pop('serviceVerification', None)
+    journal.save('restored')
+    journal.receipt_status('restored')
+    return {'status':'restored','version':before['version'],'backup':str(backup),'state':proof}
+
+
 def recover(home,root,*,stop,resume,verify,verify_files=None):
-    journal=load(home,root);plan=journal.plan;backup=journal.backup
+    journal=load(home,root,full=False);plan=journal.plan;backup=journal.backup
     gate=getattr(sys,'_nora_operation_delegate',None)
     if gate is not None:
         gate.assert_active()
         if journal.record.get('operationId') and journal.record['operationId']!=gate.operation_id:
             raise RuntimeError('更新事务属于另一次操作，未覆盖当前文件。请从原操作恢复入口继续。')
+    service_verification = journal.record.get('serviceVerification')
+    if journal.record.get('status') == 'restored' and service_verification in ('pending', 'failed'):
+        observed = effects(home, root)
+        if (observed.get('effectState') != 'restored' or observed.get('recoveryOutcome') != 'files-restored-start-failed'
+                or not _restored_installation_receipt(journal)):
+            raise RuntimeError('已恢复的程序版本凭证已变化，未重启旧服务。')
+        stopped = stop(plan, backup)
+        if not isinstance(stopped, dict) or stopped.get('offline') is not True:
+            raise RuntimeError('未确认服务停止状态，未重启旧服务。')
+        return _resume_restored_services(journal, resume, verify,
+                                         restore_backups=service_verification == 'pending' and not journal.preserves_legacy_state())
+    journal.validate()
     reason=recovery_block_reason(journal.record.get('status'))
     if reason:raise RuntimeError(reason)
     original_effect=effects(home,root)['effectState']
@@ -1538,6 +1673,12 @@ def recover(home,root,*,stop,resume,verify,verify_files=None):
         stopped=stop(plan,backup)
         if not isinstance(stopped,dict) or stopped.get('offline') is not True:
             raise RuntimeError('未确认服务停止状态，未恢复文件。请重新检查状态并保留备份。')
+        state = plan.get('state')
+        if (state and state.get('mode') == 'copy' and plan.get('partialBaseline')
+                and identity(journal.state_backup()) is not None and 'nativeConfigRestoreDigest' not in state):
+            # Only the authenticated preflight backup may authorize replacement.
+            # Sampling live bytes during rollback would bless a concurrent edit.
+            state['nativeConfigRestoreDigest'] = journal.partial_native_config_digest(journal.state_backup())
         plan['phase']='restoring-files';journal.save()
         for item in reversed(plan['targets']) if original_effect!='untouched' else []:
             journal.restore_tree(item,journal.target(item),journal.tree_storage(item),
@@ -1560,26 +1701,20 @@ def recover(home,root,*,stop,resume,verify,verify_files=None):
         if verify_files is not None and not data_released and not preserve_active:verify_files(plan,backup)
         if not preserve_active:journal.preserve_startup_backups()
         journal.mark_story_verified()
-        plan['phase']='resuming-services';journal.save();resume(plan,backup)
-        if not preserve_active:journal.preserve_startup_backups(restore=True)
-        proof=verify(plan,backup)
-        before=plan['before']
-        if not isinstance(proof,dict) or proof.get('version')!=before['version']:
-            raise RuntimeError('恢复后的旧版本核验失败')
-        standalone = before.get('scope') == 'standalone-tavern'
-        for key in (('running',) if standalone else ('running','gatewayRunning','clawchatConnected')):
-            if type(proof.get(key)) is not bool:raise RuntimeError('恢复后缺少明确服务状态：'+key)
-        for key in (('running',) if standalone else ('running','gatewayRunning')):
-            if before[key]!=proof[key]:raise RuntimeError('未恢复原服务状态：'+key)
-        if before.get('clawchatConnected') and not proof['clawchatConnected']:
-            raise RuntimeError('未恢复原服务状态：clawchatConnected')
-        # Identity remains strict after start, without whole-tree byte checks.
-        journal.validate(full=False)
-        plan['phase']='restored';journal.record['recovery']='restored';journal.record.pop('error',None)
-        journal.save('restored')
-        journal.receipt_status('restored')
-        return {'status':'restored','version':before['version'],'backup':str(backup),'state':proof}
+        plan['phase'] = 'resuming-services'
+        if (not plan.get('partialBaseline') and not (plan.get('lifecycle') or {}).get('partialRepair')
+                and _restored_installation_receipt(journal)):
+            # The offline program check above is complete. Persist that result
+            # before invoking a service that may crash or outlive this worker.
+            journal.record.update(recovery='restored', serviceVerification='pending')
+            journal.save('restored')
+            journal.receipt_status('restored')
+        else:
+            journal.save()
+        return _resume_restored_services(journal, resume, verify, restore_backups=not preserve_active)
     except Exception as error:
+        if journal.record.get('status') == 'restored':
+            raise  # The program result has already been sealed independently.
         journal.record['error']=str(error)[-2000:]
         try:journal.save('recovery-failed')
         except (OSError,ValueError,RuntimeError) as saving:

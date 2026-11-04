@@ -253,11 +253,22 @@ def tree_digest(root, platform, *, on_progress=None, scope=None):
             for child in children:
                 visit(child, relative + '/' + child.name)
         elif stat.S_ISREG(value.st_mode):
+            empty_windows_file = platform == 'win32' and value.st_size == 0
+            if empty_windows_file:
+                # The existing protocol hashes no content bytes for an empty file.
+                # A Windows deny-read handle need not prevent proving that case.
+                after = file.lstat()
+                if (value.st_ino <= 0 or not stat.S_ISREG(after.st_mode) or getattr(after, 'st_file_attributes', 0) & 0x400
+                        or any(getattr(after, name) != getattr(value, name) for name in
+                               ('st_dev', 'st_ino', 'st_size', 'st_mode', 'st_mtime_ns', 'st_ctime_ns'))):
+                    raise ValueError('启动器空文件在核验期间变化，未覆盖程序')
             result.update(b'F' + relative.encode() + b'\0')
             result.update(str(value.st_size).encode() + b'\0')
             if platform == 'darwin':
                 result.update(str(value.st_mode & 0o777).encode() + b'\0')
             if on_progress is not None: on_progress(0, 1)
+            if empty_windows_file:
+                return
             with file.open('rb') as stream:
                 for block in iter(lambda: stream.read(1024 * 1024), b''):
                     result.update(block)

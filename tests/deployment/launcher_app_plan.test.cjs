@@ -132,6 +132,21 @@ test('default APP catalogue discovery selects the latest stable publication and 
   assert.equal(fs.readFileSync(path.join(root,'preserved-user-data'),'utf8'),'unchanged');
 });
 
+for(const name of ['release-manifest.json',descriptorName])
+  test(`APP confirmation uses the timestamp and freshness of the selected ${name}`,async()=>{
+    const f=fixture();let clock=Date.parse('2026-11-03T00:00:00Z');
+    const metadataCache=releases.createMetadataCache({now:()=>clock,ttlMs:30000});
+    await releases.requestJson(assetUrl(name),f.fetcher,null,{metadataCache,networkPolicy:{...policy},channel:'stable'});
+    clock+=1000;
+    const releaseEvidence={...f.releaseEvidence,checkedAt:new Date(clock).toISOString()};
+    const result=await releases.checkApp({...f.options,releaseEvidence,metadataCache});
+    assert.equal(result.launcherLatest,appVersion);assert.equal(result.launcherInstallable,true);
+    assert.equal(result.launcherLatestConfirmed,false);
+    assert.equal(result.launcherCheckedAt,'2026-11-03T00:00:00.000Z');
+    assert.equal(result.releasePlan.metadataSource,'cache');
+    assert.equal(f.requests.filter(request=>request.name===name).length,1,'this selected asset was read from cache');
+  });
+
 for(const [local,state]of [[appVersion,'current'],['2.3.0','ahead']])
   test(`APP check with local ${local} reports ${state} without a descriptor/archive request`,async()=>{
     const f=fixture(),result=await withoutWrites(()=>releases.checkApp({...f.options,launcherVersion:local}));

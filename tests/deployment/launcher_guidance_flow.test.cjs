@@ -151,7 +151,9 @@ test('installed users can check and request updates before model or pairing setu
 test('unfinished setup never exposes update actions during maintenance or unresolved recovery',async()=>{
   for(const state of [{view:'model',snapshot:{...ready,setupCompleted:false,busy:true}},
       {view:'recovery',snapshot:{...ready,setupCompleted:false,launcherRecovery:{pending:true}}}]){
-    const h=fixture(state);await h.invoke('controls()');assert.equal(h.output().managementVisible,false);
+    const h=fixture(state);await h.invoke('controls()');
+    assert.equal(h.output().managementVisible,state.view==='recovery');
+    if(state.view==='recovery')assert.deepEqual(h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action),['logs']);
   }
 });
 test('unknown process failure reaches actual logs without clearing the error page',async()=>{
@@ -443,6 +445,49 @@ test('a failed Nora stop does not divert an explicitly selected Tavern stop into
   const h=fixture({snapshot:{...ready,operation},api:{stop:async options=>{requested=options.service;return final;},status:async()=>final}});
   await h.invoke('run("stop",{service:"tavern"})');
   assert.equal(requested,'tavern');assert.equal(h.context.view,'daily');
+});
+
+test('recovery and error routes retain management actions allowed by current facts',()=>{
+  for(const view of ['recovery','error']){
+    const h=fixture({view,snapshot:{...ready,launcherRecovery:{canRecover:true},operation:{operationId:'fixture'}},
+      launcherUpdateCheckAvailable:true,api:{openLogs(){},checkUpdate(){},uninstall(){}}});
+    h.invoke('controls()');
+    assert.equal(h.output().managementVisible,true,view);
+    const visible=h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action);
+    assert.deepEqual(visible.sort(),['logs','uninstall','update'],view);
+  }
+  const h=fixture({view:'recovery',statusUnknown:true,snapshot:{...ready,launcherRecovery:{canRecover:false},
+    operation:{operationId:'fixture'}},api:{openLogs(){},checkUpdate(){},uninstall(){}}});
+  h.invoke('controls()');
+  assert.equal(h.output().managementVisible,true);
+  assert.deepEqual(h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action),['logs']);
+});
+
+test('reopened UI refreshes a late APP executor reason during a core outage',async()=>{
+  const reason='原任务仍在等待执行者关闭；已保留写入保护。';
+  let current={...ready,busy:true};
+  const h=fixture({view:'loading',api:{status:async()=>current,openLogs:async()=>({ok:true})}});
+  await h.invoke('poll()');
+  assert.equal(h.context.view,'monitor');
+  current={statusUnavailable:true,busy:true,executorPendingReason:reason,canCancel:false};
+  await h.invoke('poll()');
+  assert.equal(h.context.view,'monitor');
+  assert.match(h.output().copy.join(' '),/APP助手退出尚未确认/);
+  assert.ok(h.output().copy.includes(reason));
+  assert.ok(action(h,'查看日志'));
+  current={...ready,busy:false};
+  await h.invoke('poll()');
+  assert.equal(h.context.view,'daily');
+});
+
+test('the active task shows APP executor-pending and disables cancellation',async()=>{
+  const h=fixture({view:'task',busy:true,snapshot:{canCancel:true}});
+  h.context.event={event:'executor-pending',task:'APP助手退出尚未确认',reason:'原任务仍在等待执行者关闭。',canCancel:false};
+  await h.invoke('onEvent(event)');
+  assert.equal(h.context.taskStage,'executor-pending');
+  assert.equal(h.context.snapshot.canCancel,false);
+  assert.equal(h.elements.get('jobTitle').textContent,h.context.event.task);
+  assert.match(h.elements.get('jobNote').textContent,/等待执行者关闭/);
 });
 
 test('a verified uninstall choice exposes only the existing More action during a status outage',async()=>{
@@ -755,7 +800,7 @@ test('failure navigation requires confirmed usable files and keeps normal contro
       primaryFailure:{guidance:{title:'更新未完成。',detail:'请查看本次日志。'}}};
     const h=fixture({snapshot:{...ready,operation}});await h.invoke('route()');
     assert.equal(Boolean(action(h,'返回酒馆')),permitted,`${effectState}/${verification}`);
-    assert.equal(h.output().managementVisible,false);
+    assert.deepEqual(h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action),['logs']);
     assert.ok(action(h,'查看日志'));
   }
 });

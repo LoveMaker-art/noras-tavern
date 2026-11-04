@@ -535,6 +535,13 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     const result=await bridge('operation-effects',{operationId:record.operationId,kind:record.kind==='install'?'install':'update'},null);
     return result.effects||{effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false};
   }
+  function settledRuntimeRecovery(facts){
+    return safe.has(facts.effectState)&&!['recovery-required','files-restored-start-failed'].includes(facts.recoveryOutcome);
+  }
+  function ownsRestoredCore(record,facts){
+    return facts.operationId===record.operationId&&facts.status==='restored'&&facts.effectState==='restored'
+      &&facts.recoveryOutcome==='files-restored-start-failed';
+  }
   function combine(parts){
     if(parts.some(part=>part.effectState==='unknown'))return {effectState:'unknown',recoveryOutcome:'recovery-required',
       canRecover:parts.filter(part=>part.effectState==='unknown').every(part=>part.canRecover===true&&part.reason==='partial-python-inspection-required')};
@@ -651,7 +658,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         throw failure('VERIFICATION_FAILED','旧文件恢复未返回受管确认，已保留现场。');
       return {effectState:'restored',filesRestored:true,verification:'failed',value:{...restored,originalServiceState:'unrecorded'}};
     }
-    let systemResult,stagedSystemFacts,systemRestored=false;
+    let systemResult,stagedSystemFacts,systemRestored=false,deferCoreServices=false;
     const currentManaged=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port,operationId:record.operationId});
     if(currentManaged?.missing.python&&present(systemJournal()))stagedSystemFacts=(await inspectPartial(context,currentManaged)).effects;
     if(present(firstJournal(record.operationId))||present(systemJournal())){
@@ -659,9 +666,14 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       // The Python transaction may have completed automatic rollback before
       // its failing child returned. Keep that verified effect in the result.
       systemRestored=facts.effectState==='restored'&&facts.recoveryOutcome==='restored-and-verified';
+      const coreFilesOnly=ownsRestoredCore(record,facts);
+      deferCoreServices=coreFilesOnly&&!settledRuntimeRecovery(inspectRuntime(locations(record.operationId)));
+      if(options.error&&coreFilesOnly&&!deferCoreServices)
+        return {effectState:'restored',filesRestored:true,verification:'failed',
+          value:{updateRecovered:true,recoveryVerification:'files-only'}};
       if(facts.effectState==='unknown'||facts.effectState==='changed'&&facts.canRecover!==true)
         throw failure('UPDATE_RECOVERY_REQUIRED','恢复记录无法核验，未覆盖现有文件。请保留安装、数据和日志。');
-      if(!safe.has(facts.effectState)||facts.recoveryOutcome==='files-restored-start-failed'){
+      if(!deferCoreServices&&(!safe.has(facts.effectState)||facts.recoveryOutcome==='files-restored-start-failed')){
         const command=present(firstJournal(record.operationId))?'recover-install':'recover-update';
         try{
           systemResult=await bridge(command,{operationId:record.operationId,port},context);
@@ -671,7 +683,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
           const after=await system(record);
           if(after.effectState==='restored'&&after.recoveryOutcome==='files-restored-start-failed'){
             const runtimeAfter=inspectRuntime(locations(record.operationId));
-            if(safe.has(runtimeAfter.effectState))return {filesRestored:true,verification:'failed',
+            if(settledRuntimeRecovery(runtimeAfter))return {filesRestored:true,verification:'failed',
               secondaryErrors:[{operation:'restore-service',error}],value:{recoveryError:error.code||'VERIFICATION_FAILED'}};
           }
           throw error;
@@ -700,7 +712,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         throw failure('UPDATE_RECOVERY_REQUIRED','诺拉核心恢复后仍有未确认的目录或运行检查。');
     }
     const retained=require('./retained-installation').inspect(value(home),{operationId:context.operationId});
-    if(runtimePending||record.recoveryOutcome==='files-restored-start-failed'||retained?.reinstallOperationId===context.operationId)
+    if(runtimePending||deferCoreServices||record.recoveryOutcome==='files-restored-start-failed'||retained?.reinstallOperationId===context.operationId)
       return finishRuntimeRecovery(context,record,systemResult,port,runtimeResult?.offlineProof);
     return {effectState:runtimeFacts.effectState==='untouched'&&!systemResult&&!systemRestored?'untouched':'restored',
       verification:'confirmed',value:{...(systemResult||{}),recoveryVerification:'confirmed'}};
@@ -708,6 +720,10 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
   async function recheck(record,context={}){
     const effects=await observe(record);
     if(!safe.has(effects.effectState)||effects.recoveryOutcome==='recovery-required')return {changed:false,...effects};
+    if(record.kind==='update'&&!isApp(record)&&!record.handoffRef
+      &&effects.effectState==='restored'&&effects.recoveryOutcome==='files-restored-start-failed'
+      &&ownsRestoredCore(record,await system(record)))
+      return {...effects,completion:'rolled-back',operationId:record.operationId};
     const baseline=record.conditionBaseline,condition=context.conditionTarget
       ||(record.currentFailure||record.primaryFailure)?.conditionTarget
       ||identifyFailureCondition(record.currentFailure||record.primaryFailure,record);

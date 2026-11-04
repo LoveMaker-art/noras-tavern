@@ -306,7 +306,7 @@ for (const action of ['update', 'repair', 'recover']) {
 }
 
 
-const controlsSource = source.slice(source.indexOf('  function controls()'), source.indexOf('  function displaySteps()'));
+const controlsSource = source.slice(source.indexOf('  function hideMenu()'), source.indexOf('  function displaySteps()'));
 test('recovery keeps normal launch controls hidden and disables its action while busy or state is unknown', () => {
   const h = recovery('2.3.17', { kind: 'legacy', status: 'prepared', canRecover: true });
   const c = h.context;
@@ -322,7 +322,7 @@ test('recovery keeps normal launch controls hidden and disables its action while
     c.busy = busy; c.snapshot.busy = remoteBusy; c.statusUnknown = unknown;
     vm.runInContext('controls();', c);
     assert.equal(c.$('launchbar').hidden, true);
-    assert.equal(c.$('management').hidden, true);
+    assert.equal(c.$('management').hidden, busy || remoteBusy);
     assert.equal(c.$('status').hidden, false);
     assert.equal(recover.disabled, disabled);
   }

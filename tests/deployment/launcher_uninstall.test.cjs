@@ -1517,7 +1517,7 @@ test('a rollback successor chain requires every later runtime writer to have com
   }
 });
 
-async function restoredPartialRuntimeFixture(t,{kind='repair',pythonOnly=false}={}){
+async function restoredPartialRuntimeFixture(t,{kind='repair',pythonOnly=false,inspection={}}={}){
   const f=fixture(t),crypto=require('node:crypto'),{spawnSync}=require('node:child_process'),{once}=require('node:events');
   // Match the updater's resolved roots before constructing cross-language
   // records: Windows TEMP may use an 8.3 spelling that Python expands.
@@ -1654,8 +1654,15 @@ print(json.dumps(r.effects(home,root)))`;
   assert.equal(transaction.inspect({...instance,operationId:currentId}).reason,'committed');
   const file=path.join(desktop,'uninstall.js'),localRequire=createRequire(file),resources=Object.fromEntries(['update_recovery.py','first_install.py','replace-launcher.py'].map(name=>
     [name,{path:path.join(installer,name)}]));
-  const context=vm.createContext({require:name=>name==='./launcher-capability'?{validate:async()=>({...instance,launcherVersion:'2.1.2',
-    platform:process.platform,arch:process.arch,channel:'stable',resources})}:name==='./managed-python'?{resolveExecution:()=>({command:python,env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}})}:localRequire(name),
+  const execution={command:python,env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}};
+  const context=vm.createContext({require:name=>{
+    if(name==='./launcher-capability')return {validate:async()=>({...instance,launcherVersion:'2.1.2',
+      platform:process.platform,arch:process.arch,channel:'stable',resources,resourcesRoot:installer})};
+    if(name==='./managed-python')return {resolveExecution:()=>inspection.old?.(execution)||execution};
+    if(name==='./app-helper-runtime'&&inspection.privateRuntime)return {resolve:options=>inspection.privateRuntime(options,execution)};
+    if(name==='./package.json'&&inspection.descriptorSha256)return {...localRequire(name),noraAppHelperRuntimeSha256:inspection.descriptorSha256};
+    return localRequire(name);
+  },
     __filename:file,__dirname:path.dirname(file),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   return {...f,bodies,release,worlds,instance,context,old,oldRecord,oldFile,current,currentRecord,currentFile,backup,original,systemSnapshot,
@@ -1695,6 +1702,42 @@ test('Python-only original partial rollback accepts its actual normal system suc
   assert.equal(journal.recoveryPlan.lifecycle.partialRepair,undefined);
   await f.inspect();await f.cleanup('keep');
   assert.equal(fs.readFileSync(path.join(f.home,'tavern/tavern-state/native/default-user/chats/chat.jsonl'),'utf8'),'fixture');
+});
+
+test('KEEP reuses the same sealed history inspector with APP Python only after the old interpreter cannot launch',{timeout:30000},async t=>{
+  let old='missing',privateRuns=0;
+  const descriptorSha256='a'.repeat(64);
+  const inspection={descriptorSha256,old:execution=>{
+    if(old==='missing')throw Object.assign(new Error('missing managed interpreter'),{code:'ENOENT'});
+    if(old==='spawn')return {...execution,command:path.join(f.directory,'old-python-no-longer-present')};
+    if(old==='redirected')throw Object.assign(new Error('unbound managed interpreter'),{code:'LOCK_CHILD_IDENTITY'});
+    return execution;
+  },privateRuntime:(options,execution)=>{
+    privateRuns++;
+    assert.equal(options.home,f.home);assert.equal(options.executable,process.execPath);
+    assert.equal(options.descriptorSha256,descriptorSha256);assert.equal(options.materialize,false);
+    assert.equal(options.resourcesRoot,path.resolve(__dirname,'../installer'));
+    return execution;
+  }};
+  const f=await restoredPartialRuntimeFixture(t,{inspection});
+  const failedLog=path.join(f.old.paths.failed,'logs/failed-repair.log'),history=fs.readFileSync(f.oldFile),log=fs.readFileSync(failedLog);
+  await f.inspect();assert.equal(privateRuns,1);
+  await assert.rejects(f.context.inspectSealedTransactions(f.plan('all')),{code:'ENOENT'});assert.equal(privateRuns,1);
+  old='spawn';await f.inspect();assert.equal(privateRuns,2);
+  old='redirected';await assert.rejects(f.inspect(),{code:'LOCK_CHILD_IDENTITY'});assert.equal(privateRuns,2);
+  old='healthy';
+  const savedStory=path.join(f.backup,'state/native/default-user/chats/chat.jsonl'),story=fs.readFileSync(savedStory);
+  fs.writeFileSync(savedStory,'changed original backup after sealing');
+  await assert.rejects(f.inspect(),{code:'UNINSTALL_PYTHON_INSPECTION_FAILED'});assert.equal(privateRuns,2);
+  old='spawn';
+  await assert.rejects(f.inspect(),{code:'UNINSTALL_PYTHON_INSPECTION_FAILED'});assert.equal(privateRuns,3);
+  assert.equal(fs.existsSync(path.join(f.home,RETAINED)),false);
+  fs.writeFileSync(savedStory,story);
+  await f.cleanup('keep');assert.equal(privateRuns,4);
+  assert.deepEqual(fs.readFileSync(preservedHistory(f.home,f.oldFile)),history);
+  assert.deepEqual(fs.readFileSync(preservedHistory(f.home,failedLog)),log);
+  assert.equal(fs.readFileSync(path.join(f.home,'tavern/tavern-state/native/default-user/chats/chat.jsonl'),'utf8'),'fixture');
+  assert.equal(fs.existsSync(path.join(f.home,'installer/app-helper-runtime')),false);
 });
 
 test('committed partial successor rejects each altered baseline relation before deletion',{timeout:30000},async t=>{
