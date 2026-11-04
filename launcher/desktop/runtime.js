@@ -7,6 +7,8 @@ const { launcherError } = require('./launcher-errors');
 const { redactDiagnosticText } = require('./diagnostics');
 
 const RUNTIME_MANIFEST = 'nora-hermes-runtime.json';
+// Windows verifies the full bundled Git tree while freshly extracted files may still be scanned.
+const COMPONENT_PROBE_TIMEOUT_MS = process.platform === 'win32' ? 180_000 : 60_000;
 const TOKENS = {
   '@@NORA_HERMES_HOME@@': (home) => home,
   '@@NORA_PYTHON_HOME@@': (home) => path.join(home, 'python'),
@@ -213,7 +215,7 @@ function validateRuntime(home, manifest) {
     throw commandFailure(`Hermes 运行时校验失败：${result.error?.message || result.stderr || result.stdout || '未知错误'}`, result, [command, ...(manifest.probe.args || ['--version'])]);
   }
   const check = spawnSync(contained(home, manifest.venvPython), ['-B', contained(home, manifest.componentProbe)], {
-    encoding: 'utf8', timeout: 60000, windowsHide: true,
+    encoding: 'utf8', timeout: COMPONENT_PROBE_TIMEOUT_MS, windowsHide: true,
     env: {
       // Do not inherit developer credentials, Python paths, or external Liveware binaries.
       SystemRoot: process.env.SystemRoot || '', WINDIR: process.env.WINDIR || '',
@@ -329,7 +331,7 @@ async function validateRuntimeAsync(home,manifest,delegate,{programRoots,profile
     {...pythonOptions(home,manifest),env:environment,timeoutMs:30000},'Hermes 运行时校验失败');
   if(programOnly)return (result.stdout||result.stderr||'').trim();
   await checkedRun(delegate,runtimePython(home,manifest),['-B',contained(home,manifest.componentProbe)],
-    {...pythonOptions(home,manifest),timeoutMs:60000,env:{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
+    {...pythonOptions(home,manifest),timeoutMs:COMPONENT_PROBE_TIMEOUT_MS,env:{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
       HOME:home,USERPROFILE:home,HERMES_HOME:home,APPDATA:path.join(home,'appdata'),LOCALAPPDATA:path.join(home,'localappdata'),
       TMPDIR:home,TMP:home,TEMP:home,XDG_CACHE_HOME:path.join(home,'.cache'),PYTHONPATH:path.join(home,'hermes-agent'),
       PYTHONDONTWRITEBYTECODE:'1',PYTHONNOUSERSITE:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',

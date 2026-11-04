@@ -894,6 +894,7 @@ const actual=createRequire(path.join(desktop,'runtime-worker.js'));
 const runtime=actual('./runtime');
 const {consumeLines}=actual('./process-output');
 const {errorDetails}=actual('./diagnostics');
+const componentProbeTimeoutMs=process.platform==='win32'?180_000:60_000;
 async function verifierFailure(t,{stdout='',stderr='',deadline=true,outputTruncated=false}={}){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-diagnostic-'));
   t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
@@ -909,7 +910,7 @@ async function verifierFailure(t,{stdout='',stderr='',deadline=true,outputTrunca
       return calls.length===3?{status:deadline?null:1,signal:deadline?'SIGKILL':null,stdout,stderr,error:cause,outputTruncated}
         :{status:0,stdout:'fixture version',stderr:''};}});
   }catch(error){failure=error;}
-  assert.equal(calls.length,3);assert.equal(calls[2].options.timeoutMs,60000,'retain the actual component-probe deadline');
+  assert.equal(calls.length,3);assert.equal(calls[2].options.timeoutMs,componentProbeTimeoutMs,'retain the actual component-probe deadline');
   assert.ok(failure);if(deadline)assert.equal(failure.cause,cause);
   return failure;
 }
@@ -938,7 +939,7 @@ test('a runtime deadline retains its captured stderr and original cause through 
   assert.equal(diagnostic.context.stderr,stderr);assert.equal(diagnostic.context.stdoutBytes,Buffer.byteLength(stdout));
   assert.equal(diagnostic.context.stderrBytes,Buffer.byteLength(stderr));assert.equal(diagnostic.context.outputTruncated,true);
   assert.ok(diagnostic.context.stdout.startsWith('first phase'));assert.ok(diagnostic.context.stdout.endsWith('last phase'));
-  assert.equal(diagnostic.context.timeoutMs,60000);assert.equal(diagnostic.context.purpose,'python');
+  assert.equal(diagnostic.context.timeoutMs,componentProbeTimeoutMs);assert.equal(diagnostic.context.purpose,'python');
   assert.equal(observed.messages.find(message=>message.event==='error').code,'ETIMEDOUT');
 });
 test('a large failing child message is bounded without turning a failure into a successful runtime check',async t=>{
@@ -967,7 +968,7 @@ test('empty or already-truncated captures are reported as capture facts without 
     const failure=await verifierFailure(t,{outputTruncated});
     assert.equal(failure.cause.code,'ETIMEDOUT');assert.equal(failure.context.stdout,'');assert.equal(failure.context.stderr,'');
     assert.equal(failure.context.stdoutBytes,0);assert.equal(failure.context.stderrBytes,0);
-    assert.equal(failure.context.outputTruncated,outputTruncated);assert.equal(failure.context.timeoutMs,60000);
+    assert.equal(failure.context.outputTruncated,outputTruncated);assert.equal(failure.context.timeoutMs,componentProbeTimeoutMs);
   }
 });
 }
