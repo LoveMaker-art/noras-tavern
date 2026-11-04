@@ -180,21 +180,48 @@ test('the desktop retry reopens the fixed APP task, retains the closed handoff a
   assert.equal(fs.readFileSync(marker,'utf8'),'first fault remains');
   assert.equal(exhausted.primaryFailure.code,'EACCES');
 });
-test('cancelling during APP helper preparation cancels the bound staging job without publishing a handoff',async()=>{
-  const controller=new AbortController(),job='/fixture/installer/launcher-update/job-prepared',steps=[];
+test('APP preparation cancellation keeps a durable binding until the original task is closed',async t=>{
+  const f=fixture(t),{createOperationController}=realRequire('./operation-state');
+  const {createTestOperationLock}=require('./launcher_operation_test_lock.cjs');
+  const signal=new AbortController(),job=path.join(f.home,'installer','launcher-update','job-prepared');
   const plan={client:'app',mode:'update',tag:'v2.6.5'},target={request:{launcherOnly:true},releasePlan:plan};
+  const installer=path.join(f.home,'installer'),operationFile=(directory,id)=>path.join(directory,'operations',id,'operation.json');
+  let atCancellationCheckpoint;
   const start=appStartFixture({releases:()=>({validateAppPlan:fixed=>fixed}),
     require:name=>{assert.equal(name,'./app-helper-runtime');return {isVerified:()=>true};},
-    prepare:async()=>({launcher:{version:'2.2.9'}}),prepareHandoff:async()=>{controller.abort();return job;},
-    callHelper:async(_options,helper,args,cwd)=>{
+    prepare:async()=>({launcher:{version:'2.2.9'}}),prepareHandoff:async()=>{signal.abort();return job;},
+    callHelper:async(options,helper,args,cwd)=>{
       assert.equal(helper,path.join(job,'replace.py'));assert.deepEqual(Array.from(args),['--recover',job]);
-      assert.equal(cwd,job);steps.push('prepared job cancelled');return {untouched:true};
+      assert.equal(cwd,job);
+      // These are the operation bytes a new process sees if it dies just
+      // after the helper confirms and checkpoints that the APP was untouched.
+      atCancellationCheckpoint=fs.readFileSync(operationFile(installer,options.context.operationId));
+      const durable=JSON.parse(atCancellationCheckpoint);
+      assert.equal(durable.handoffRef,job);assert.equal(durable.state,'awaiting-handoff');
+      assert.equal(durable.effectState,'unknown');assert.ok(!durable.journalRefs?.includes(job));
+      return {untouched:true};
     }});
-  const context={target,snapshot:{target},check(){},stage:async()=>{},effect:async state=>steps.push(state),
-    journal:async value=>{assert.equal(value,job);steps.push('history retained');},handoff:()=>assert.fail('cancelled APP must not publish or dispatch replacement')};
-  await assert.rejects(start({context,home:'/fixture',launcherVersion:'2.2.8',isPackaged:true,appHelperRuntime:{command:'/python'},
-    signal:controller.signal,closeCancellation:()=>steps.push('cancellation closed')}),{name:'AbortError'});
-  assert.deepEqual(steps,['cancellation closed','unknown','prepared job cancelled','history retained','untouched']);
+  const controller=createOperationController({directory:installer,lock:createTestOperationLock()});
+  const cancelled=await controller.start('update',{target,execute:context=>start({context,home:f.home,launcherVersion:'2.2.8',
+    isPackaged:true,appHelperRuntime:{command:'/python'},signal:signal.signal})},'cancel-app-before-dispatch');
+  assert.equal(cancelled.state,'cancelled');assert.equal(cancelled.effectState,'untouched');
+  assert.equal(cancelled.handoffRef,null);assert.deepEqual(cancelled.journalRefs,[job]);
+
+  const reopenedInstaller=path.join(f.home,'reopened','installer'),file=operationFile(reopenedInstaller,cancelled.operationId);
+  fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,atCancellationCheckpoint);
+  let outcomeJob=job+'-unrelated';
+  const reopened=createOperationController({directory:reopenedInstaller,lock:createTestOperationLock(),
+    verifyRestoredHandoff:async record=>({status:'cancelled',verification:'confirmed',effectState:'untouched',
+      workerOffline:true,busy:false,operationId:record.operationId,planDigest:record.planDigest,job:outcomeJob,
+      value:{notAppliedVerification:'confirmed',launcherVersion:'2.2.8'}})});
+  const unverified=await reopened.recheck(cancelled.operationId);
+  assert.equal(unverified.state,'awaiting-handoff');assert.equal(unverified.effectState,'unknown');
+  outcomeJob=job;
+  const startup=vm.createContext({operations:()=>reopened,ensureAppHelperRuntime:async()=>{}});
+  load(startup,'reconcileRestoredHandoff');
+  const closed=await startup.reconcileRestoredHandoff();
+  assert.equal(closed.state,'failed');assert.equal(closed.effectState,'untouched');assert.equal(closed.verification,'confirmed');
+  assert.equal(closed.result.notAppliedVerification,'confirmed');assert.equal(closed.operationId,cancelled.operationId);
 });
 test('a duplicate APP submission never launches another helper while the original writer is busy',async()=>{
   const operation={state:'awaiting-handoff',busy:true,handoffRef:'/test/job'};

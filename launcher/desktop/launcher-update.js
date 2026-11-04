@@ -690,18 +690,13 @@ async function start(options){
   context.check();
   options.closeCancellation?.();
   if(options.signal?.aborted){
-    // The prepared helper has not published a replacement. Cancel that exact
-    // job under the current writer so a later retry cannot inherit its stage.
+    // Bind the job before its cancellation checkpoint. A crash leaves the
+    // original task able to verify the helper's result without dispatching it.
+    await context.handoff(job);
     await context.effect('unknown');
-    try{
-      const result=await callHelper(options,path.join(job,'replace.py'),['--recover',job],job);
-      if(result.untouched!==true)throw launcherError('尚未确认原启动器未修改。',{code:'OPERATION_EXECUTOR_UNCONFIRMED'});
-      await context.journal(job);
-      await context.effect('untouched');
-    }catch(error){
-      await context.handoff(job);
-      throw error;
-    }
+    const result=await callHelper(options,path.join(job,'replace.py'),['--recover',job],job);
+    if(result.untouched!==true)throw launcherError('尚未确认原启动器未修改。',{code:'OPERATION_EXECUTOR_UNCONFIRMED'});
+    context.confirmCancelledAppHandoff(job);
     options.signal.throwIfAborted();
   }
   await context.handoff(job);

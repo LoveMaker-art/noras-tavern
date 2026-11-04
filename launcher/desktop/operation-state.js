@@ -464,6 +464,15 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       effect:async effectState=>{if(!['untouched','changed','restored','unknown'].includes(effectState))throw fail('OPERATION_INVALID_EFFECT','Invalid effect state');await update({effectState});},
       journal:async(reference)=>{if(typeof reference!=='string'||reference.length>4096)throw fail('OPERATION_INVALID_JOURNAL','Invalid journal reference');await update({journalRefs:[...new Set([...(record.journalRefs||[]),reference])]});},
       handoff:async(reference)=>{if(typeof reference!=='string'||reference.length>4096)throw fail('OPERATION_INVALID_HANDOFF','Invalid handoff reference');await update({state:'awaiting-handoff',handoffRef:reference});},
+      confirmCancelledAppHandoff(reference){
+        check();
+        if(!isAppUpdate(record)||record.state!=='awaiting-handoff'||record.handoffRef!==reference||record.effectState!=='unknown')
+          throw fail('OPERATION_INVALID_HANDOFF','Cancelled APP handoff does not belong to this operation');
+        // The executor's abort persists this together with the cancelled state.
+        // Until then, the durable handoff can consume the helper's checkpoint.
+        Object.assign(record,{handoffRef:null,effectState:'untouched',
+          journalRefs:[...new Set([...(record.journalRefs||[]),reference])]});
+      },
       observe:message=>saved?.observe(message),
       delivery:summary=>evidence?.updateDelivery(record.operationId,summary),
       check,
