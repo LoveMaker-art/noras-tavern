@@ -1,5 +1,6 @@
 """Current Tavern process operations."""
 import errno
+from ipaddress import IPv4Address, ip_address
 import os
 from pathlib import Path
 import signal
@@ -122,9 +123,27 @@ def same_runtime(current, saved):
 
 
 def port_open(port):
+    port = int(port)
+    if os.name == 'nt':
+        # A timed IPv4 connect can return WSAEWOULDBLOCK even on an unused
+        # port. The system TCP table can establish whether a listener exists.
+        if psutil is None:
+            raise OSError('Windows TCP listener inspection is unavailable')
+        try:
+            addresses = {ip_address(row.laddr.ip) for row in psutil.net_connections(kind='tcp')
+                         if row.status == psutil.CONN_LISTEN and row.laddr and row.laddr.port == port}
+        except (OSError, RuntimeError, psutil.Error) as error:
+            raise OSError('Windows TCP listener state could not be confirmed') from error
+        loopback = {IPv4Address('127.0.0.1'), IPv4Address('0.0.0.0')}
+        if any(address in loopback or getattr(address, 'ipv4_mapped', None) in loopback for address in addresses):
+            return True
+        if not any(address.version == 6 and address.is_unspecified for address in addresses):
+            return False
+        # The table does not say whether an IPv6 wildcard accepts IPv4.
+        # In this case only a definite IPv4 connect or refusal is sufficient.
     with socket.socket() as probe:
         probe.settimeout(0.3)
-        result = probe.connect_ex(('127.0.0.1', int(port)))
+        result = probe.connect_ex(('127.0.0.1', port))
     if result not in (0, errno.ECONNREFUSED, 10061):  # Winsock WSAECONNREFUSED
         raise OSError(result, 'Tavern listener state could not be confirmed')
     return result == 0

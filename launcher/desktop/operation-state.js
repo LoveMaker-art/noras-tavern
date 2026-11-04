@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { presentError } = require('./error-presentation');
-const {describeError}=require('./launcher-errors');
+const {describeError,isAppMoveFailure}=require('./launcher-errors');
 const {failureActions}=require('./operation-result');
 const {OPERATION_BUDGET}=require('./evidence-store');
 const {releaseListRequest}=require('./release-sources');
@@ -62,9 +62,7 @@ function closedAppHandoff(record){
 function appSharingRetryTime(record){
   if(record.attempt!==2||closedAppHandoff(record)!=='cancelled')return null;
   const plan=record.target.releasePlan,sharing=record.result.appSharingFailure;
-  if(plan?.client!=='app'||plan.platform!=='win32'||!plan.manifestRef
-    ||sharing?.schema!=='nora-app-sharing-failure/1'||sharing.phase!=='moving-old'||![32,33].includes(sharing.winerror)
-    ||Object.keys(sharing).sort().join(',')!=='phase,schema,winerror')return null;
+  if(plan?.client!=='app'||plan.platform!=='win32'||!plan.manifestRef||!isAppMoveFailure(sharing))return null;
   const finished=Date.parse(record.updatedAt);
   return Number.isFinite(finished)?finished+APP_SHARING_RETRY_DELAY_MS:null;
 }

@@ -184,8 +184,9 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed, stan
                        service_snapshot=None, swaps=()):
     """Match the actual backup copies and possible metadata restore temporaries.
 
-    Program and original-state rollback use same-volume rename. Candidates have
-    already been materialized and are reflected in disk_usage's free space.
+    Program and original-state rollback use same-volume rename. Existing
+    candidates are reflected in free space, but Windows program publication
+    creates fresh directory entries under the final ACL boundary.
     Legacy preparation and failed-conversion fallback can coexist, so reserve
     two original-state copies before conversion. Rechecking uses current sizes.
     """
@@ -207,11 +208,13 @@ def update_space_tasks(hermes_home, install_root, backup, work, *, managed, stan
     # A stopped managed cron store may have a new run timestamp. The journal
     # seals that logical equivalent in a separate snapshot before any write.
     tasks = []
-    device = recovery_module().filesystem_device
-    for _, source, target in swaps:
-        if source is not None and device(source) != device(Path(target).parent):
+    recovery = recovery_module()
+    device = recovery.filesystem_device
+    for name, source, target in swaps:
+        publish = recovery.needs_program_publication(name)
+        if source is not None and (publish or device(source) != device(Path(target).parent)):
             tasks.append({'source': source, 'destination': Path(target).parent / '.nora-space-stage',
-                          'label': 'target-volume-stage', 'links': 'preserve'})
+                          'label': 'target-volume-stage', 'links': 'reject' if publish else 'preserve'})
     if (managed or standalone_checker) and not restore_only:
         tasks.append({'source': hermes_home / 'cron/jobs.json',
                       'destination': backup / 'runtime-state/cron-jobs.json',
@@ -1938,6 +1941,7 @@ def install(args):
                 previous_effects=recovery_module().effects(hermes_home,install_root)
                 if previous_effects['effectState']!='untouched':
                     raise RuntimeError("上次更新事务未完成，禁止覆盖恢复现场；请保留备份：" + str(previous.get("backup", "")))
+                recovery_module().load(hermes_home,install_root,full=False).discard_program_stages()
                 # A trusted preparation with no remaining write effect is
                 # historical evidence, not a permanent lock on later updates.
                 json_write(Path(previous['backup'])/'transaction-retired.json',previous)
@@ -2159,7 +2163,7 @@ def install(args):
                     check_update_space(update_space_tasks(
                         hermes_home, install_root, backup, work, managed=bool(managed),
                         runtime_changed=True, migration=bool(layout), partial_repair=snapshot_repair,
-                        restore_only=True, journal=journal, service_snapshot=service_snapshot))
+                        restore_only=True, journal=journal, service_snapshot=service_snapshot, swaps=swaps))
                     if layout:
                         # Only the stopped installation is an authoritative
                         # migration source. Preparation can take minutes while
@@ -2230,7 +2234,11 @@ def install(args):
                             os.replace(target, saved)
                         applied.append((name, target, saved))
                         continue
-                    swap_tree(prepared, target, saved)
+                    if recovery_module().needs_program_publication(name):
+                        with recovery_module().stage_program_for_publication(prepared, target) as program:
+                            swap_tree(program, target, saved)
+                    else:
+                        swap_tree(prepared, target, saved)
                     applied.append((name, target, saved))
                 if gateway_swaps:
                     gateway_report = {**gateway_report, "status": "installed"}

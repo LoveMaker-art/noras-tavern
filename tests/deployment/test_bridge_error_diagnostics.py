@@ -4,6 +4,7 @@ import errno
 import io
 import json
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -308,6 +309,31 @@ console.log(JSON.stringify(packets.packet(error, { action: 'stop', history: [] }
                         self.assertFalse(any(call.args[0] == 'result' for call in emit.call_args_list))
                     proof.assert_called()
                     native.assert_not_called()
+
+    def test_windows_recovery_accepts_no_listener_and_refuses_unconfirmed_tcp_snapshot(self):
+        import psutil
+        args = SimpleNamespace(install_root=Path('/fixture/nora/tavern'), port=18899)
+        with patch.object(bridge, 'os', SimpleNamespace(name='nt')), \
+                patch.object(psutil, 'Process'), patch.object(psutil, 'process_iter', return_value=[]), \
+                patch.object(psutil, 'net_connections') as snapshot, patch.object(socket, 'socket') as socket_factory:
+            snapshot.return_value = []
+            self.assertIsNone(bridge._recovery_require_native_offline(args))
+            snapshot.return_value = [SimpleNamespace(status=psutil.CONN_LISTEN,
+                laddr=SimpleNamespace(ip='0.0.0.0', port=args.port))]
+            with self.assertRaisesRegex(RuntimeError, '端口仍被占用'):
+                bridge._recovery_require_native_offline(args)
+            socket_factory.assert_not_called()
+
+            snapshot.return_value[0].laddr.ip = '::'
+            socket_factory.return_value.__enter__.return_value.connect_ex.return_value = 10035
+            with self.assertRaises(OSError) as unresolved:
+                bridge._recovery_require_native_offline(args)
+            self.assertEqual(unresolved.exception.errno, 10035)
+
+            snapshot.side_effect = psutil.AccessDenied()
+            with self.assertRaisesRegex(OSError, '无法核验酒馆端口状态') as denied:
+                bridge._recovery_require_native_offline(args)
+            self.assertIs(denied.exception.__cause__, snapshot.side_effect)
 
     def test_stop_does_not_treat_a_denied_controller_as_a_marker_only_failure(self):
         root = Path('/fixture/nora')

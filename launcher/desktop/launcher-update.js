@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { launcherError,programError } = require('./launcher-errors');
+const { launcherError,programError,isAppMoveFailure } = require('./launcher-errors');
 const {downloadAsset,createReleaseSourceContext} = require('./release-network');
 const releases = () => require('./releases');
 
@@ -199,8 +199,7 @@ function projectOutcome(outcome,operation,plan,job,{checkTarget=false,home}={}){
   const sharing=outcome.sharingFailure;
   if(sharing!==undefined){
     if(outcome.status!=='cancelled'||plan.platform!=='win32'||plan.releasePlan?.client!=='app'
-      ||sharing?.schema!=='nora-app-sharing-failure/1'||sharing.phase!=='moving-old'||![32,33].includes(sharing.winerror)
-      ||Object.keys(sharing).sort().join(',')!=='phase,schema,winerror'||!sameSealedTarget(operation,plan)
+      ||!isAppMoveFailure(sharing)||!sameSealedTarget(operation,plan)
       ||!operation.target.releasePlan.manifestRef)return null;
     try{
       releases().validateAppPlan(operation.target.releasePlan,{launcherVersion:outcome.version,platform:plan.platform,arch:plan.arch,
@@ -208,8 +207,10 @@ function projectOutcome(outcome,operation,plan,job,{checkTarget=false,home}={}){
     }catch{return null;}
   }
   if(outcome.status==='committed')return outcome;
-  return {...outcome,failure:helperError(outcome.diagnosticError,outcome.status==='cancelled'
-    ?'启动器更新未能应用，原程序和数据已保留。请查看日志后重试。':'新版启动器启动失败，旧程序已恢复。')};
+  const failure=helperError(outcome.diagnosticError,outcome.status==='cancelled'
+    ?'启动器更新未能应用，原程序和数据已保留。请查看日志后重试。':'新版启动器启动失败，旧程序已恢复。');
+  if(sharing?.winerror===5)failure.userCode='APP_MOVE_BLOCKED';
+  return {...outcome,failure};
 }
 async function waitHandoff(options){
   const deadline=Date.now()+20000;

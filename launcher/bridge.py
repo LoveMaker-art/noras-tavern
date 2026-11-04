@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+from ipaddress import IPv4Address, ip_address
 import json
 import os
 from pathlib import Path
@@ -1071,6 +1072,21 @@ def _recovery_require_native_offline(args):
                     raise RuntimeError('酒馆进程仍在运行且停止组件不完整，未恢复文件。请先正常退出酒馆。')
     except psutil.Error as error:
         raise RuntimeError('无法核验酒馆进程状态，未恢复文件。') from error
+    if os.name == 'nt':
+        # This bridge also runs while the installed core's process module is
+        # unavailable. Query the same system TCP table without loading it.
+        try:
+            addresses = {ip_address(row.laddr.ip) for row in psutil.net_connections(kind='tcp')
+                         if row.status == psutil.CONN_LISTEN and row.laddr and row.laddr.port == args.port}
+        except (OSError, RuntimeError, psutil.Error) as error:
+            raise OSError('无法核验酒馆端口状态。') from error
+        loopback = {IPv4Address('127.0.0.1'), IPv4Address('0.0.0.0')}
+        if any(address in loopback or getattr(address, 'ipv4_mapped', None) in loopback for address in addresses):
+            raise RuntimeError('酒馆端口仍被占用，未恢复文件。请先正常退出占用该端口的程序。')
+        if not any(address.version == 6 and address.is_unspecified for address in addresses):
+            return
+        # The table does not distinguish IPv6-only and dual-stack wildcard
+        # listeners. Fall back to the IPv4 probe only in this ambiguous case.
     with socket.socket() as probe:
         probe.settimeout(0.3)
         result = probe.connect_ex(('127.0.0.1', args.port))

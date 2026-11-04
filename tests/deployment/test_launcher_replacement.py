@@ -1159,9 +1159,11 @@ class OperationReplacementTests(unittest.TestCase):
         self.assertEqual(outcome['outcome']['version'], f['plan']['previousVersion'])
         self.assertIn('新版启动器提前退出', outcome['outcome']['diagnosticError']['message'])
 
-    def test_sharing_retry_proof_is_only_for_native_sharing_errors_before_first_move(self):
-        for winerror, after_move in ((32, False), (33, False), (5, False), (33, True)):
-            with self.subTest(winerror=winerror, after_move=after_move):
+    def test_retry_proof_is_only_for_supported_native_errors_before_first_move(self):
+        cases = ((32, False, True), (33, False, True), (5, False, True), (5, False, False),
+                 (33, True, True), (5, True, True))
+        for winerror, after_move, bound in cases:
+            with self.subTest(winerror=winerror, after_move=after_move, bound=bound):
                 f = self.fixture(); f['plan']['releasePlan']['client'] = 'app'
                 worker.write_json(f['job'] / 'plan.json', f['plan']); worker.prepare(f['job'])
                 context = worker.context(f['job'])
@@ -1170,6 +1172,8 @@ class OperationReplacementTests(unittest.TestCase):
 
                 def rename(source, target):
                     if target == (context['app'] if after_move else context['backup']) and source != context['backup']:
+                        if bound:
+                            error.filename, error.filename2 = str(worker.io_path(source)), str(worker.io_path(target))
                         raise error
                     original_rename(source, target)
 
@@ -1178,8 +1182,9 @@ class OperationReplacementTests(unittest.TestCase):
                         patch.object(worker, 'retry_rename', side_effect=rename):
                     with self.assertRaises(PermissionError): worker.run(f['job'])
                     outcome = worker.read_outcome(f['job'])['outcome']
-                if not after_move and winerror in (32, 33):
-                    self.assertEqual(outcome['sharingFailure'], {'schema': 'nora-app-sharing-failure/1',
+                if not after_move and bound:
+                    schema = 'nora-app-move-denied/1' if winerror == 5 else 'nora-app-sharing-failure/1'
+                    self.assertEqual(outcome['sharingFailure'], {'schema': schema,
                         'phase': 'moving-old', 'winerror': winerror})
                 else:
                     self.assertNotIn('sharingFailure', outcome)
@@ -1278,6 +1283,79 @@ class OperationReplacementTests(unittest.TestCase):
         f['plan']['sha256'] = worker.digest(f['plan']['archive'])
         worker.write_json(f['job'] / 'plan.json', f['plan'])
         return f
+
+    @unittest.skipUnless(os.name == 'nt', 'Requires a native Windows byte-range lock')
+    def test_native_foreign_byte_lock_preserves_untouched_app_and_allows_retry_after_release(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class Overlapped(ctypes.Structure):
+            _fields_ = [('internal', ctypes.c_size_t), ('internal_high', ctypes.c_size_t),
+                        ('offset', wintypes.DWORD), ('offset_high', wintypes.DWORD), ('event', wintypes.HANDLE)]
+
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.LockFileEx.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(Overlapped))
+        kernel.LockFileEx.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        f = self.fixture_with_app_asar()
+        f['plan']['releasePlan']['client'] = 'app'
+        worker.write_json(f['job'] / 'plan.json', f['plan'])
+        relative = Path('resources/clawchat/session.run.lock')
+        foreign = f['app'] / relative
+        foreign.parent.mkdir()
+        foreign.touch()
+        # GENERIC_READ | GENERIC_WRITE, all share flags, OPEN_EXISTING.
+        handle = kernel.CreateFileW(str(foreign), 0xc0000000, 7, None, 3, 128, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            # Lock the first byte exclusively, even though the file is empty.
+            if not kernel.LockFileEx(handle, 3, 0, 1, 0, ctypes.byref(Overlapped())):
+                raise ctypes.WinError(ctypes.get_last_error())
+            with foreign.open('rb') as stream, self.assertRaises(PermissionError):
+                stream.read(1)
+            self.assertTrue(worker.prepare(f['job'])['prepared'])
+            result = f['owner'].execute(f, check=False)
+            if result.returncode:
+                outcome = worker.read_outcome(f['job'])['outcome']
+                self.assertEqual(outcome['status'], 'cancelled')
+                self.assertEqual(outcome['effectState'], 'untouched')
+                self.assertTrue(outcome['workerOffline'])
+                proof = outcome['sharingFailure']
+                self.assertIn(proof['winerror'], (5, 32, 33))
+                self.assertEqual(proof['schema'], 'nora-app-move-denied/1' if proof['winerror'] == 5
+                                 else 'nora-app-sharing-failure/1')
+                self.assertEqual(proof['phase'], 'moving-old')
+                self.assertEqual([item['kind'] for item in f['owner'].children(f)], ['old'])
+                f['owner'].assert_preserved(f)
+        finally:
+            if not kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+        if result.returncode:
+            self.assertEqual(foreign.read_bytes(), b'')
+            f['owner'].wait_children(f)
+            first_job = f['job']
+            f['job'] = first_job.with_name('job-retry')
+            f['job'].mkdir()
+            for name in ('replace.py', 'operation_control.py', 'operation_evidence.py', 'error_diagnostics.py', 'operation-budget.json'):
+                shutil.copy2(first_job / name, f['job'] / name)
+            f['plan']['token'] = str(uuid.uuid4())
+            worker.write_json(f['job'] / 'plan.json', f['plan'])
+            self.assertTrue(worker.prepare(f['job'])['prepared'])
+            f['owner'].execute(f)
+            self.assertEqual(worker.read_json(first_job / 'recovery.json')['sharingFailure'], proof)
+        committed = worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
+        self.assertEqual(committed['status'], 'committed')
+        self.assertEqual((Path(committed['retainedBackup']) / relative).read_bytes(), b'')
+        self.assertEqual((f['app'] / 'resources/app.asar').read_bytes(), b'new package')
+        f['owner'].assert_preserved(f, old=False)
 
     def test_unowned_windows_file_lock_does_not_block_update_and_backup_retirement_preserves_unknown_files(self):
         f = self.fixture_with_app_asar()

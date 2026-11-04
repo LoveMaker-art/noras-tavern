@@ -143,7 +143,8 @@ j.apply(incoming,target)
 j.record.update(restoreMode='failed-apply',status='restoring');j.checkpoint('restore','intent')
 replace=os.replace
 def interrupt(src,dst):
-    if Path(dst)==target and Path(src).name.startswith('.nfi-r-'):raise RuntimeError('fixture restore interruption')
+    if Path(dst)==Path(m.filesystem_path(target)) and Path(src).name.startswith('.nfi-r-'):
+        raise RuntimeError('fixture restore interruption')
     return replace(src,dst)
 os.replace=interrupt
 try:j.restore_target(j.record['targets'][0],0)
@@ -519,7 +520,7 @@ test('all builds include helper; NSIS upgrade path bypasses both destructive hoo
   assert.ok(script.includes('result.json')); assert.ok(script.includes('ELECTRON_RUN_AS_NODE'));
 });
 
-function wizard(t, responses) {
+function wizard(t, responses, { platform = 'win32' } = {}) {
   const f = fixture(t), dialogs = [], exits = [];
   fs.writeFileSync(path.join(f.directory,'launcher.exe'),'confirmation-only fixture executable');
   const main = path.resolve(__dirname, '../installer/desktop/main.js');
@@ -527,10 +528,10 @@ function wizard(t, responses) {
   const electron = { app: { isPackaged: true, getPath: () => f.directory, getVersion:()=> '2.1.3', exit: code => exits.push(code) },
     dialog: { showMessageBox: async options => { dialogs.push(options); return { response: responses.shift() }; } } };
   const context = vm.createContext({
-    require: name => name === 'electron' ? electron : name === 'node:child_process'
+    require: name => name === 'electron' ? electron : name === 'node:path' && platform === 'darwin' ? path.posix : name === 'node:child_process'
       ? { spawnSync: () => ({ status: 1 }) } : localRequire(name),
     __dirname: path.dirname(main), console, setTimeout, clearTimeout,
-    process: { platform: 'win32', argv: [], on() {}, env: { NORA_TAVERN_HOME: f.home }, pid:process.pid,
+    process: { platform, argv: [], on() {}, env: { NORA_TAVERN_HOME: f.home }, pid:process.pid,
       resourcesPath:path.resolve(path.dirname(main),'..'),execPath: path.join(f.directory, 'launcher.exe') },
   });
   vm.runInContext(fs.readFileSync(main, 'utf8'), context);
@@ -636,8 +637,7 @@ test('only a confirmed full uninstall can bypass an unreadable KEEP receipt',asy
 });
 
 test('a macOS disk image blocks uninstall before prompting or stopping services',async t=>{
-  const f=wizard(t,[]);
-  f.context.process.platform='darwin';
+  const f=wizard(t,[],{platform:'darwin'});
   f.context.process.execPath='/Volumes/Nora/Nora.app/Contents/MacOS/Nora';
   await assert.rejects(f.run(),/移入“应用程序”/);
   assert.deepEqual(f.dialogs,[]);
@@ -1868,7 +1868,7 @@ async function advancePartialSystemFixture(f,{version='2.4.6',commit='b'.repeat(
   recoveryOutcome:'not-required',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),planSelected:true,target,planDigest:hash(JSON.stringify(target)),
   result:{systemReady:true,updateVerified:true,version,commit,...f.instance}};
  const backup=path.join(f.instance.installRoot,'tavern-backups/normal-update-'+version);
- const script=String.raw`import importlib.util,json,sys,shutil,types
+ const script=String.raw`import importlib.util,json,sys,shutil,tempfile,types
 from pathlib import Path
 p=json.load(sys.stdin);spec=importlib.util.spec_from_file_location('r',p['recovery']);r=importlib.util.module_from_spec(spec);spec.loader.exec_module(r)
 sys.path.insert(0,str(Path(p['updater']).parent));spec=importlib.util.spec_from_file_location('u',p['updater']);u=importlib.util.module_from_spec(spec);spec.loader.exec_module(u)
@@ -1878,7 +1878,7 @@ for name in ('installed.json','installed-manifest.json','nora-system.json'):shut
 for name in ('AGENTS.md','AGENTS.md.bak'):
  if (home/name).exists():shutil.copy2(home/name,backup/'agents-rollback'/name)
 u.record_backup(root,backup,'prepared')
-stage=root/'candidate-c';stage.mkdir();(stage/'native-runtime.json').write_text('{}');(stage/'native_lifecycle.py').write_text('pass\n')
+stage=Path(tempfile.mkdtemp(prefix='candidate-c-',dir=root));(stage/'native-runtime.json').write_text('{}');(stage/'native_lifecycle.py').write_text('pass\n')
 before={'version':p['beforeVersion'],'running':False,'gatewayRunning':False,'clawchatConnected':False,'systemReady':True}
 plan={**p['instance'],'before':before}
 sys._nora_operation_delegate=types.SimpleNamespace(operation_id=p['operationId'],owner_epoch=p['epoch'],assert_active=lambda:None)

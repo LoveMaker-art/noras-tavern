@@ -9,6 +9,9 @@ const releases=require('../installer/desktop/releases');
 const {createLocalRelease}=require('../installer/desktop/local-release');
 const desktop=path.resolve(__dirname,'../installer/desktop');
 const python=process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON||'python3';
+// Keep the exact NTFS file identities written by Python when editing a fixture.
+const mutableRecovery=bytes=>JSON.parse(bytes.toString('utf8'),(_key,value,context)=>
+  typeof value==='number'&&!Number.isSafeInteger(value)&&Number.isInteger(value)?JSON.rawJSON(context.source):value);
 const setup=String.raw`
 import sys,json,importlib.util,hashlib,uuid,os,shutil
 from pathlib import Path
@@ -120,14 +123,25 @@ for(const phase of ['restored','cancelled'])test(`APP ${phase} survives a lost s
   assert.equal(result.value[phase==='restored'?'recoveryVerification':'notAppliedVerification'],'confirmed');
   f.assertPreserved();
 });
-test('APP sharing proof checks the original sealed manifest bytes before permitting retry',async t=>{
+for(const [winerror,schema] of [[33,'nora-app-sharing-failure/1'],[5,'nora-app-move-denied/1']])
+test(`APP move proof checks the original sealed manifest bytes before permitting retry (${winerror})`,async t=>{
   const platform='win32',arch='x64',releasePlan=await releases.selectAppPlan(publication(t,{platform,arch}));
   const f=fixture(t,{phase:'cancelled',releasePlan,platform,arch}),file=path.join(f.job,'recovery.json');
-  const sharing={schema:'nora-app-sharing-failure/1',phase:'moving-old',winerror:33};
-  const snapshot=JSON.parse(fs.readFileSync(file));
+  const sharing={schema,phase:'moving-old',winerror};
+  const snapshot=mutableRecovery(fs.readFileSync(file));
+  if(winerror===5){
+    fs.writeFileSync(file,JSON.stringify({...snapshot,failurePhase:'moving-old',sharingFailure:{...sharing,schema:'nora-app-sharing-failure/1'}}));
+    assert.equal((await update.observeApp(f)).effectState,'unknown','access denial is not a proven sharing violation');
+  }
   fs.writeFileSync(file,JSON.stringify({...snapshot,failurePhase:'moving-old',sharingFailure:sharing}));
   const before=await update.observeApp(f);
   assert.deepEqual(before.sharingFailure,sharing);assert.equal(before.workerOffline,true);
+  if(winerror===5){
+    const {presentError}=require('../installer/desktop/error-presentation');
+    const result=await update.reconcileAppHandoff(f);
+    assert.equal(result.failure.userCode,'APP_MOVE_BLOCKED');
+    assert.match(presentError(result.failure,{action:'update'}).next,/占用.*重试.*权限/);
+  }
   const manifest=path.join(f.operationDirectory,f.operation.target.releasePlan.manifestRef.file);
   const bytes=fs.readFileSync(manifest);bytes[bytes.indexOf('a'.repeat(40))]='b'.charCodeAt(0);fs.writeFileSync(manifest,bytes);
   const after=await update.observeApp(f);
@@ -150,7 +164,7 @@ test('wrong operation binding, changed program and a live worker do not grant AP
   const f=fixture(t),file=path.join(f.job,'recovery.json'),before=fs.readFileSync(file);
   assert.equal(await update.reconcileAppHandoff({...f,operation:{...f.operation,planDigest:'0'.repeat(64)}}),null);
   const identity=JSON.parse(execFileSync(python,['-B',f.helper,'--process-identity',String(process.pid)],{encoding:'utf8'}));
-  const value=JSON.parse(before);value.workerPid=identity.pid;value.workerCreationTime=identity.creationTime;fs.writeFileSync(file,JSON.stringify(value));
+  const value=mutableRecovery(before);value.workerPid=identity.pid;value.workerCreationTime=identity.creationTime;fs.writeFileSync(file,JSON.stringify(value));
   assert.equal((await update.read(f)).kind,'pending');assert.equal(await update.reconcileAppHandoff(f),null);
   fs.writeFileSync(file,before);fs.writeFileSync(f.executable,'unknown APP content');
   assert.equal((await update.observeApp(f)).effectState,'unknown');
@@ -274,7 +288,7 @@ test('only the exact unpublished APP preparation with an offline worker and unch
     {...f.operation,target:{...f.operation.target,request:{action:'update'}}},
     {...f.operation,target:{...f.operation.target,releasePlan:{schema:'nora-release-plan/1',planId:'foreign'}}}])
     assert.equal(await update.verifyRecovery({...f,operation}),false);
-  const file=path.join(f.job,'recovery.json'),before=fs.readFileSync(file),value=JSON.parse(before);
+  const file=path.join(f.job,'recovery.json'),before=fs.readFileSync(file),value=mutableRecovery(before);
   const identity=JSON.parse(execFileSync(python,['-B',f.helper,'--process-identity',String(process.pid)],{encoding:'utf8'}));
   value.workerPid=identity.pid;value.workerCreationTime=identity.creationTime;fs.writeFileSync(file,JSON.stringify(value));
   assert.equal(await update.verifyRecovery(f),false,'a PID with its exact live birth cannot be adopted');
@@ -287,9 +301,13 @@ test('APP helper readiness has a bounded unconfirmed result and retains real job
   const f=fixture(t,{phase:'awaiting-system'}),file=path.join(desktop,'launcher-update.js'),localRequire=createRequire(file),loaded={exports:{}};
   const child=new EventEmitter(),signals=[];child.pid=2147483646;child.kill=signal=>{signals.push(signal);return true;};child.unref=()=>{};
   let ticks=0;
+  const fixtureRequire=name=>{
+    if(name==='node:child_process')return {...localRequire(name),spawn:()=>child};
+    if(name==='./managed-python')return {resolveExecution:command=>({command,env:process.env})};
+    return localRequire(name);
+  };
   vm.runInNewContext(fs.readFileSync(file,'utf8'),{module:loaded,process,
-    setTimeout:callback=>{ticks++;queueMicrotask(callback);},
-    require:name=>name==='node:child_process'?{...localRequire(name),spawn:()=>child}:localRequire(name)}, {filename:file});
+    setTimeout:callback=>{ticks++;queueMicrotask(callback);},require:fixtureRequire}, {filename:file});
   const before=fs.readFileSync(path.join(f.job,'recovery.json'));
   await assert.rejects(loaded.exports.launchHandoff(f),error=>error.code==='OPERATION_EXECUTOR_UNCONFIRMED'
     &&error.pending===true&&error.executorTerminationConfirmed===false&&error.job===f.job&&error.cause.code==='TIMEOUT');

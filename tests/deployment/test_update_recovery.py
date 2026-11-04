@@ -5,6 +5,7 @@ import importlib.util
 import multiprocessing
 import os
 from pathlib import Path, PureWindowsPath
+import re
 import shutil
 import signal
 import subprocess
@@ -146,6 +147,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
     original_replace=helper.os.replace
     original_copy_host=updater.copy_host_backup
     receipt_failed=False
+    installed_receipt=Path(first_install.filesystem_path(root/'tavern-updates/installed.json'))
     def start_candidate(*_args, **_kwargs):
         if write_during_start is not None:
             write_during_start(root/'tavern-state')
@@ -170,7 +172,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
 
     def replace(source,target):
         nonlocal receipt_failed
-        if checker_receipt_failure and not receipt_failed and Path(target)==root/'tavern-updates/installed.json':
+        if checker_receipt_failure and not receipt_failed and Path(target)==installed_receipt:
             assert (home/'scripts'/updater.UPDATE_CHECK_SCRIPT).read_text().startswith('new checker')
             assert json.loads(cron.read_text())['jobs'][0]['no_agent'] is True
             receipt_failed=True
@@ -973,6 +975,94 @@ class CronMetadataClassificationTests(unittest.TestCase):
 
 
 class InterruptedRecoveryTests(unittest.TestCase):
+    def test_program_publication_breaks_hardlinks_and_seals_new_identity_before_swap(self):
+        journal=self.journal()
+        source=journal._sources['app']
+        os.link(self.old/'program.txt',source/'shared-dependency.txt')
+        original=recovery.identity(self.old/'program.txt')
+        with patch.object(recovery,'needs_program_publication',return_value=True):
+            journal.swap('app')
+        self.assertEqual(recovery.identity(self.old),journal.plan['targets'][0]['newIdentity'])
+        self.assertEqual(recovery.identity(source/'shared-dependency.txt'),original)
+        self.assertEqual(recovery.identity(self.backup/'trees/app/program.txt'),original)
+        self.assertNotEqual(recovery.identity(self.old/'shared-dependency.txt'),original)
+        self.assertEqual((self.old/'shared-dependency.txt').read_text(),'old program')
+        self.assertEqual(list(self.old.parent.glob('.nora-program-*')),[])
+        self.assertEqual(self.run_recover()['status'],'restored')
+        self.assertEqual(recovery.identity(self.old/'program.txt'),original)
+
+    def test_program_publication_copy_failure_preserves_old_tree(self):
+        journal=self.journal()
+        original=recovery.identity(self.old)
+        with patch.object(recovery,'needs_program_publication',return_value=True), \
+                patch.object(recovery.shutil,'copytree',side_effect=PermissionError('fixture stage copy denied')):
+            with self.assertRaisesRegex(PermissionError,'fixture stage copy denied'):
+                journal.swap('app')
+        self.assertEqual(journal.plan['targets'][0]['phase'],'pending')
+        self.assertEqual(recovery.identity(self.old),original)
+        self.assertEqual((self.old/'program.txt').read_text(),'old program')
+        self.assertFalse((self.backup/'trees/app').exists())
+        self.assertEqual(list(self.old.parent.glob('.nora-program-*')),[])
+
+    def test_recovery_removes_only_the_sealed_interrupted_program_stage(self):
+        journal=self.journal(metadata_changes=False)
+        item=journal.plan['targets'][0]
+        staged=journal.program_stage_path(item)
+        staged.mkdir()
+        (staged/'partial-program.txt').write_text('incomplete candidate')
+        item['programPublication']={'identity':recovery.identity(staged)}
+        journal.save()
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'untouched')
+        self.assertEqual(self.run_recover()['status'],'restored')
+        self.assertFalse(staged.exists())
+        self.assertEqual((self.old/'program.txt').read_text(),'old program')
+
+    def test_recovery_refuses_an_unsealed_or_replaced_program_stage(self):
+        journal=self.journal(metadata_changes=False)
+        item=journal.plan['targets'][0]
+        staged=journal.program_stage_path(item)
+        staged.mkdir()
+        (staged/'unconfirmed.txt').write_text('preserve evidence')
+        for unknown in (None,[0,1]):
+            with self.subTest(unknown=unknown):
+                item['programPublication']={'identity':unknown}
+                journal.save()
+                self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'unknown')
+                with self.assertRaisesRegex(RuntimeError,'正式程序暂存目录身份未知'):
+                    self.run_recover()
+                self.assertEqual(self.stop_calls,[])
+                self.assertEqual((staged/'unconfirmed.txt').read_text(),'preserve evidence')
+                self.assertEqual((self.old/'program.txt').read_text(),'old program')
+
+    @unittest.skipUnless(os.name=='nt','requires NTFS security descriptors')
+    def test_windows_program_publication_inherits_destination_dacl(self):
+        journal=self.journal()
+        source=journal._sources['app']
+        current=subprocess.check_output(['whoami.exe','/user','/fo','csv','/nh'],timeout=10)
+        sid=re.search(rb'S-1-(?:\d+-)+\d+',current)[0].decode('ascii')
+        for program in (source,self.old):
+            subprocess.run(['icacls.exe',str(program),'/inheritance:r','/grant:r',f'*{sid}:(OI)(CI)F'],
+                           check=True,capture_output=True,timeout=10)
+        reference=self.old.parent/'reference'
+        reference.mkdir()
+        (reference/'program.txt').write_text('reference')
+
+        def acl(path):
+            return subprocess.check_output(['powershell.exe','-NoProfile','-NonInteractive','-Command',
+                "(Get-Acl -LiteralPath $env:NORA_TEST_ACL_PATH).GetSecurityDescriptorSddlForm('Access')"],
+                env={**os.environ,'NORA_TEST_ACL_PATH':str(path)},text=True,timeout=20).strip()
+
+        private=acl(source)
+        old_acl=acl(self.old)
+        expected=acl(reference)
+        self.assertNotEqual(private,expected)
+        journal.swap('app')
+        self.assertEqual(acl(self.old),expected)
+        self.assertEqual(acl(self.old/'program.txt'),acl(reference/'program.txt'))
+        self.assertEqual(acl(source),private)
+        self.assertEqual(acl(self.backup/'trees/app'),old_acl)
+        self.assertEqual((self.old/'program.txt').read_text(),'new program')
+
     def test_historical_copy_recovery_keeps_current_story_when_snapshot_has_drifted(self):
         journal=self.journal()
         journal.snapshot_state()

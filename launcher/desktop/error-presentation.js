@@ -72,6 +72,7 @@ const business = {
   RUNTIME_PARTIAL_UNCONFIRMED: ['上次诺拉安装尚未完成确认。', '', '请先处理恢复提示，保留安装目录和备份。'],
   RUNTIME_IDENTITY_UNKNOWN: ['诺拉程序目录身份无法确认。', '', '请重新检查原安装目录，保留文件和备份。'],
   LAUNCHER_RECOVERY_REQUIRED: ['启动器更新仍需恢复。', '', '请先按提示恢复旧启动器。'],
+  APP_MOVE_BLOCKED: ['Windows 拒绝移动旧启动器。', '原启动器和数据已保留。', '请退出占用启动器目录的程序后重试。如果没有占用，请检查该目录的权限。'],
   LOG_OPEN_FAILED: ['无法打开日志。', '', '请重新打开启动器后查看，保留原始日志。'],
 };
 

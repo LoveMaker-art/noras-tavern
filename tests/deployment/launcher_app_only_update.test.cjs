@@ -118,14 +118,15 @@ test('the visible same-operation APP retry launches its prepared replacement hel
   assert.deepEqual(calls,[['helper','/test/job'],['quit']]);
   assert.equal(context.quitReady,true);
 });
-for(const entry of ['original task','latest block','fresh request'])
+for(const [entry,winerror,schema] of [['original task',33,'nora-app-sharing-failure/1'],
+  ['latest block',5,'nora-app-move-denied/1'],['fresh request',5,'nora-app-move-denied/1']])
 test(`the desktop retry keeps the fixed APP target and closed handoffs via ${entry}`,async t=>{
   const f=fixture(t),{createOperationController}=realRequire('./operation-state');
   const {createTestOperationLock}=require('./launcher_operation_test_lock.cjs');
   const updates=path.join(f.home,'installer','launcher-update');fs.mkdirSync(updates,{recursive:true});
   const oldJob=path.join(updates,'job-original');fs.mkdirSync(oldJob);
   const marker=path.join(oldJob,'original-evidence');fs.writeFileSync(marker,'first fault remains');
-  const preparedJobs=[],dispatched=[],sharing={schema:'nora-app-sharing-failure/1',phase:'moving-old',winerror:33};
+  const preparedJobs=[],dispatched=[],sharing={schema,phase:'moving-old',winerror};
   let now=Date.parse('2026-11-04T00:00:00Z'),evidenceTrusted=true;
   const plan={schema:'nora-release-plan/1',client:'app',mode:'update',tag:'v2.6.5',platform:'win32',
     manifestRef:{file:'release-plan/fixed.json'},launcherManifest:{version:'2.2.9'}};

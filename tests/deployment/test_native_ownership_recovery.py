@@ -336,6 +336,48 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'inspection denied'):
                 r.stop_run(port=port)
 
+    def test_windows_listener_snapshot_distinguishes_occupied_free_and_unknown(self):
+        port = 18797
+        psutil = self.processes.psutil
+        def row(ip, state=psutil.CONN_LISTEN, local_port=port):
+            return types.SimpleNamespace(status=state, laddr=types.SimpleNamespace(ip=ip, port=local_port))
+
+        with mock.patch.object(self.processes, 'os', types.SimpleNamespace(name='nt')), \
+                mock.patch.object(psutil, 'net_connections') as snapshot, \
+                mock.patch.object(socket, 'socket') as socket_factory:
+            snapshot.return_value = [row('127.0.0.1', psutil.CONN_TIME_WAIT), row('127.0.0.2'), row('::1'),
+                                     row('0.0.0.0', local_port=port + 1)]
+            self.assertIs(self.processes.port_open(port), False)
+            for address in ('127.0.0.1', '0.0.0.0', '::ffff:7f00:1'):
+                with self.subTest(address=address):
+                    snapshot.return_value = [row(address)]
+                    self.assertIs(self.processes.port_open(port), True)
+            socket_factory.assert_not_called()
+
+            snapshot.return_value = [row('::')]
+            probe = socket_factory.return_value.__enter__.return_value
+            for result, occupied in ((0, True), (10061, False)):
+                probe.connect_ex.return_value = result
+                self.assertIs(self.processes.port_open(port), occupied)
+            probe.connect_ex.return_value = 10035
+            with self.assertRaises(OSError) as unresolved:
+                self.processes.port_open(port)
+            self.assertEqual(unresolved.exception.errno, 10035)
+
+            snapshot.side_effect = psutil.AccessDenied()
+            with self.assertRaisesRegex(OSError, 'could not be confirmed') as denied:
+                self.processes.port_open(port)
+            self.assertIs(denied.exception.__cause__, snapshot.side_effect)
+
+    @unittest.skipUnless(os.name == 'nt', 'requires the Windows TCP table')
+    def test_windows_listener_snapshot_reports_actual_loopback_and_released_port(self):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            self.assertIs(self.processes.port_open(port), True)
+        self.assertIs(self.processes.port_open(port), False)
+
     def test_stopping_canary_does_not_stop_its_verified_production_peer(self):
         node = resolve_node()
         self.assertIsNotNone(node, 'requires NORA_TEST_NODE or a local Node executable')

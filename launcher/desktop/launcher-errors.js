@@ -122,4 +122,9 @@ function programError(record,depth=0){
   Object.assign(error,programFacts(record));
   return error;
 }
-module.exports = { describeError, launcherError, isProxyConnectionFailure,programError,programFacts,programIdentity };
+function isAppMoveFailure(evidence){
+  if(evidence?.phase!=='moving-old'||Object.keys(evidence).sort().join(',')!=='phase,schema,winerror')return false;
+  return evidence.schema==='nora-app-sharing-failure/1'&&[32,33].includes(evidence.winerror)
+    ||evidence.schema==='nora-app-move-denied/1'&&evidence.winerror===5;
+}
+module.exports = { describeError, launcherError, isProxyConnectionFailure,programError,programFacts,programIdentity,isAppMoveFailure };

@@ -1,7 +1,7 @@
 """Durable, bounded-path recovery of one owned Tavern update transaction."""
 import hashlib
 from datetime import datetime
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import ntpath
 import os
@@ -30,6 +30,7 @@ CRON_RUNTIME_FIELDS = {'last_run_at','last_status','last_error','last_delivery_e
                        'last_delivery_unverified','failure_streak','next_run_at',
                        'run_claim','fire_claim','last_dispatch','last_fire_error','monitor_state'}
 SETUP_METADATA_KEY = 'install:tavern-updates/nora-system.json'
+PROGRAM_TARGETS = {'app': 'apps/tavern-runtime', 'ops': 'apps/tavern-ops', 'nora-mcp': 'apps/nora-mcp'}
 
 
 def cron_definition(path):
@@ -491,8 +492,7 @@ def story_inventory(state):
 def allowed_target(name, namespace, relative):
     if not all(isinstance(value,str) for value in (name,namespace,relative)):return False
     if namespace=='install':
-        return {'app':'apps/tavern-runtime','ops':'apps/tavern-ops',
-                'nora-mcp':'apps/nora-mcp'}.get(name)==relative
+        return PROGRAM_TARGETS.get(name)==relative
     if namespace!='hermes':return False
     if name.startswith('skill-'):
         return any(name=='skill-'+s.replace('/','-') and relative=='skills/'+s for s in SKILLS)
@@ -541,6 +541,43 @@ def _stage_tree(source, staged):
         shutil.copy2(_io_path(source), _io_path(staged), follow_symlinks=False)
     if digest(source) != digest(staged):
         raise RuntimeError('目标卷暂存内容校验失败，未替换原文件。')
+
+
+def needs_program_publication(name):
+    return os.name == 'nt' and name in PROGRAM_TARGETS
+
+
+@contextmanager
+def stage_program_for_publication(source, target, *, staged=None, on_create=None):
+    """Create fresh Windows program objects with the target parent's ACLs."""
+    # Same-volume NTFS renames retain the source ACL, including access
+    # inherited from private staging. Copying into a fresh sibling also
+    # separates dependency hardlinks without changing rollback permissions.
+    target = Path(target)
+    if target.parent.name != 'apps' or target.relative_to(target.parent.parent).as_posix() not in PROGRAM_TARGETS.values():
+        raise RuntimeError('正式程序暂存目标不在受管范围，未替换原文件。')
+    if staged is None:
+        staged = safe_path(target.parent, '.nora-program-' + uuid.uuid4().hex)
+    reject_links(source)
+    _io_path(staged).parent.mkdir(parents=True, exist_ok=True)
+    _io_path(staged).mkdir()
+    owned = identity(staged)
+    try:
+        if on_create is not None:
+            on_create(owned)
+        shutil.copytree(_io_path(source), _io_path(staged), dirs_exist_ok=True)
+        if identity(staged) != owned or digest(source) != digest(staged):
+            raise RuntimeError('正式程序暂存目录无法核验，未替换原文件。')
+        yield staged
+    finally:
+        error = sys.exception()
+        try:
+            if identity(staged) == owned:
+                shutil.rmtree(_io_path(staged))
+        except (OSError, RuntimeError) as cleanup:
+            if error is None:
+                raise
+            error.add_note(f'正式程序暂存目录未清理：{cleanup}')
 
 
 def _recovery_rename(source, target):
@@ -603,6 +640,49 @@ class Journal:
         self.save()  # Record the actual target-volume inode before any swap.
         return staged
 
+    def program_stage_path(self, item):
+        target = self.target(item)
+        key = hashlib.sha256((str(self.backup) + '\0' + str(target)).encode()).hexdigest()[:24]
+        return safe_path(target.parent, '.nora-program-' + key)
+
+    def staged_program(self, source, item):
+        staged = self.program_stage_path(item)
+        if identity(staged) is not None or 'programPublication' in item:
+            raise RuntimeError('正式程序暂存现场已存在，未替换原文件。')
+        item['programPublication'] = {'identity': None}
+        self.save()
+
+        def seal(owned):
+            item['programPublication']['identity'] = owned
+            self.save()
+
+        return stage_program_for_publication(source, self.target(item), staged=staged, on_create=seal)
+
+    def checked_program_stage(self, item):
+        if 'programPublication' not in item:
+            return None
+        record = item['programPublication']
+        if item['name'] not in PROGRAM_TARGETS or not isinstance(record, dict) or set(record) != {'identity'}:
+            raise RuntimeError('正式程序暂存记录无效，已保留现场。')
+        expected = record['identity']
+        if expected is not None and (not isinstance(expected, list) or len(expected) != 2
+                                     or any(type(value) is not int or value < 0 for value in expected)
+                                     or expected[1] == 0):
+            raise RuntimeError('正式程序暂存身份无效，已保留现场。')
+        staged = self.program_stage_path(item)
+        observed = identity(staged)
+        if observed is None:
+            return None
+        if observed != expected or not _io_path(staged).is_dir():
+            raise RuntimeError('正式程序暂存目录身份未知，已保留现场。')
+        return staged
+
+    def discard_program_stages(self):
+        for item in self.plan['targets']:
+            staged = self.checked_program_stage(item)
+            if staged is not None:
+                shutil.rmtree(_io_path(staged))
+
     def state_root(self):
         value = self.plan.get('stateRoot')
         if value is None:
@@ -632,7 +712,7 @@ class Journal:
             target=Path(target).absolute()
             # Independent installations may keep Hermes and Tavern in the
             # same root. The declared, whitelisted target owns its namespace.
-            namespace='install' if name in ('app','ops','nora-mcp') else 'hermes'
+            namespace='install' if name in PROGRAM_TARGETS else 'hermes'
             owner=root if namespace=='install' else home
             relative=target.relative_to(owner).as_posix()
             if not allowed_target(name,namespace,relative):raise RuntimeError('恢复计划含未受管目标：'+name)
@@ -790,6 +870,7 @@ class Journal:
             pair=(item['namespace'],item['relative'])
             if item['name'] in names or pair in paths:raise RuntimeError('恢复计划包含重复目标')
             names.add(item['name']);paths.add(pair)
+            self.checked_program_stage(item)
             self.check_tree(item,self.target(item),self.tree_storage(item),full=full)
         state=self.plan.get('state')
         if state is not None and not isinstance(state,dict):raise RuntimeError('剧情状态恢复计划格式无效')
@@ -1070,18 +1151,23 @@ class Journal:
     def swap(self,name):
         item=next(i for i in self.plan['targets'] if i['name']==name)
         source=self._sources[name];target=self.target(item);saved=self.tree_storage(item, create=True)
-        if source is not None:source=self.staged_tree(source,item)
-        # A context/script swap can also replace a metadata-snapshotted file.
-        # Record it once before its write so later metadata checks do not
-        # mistake our own replacement for an external configuration change.
-        if self.metadata_key(target) in {self.metadata_key(path) for path,_ in self.metadata_items()}:
-            self.mark_metadata([target])
-        item['phase']='moving-old';self.save();_io_path(saved).parent.mkdir(parents=True,exist_ok=True)
-        if item['oldIdentity'] is not None:os.replace(_io_path(target),_io_path(saved))
-        item['phase']='installing-new';self.save()
-        if source is not None:
-            _io_path(target).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(source),_io_path(target))
-        item['phase']='applied';self.save()
+        publish = source is not None and needs_program_publication(name)
+        staging = self.staged_program(source, item) if publish else nullcontext(
+            self.staged_tree(source, item) if source is not None else None)
+        with staging as prepared:
+            if publish:
+                item['newIdentity'] = identity(prepared)
+            # A context/script swap can also replace a metadata-snapshotted file.
+            # Record it once before its write so later metadata checks do not
+            # mistake our own replacement for an external configuration change.
+            if self.metadata_key(target) in {self.metadata_key(path) for path,_ in self.metadata_items()}:
+                self.mark_metadata([target])
+            item['phase']='moving-old';self.save();_io_path(saved).parent.mkdir(parents=True,exist_ok=True)
+            if item['oldIdentity'] is not None:os.replace(_io_path(target),_io_path(saved))
+            item['phase']='installing-new';self.save()
+            if prepared is not None:
+                _io_path(target).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(prepared),_io_path(target))
+            item['phase']='applied';self.save()
         if self.metadata_key(target) in self.plan.get('metadataIntents',[]):self.finish_metadata([target])
 
     def bind_sources(self,swaps):
@@ -1673,6 +1759,7 @@ def recover(home,root,*,stop,resume,verify,verify_files=None):
         stopped=stop(plan,backup)
         if not isinstance(stopped,dict) or stopped.get('offline') is not True:
             raise RuntimeError('未确认服务停止状态，未恢复文件。请重新检查状态并保留备份。')
+        journal.discard_program_stages()
         state = plan.get('state')
         if (state and state.get('mode') == 'copy' and plan.get('partialBaseline')
                 and identity(journal.state_backup()) is not None and 'nativeConfigRestoreDigest' not in state):

@@ -1225,8 +1225,14 @@ def replace(ctx, *, allow_legacy=False):
         except PermissionError as error:
             code = getattr(error, 'winerror', None)
             if (plan['platform'] == 'win32' and plan['schema'] == 2 and plan['releasePlan'].get('client') == 'app'
-                    and type(code) is int and code in (32, 33)):
-                sharing_failure = {'schema': 'nora-app-sharing-failure/1', 'phase': 'moving-old', 'winerror': code}
+                    and type(code) is int):
+                if code in (32, 33):
+                    sharing_failure = {'schema': 'nora-app-sharing-failure/1', 'phase': 'moving-old', 'winerror': code}
+                elif (code == 5 and error.filename == str(io_path(app))
+                        and error.filename2 == str(io_path(backup))):
+                    # NTFS can deny this rename while an external file is
+                    # locked. Error 5 alone does not identify the cause.
+                    sharing_failure = {'schema': 'nora-app-move-denied/1', 'phase': 'moving-old', 'winerror': code}
             raise
         moved = True
         checkpoint(ctx, snapshot, 'installing-new'); retry_rename(incoming, app)
