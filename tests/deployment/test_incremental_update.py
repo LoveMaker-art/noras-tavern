@@ -3,6 +3,7 @@ from contextlib import ExitStack
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
@@ -482,22 +483,24 @@ class IncrementalUpdateTests(unittest.TestCase):
                 self.assertNotIn(b"personal suffix", first)
                 self.assertNotIn(b"old rules", first)
 
-    def test_small_update_temporarily_skips_content_check_and_restores_config(self):
+    def test_small_update_scopes_content_skip_without_rewriting_config(self):
         with tempfile.TemporaryDirectory(prefix="nora-content-check-") as temporary:
             config = Path(temporary) / "config.yaml"
             original = b"port: 8000\nskipContentCheck: false\n"
             config.write_bytes(original)
-            with UPDATER.temporary_content_check_skip(config, True):
-                self.assertIn(b"skipContentCheck: true", config.read_bytes())
-            self.assertEqual(config.read_bytes(), original)
+            key = 'SILLYTAVERN_SKIPCONTENTCHECK'
+            with mock.patch.dict(os.environ, {key: 'false'}):
+                with UPDATER.temporary_content_check_skip(True):
+                    self.assertEqual(os.environ[key], 'true')
+                    self.assertEqual(config.read_bytes(), original)
+                    config.write_bytes(b"skipContentCheck: false\n# later edit\n")
+                self.assertEqual(os.environ[key], 'false')
+            self.assertEqual(config.read_bytes(), b"skipContentCheck: false\n# later edit\n")
 
     def test_engine_update_keeps_normal_content_check(self):
-        with tempfile.TemporaryDirectory(prefix="nora-content-check-engine-") as temporary:
-            config = Path(temporary) / "config.yaml"
-            original = b"skipContentCheck: false\n"
-            config.write_bytes(original)
-            with UPDATER.temporary_content_check_skip(config, False):
-                self.assertEqual(config.read_bytes(), original)
+        key = 'SILLYTAVERN_SKIPCONTENTCHECK'
+        with mock.patch.dict(os.environ, {key: 'false'}), UPDATER.temporary_content_check_skip(False):
+            self.assertEqual(os.environ[key], 'false')
 
     def test_extra_managed_file_forces_clean_root_replacement_but_node_modules_do_not(self):
         with tempfile.TemporaryDirectory(prefix="nora-extra-file-") as temporary:

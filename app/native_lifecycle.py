@@ -445,7 +445,7 @@ class NativeRuntime:
             raise NativeLifecycleError("bundled SillyTavern dependencies are not prepared")
         return {**report, "node_major": node_major, "dependencies": "ready"}
 
-    def install(self, *, allow_dependency_install=False, journal=None):
+    def install(self, *, allow_dependency_install=False, journal=None, prepare_assets=True):
         self.assert_operation()
         if journal is not None: self._install_journal = journal
         report = self.verify_source()
@@ -481,7 +481,15 @@ class NativeRuntime:
                 }, indent=2) + "\n",
             )
         report = self.verify_install()
-        self.sync_assets()
+        if prepare_assets:
+            self.sync_assets()
+        else:
+            # Program updates use the bundles inside the journaled app tree.
+            # Leave prior per-user copies and configuration available to rollback.
+            extension_source = self.app_root / "native-extensions"
+            for name in MANAGED_EXTENSIONS:
+                if not (extension_source / name / 'manifest.json').is_file():
+                    raise NativeLifecycleError(f"managed Nora extension is missing: {name}")
         return {
             **report,
             "installed": installed,

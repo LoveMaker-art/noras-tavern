@@ -138,40 +138,37 @@ class UpdateSpaceInstallContractTests(unittest.TestCase):
                     self.assertIn('new-runtime', fixture.events)
                     self.assertEqual('convert' in fixture.events, not native)
 
-    def test_copy_enospc_after_successful_admission_preserves_actual_failure_and_last_write(self):
+    def test_legacy_copy_enospc_after_admission_preserves_actual_failure_and_last_write(self):
         for managed in (False, True):
-            for native in (False, True):
-                with self.subTest(managed=managed, native=native), tempfile.TemporaryDirectory(prefix='nora-space-copy-failure-') as temporary:
-                    fixture = MigrationInstallFixture(temporary, managed=managed)
-                    if native:
-                        self.native(fixture)
-                    extra = fixture.state / 'another-story'
-                    extra.write_text('original extra data')
-                    original_copy = shutil.copyfile
-                    io_state = Path(fixture.updater.filesystem_path(fixture.state))
-                    copied = []
-                    original_error = OSError(errno.ENOSPC, 'space exhausted during actual state copy')
-                    def copy(*args, **kwargs):
-                        source = Path(args[0])
-                        if source.is_relative_to(io_state) or source.is_relative_to(fixture.state):
-                            if copied:
-                                raise original_error
-                            copied.append(source)
-                        return original_copy(*args, **kwargs)
-                    with patch.object(fixture.updater.shutil, 'disk_usage', return_value=self.usage(50_000_000)), \
-                            patch.object(shutil, 'copyfile', side_effect=copy), \
-                            patch.object(fixture.updater, 'fallback_python_state',
-                                         wraps=fixture.updater.fallback_python_state) as fallback, \
-                            self.assertRaises(RuntimeError) as failure:
-                        fixture.run()
-                    text = '; '.join(str(cause) for cause in chain(failure.exception))
-                    self.assertIn('[Errno 28]', text)
-                    self.assertIn('space exhausted during actual state copy', text)
-                    self.assertEqual(len(copied), 1)
-                    self.assert_preserved(fixture, stopped=True, native=native)
-                    self.assertEqual(extra.read_text(), 'original extra data')
-                    self.assertNotIn('convert', fixture.events)
-                    fallback.assert_not_called()
+            with self.subTest(managed=managed), tempfile.TemporaryDirectory(prefix='nora-space-copy-failure-') as temporary:
+                fixture = MigrationInstallFixture(temporary, managed=managed)
+                extra = fixture.state / 'another-story'
+                extra.write_text('original extra data')
+                original_copy = shutil.copyfile
+                io_state = Path(fixture.updater.filesystem_path(fixture.state))
+                copied = []
+                original_error = OSError(errno.ENOSPC, 'space exhausted during actual state copy')
+                def copy(*args, **kwargs):
+                    source = Path(args[0])
+                    if source.is_relative_to(io_state) or source.is_relative_to(fixture.state):
+                        if copied:
+                            raise original_error
+                        copied.append(source)
+                    return original_copy(*args, **kwargs)
+                with patch.object(fixture.updater.shutil, 'disk_usage', return_value=self.usage(50_000_000)), \
+                        patch.object(shutil, 'copyfile', side_effect=copy), \
+                        patch.object(fixture.updater, 'fallback_python_state',
+                                     wraps=fixture.updater.fallback_python_state) as fallback, \
+                        self.assertRaises(RuntimeError) as failure:
+                    fixture.run()
+                text = '; '.join(str(cause) for cause in chain(failure.exception))
+                self.assertIn('[Errno 28]', text)
+                self.assertIn('space exhausted during actual state copy', text)
+                self.assertEqual(len(copied), 1)
+                self.assert_preserved(fixture, stopped=True)
+                self.assertEqual(extra.read_text(), 'original extra data')
+                self.assertNotIn('convert', fixture.events)
+                fallback.assert_not_called()
 
 
 class UpdateSpaceTaskContractTests(unittest.TestCase):
@@ -193,7 +190,7 @@ class UpdateSpaceTaskContractTests(unittest.TestCase):
                 disk_usage=lambda _path: UpdateSpaceInstallContractTests.usage(50_000_000),
                 volume_identity=volume)
             copies = [copy for item in report['volumes'] for copy in item['copies']]
-            self.assertEqual(sum(copy['label'] == 'state-snapshot' for copy in copies), 1)
+            self.assertNotIn('state-snapshot', [copy['label'] for copy in copies])
             self.assertNotIn('legacy-preparation', [copy['label'] for copy in copies])
             install, hermes = report['volumes']
             self.assertTrue(all(copy['label'] == 'metadata-restore' for copy in hermes['copies']))
@@ -220,7 +217,7 @@ class UpdateSpaceTaskContractTests(unittest.TestCase):
             report = fixture.updater.check_update_space(tasks,
                 disk_usage=lambda _path: UpdateSpaceInstallContractTests.usage(200_000))
             copies = [copy for item in report['volumes'] for copy in item['copies']]
-            self.assertTrue(all(copy['label'] in ('metadata-restore', 'state-snapshot') for copy in copies))
+            self.assertTrue(all(copy['label'] == 'metadata-restore' for copy in copies))
             self.assertLess(sum(item['copyBytes'] for item in report['volumes']), 10_000)
             self.assertEqual((fixture.home / 'config.yaml').stat().st_size, 1_000_000)
 

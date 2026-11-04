@@ -37,7 +37,8 @@ def load_updater():
     return module
 
 
-def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resume_writes=False):
+def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resume_writes=False,
+                    write_during_start=None):
     """Run the real managed transaction, substituting only release/services."""
     updater=load_updater();base=Path(base).resolve();home=base/'hermes';root=base/'tavern'
     (home/'skills').mkdir(parents=True);(root/'apps/tavern-runtime').mkdir(parents=True)
@@ -111,6 +112,13 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
     helper=updater.recovery_module()
     def module(name,path):return helper if name=='tavern_update_recovery' else modules.get(name) or original_loader(name,path)
     original_replace=helper.os.replace
+    def start_candidate(*_args, **_kwargs):
+        if write_during_start is not None:
+            write_during_start(root/'tavern-state')
+        if not success:
+            raise RuntimeError('new runtime failed')
+        return {'native_pid':None,'health':{'ok':True}}
+
     def replace(source,target):
         original_replace(source,target)
         if interrupt and Path(first_install.filesystem_path(target))==Path(first_install.filesystem_path(root/'apps/tavern-runtime')):
@@ -135,9 +143,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
             stack.enter_context(patch.object(updater,'verify_preserved_worlds',return_value={'status':'verified'}))
         stack.enter_context(patch.object(updater,'dependency_marker',return_value={}))
         stack.enter_context(patch.object(updater,'install_update_check',return_value={'status':'installed'}))
-        stack.enter_context(patch.object(updater,'install_runtime',**(
-            {'return_value':{'native_pid':None,'health':{'ok':True}}} if success else
-            {'side_effect':RuntimeError('new runtime failed')})))
+        stack.enter_context(patch.object(updater,'install_runtime',side_effect=start_candidate))
         stack.enter_context(patch.object(helper.os,'replace',side_effect=replace))
         updater.install(SimpleNamespace(home=home,install_root=root,managed_home=base,
             release_dir=base/'release',manifest_sha256=None))
@@ -186,6 +192,26 @@ def interrupted_install_fixture():
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def test_automatic_rollback_preserves_latest_active_user_files(self):
+        with tempfile.TemporaryDirectory(prefix='nora-managed-live-edits-') as temporary:
+            base=Path(temporary)
+            state=base/'tavern/tavern-state'
+            chat='native/default-user/chats/story.jsonl'
+            settings='native/default-user/settings.json'
+            character='native/default-user/characters/retained.json'
+
+            def save_changes(active):
+                (active/chat).write_text('story written after program swap')
+                (active/settings).write_text('{"theme":"latest"}')
+                (active/character).unlink()
+
+            with self.assertRaisesRegex(RuntimeError,'new runtime failed; recovery=restored'):
+                install_fixture(base,write_during_start=save_changes)
+            self.assertEqual((base/'tavern/apps/tavern-runtime/program.txt').read_text(),'old program')
+            self.assertEqual((state/chat).read_text(),'story written after program swap')
+            self.assertEqual(json.loads((state/settings).read_text()),{'theme':'latest'})
+            self.assertFalse((state/character).exists())
+
     def test_automatic_rollback_keeps_user_edits_after_reopening_and_closes_recovery(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-live-edits-') as temporary:
             base=Path(temporary)

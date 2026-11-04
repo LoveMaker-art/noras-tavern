@@ -173,7 +173,7 @@ class StandaloneRecoveryTests(unittest.TestCase):
                     (root/'config.yaml').write_text('model: {api_key: changed-placeholder}\n')
                     journal.finish_metadata([root/'config.yaml'])
                 runtime = SimpleNamespace(status=lambda:{'processes':{'native':running},'health':{'ok':running}})
-                def reopen(*_):state.write_text('new normal chat after reopening')
+                def reopen(*_args, **_options):state.write_text('new normal chat after reopening')
                 with patch.object(updater,'standalone_runtime',return_value=runtime), \
                         patch.object(updater,'start_old',side_effect=reopen), \
                         patch.object(updater,'verify_worlds',return_value={}):

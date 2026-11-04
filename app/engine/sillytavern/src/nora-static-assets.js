@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { renderLocaleBootstrap } from './nora-locale-bootstrap.js';
-import { isManagedExtension } from './nora-extension-library.js';
+import { bundledExtensionPath, isManagedExtension, managedExtensions } from './nora-extension-library.js';
 
 export const IMMUTABLE_ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 export const REVALIDATED_ASSET_CACHE_CONTROL = 'no-cache, must-revalidate';
@@ -210,10 +210,14 @@ export function extensionReleaseForPath(extension, relativePath) {
  * @param {number} [options.length]
  * @returns {{release: string, extensions: Record<string, ReturnType<typeof buildNamespace>>}}
  */
-export function computeExtensionAssetManifest({ userDirectory, globalDirectory, length = NORA_ASSET_HASH_LENGTH, managedOnly = false }) {
-    const extensionNames = [...new Set([
+export function computeExtensionAssetManifest({ userDirectory, globalDirectory, bundledDirectory, length = NORA_ASSET_HASH_LENGTH, managedOnly = false }) {
+    const localAndGlobalNames = bundledDirectory && managedOnly ? [] : [
         ...extensionDirectoryNames(globalDirectory),
         ...extensionDirectoryNames(userDirectory),
+    ].filter(name => !bundledDirectory || !isManagedExtension(name));
+    const extensionNames = [...new Set([
+        ...localAndGlobalNames,
+        ...(bundledDirectory ? managedExtensions : []),
     ])].sort();
     const extensions = Object.create(null);
     const aggregate = crypto.createHash('sha256');
@@ -224,11 +228,10 @@ export function computeExtensionAssetManifest({ userDirectory, globalDirectory, 
         // User-installable extensions remain mutable without restarting the server.
         if (managedOnly && !isManagedExtension(extensionName)) continue;
         const key = `third-party/${extensionName}`;
-        const extension = buildExtensionNamespace(
-            extensionName,
-            effectiveExtensionFiles(extensionName, userDirectory, globalDirectory),
-            length,
-        );
+        const bundled = bundledExtensionPath(bundledDirectory, extensionName);
+        const files = bundled ? Object.create(null) : effectiveExtensionFiles(extensionName, userDirectory, globalDirectory);
+        if (bundled) collectRegularFiles(bundled, files);
+        const extension = buildExtensionNamespace(extensionName, files, length);
         extensions[key] = extension;
         aggregate.update(`${key}\0${extension.fullDigest}\0`);
     }
@@ -270,6 +273,7 @@ function coreNamespaceFor(relativePath) {
  * @param {string} options.bundledLibPath
  * @param {string} options.userExtensionDirectory
  * @param {string} options.globalExtensionDirectory
+ * @param {string} [options.bundledExtensionDirectory]
  * @param {number} [options.length]
  */
 export function computeBrowserAssetManifest({
@@ -277,6 +281,7 @@ export function computeBrowserAssetManifest({
     bundledLibPath,
     userExtensionDirectory,
     globalExtensionDirectory,
+    bundledExtensionDirectory,
     length = NORA_ASSET_HASH_LENGTH,
 }) {
     const publicFiles = Object.create(null);
@@ -301,6 +306,7 @@ export function computeBrowserAssetManifest({
     const extensionManifest = computeExtensionAssetManifest({
         userDirectory: userExtensionDirectory,
         globalDirectory: globalExtensionDirectory,
+        bundledDirectory: bundledExtensionDirectory,
         length,
         managedOnly: true,
     });

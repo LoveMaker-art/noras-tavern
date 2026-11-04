@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import express from 'express';
 
 import {
+    computeBrowserAssetManifest,
     computeExtensionAssetManifest,
     createVersionedExtensionRouteHandler,
     materializeBrowserAssetManifest,
@@ -14,7 +17,10 @@ import { setConfigFilePath } from '../src/util.js';
 setConfigFilePath(path.resolve('default/config.yaml'));
 const {
     createExtensionAssetRedirectHandler,
+    createVersionedExtensionsRouter,
+    router: workspaceRouter,
 } = await import('../src/workspace.js');
+const { router: extensionsRouter } = await import('../src/endpoints/extensions.js');
 
 function responseFixture() {
     return {
@@ -121,4 +127,77 @@ test('legacy extension asset paths redirect to the matching package release', ()
     } finally {
         fs.rmSync(fixture, { recursive: true, force: true });
     }
+});
+
+test('runtime uses the bundled program for managed extensions without changing old copies', async t => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-bundled-extension-router-'));
+    let server;
+    t.after(async () => {
+        if (server?.listening) {
+            await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+        fs.rmSync(fixture, { recursive: true, force: true });
+    });
+    const userDirectory = path.join(fixture, 'extensions');
+    const bundledDirectory = new URL('../../../native-extensions/', import.meta.url);
+    const write = (name, script) => {
+        const directory = path.join(userDirectory, name);
+        fs.mkdirSync(directory, { recursive: true });
+        fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ display_name: name }));
+        fs.writeFileSync(path.join(directory, 'index.js'), script);
+    };
+    write('nora-ledger', 'old managed copy');
+    write('nora-shell', 'retired managed copy');
+    write('LocalFixture', 'user extension');
+    fs.writeFileSync(path.join(userDirectory, 'nora-ledger', 'old-only.js'), 'must not shadow the bundle');
+    const publicDirectory = path.join(fixture, 'public');
+    const bundledLibPath = path.join(fixture, 'lib.js');
+    const noraAssets = path.join(publicDirectory, 'dist', 'nora');
+    fs.mkdirSync(noraAssets, { recursive: true });
+    fs.writeFileSync(path.join(noraAssets, 'inline-modules.js'), '{"modules":[]}');
+    fs.writeFileSync(bundledLibPath, 'export default {};');
+    const manifest = computeBrowserAssetManifest({
+        publicDirectory,
+        bundledLibPath,
+        userExtensionDirectory: userDirectory,
+        globalExtensionDirectory: path.join(fixture, 'global'),
+        bundledExtensionDirectory: fileURLToPath(bundledDirectory),
+    });
+    const ledgerAsset = manifest.extensions['third-party/nora-ledger'];
+    const cacheDirectory = path.join(fixture, 'cache');
+    materializeBrowserAssetManifest({
+        manifest: { namespaces: {}, extensions: { 'third-party/nora-ledger': ledgerAsset } },
+        cacheDirectory,
+    });
+
+    const app = express();
+    app.use((request, _response, next) => {
+        request.user = { profile: { handle: 'default-user' }, directories: { extensions: userDirectory } };
+        next();
+    });
+    app.use('/extensions', extensionsRouter);
+    app.use('/extension-assets', createVersionedExtensionsRouter(cacheDirectory));
+    app.use(workspaceRouter);
+    server = app.listen(0, '127.0.0.1');
+    await new Promise((resolve, reject) => server.once('listening', resolve).once('error', reject));
+    const fetchPath = route => fetch(`http://127.0.0.1:${server.address().port}${route}`);
+    const asset = name => fetchPath(`/scripts/extensions/third-party/${name}/index.js`);
+    const bundledScript = fs.readFileSync(new URL('nora-ledger/index.js', bundledDirectory), 'utf8');
+
+    assert.equal(await (await asset('nora-ledger')).text(), bundledScript);
+    const immutable = await fetchPath(`/extension-assets/${ledgerAsset.release}/scripts/extensions/third-party/nora-ledger/index.js`);
+    assert.equal(await immutable.text(), bundledScript);
+    assert.equal(immutable.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.equal((await fetchPath('/scripts/extensions/third-party/nora-ledger/old-only.js')).status, 404);
+    assert.equal(await (await asset('LocalFixture')).text(), 'user extension');
+    assert.equal((await asset('nora-shell')).status, 404);
+    const discovered = await (await fetchPath('/extensions/discover')).json();
+    assert.equal(discovered.filter(item => item.name === 'third-party/nora-ledger').length, 1);
+    assert.ok(discovered.some(item => item.name === 'third-party/nora-ui'), 'bundle works without a per-user copy');
+    assert.ok(discovered.some(item => item.name === 'third-party/LocalFixture' && item.type === 'local'));
+    assert.ok(!discovered.some(item => item.name === 'third-party/nora-shell'));
+    const library = await (await fetchPath('/extensions/library')).json();
+    assert.equal(library.items.find(item => item.name === 'third-party/nora-ledger').displayName, 'Story Ledger');
+    assert.equal(fs.readFileSync(path.join(userDirectory, 'nora-ledger/index.js'), 'utf8'), 'old managed copy');
+    assert.equal(fs.readFileSync(path.join(userDirectory, 'nora-shell/index.js'), 'utf8'), 'retired managed copy');
 });

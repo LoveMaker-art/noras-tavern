@@ -9,6 +9,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY, USER_DIRECTORY_TEMPLATE } from './constants.js';
 import { extensionsEnabledFeatureGuard } from './endpoints/extensions.js';
+import { bundledExtensionPath, bundledExtensionsFor, isObsoleteManagedExtension } from './nora-extension-library.js';
 import {
     IMMUTABLE_ASSET_CACHE_CONTROL,
     REVALIDATED_ASSET_CACHE_CONTROL,
@@ -191,8 +192,22 @@ function createRouteHandler(directoryFn) {
 function createExtensionsRouteHandler(directoryFn, { immutable = false } = {}) {
     return async (request, response) => {
         try {
-            const filePath = decodeURIComponent(request.params[0]);
-            for (const directory of [directoryFn(request), PUBLIC_DIRECTORIES.globalExtensions]) {
+            let filePath = decodeURIComponent(request.params[0]);
+            const segments = filePath.split('/');
+            if (filePath.includes('\\') || segments.some(segment => !segment || segment === '.' || segment === '..')) {
+                return response.sendStatus(403);
+            }
+            const bundle = bundledExtensionsFor(request.user.profile.handle);
+            const managed = bundledExtensionPath(bundle, segments[0]);
+            let directories = [directoryFn(request), PUBLIC_DIRECTORIES.globalExtensions];
+            if (managed) {
+                if (segments.length === 1) return response.sendStatus(404);
+                filePath = segments.slice(1).join('/');
+                directories = [managed];
+            } else if (bundle && isObsoleteManagedExtension(segments[0])) {
+                directories = [PUBLIC_DIRECTORIES.globalExtensions];
+            }
+            for (const directory of directories) {
                 const fullPath = path.join(directory, filePath);
                 if (!isPathUnderParent(directory, path.resolve(fullPath))) {
                     return response.sendStatus(403);

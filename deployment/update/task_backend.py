@@ -5,11 +5,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
-import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -88,23 +85,6 @@ def installed_identity(update, root, *, verify_contents=True):
     return receipt, manifest
 
 
-def world_read(update, root, home=None):
-    app, state = root / 'apps/tavern-runtime', update.bound_state_root(home, root)
-    if getattr(sys, '_nora_operation_delegate', None) is not None:
-        return update.verify_worlds(app, state)
-    native = state / 'native'
-    if not native.is_dir():
-        return {}
-    node = os.environ.get('TAVERN_NODE_EXECUTABLE') or shutil.which('node')
-    if not node:
-        raise failure('未找到现有 Node.js，无法读取原有世界。', 'RESOURCE_INCOMPLETE')
-    # The existing verifier replaces writes with an explicit denial. This is
-    # the same bounded read-only program, never an independent maintenance run.
-    result = subprocess.run([str(node), str(HERE / 'verify-worlds.mjs'), str(app), str(native)],
-        capture_output=True, text=True, timeout=120, check=True)
-    return json.loads(result.stdout)
-
-
 def status(args, update, *, verify=True):
     home, root, nora = roots(args, update)
     # Admission proves ownership without requiring bytes that this transaction
@@ -118,12 +98,11 @@ def status(args, update, *, verify=True):
     running = facts.get('processes', {}).get('native') is True
     if running and (facts.get('port') != args.port or facts.get('health', {}).get('ok') is not True):
         raise failure('原酒馆进程未通过当前实例的健康与端口检查。')
-    worlds = world_read(update, root, home) if verify else None
     return {'standalone': True, 'installed': True, 'hermesInstalled': True, 'noraInstalled': True,
         'systemReady': True, 'setupCompleted': None, 'version': receipt['version'], 'commit': manifest['commit'],
         'port': args.port, 'running': running, 'gatewayRunning': None, 'clawchatConnected': None,
         'gatewayManaged': False, 'noraHome': str(nora), 'hermesHome': str(home), 'installRoot': str(root),
-        'worldVerification': {'status': 'verified', 'worlds': sum(len(value) for value in worlds.values())} if worlds is not None else None}
+        'worldVerification': None}
 
 
 def verify_closed_history(args, update, root, file, previous, expected_version):
@@ -204,9 +183,6 @@ def verify_committed(args, update):
     current = status(args, update)
     if current['version'] != journal.record['version'] or current['running'] != journal.plan['before']['running']:
         raise failure('新版文件或原有服务状态尚未通过验收。')
-    if journal.plan.get('worlds') is not None:
-        update.verify_preserved_worlds(root / 'apps/tavern-runtime', update.bound_state_root(home, root),
-            journal.plan.get('storyInventory', {}), journal.plan['worlds'])
     return {**current, 'updateVerified': True, 'operationVerified': True}
 
 

@@ -56,6 +56,7 @@ import corsProxyMiddleware from './middleware/corsProxy.js';
 import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
 import { createLivewareEntryMiddleware, createLivewareIndexHandler } from './nora-liveware-entry.js';
+import { bundledExtensionsFor } from './nora-extension-library.js';
 import {
     computeBrowserAssetManifest,
     createVersionedAssetRouteHandler,
@@ -74,7 +75,7 @@ import {
     setWindowTitle,
     getConfigValue,
 } from './util.js';
-import { PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from './constants.js';
+import { DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from './constants.js';
 
 import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
@@ -109,6 +110,7 @@ function initializeBrowserAssets() {
         bundledLibPath,
         userExtensionDirectory: getUserDirectories().extensions,
         globalExtensionDirectory: path.resolve(serverDirectory, PUBLIC_DIRECTORIES.globalExtensions),
+        bundledExtensionDirectory: bundledExtensionsFor(DEFAULT_USER.handle),
     });
     materializeBrowserAssetManifest({
         manifest: browserAssetManifest,

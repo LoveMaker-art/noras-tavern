@@ -194,12 +194,12 @@ class NoraSystemTests(unittest.TestCase):
         self.assertFalse(result["setupCompleted"])
 
     def test_mcp_read_probe_uses_owned_script_and_passes_configuration_only_through_stdin(self):
-        from types import SimpleNamespace
         with patch.object(system, 'managed_problems', return_value=[]), patch.object(system, 'maintenance_run',
-                return_value=SimpleNamespace(returncode=0)) as run:
+                return_value=SimpleNamespace(returncode=0)) as run, patch.object(sys, '_nora_operation_delegate',
+                SimpleNamespace(), create=True):
             result = system.verify_runtime(self.home, self.root, 18899, '/fixture/python', {'PRIVATE_KEY': 'private-value'})
         command = run.call_args.args[0]
-        self.assertEqual(Path(command[1]).name, 'mcp_probe.mjs')
+        self.assertEqual(Path(command[1]), Path(system.__file__).resolve().with_name('mcp_probe.mjs'))
         self.assertTrue(Path(command[1]).is_absolute())
         self.assertEqual(len(command), 2)
         config = json.loads(run.call_args.kwargs['input'])

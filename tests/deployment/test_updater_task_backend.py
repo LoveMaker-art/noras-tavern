@@ -77,18 +77,20 @@ class UpdaterTaskBackendTests(unittest.TestCase):
                             self.backend.execute(self.args)
                         run.assert_not_called()
 
-    def test_status_requires_receipt_manifest_program_and_real_world_reader_even_when_process_is_healthy(self):
+    def test_status_requires_receipt_manifest_and_program_without_reading_worlds(self):
         app, metadata = self.identity()
+        unreadable = self.root / 'tavern-state/native/default-user/nora-world-core/worlds/legacy.json'
+        unreadable.parent.mkdir(parents=True)
+        unreadable.write_text('invalid historical world')
         runtime = SimpleNamespace(verify_install=lambda: {'dependencies': 'ready'},
             status=lambda: {'port': 18999, 'processes': {'native': True}, 'health': {'ok': True}})
         with patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
-                patch.object(self.update, 'standalone_runtime', return_value=runtime), \
-                patch.object(self.backend, 'world_read', return_value={'default-user': [{'worldId': 'world'}]}) as worlds:
+                patch.object(self.update, 'standalone_runtime', return_value=runtime):
             current = self.backend.status(self.args, self.update)
-            self.assertEqual(current['worldVerification']['worlds'], 1)
+            self.assertIsNone(current['worldVerification'])
+            self.assertEqual(unreadable.read_text(),'invalid historical world')
             self.assertIsNone(current['gatewayRunning'])
             self.assertFalse(current['gatewayManaged'])
-            worlds.assert_called_once()
             (app / 'program.js').write_text('damaged but still healthy')
             with self.assertRaisesRegex(RuntimeError, '程序文件'):
                 self.backend.status(self.args, self.update)
@@ -109,14 +111,12 @@ class UpdaterTaskBackendTests(unittest.TestCase):
         runtime = SimpleNamespace(verify_install=lambda: None,
             status=lambda: {'port': 18999, 'processes': {'native': True}, 'health': {'ok': True}})
         with patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
-                patch.object(self.update, 'standalone_runtime', return_value=runtime), \
-                patch.object(self.backend, 'world_read', return_value={'default-user': []}) as worlds:
+                patch.object(self.update, 'standalone_runtime', return_value=runtime):
             effects = self.backend.effects(self.args, self.update)
             self.assertEqual(effects['effectState'], 'untouched')
             self.assertEqual(effects['recoveryOutcome'], 'not-required')
             self.assertFalse(effects['canResume'])
             self.assertEqual(transaction.read_bytes(), saved)
-            worlds.assert_not_called()
             (app / 'program.js').write_text('damaged but healthy process')
             with self.assertRaisesRegex(RuntimeError, '程序文件'):
                 self.backend.effects(self.args, self.update)
@@ -148,8 +148,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
                 'before': {'scope': 'standalone-tavern', 'version': '2.4.2', 'running': True}}}
         file = metadata / 'transaction.json'
         with patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
-                patch.object(self.update, 'standalone_runtime', return_value=runtime), \
-                patch.object(self.backend, 'world_read', side_effect=AssertionError('story data is not history admission')):
+                patch.object(self.update, 'standalone_runtime', return_value=runtime):
             for state in ('committed', 'restored'):
                 file.write_text(json.dumps({**record, 'status': state}))
                 before = file.read_bytes()
@@ -229,8 +228,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
         runtime = SimpleNamespace(verify_install=lambda: {'dependencies': 'ready'},
             status=lambda: {'port': 18999, 'processes': {'native': False}, 'health': {'ok': False}})
         with patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
-                patch.object(self.update, 'standalone_runtime', return_value=runtime), \
-                patch.object(self.backend, 'world_read', side_effect=AssertionError('preflight must not run damaged application reader')):
+                patch.object(self.update, 'standalone_runtime', return_value=runtime):
             current = self.backend.status(self.args, self.update, verify=False)
             self.assertEqual(current['version'], '2.4.2')
             self.assertIsNone(current['worldVerification'])
@@ -256,8 +254,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
                 patch.object(self.backend, 'roots', return_value=(self.home, self.root, self.root)), \
                 patch.object(self.update, 'resolve_update_target', return_value=(self.home, self.root)), \
                 patch.object(self.update._operation_control, 'require_operation', return_value=gate), \
-                patch.object(self.update, 'standalone_runtime', return_value=runtime), \
-                patch.object(self.backend, 'world_read', return_value={}):
+                patch.object(self.update, 'standalone_runtime', return_value=runtime):
             result = self.backend.execute(self.args)
             self.assertTrue(result['noUpdate'])
             self.assertTrue(result['updateVerified'])

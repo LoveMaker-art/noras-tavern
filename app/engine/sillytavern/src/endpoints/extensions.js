@@ -8,7 +8,7 @@ import { CheckRepoActions, default as simpleGit } from 'simple-git';
 import { PUBLIC_DIRECTORIES } from '../constants.js';
 import { getConfigValue, isValidUrl } from '../util.js';
 import { createGitClient } from '../git/client.js';
-import { builtinPlugins, discoverInstalledExtensions, installDisabledExtension, isManagedExtension, readExtensionLibraryState, setExtensionLibraryState } from '../nora-extension-library.js';
+import { builtinPlugins, bundledExtensionPath, bundledExtensionsFor, discoverInstalledExtensions, installDisabledExtension, isManagedExtension, readExtensionLibraryState, setExtensionLibraryState } from '../nora-extension-library.js';
 
 const gitBackend = getConfigValue('git.backend', 'auto');
 
@@ -97,9 +97,10 @@ router.use((request, response, next) => {
 router.get('/library', async (request, response) => {
     try {
         const directory = request.user.directories.extensions;
+        const bundle = bundledExtensionsFor(request.user.profile.handle);
         const state = readExtensionLibraryState(directory);
         // Feature plugins belong in the library; infrastructure stays runtime-only.
-        const installed = discoverInstalledExtensions(directory, PUBLIC_DIRECTORIES.extensions, PUBLIC_DIRECTORIES.globalExtensions)
+        const installed = discoverInstalledExtensions(directory, PUBLIC_DIRECTORIES.extensions, PUBLIC_DIRECTORIES.globalExtensions, bundle)
             .filter(item => Object.hasOwn(builtinPlugins, item.name) || item.type !== 'system' && !isManagedExtension(item.name.replace(/^third-party\//, '')));
         const items = await Promise.all(installed.map(async item => {
             const folder = item.name.replace(/^third-party\//, '');
@@ -107,7 +108,7 @@ router.get('/library', async (request, response) => {
             const managed = Boolean(builtin);
             const base = item.type === 'system' ? PUBLIC_DIRECTORIES.extensions : item.type === 'global' ? PUBLIC_DIRECTORIES.globalExtensions : directory;
             let manifest = {}, manifestError = false, source = item.type === 'local' ? state[folder]?.source || '' : '';
-            try { manifest = await getManifest(path.join(base, folder)); } catch { manifestError = true; }
+            try { manifest = await getManifest(bundledExtensionPath(bundle, folder) || path.join(base, folder)); } catch { manifestError = true; }
             const repository = !managed && fs.existsSync(path.join(base, folder, '.git'));
             if (repository && !source) {
                 try { source = (await simpleGit({ baseDir: path.join(base, folder), ...OPTIONS }).getRemotes(true)).find(remote => remote.name === 'origin')?.refs.fetch || ''; } catch { /* not a usable Git repository */ }
@@ -555,7 +556,8 @@ router.get('/discover', function (request, response) {
         fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
     }
 
-    const allExtensions = discoverInstalledExtensions(request.user.directories.extensions, PUBLIC_DIRECTORIES.extensions, PUBLIC_DIRECTORIES.globalExtensions);
+    const allExtensions = discoverInstalledExtensions(request.user.directories.extensions, PUBLIC_DIRECTORIES.extensions,
+        PUBLIC_DIRECTORIES.globalExtensions, bundledExtensionsFor(request.user.profile.handle));
     console.debug('Extensions available for', request.user.profile.handle, allExtensions);
 
     return response.send(allExtensions);

@@ -433,7 +433,7 @@ class UpdateTargetTests(unittest.TestCase):
         self.assertEqual(UPDATER.resolve_update_target.__code__.co_code,
                          BOOTSTRAP.resolve_update_target.__code__.co_code)
 
-    def transaction(self, *, corrupt=False, unreadable=False, receipt_failure=False):
+    def transaction(self, *, user_edits=False, unreadable=False, receipt_failure=False):
         self.installation(self.home)
         self.bind(self.home)
         config_before = (self.home / "config.yaml").read_bytes()
@@ -445,8 +445,8 @@ class UpdateTargetTests(unittest.TestCase):
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text(content)
         manifest = {"versions": {"tavern": "2.3.0"}, "commit": "updated", "artifacts": {}}
-        worlds = {"default-user": [{"worldId": "fixture", "sessions": ["session"]}]}
-        started = False
+        if unreadable:
+            story.write_text('invalid historical world')
 
         def extract(_release, source, _manifest, **_kwargs):
             agents = source / "ops/skills/agents-tavern.md"
@@ -457,17 +457,10 @@ class UpdateTargetTests(unittest.TestCase):
             return {"changedModules": ["tavern-engine"]}
 
         def start(*_args, **_kwargs):
-            nonlocal started
-            started = True
-            if corrupt:
-                quarantine = story.parent.parent / "quarantine/worlds"
-                quarantine.mkdir(parents=True)
-                story.rename(quarantine / "fixture.invalid")
-                chat.write_text("wrong data")
+            if user_edits:
+                story.unlink()
+                chat.write_text('{"message":"latest"}\n')
             return {"health": {"ok": True}, "native_pid": 123}
-
-        def read_worlds(*_args):
-            return {} if started and unreadable else worlds
 
         write_json = UPDATER.json_write
 
@@ -495,13 +488,13 @@ class UpdateTargetTests(unittest.TestCase):
             stack.enter_context(patch.object(UPDATER, "module_at", side_effect=lambda name, _path:
                                             recovery if name == 'tavern_update_recovery' else modules))
             stack.enter_context(patch.object(UPDATER, "install_runtime", side_effect=start))
-            stack.enter_context(patch.object(UPDATER, "verify_worlds", side_effect=read_worlds))
+            read_worlds = stack.enter_context(patch.object(UPDATER, "verify_worlds"))
             stack.enter_context(patch.object(UPDATER, "json_write", side_effect=write_receipt))
             restart = stack.enter_context(patch.object(UPDATER, "start_old"))
             output = stack.enter_context(patch("sys.stdout", new_callable=io.StringIO))
             args = SimpleNamespace(home=None, install_root=None, release_dir=self.root / "release", manifest_sha256=None)
-            if corrupt or unreadable or receipt_failure:
-                with self.assertRaisesRegex(RuntimeError, "(更新验收失败|receipt write failed).*recovery=restored"):
+            if receipt_failure:
+                with self.assertRaisesRegex(RuntimeError, "receipt write failed.*recovery=restored"):
                     UPDATER.install(args)
                 restart.assert_called_once()
                 self.assertEqual((self.home / "AGENTS.md").read_text(), "old instructions")
@@ -511,21 +504,25 @@ class UpdateTargetTests(unittest.TestCase):
             else:
                 UPDATER.install(args)
                 result = json.loads(output.getvalue())
-                self.assertEqual(result["worldVerification"], {"status": "verified", "worlds": 1, "files": 2})
+                self.assertEqual(result["worldVerification"], {"status": "not-required"})
                 self.assertEqual(result["backupRetention"]["status"], "pruned")
                 self.assertNotIn("warnings", result["backupRetention"])
-                self.assertEqual((Path(result["backup"]) / "state/native/default-user/chats/fixture/session.jsonl").read_text(), '{"message":"keep"}\n')
-            self.assertEqual(story.read_text(), '{"fixture":true}')
-            self.assertEqual(chat.read_text(), '{"message":"keep"}\n')
+                self.assertFalse((Path(result["backup"]) / "state").exists())
+            if user_edits:
+                self.assertFalse(story.exists())
+            else:
+                self.assertEqual(story.read_text(), 'invalid historical world' if unreadable else '{"fixture":true}')
+            self.assertEqual(chat.read_text(), '{"message":"latest"}\n' if user_edits else '{"message":"keep"}\n')
+            read_worlds.assert_not_called()
             self.assertFalse((self.home / "home").exists())
 
-    def test_transaction_preserves_existing_worlds_and_stores_verification(self):
+    def test_transaction_preserves_existing_worlds_without_snapshotting_them(self):
         self.transaction()
 
-    def test_healthy_server_with_quarantined_world_rolls_back_data_and_program(self):
-        self.transaction(corrupt=True)
+    def test_failed_receipt_restores_program_without_reversing_user_edits(self):
+        self.transaction(user_edits=True, receipt_failure=True)
 
-    def test_healthy_server_with_missing_worlds_fails_even_when_files_remain(self):
+    def test_historical_world_contents_do_not_gate_program_update(self):
         self.transaction(unreadable=True)
 
     def test_failed_receipt_commit_does_not_leave_new_version_on_rolled_back_program(self):

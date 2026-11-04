@@ -1,11 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sync as writeAtomic } from 'write-file-atomic';
 import { builtinPlugins } from '../public/scripts/nora-controls/plugin-catalog.js';
+import { DEFAULT_USER } from './constants.js';
 export { builtinPlugins };
 
 export const managedExtensions = new Set(['nora-ui', 'nora-ledger', 'nora-mvu', 'JS-Slash-Runner', 'ST-Prompt-Template']);
-export const isManagedExtension = name => [...managedExtensions].some(item => item.toLowerCase() === name.toLowerCase());
+const managedExtensionName = name => [...managedExtensions].find(item => item.toLowerCase() === name.toLowerCase());
+export const isManagedExtension = name => Boolean(managedExtensionName(name));
+const obsoleteManagedExtensions = new Set(['nora-shell', 'nora-character-status']);
+export const isObsoleteManagedExtension = name => obsoleteManagedExtensions.has(name.toLowerCase());
+const bundledDirectory = fileURLToPath(new URL('../../../native-extensions/', import.meta.url));
+export const bundledExtensionsFor = handle => handle === DEFAULT_USER.handle ? bundledDirectory : undefined;
+
+export function bundledExtensionPath(directory, name) {
+    const canonical = directory && managedExtensionName(name);
+    return canonical ? path.join(directory, canonical) : null;
+}
 // Product features users can manage, not every module discovered by ST.
 const stateFile = directory => path.join(path.dirname(directory), 'nora-extension-library.json');
 
@@ -27,10 +39,10 @@ export function setExtensionLibraryState(directory, name, patch) {
     writeAtomic(stateFile(directory), JSON.stringify(state, null, 2));
 }
 
-export function discoverInstalledExtensions(userDirectory, systemDirectory, globalDirectory) {
-    const names = directory => fs.existsSync(directory) ? fs.readdirSync(directory, { withFileTypes: true })
+export function discoverInstalledExtensions(userDirectory, systemDirectory, globalDirectory, bundle) {
+    const names = (directory, include = () => true) => fs.existsSync(directory) ? fs.readdirSync(directory, { withFileTypes: true })
         .filter(entry => {
-            if (entry.name.startsWith('.') || !(entry.isDirectory() || entry.isSymbolicLink())) return false;
+            if (entry.name.startsWith('.') || !include(entry.name) || !(entry.isDirectory() || entry.isSymbolicLink())) return false;
             try {
                 return fs.statSync(path.join(directory, entry.name, 'manifest.json')).isFile();
             } catch (error) {
@@ -39,12 +51,15 @@ export function discoverInstalledExtensions(userDirectory, systemDirectory, glob
             }
         }).map(entry => entry.name) : [];
     const state = readExtensionLibraryState(userDirectory);
-    const local = names(userDirectory).map(folder => ({ type: 'local', name: `third-party/${folder}`,
+    const localNames = names(userDirectory, name => !bundle || (!isManagedExtension(name) && !isObsoleteManagedExtension(name)));
+    if (bundle) localNames.push(...names(bundle, name => managedExtensions.has(name)));
+    const local = localNames.map(folder => ({ type: 'local', name: `third-party/${folder}`,
         ...(Object.hasOwn(state, folder) ? { libraryEnabled: state[folder]?.enabled === true } : {}) }));
     return [
         ...names(systemDirectory).filter(name => name !== 'third-party').map(name => ({ type: 'system', name })),
         ...local,
-        ...names(globalDirectory).map(name => ({ type: 'global', name: `third-party/${name}` })).filter(item => !local.some(other => other.name === item.name)),
+        ...names(globalDirectory, name => !bundle || !isManagedExtension(name))
+            .map(name => ({ type: 'global', name: `third-party/${name}` })).filter(item => !local.some(other => other.name === item.name)),
     ];
 }
 

@@ -385,7 +385,7 @@ def inspect(home, root, port):
 
 
 def verify_runtime(home, root, port, python, env):
-    """Exercise Hermes loaders and a read-only MCP request, never a model call."""
+    """Exercise Hermes loaders, the MCP handshake and its live instance binding."""
     import yaml
     problems = managed_problems(home, root, port)
     if problems:
@@ -428,8 +428,9 @@ with patch.object(handle.__globals__["subprocess"], "Popen") as spawn:
     mcp = config["mcp_servers"]["nora"]
     if mcp["env"].get("NORA_MCP_BASE_URL") != f"http://127.0.0.1:{port}":
         raise RuntimeError("MCP 端口与当前酒馆不一致")
-    delegate = getattr(sys, '_nora_operation_delegate', None)
-    probe = delegate.resource('mcp_probe.mjs') if delegate is not None else Path(__file__).with_name('mcp_probe.mjs').resolve()
+    # The installed or release-verified nora_system and its probe are one
+    # contract. An older APP may still supply the guarded process delegate.
+    probe = Path(__file__).resolve().with_name('mcp_probe.mjs')
     if not probe.is_file() or probe.is_symlink():
         error = RuntimeError('运行资源不完整，请使用匹配平台的完整安装包。')
         error.code = 'RESOURCE_INCOMPLETE'
