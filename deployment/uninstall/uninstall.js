@@ -688,6 +688,20 @@ function boundFirstInstallAssets(root,catalog,assets){
   if(remaining.size)throw keepAssetUnconfirmed(remaining.values().next().value);
   return owners;
 }
+function keepClosedOperation(record){
+  if(!record)return true;
+  if(['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome))return false;
+  if(['succeeded','rolled-back','cancelled'].includes(record.state))
+    return ['untouched','restored','changed'].includes(record.effectState);
+  // KEEP may have just attempted to stop services through an unavailable old
+  // interpreter. The worker independently proved executor and service closure.
+  const failure=record.currentFailure,technical=failure?.technical;
+  return record.kind==='shutdown'&&record.state==='failed'&&record.effectState==='untouched'
+    &&(record.recoveryOutcome===undefined||record.recoveryOutcome==='not-required')
+    &&Array.isArray(record.secondaryFailures)&&!record.secondaryFailures.length
+    &&technical?.exit_code===null&&technical.exit_signal===''
+    &&require('./uninstall-offline-check').managedPythonUnavailable({code:failure.code});
+}
 function assertNoPendingTransaction(root,plan,assets){
   try{
     const catalog=transactionCatalog(root,plan);
@@ -697,9 +711,7 @@ function assertNoPendingTransaction(root,plan,assets){
     // Other recovery histories still go through their original sealed readers.
     if(owners.size===1&&!catalog.system&&!catalog.legacy&&!catalog.appJobs.length
       &&catalog.operations.every(item=>!item.runtime&&(!item.first||owners.has(item.id))
-        &&(!item.record||owners.has(item.id)||['succeeded','rolled-back','cancelled'].includes(item.record.state)
-          &&['untouched','restored','changed'].includes(item.record.effectState)
-          &&!['recovery-required','files-restored-start-failed'].includes(item.record.recoveryOutcome))))return;
+        &&(owners.has(item.id)||keepClosedOperation(item.record))))return;
     if(!catalog.system&&!catalog.appJobs.length&&!catalog.operations.some(item=>item.first))return;
     // Keep the public cleanup synchronous. This bounded child only reads
     // sealed current-APP resources; the parent keeps the native writer fd

@@ -116,8 +116,19 @@ test('changing a user migration backup after completed KEEP does not block reins
   }
 });
 
-test('KEEP preserves an inode-bound first-install exchange after a real restore was interrupted',t=>{
+test('KEEP preserves an inode-bound first-install exchange after a real restore was interrupted',async t=>{
   const f=fixture(t),plan=f.plan('keep'),retained=require('../installer/desktop/retained-installation');
+  const {createOperationController}=require('../installer/desktop/operation-state');
+  const lock=require('../installer/desktop/operation-lock');
+  const controller=createOperationController({directory:path.join(f.home,'installer'),lock});
+  const stop=await controller.start('shutdown',{target:{request:{action:'stop',service:'all'}},execute:async context=>{
+    await context.stage('applying');
+    throw Object.assign(Error('fixture old interpreter cannot start'),{code:'ENOEXEC'});
+  }},'keep-old-python');
+  assert.equal(stop.state,'failed');assert.equal(stop.effectState,'untouched');assert.equal(stop.recoveryOutcome,'not-required');
+  const stopFile=path.join(f.home,'installer/operations',stop.operationId,'operation.json');
+  const stoppedBytes=fs.readFileSync(stopFile),stopped=JSON.parse(stoppedBytes);
+  assert.equal(stopped.recoveryOutcome,undefined,'fresh untouched shutdown failures omit the optional recovery field');
   const script=String.raw`
 import importlib.util,json,os,sys
 from pathlib import Path
@@ -149,6 +160,10 @@ print(json.dumps(str((root/'tavern'/j.record['targets'][0]['staged']).relative_t
   assert.throws(()=>cleanup(plan),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED'&&error.message.includes(relative));
   assert.equal(fs.readFileSync(path.join(source,'before.txt'),'utf8'),'replacement fixture');
   fs.rmSync(source,{recursive:true});fs.renameSync(unbound,source);
+  fs.writeFileSync(stopFile,JSON.stringify({...stopped,secondaryFailures:[{operation:'release'}]}));
+  assert.throws(()=>cleanup(plan),{code:'UNINSTALL_RECOVERY_REQUIRED'});
+  assert.equal(fs.existsSync(source),true);
+  fs.writeFileSync(stopFile,stoppedBytes);
   assert.throws(()=>cleanup(plan,()=>{throw Error('fixture interruption before deletion');}),/fixture interruption/);
   const pending=retained.inspect(f.home,{allowPending:true}),asset=pending.entries.find(entry=>entry.from===relative);
   const destination=path.join(f.home,asset.to);
