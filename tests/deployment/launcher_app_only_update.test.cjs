@@ -13,6 +13,13 @@ walk(parse(source,{ecmaVersion:'latest'}));
 function definition(name){const node=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id?.name===name||node.type==='VariableDeclarator'&&node.id?.name===name);assert.ok(node,name);return node.type==='VariableDeclarator'?`const ${source.slice(node.start,node.end)};`:source.slice(node.start,node.end);}
 function load(context,...names){for(const name of names)vm.runInContext(definition(name),context);}
 const failure=(message,details)=>Object.assign(new Error(message),details);
+function appStartFixture(seams){
+  const moduleSource=fs.readFileSync(path.join(path.dirname(mainFile),'launcher-update.js'),'utf8');
+  const node=parse(moduleSource,{ecmaVersion:'latest'}).body.find(value=>value.type==='FunctionDeclaration'&&value.id.name==='start');
+  assert.ok(node);
+  return vm.runInNewContext(`(${moduleSource.slice(node.start,node.end)})`,{path,launcherError:failure,
+    appOperation:operation=>operation.target.request.launcherOnly===true,...seams});
+}
 function tree(directory){return fs.readdirSync(directory).sort().map(name=>{const file=path.join(directory,name),stat=fs.lstatSync(file);return [name,stat.ino,stat.isDirectory()?tree(file):fs.readFileSync(file,'hex')];});}
 function fixture(t){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-only-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
@@ -110,6 +117,84 @@ test('the visible same-operation APP retry launches its prepared replacement hel
   assert.equal(result.state,'awaiting-handoff');
   assert.deepEqual(calls,[['helper','/test/job'],['quit']]);
   assert.equal(context.quitReady,true);
+});
+test('the desktop retry reopens the fixed APP task, retains the closed handoff and dispatches a new prepared job',async t=>{
+  const f=fixture(t),{createOperationController}=realRequire('./operation-state');
+  const {createTestOperationLock}=require('./launcher_operation_test_lock.cjs');
+  const updates=path.join(f.home,'installer','launcher-update');fs.mkdirSync(updates,{recursive:true});
+  const oldJob=path.join(updates,'job-original');fs.mkdirSync(oldJob);
+  const marker=path.join(oldJob,'original-evidence');fs.writeFileSync(marker,'first fault remains');
+  const preparedJobs=[],dispatched=[],sharing={schema:'nora-app-sharing-failure/1',phase:'moving-old',winerror:33};
+  let now=Date.parse('2026-11-04T00:00:00Z'),evidenceTrusted=true;
+  const plan={schema:'nora-release-plan/1',client:'app',mode:'update',tag:'v2.6.5',platform:'win32',
+    manifestRef:{file:'release-plan/fixed.json'},launcherManifest:{version:'2.2.9'}};
+  const helperOutcome=operation=>({status:'cancelled',verification:'confirmed',effectState:'untouched',busy:false,
+    workerOffline:evidenceTrusted,operationId:operation.operationId,planDigest:operation.planDigest,job:operation.handoffRef,
+    value:{notAppliedVerification:'confirmed',appSharingFailure:sharing},sharingFailure:sharing,
+    failure:Object.assign(new Error('original APP share violation'),{code:'EACCES'})});
+  const runtime={command:'/fixture/app-python'};
+  const start=appStartFixture({releases:()=>({validateAppPlan:fixed=>fixed}),
+    require:name=>{assert.equal(name,'./app-helper-runtime');return {isVerified:value=>value===runtime};},
+    ownedJob:job=>job,reconcile:async options=>({kind:'terminal',outcome:helperOutcome(options.operation)}),
+    prepare:async options=>{assert.deepEqual(options.selectedPlan,plan);return {launcher:plan.launcherManifest};},
+    prepareHandoff:async options=>{
+      assert.equal(options.operation.handoffRef,null);assert.equal(options.operation.effectState,'untouched');
+      const job=fs.mkdtempSync(path.join(updates,'job-retry-'));preparedJobs.push(job);return job;
+    }});
+  const controller=createOperationController({directory:path.join(f.home,'installer'),lock:createTestOperationLock(),
+    now:()=>new Date(now).toISOString(),verifyRestoredHandoff:async operation=>helperOutcome(operation),
+    observeAppEffects:async operation=>helperOutcome(operation),
+    executors:{update:context=>start({context,home:f.home,launcherVersion:'2.2.8',isPackaged:true,appHelperRuntime:runtime})}});
+  const handler=nodes.find(node=>node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.quasis?.[0]?.value?.raw==='nora:operation-');
+  const context=vm.createContext({activeRun:false,modelBusy:false,cancelled:false,activeOperationContext:null,
+    launcherError:failure,operationRequest:payload=>({snapshotSequence:payload.snapshotSequence}),
+    operations:()=>controller,ensureAppHelperRuntime:async()=>runtime,ownsDesktopOperation:operation=>operation.target.request.launcherOnly===true,
+    finishOperationTelemetry(){},registerCapabilities:async()=>{},requireOperationResult:value=>value,
+    launcherUpdate:{launchHandoff:async options=>{assert.ok(preparedJobs.includes(options.job));dispatched.push(options.job);}},
+    launcherRecoveryOptions:()=>({}),quitReady:false,setImmediate:callback=>callback(),app:{quit(){}}});
+  load(context,'dispatchLauncherHandoff');
+  const callback=handler.arguments[1];
+  const resume=vm.runInContext(`const mode='resume';(${source.slice(callback.start,callback.end)})`,context);
+  const initial=await controller.start('update',{target:{request:{action:'update',launcherOnly:true,tag:plan.tag},releasePlan:plan},
+    execute:async context=>{await context.handoff(oldJob);return {handoff:true};}},'first-desktop-attempt');
+  const retry=operation=>resume({sender:null},{operationId:operation.operationId,snapshotSequence:operation.snapshotSequence});
+  const recheck=operation=>controller.recheck(operation.operationId,{snapshotSequence:operation.snapshotSequence});
+  const failed=await recheck(initial);
+  assert.equal(failed.state,'failed');assert.equal(failed.primaryFailure.code,'EACCES');
+  evidenceTrusted=false;
+  await assert.rejects(retry(failed),{code:'UPDATE_RECOVERY_REQUIRED'});
+  evidenceTrusted=true;
+  const second=await retry(failed);
+  assert.equal(second.operationId,failed.operationId);assert.equal(second.state,'awaiting-handoff');assert.equal(second.attempt,2);
+  assert.notEqual(second.handoffRef,oldJob);assert.ok(second.journalRefs.includes(oldJob));
+  const again=await recheck(second);
+  assert.equal(again.appSharingRetryAt,now+30000);assert.equal(again.allowedActions.includes('retry'),false);
+  await assert.rejects(retry(again),{code:'OPERATION_ACTION_UNAVAILABLE'});
+  now+=30000;
+  const third=await retry(await controller.snapshot(again.operationId));
+  assert.equal(third.attempt,3);assert.ok(third.journalRefs.includes(second.handoffRef));
+  now+=60000;
+  const exhausted=await recheck(third);
+  await assert.rejects(retry(exhausted),{code:'OPERATION_ACTION_UNAVAILABLE'});
+  assert.deepEqual(dispatched,preparedJobs);assert.equal(dispatched.length,2);
+  assert.equal(fs.readFileSync(marker,'utf8'),'first fault remains');
+  assert.equal(exhausted.primaryFailure.code,'EACCES');
+});
+test('cancelling during APP helper preparation cancels the bound staging job without publishing a handoff',async()=>{
+  const controller=new AbortController(),job='/fixture/installer/launcher-update/job-prepared',steps=[];
+  const plan={client:'app',mode:'update',tag:'v2.6.5'},target={request:{launcherOnly:true},releasePlan:plan};
+  const start=appStartFixture({releases:()=>({validateAppPlan:fixed=>fixed}),
+    require:name=>{assert.equal(name,'./app-helper-runtime');return {isVerified:()=>true};},
+    prepare:async()=>({launcher:{version:'2.2.9'}}),prepareHandoff:async()=>{controller.abort();return job;},
+    callHelper:async(_options,helper,args,cwd)=>{
+      assert.equal(helper,path.join(job,'replace.py'));assert.deepEqual(Array.from(args),['--recover',job]);
+      assert.equal(cwd,job);steps.push('prepared job cancelled');return {untouched:true};
+    }});
+  const context={target,snapshot:{target},check(){},stage:async()=>{},effect:async state=>steps.push(state),
+    journal:async value=>{assert.equal(value,job);steps.push('history retained');},handoff:()=>assert.fail('cancelled APP must not publish or dispatch replacement')};
+  await assert.rejects(start({context,home:'/fixture',launcherVersion:'2.2.8',isPackaged:true,appHelperRuntime:{command:'/python'},
+    signal:controller.signal,closeCancellation:()=>steps.push('cancellation closed')}),{name:'AbortError'});
+  assert.deepEqual(steps,['cancellation closed','unknown','prepared job cancelled','history retained','untouched']);
 });
 test('a duplicate APP submission never launches another helper while the original writer is busy',async()=>{
   const operation={state:'awaiting-handoff',busy:true,handoffRef:'/test/job'};

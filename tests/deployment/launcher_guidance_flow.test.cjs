@@ -540,6 +540,40 @@ test('a confirmed explicit recovery retains the original failure and returns to 
   assert.doesNotMatch(h.inline.textContent,/上次操作尚未确认/);
 });
 
+test('a confirmed APP restore reports its actual version even when the core state is unknown',async()=>{
+  for(const statusUnknown of [false,true]){
+    const operation={...structuredFailure().operation,state:'rolled-back',effectState:'restored',verification:'confirmed',
+      recoveryOutcome:'restored-and-verified',currentFailure:null,snapshotSequence:10,
+      result:{launcherVersion:'2.2.8',recoveryVerification:'confirmed',appRelaunchFailed:true}};
+    const h=fixture({snapshot:{...ready,operation},statusUnknown,
+      dailyHome(message){h.context.view='daily';h.copies.push([message]);}});
+    await h.invoke('route()');
+    assert.match(`${h.inline.textContent}\n${h.output().copy.join(' ')}`,/已恢复启动器 2\.2\.8.*自动重开未成功/);
+    assert.equal(h.context.view,statusUnknown?'error':'daily');
+  }
+});
+
+test('the closed APP handoff can only retry the same authorized task after the sharing cooldown',async()=>{
+  for(const phase of ['cooldown','eligible','exhausted']){
+    const requests=[],operation={...structuredFailure().operation,kind:'update',busy:false,state:'failed',effectState:'untouched',
+      verification:'confirmed',recoveryOutcome:'not-required',currentFailure:null,handoffRef:'/fixture/old-job',
+      target:{request:{launcherOnly:true,tag:'v2.4.3'}},result:{notAppliedVerification:'confirmed'},
+      allowedActions:phase==='eligible'?['retry','recheck','logs']:['recheck','logs'],
+      ...(phase==='cooldown'?{appSharingRetryAt:Date.now()+30000}:{})};
+    const h=fixture({snapshot:{...ready,operation},api:{checkUpdate:async()=>updateResult,resumeOperation:async()=>({})}});
+    await h.invoke('checkUpdates()');
+    assert.equal(action(h,'更新启动器'),undefined);
+    if(phase==='eligible'){
+      h.context.run=async(action,payload,endpoint)=>requests.push({action,payload,endpoint});
+      await action(h,'重试启动器更新').onclick();
+      assert.equal(requests[0].payload.operationId,operation.operationId);assert.equal(requests[0].endpoint,'resumeOperation');
+    }else{
+      assert.equal(action(h,'重试启动器更新'),undefined);
+      assert.match(h.inline.textContent,phase==='cooldown'?/约 30 秒后/:/本次启动器更新暂不可重试/);
+    }
+  }
+});
+
 test('verified unapplied update retains the first failure and permits navigation and the next update',async()=>{
   const original=structuredFailure();
   const ended={...original.operation,state:'failed',effectState:'untouched',verification:'confirmed',

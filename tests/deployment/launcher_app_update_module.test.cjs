@@ -108,6 +108,7 @@ test('SELF plan ownership can be inspected without ACK; only an authenticated op
 for(const phase of ['restored','cancelled'])test(`APP module projects ${phase} without core acceptance`,async t=>{
   const f=fixture(t,{phase});const result=await update.reconcileAppHandoff(f);
   assert.equal(result.status,phase);assert.equal(result.value[phase==='restored'?'recoveryVerification':'notAppliedVerification'],'confirmed');
+  assert.equal(result.value.launcherVersion,'1.0.0');
   assert.equal(result.value.systemReady,undefined);f.assertPreserved();
 });
 for(const phase of ['restored','cancelled'])test(`APP ${phase} survives a lost status cache write`,async t=>{
@@ -229,6 +230,9 @@ test('historical APP rollback restores old bytes without launching the old joint
 test('interrupted APP preparation is visible before its job reference is published',async t=>{
   const f=fixture(t,{phase:'prepared'}),operation={...f.operation,handoffRef:null,stageId:'prepared',effectState:'untouched'};
   const options={...f,job:undefined,operation};
+  const previous=path.join(path.dirname(f.job),'job-archived');fs.mkdirSync(previous);
+  fs.copyFileSync(path.join(f.job,'plan.json'),path.join(previous,'plan.json'));
+  operation.journalRefs=[previous];
   const read=await update.read(options);
   assert.equal(read.kind,'pending');assert.equal(read.job,f.job);assert.equal(read.state.status,'prepared');
   const observed=await update.observeApp(options);

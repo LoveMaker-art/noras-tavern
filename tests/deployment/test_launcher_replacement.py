@@ -1069,6 +1069,49 @@ class OperationReplacementTests(unittest.TestCase):
         self.assertTrue(any(item['error']['name'] == 'PermissionError' for item in record.get('secondaryErrors', [])))
         self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['phase'], 'recovery-failed')
 
+    def test_auto_rollback_keeps_verified_old_app_when_automatic_reopen_fails(self):
+        f = self.fixture(); f['plan']['releasePlan']['client'] = 'app'
+        worker.write_json(f['job'] / 'plan.json', f['plan']); worker.prepare(f['job'])
+        with patch.object(worker, 'parent_alive', return_value=False), \
+                patch.object(worker, 'require_launcher_offline'), \
+                patch.object(worker.subprocess, 'Popen', return_value=SimpleNamespace(poll=lambda: 1)), \
+                patch.object(worker, 'launch_old', side_effect=OSError('old executable launch failed')):
+            with self.assertRaisesRegex(RuntimeError, '新版启动器提前退出'):
+                worker.run(f['job'])
+            outcome = worker.read_outcome(f['job'])
+        self.assertEqual((f['app'] / 'launcher.exe').read_text(), 'old')
+        self.assertEqual(outcome['kind'], 'terminal')
+        self.assertEqual(outcome['outcome']['status'], 'restored')
+        self.assertTrue(outcome['outcome']['relaunchFailed'])
+        self.assertEqual(outcome['outcome']['version'], f['plan']['previousVersion'])
+        self.assertIn('新版启动器提前退出', outcome['outcome']['diagnosticError']['message'])
+
+    def test_sharing_retry_proof_is_only_for_native_sharing_errors_before_first_move(self):
+        for winerror, after_move in ((32, False), (33, False), (5, False), (33, True)):
+            with self.subTest(winerror=winerror, after_move=after_move):
+                f = self.fixture(); f['plan']['releasePlan']['client'] = 'app'
+                worker.write_json(f['job'] / 'plan.json', f['plan']); worker.prepare(f['job'])
+                context = worker.context(f['job'])
+                original_rename = worker.retry_rename
+                error = PermissionError(13, 'native sharing fixture'); error.winerror = winerror
+
+                def rename(source, target):
+                    if target == (context['app'] if after_move else context['backup']) and source != context['backup']:
+                        raise error
+                    original_rename(source, target)
+
+                with patch.object(worker, 'parent_alive', return_value=False), \
+                        patch.object(worker, 'require_launcher_offline'), patch.object(worker, 'launch_old'), \
+                        patch.object(worker, 'retry_rename', side_effect=rename):
+                    with self.assertRaises(PermissionError): worker.run(f['job'])
+                    outcome = worker.read_outcome(f['job'])['outcome']
+                if not after_move and winerror in (32, 33):
+                    self.assertEqual(outcome['sharingFailure'], {'schema': 'nora-app-sharing-failure/1',
+                        'phase': 'moving-old', 'winerror': winerror})
+                else:
+                    self.assertNotIn('sharingFailure', outcome)
+                self.assertEqual((f['app'] / 'launcher.exe').read_text(), 'old')
+
     def test_detached_diagnostics_consume_saved_proof_without_rehashing_or_unlocking_legacy_records(self):
         f = self.fixture(); worker.prepare(f['job'])
         with patch.object(worker, 'parent_alive', return_value=False), patch.object(worker, 'launch_old'), \

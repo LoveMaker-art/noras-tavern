@@ -649,6 +649,8 @@ def inspect_outcome(job, *, typed=False):
                 'operationId': snapshot['operationId'], 'planDigest': snapshot['planDigest'],
                 'version': snapshot['old']['version'],
                 **({'appSegmentOnly': True} if typed and segment_only else {}),
+                **({'relaunchFailed': True} if typed and phase == 'restored' and snapshot.get('relaunchError') else {}),
+                **({'sharingFailure': snapshot['sharingFailure']} if typed and phase == 'cancelled' and 'sharingFailure' in snapshot else {}),
                 'diagnosticError': snapshot.get('diagnosticError') or status.get('diagnosticError'), **extra}
 
 
@@ -952,10 +954,11 @@ def wait_parent(pid, created, *, cancel=None):
         time.sleep(0.1)
 
 
-def cancel_untouched(ctx, snapshot, *, error=None, historical_segment=False):
+def cancel_untouched(ctx, snapshot, *, error=None, historical_segment=False, sharing_failure=None):
     if not untouched(ctx, snapshot): raise ValueError('原程序现场发生变化，未取消恢复')
     extra = {'diagnosticError': error_data(error)} if error is not None else {}
     if historical_segment: extra['appSegmentOnly'] = True
+    if sharing_failure is not None: extra['sharingFailure'] = sharing_failure
     checkpoint(ctx, snapshot, 'cancelled', diagnosticVerification='confirmed', **worker_identity(), **extra)
     try: clean_stage(ctx, snapshot)
     except (OSError, ValueError) as cleanup:
@@ -1197,6 +1200,7 @@ def replace(ctx, *, allow_legacy=False):
             or tree_digest(stage, plan['platform']) != snapshot['stageDigest']):
         raise ValueError('已准备的启动器内容变化，未覆盖程序')
     moved = False; child = None
+    sharing_failure = None
     try:
         checkpoint(ctx, snapshot, 'waiting-parent', **worker_identity())
         wait_parent(plan['parentPid'], plan.get('parentCreationTime'), cancel=job / 'cancel')
@@ -1204,7 +1208,16 @@ def replace(ctx, *, allow_legacy=False):
         helper_runtime(ctx)
         validate_snapshot(ctx, full=True)
         if not untouched(ctx, snapshot): raise ValueError('原启动器在准备期间发生变化，未替换程序')
-        checkpoint(ctx, snapshot, 'moving-old'); retry_rename(app, backup); moved = True
+        checkpoint(ctx, snapshot, 'moving-old')
+        try:
+            retry_rename(app, backup)
+        except PermissionError as error:
+            code = getattr(error, 'winerror', None)
+            if (plan['platform'] == 'win32' and plan['schema'] == 2 and plan['releasePlan'].get('client') == 'app'
+                    and type(code) is int and code in (32, 33)):
+                sharing_failure = {'schema': 'nora-app-sharing-failure/1', 'phase': 'moving-old', 'winerror': code}
+            raise
+        moved = True
         checkpoint(ctx, snapshot, 'installing-new'); retry_rename(incoming, app)
         checkpoint(ctx, snapshot, 'awaiting-launcher')
         args = [str(app / executable), '--nora-self-update=' + str(job)]
@@ -1238,14 +1251,21 @@ def replace(ctx, *, allow_legacy=False):
         if moved:
             try: restore(ctx, allow_legacy=allow_legacy)
             except Exception as recovery_error:
-                try: annotate_failure(read_json(ctx['job'] / 'recovery.json'), recovery_error)
-                except (OSError, ValueError): pass
+                restored = None
+                try:
+                    durable = validate_snapshot(ctx, full=True)
+                    if durable['phase'] == 'restored': restored = durable
+                    annotate_failure(durable, recovery_error)
+                except (OSError, ValueError, KeyError, TypeError): pass
                 error.secondary_errors = [*getattr(error, 'secondary_errors', ()), recovery_error]
-                report_failure(ctx, snapshot, 'recovery-failed', error, rollbackError=error_data(recovery_error))
+                if restored:
+                    report_failure(ctx, restored, 'restored', error, relaunchError=error_data(recovery_error))
+                else:
+                    report_failure(ctx, snapshot, 'recovery-failed', error, rollbackError=error_data(recovery_error))
             else:
                 report_failure(ctx, snapshot, 'restored', error, launchAttempted=True)
         else:
-            try: cancel_untouched(ctx, snapshot, error=error)
+            try: cancel_untouched(ctx, snapshot, error=error, sharing_failure=sharing_failure)
             except Exception as recovery_error:
                 error.secondary_errors = [*getattr(error, 'secondary_errors', ()), recovery_error]
                 report_failure(ctx, snapshot, 'recovery-failed', error)

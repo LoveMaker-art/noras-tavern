@@ -621,9 +621,16 @@
   }
   function route() {
     $('main').classList.remove('update-recovery');
+    const latest = snapshot.operation;
+    const appRestored = isAppUpdate(latest) && recoveredOperation(latest) && latest.effectState === 'restored'
+      && typeof latest.result?.launcherVersion === 'string'
+      ? `更新未完成，已恢复启动器 ${latest.result.launcherVersion}。${latest.result.appRelaunchFailed === true ? '自动重开未成功。' : ''}` : '';
     if (statusUnknown && (!launcherRecoveryConfirmed || uninstallChoiceAvailable)) {
       if (lastFailure?.error) fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);
       else fail('状态暂时无法确认，请等待查询恢复后再继续。', 'status', refreshFailure);
+      if (appRestored) {
+        const note = document.createElement('p'); note.className = 'note'; note.textContent = appRestored; $('inline').prepend(note);
+      }
       return;
     }
     if (snapshot.busy) {
@@ -731,8 +738,8 @@
       if (!snapshot.running) { run('start', { service: 'tavern', resumeSetup: true }); return; }
     }
     if (complete()) {
-      dailyHome(restoredSuccessfully && operation.effectState === 'restored' && operation.verification === 'confirmed'
-        ? operation.kind === 'update' ? '更新未完成，已恢复旧版本。' : '操作已回退，恢复后的状态已核验。' : '');
+      dailyHome(appRestored || (restoredSuccessfully && operation.effectState === 'restored' && operation.verification === 'confirmed'
+        ? operation.kind === 'update' ? '更新未完成，已恢复旧版本。' : '操作已回退，恢复后的状态已核验。' : ''));
       return;
     }
     if ((snapshot.installed || snapshot.managedInstallation) && snapshot.systemReady === false) {
@@ -1517,15 +1524,22 @@
       const fixed = operation ? currentOperation({operation}) : undefined;
       const tag = result.releaseTag || result.latest;
       const fixedTag = fixed?.target?.releasePlan?.tag || fixed?.target?.request?.tag;
-      const retryOperation = (!snapshot.updateSequence || snapshot.updateSequence.readOnly === true) && fixed?.kind === 'update' && fixed.target?.request?.launcherOnly === true
-        && settledUpdateOperation(fixed) && typeof tag === 'string' && typeof fixedTag === 'string'
-        && tag.replace(/^v/,'') === fixedTag.replace(/^v/,'') && Number.isSafeInteger(fixed.snapshotSequence)
+      const sameAppTask = isAppUpdate(fixed) && settledUpdateOperation(fixed) && typeof tag === 'string'
+        && typeof fixedTag === 'string' && tag.replace(/^v/,'') === fixedTag.replace(/^v/,'');
+      const retryOperation = (!snapshot.updateSequence || snapshot.updateSequence.readOnly === true) && sameAppTask
+        && Number.isSafeInteger(fixed.snapshotSequence)
         && fixed.allowedActions?.some(action=>['retry','resume'].includes(action)) && typeof api.resumeOperation === 'function' ? fixed : null;
       if (statusUnknown) {
         const note = document.createElement('p'); note.className = 'model-feedback'; note.textContent = unknownStatusCopy(); $('inline').append(note);
         entries.push({label:'重新查询状态', run:refreshFailure, primary:true});
       }
-      if (canInstallAppOffer(result, tag) && (!unresolved || newTarget || retryOperation)) {
+      if (sameAppTask && fixed.handoffRef && !retryOperation) {
+        const retryAt = fixed.appSharingRetryAt, seconds = Number.isSafeInteger(retryAt) ? Math.ceil((retryAt - Date.now()) / 1000) : 0;
+        const note = document.createElement('p'); note.className = 'model-feedback';
+        note.textContent = seconds > 0 ? `原启动器未修改。约 ${seconds} 秒后可重新检查本次更新。` : '本次启动器更新暂不可重试，请重新检查原任务。';
+        $('inline').append(note);
+        entries.push({label:'重新检查原任务', run:recheckFailure, retryAt, primary:true});
+      } else if (canInstallAppOffer(result, tag) && (!unresolved || newTarget || retryOperation)) {
         entries.push({label:retryOperation ? '重试启动器更新' : '更新启动器', run:() => {
           if (!canInstallAppOffer(versionInfo, tag) || newTarget && !isNewUpdateTarget(tag, operation)) { route(); return; }
           if (retryOperation) return run('update', {operationId:retryOperation.operationId,snapshotSequence:retryOperation.snapshotSequence}, 'resumeOperation');

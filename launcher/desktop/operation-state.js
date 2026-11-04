@@ -39,6 +39,7 @@ const updateTargetTag=record=>{
 const PAIR_COOLDOWN_MS=30000;
 const MODEL_RETRY_WINDOW_MS=30000;
 const SERVICE_RETRY_WINDOW_MS=30000;
+const APP_SHARING_RETRY_DELAY_MS=30000;
 const serviceCommand=record=>['start','restart','stop','shutdown'].includes(record?.kind);
 const retryAdmission=code=>['RETRY_CONDITIONS_UNCHANGED','SERVICE_RETRY_COOLDOWN'].includes(code);
 const modelValidation=(record,target=record?.target)=>record?.kind==='model'&&target?.request?.mode==='configure'
@@ -50,6 +51,23 @@ const modelValidation=(record,target=record?.target)=>record?.kind==='model'&&ta
 const isAppUpdate=record=>record?.kind==='update'&&record.target?.request?.launcherOnly===true;
 const mayAffectApp=record=>isAppUpdate(record)||Boolean(record.handoffRef)
   ||record.kind==='update'&&record.target?.request?.includeLauncher===true;
+function closedAppHandoff(record){
+  if(!isAppUpdate(record)||!record.handoffRef||record.verification!=='confirmed'||record.currentFailure)return null;
+  if(record.state==='failed'&&record.effectState==='untouched'&&record.recoveryOutcome==='not-required'
+    &&record.result?.notAppliedVerification==='confirmed')return 'cancelled';
+  if(record.state==='rolled-back'&&record.effectState==='restored'&&record.recoveryOutcome==='restored-and-verified'
+    &&record.result?.recoveryVerification==='confirmed')return 'restored';
+  return null;
+}
+function appSharingRetryTime(record){
+  if(record.attempt!==2||closedAppHandoff(record)!=='cancelled')return null;
+  const plan=record.target.releasePlan,sharing=record.result.appSharingFailure;
+  if(plan?.client!=='app'||plan.platform!=='win32'||!plan.manifestRef
+    ||sharing?.schema!=='nora-app-sharing-failure/1'||sharing.phase!=='moving-old'||![32,33].includes(sharing.winerror)
+    ||Object.keys(sharing).sort().join(',')!=='phase,schema,winerror')return null;
+  const finished=Date.parse(record.updatedAt);
+  return Number.isFinite(finished)?finished+APP_SHARING_RETRY_DELAY_MS:null;
+}
 
 function createOperationController({directory,lock,executors={},recoverers={},recheckers={},captureConditions,identifyFailureCondition,evidence,
   observeEffects,observeAppEffects=observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
@@ -267,6 +285,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     return last&&until>Date.parse(now())?until:null;
   }
   function dto(record,fields={},recoveryClosurePending=false){
+    const appSharingRetryAt=appSharingRetryTime(record);
     let allowedActions;
     if(record.archived)allowedActions=['logs'];
     else if(fields.busy)allowedActions=['wait','logs'];
@@ -279,6 +298,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     else if(record.state==='blocked')allowedActions=['recheck','logs'];
     else if(record.state==='interrupted')allowedActions=record.effectState==='untouched'?['resume','recheck','logs']:['recheck','logs'];
     else if(record.effectState==='changed')allowedActions=['recheck','logs'];
+    else if(appSharingRetryAt!==null&&appSharingRetryAt<=Date.parse(now()))allowedActions=['retry','recheck','logs'];
     else if(record.state==='failed'||record.state==='cancelled'||record.state==='rolled-back')allowedActions=record.attempt>=2?['recheck','logs']:['retry','recheck','logs'];
     else allowedActions=['recheck','logs'];
     if(record.kind==='pair'||record.kind==='model'&&record.target?.request?.mode==='configure')
@@ -321,6 +341,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       recoveryOutcome:record.recoveryOutcome||'not-required',verification:record.verification||'unconfirmed',
       evidenceStatus:record.evidenceStatus||'not-needed',evidenceMissingReasons:record.evidenceMissingReasons||[],journalRefs:record.journalRefs||[],
       handoffRef:record.handoffRef||null,result:record.result,archived:record.archived===true,allowedActions,
+      ...(appSharingRetryAt>Date.parse(now())?{appSharingRetryAt}:{}),
       ...(serviceCommand(record)?{serviceRetryAt:retryAt}:{}),
       ...(record.kind==='pair'?{pairRetryAt:Number.isSafeInteger(record.pairRetryAt)&&record.pairRetryAt>Date.parse(now())?record.pairRetryAt:null}:{}),...fields};
   }
@@ -690,6 +711,20 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     try{
     record=read(id);
     if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
+    if(mode==='resume'&&!handoff&&isAppUpdate(record)&&record.handoffRef&&TERMINAL.has(record.state)){
+      const expected=closedAppHandoff(record),retryAt=appSharingRetryTime(record);
+      if(!expected||record.attempt>=2&&(retryAt===null||retryAt>Date.parse(now())))
+        throw fail('OPERATION_ACTION_UNAVAILABLE','The previous APP handoff is not eligible for retry');
+      const observed=observeAppEffects&&await observeAppEffects(record);
+      const sharing=record.result?.appSharingFailure;
+      if(observed?.status!==expected||observed.effectState!==record.effectState
+        ||observed.workerOffline!==true||observed.busy!==false||observed.operationId!==id
+        ||observed.planDigest!==record.planDigest||observed.job!==record.handoffRef
+        ||sharing&&(!observed.sharingFailure||digest(canonical(observed.sharingFailure))!==digest(canonical(sharing))))
+        throw fail('UPDATE_RECOVERY_REQUIRED','The previous APP handoff is not confirmed safe to retry');
+      record.journalRefs=[...new Set([...(record.journalRefs||[]),record.handoffRef])];
+      record.handoffRef=null;record.result=null;record.verification='unconfirmed';record.effectState='untouched';
+    }
     record.ownerEpoch=ownerEpoch;
     if(mode==='recover'&&before.recoveryOutcome==='files-restored-start-failed')
       record.restoredStartAttempts=(record.restoredStartAttempts||0)+1;
@@ -715,7 +750,9 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       const record=read(id);
       if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
       const appOnly=isAppUpdate(record);
-      if(record.handoffRef&&verifyRestoredHandoff&&(record.state==='awaiting-handoff'||appOnly&&!TERMINAL.has(record.state))){
+      const unfinishedApp=appOnly&&(!TERMINAL.has(record.state)
+        ||['failed','blocked'].includes(record.state)&&!closedAppHandoff(record));
+      if(record.handoffRef&&verifyRestoredHandoff&&(record.state==='awaiting-handoff'||unfinishedApp)){
         const check=()=>{
           lease.assertActive?.();
           const current=read(id);
@@ -739,7 +776,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         }
         const untouched=outcome?.status==='cancelled'&&outcome.effectState==='untouched'
           &&outcome.value?.notAppliedVerification==='confirmed';
-        if((record.state==='awaiting-handoff'||appOnly&&!TERMINAL.has(record.state))
+        if((record.state==='awaiting-handoff'||unfinishedApp)
           &&(outcome?.status==='restored'||untouched)&&outcome.verification==='confirmed'
           &&outcome.operationId===id&&outcome.planDigest===record.planDigest&&outcome.job===record.handoffRef){
           const terminal=untouched?'failed':'rolled-back';

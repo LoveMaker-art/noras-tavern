@@ -196,6 +196,10 @@ function projectOutcome(outcome,operation,plan,job,{checkTarget=false}={}){
       ||outcome.status==='committed'&&outcome.effectState==='changed'
         &&outcome.version===plan.version&&(!checkTarget||outcome.target===plan.target))
     ||outcome.workerOffline!==true||outcome.busy!==false)return null;
+  const sharing=outcome.sharingFailure;
+  if(sharing!==undefined&&(outcome.status!=='cancelled'||plan.platform!=='win32'||plan.releasePlan?.client!=='app'
+    ||sharing?.schema!=='nora-app-sharing-failure/1'||sharing.phase!=='moving-old'||![32,33].includes(sharing.winerror)
+    ||Object.keys(sharing).sort().join(',')!=='phase,schema,winerror'||!sameSealedTarget(operation,plan)))return null;
   if(outcome.status==='committed')return outcome;
   return {...outcome,failure:helperError(outcome.diagnosticError,outcome.status==='cancelled'
     ?'启动器更新未能应用，原程序和数据已保留。请查看日志后重试。':'新版启动器启动失败，旧程序已恢复。')};
@@ -541,6 +545,7 @@ async function readUnpublished(options){
   for(const entry of entries){
     if(!entry.isDirectory()||!/^job-[\w-]+$/.test(entry.name))continue;
     const job=path.join(jobs,entry.name);
+    if(operation.journalRefs?.includes(job))continue;
     let plan;
     try{
       const file=path.join(job,'plan.json'),stat=fs.lstatSync(file);
@@ -609,7 +614,8 @@ async function observeApp(options){
         ...(appSegmentSettled?{appSegmentSettled:true}:{}),
         recoveryOutcome:outcome.status==='restored'?'restored-and-verified':'not-required',
         canRecover:false,canResume:outcome.status==='committed'&&!appSegmentSettled,workerOffline:true,busy:false,
-        operationId:outcome.operationId,planDigest:outcome.planDigest,job:outcome.job,reason:outcome.status};
+        operationId:outcome.operationId,planDigest:outcome.planDigest,job:outcome.job,reason:outcome.status,
+        ...(outcome.sharingFailure?{sharingFailure:outcome.sharingFailure}:{})};
     }
     if(result.kind==='unknown')return {effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false,canResume:false,reason:result.reason};
     const state=result.state;
@@ -629,8 +635,10 @@ async function reconcileAppHandoff(options){
   const outcome=observed.outcome;
   if(outcome.status==='committed')return {...outcome,value:{launcherVersion:outcome.version,
     appUpdateComplete:true,updateComplete:true,updateVerified:true,coreUpdateComplete:false}};
-  if(outcome.status==='cancelled')return {...outcome,value:{notAppliedVerification:'confirmed'}};
-  return {...outcome,value:{recoveryVerification:'confirmed'}};
+  if(outcome.status==='cancelled')return {...outcome,value:{launcherVersion:outcome.version,notAppliedVerification:'confirmed',
+    ...(outcome.sharingFailure?{appSharingFailure:outcome.sharingFailure}:{})}};
+  return {...outcome,value:{launcherVersion:outcome.version,recoveryVerification:'confirmed',
+    ...(outcome.relaunchFailed===true?{appRelaunchFailed:true}:{})}};
 }
 async function start(options){
   const {context,launcherVersion:version}=options;
@@ -680,6 +688,22 @@ async function start(options){
   const job=await prepareHandoff({...options,prepared,operation:context.snapshot,previousVersion:version,
     python:options.appHelperRuntime.command});
   context.check();
+  options.closeCancellation?.();
+  if(options.signal?.aborted){
+    // The prepared helper has not published a replacement. Cancel that exact
+    // job under the current writer so a later retry cannot inherit its stage.
+    await context.effect('unknown');
+    try{
+      const result=await callHelper(options,path.join(job,'replace.py'),['--recover',job],job);
+      if(result.untouched!==true)throw launcherError('尚未确认原启动器未修改。',{code:'OPERATION_EXECUTOR_UNCONFIRMED'});
+      await context.journal(job);
+      await context.effect('untouched');
+    }catch(error){
+      await context.handoff(job);
+      throw error;
+    }
+    options.signal.throwIfAborted();
+  }
   await context.handoff(job);
   return {handoff:true,value:{restarting:true,job}};
 }

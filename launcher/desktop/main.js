@@ -1380,6 +1380,7 @@ async function runLauncherUpdate(context,{payload,event,networkPolicy,operationD
     const result=await launcherUpdate.start({...launcherRecoveryOptions(),context,payloadTag:payload.tag,
       fetcher:updateFetch,channel:CHANNEL,networkPolicy,operationDirectory,launcherVersion:app.getVersion(),
       isPackaged:app.isPackaged,localTest:LOCAL_TEST,signal:releaseAbort.signal,metadataCache:releaseMetadataCache(),
+      closeCancellation:()=>{releaseAbort=null;},
       localRelease:localReleaseDirectory,spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
       onEvent:message=>sendBridgeEvent(event.sender,payload.runId,message)});
     if(result.handoff)diagnostics.finish('restarting');
