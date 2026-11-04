@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stdout
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -32,6 +33,39 @@ def load_lifecycle():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class InstalledRuntimeModuleTests(unittest.TestCase):
+    def test_new_runtime_reads_new_operations_from_the_same_install_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / 'apps/tavern-runtime'
+            operations = root / 'apps/tavern-ops/updater'
+            app.mkdir(parents=True)
+            operations.mkdir(parents=True)
+            installed = app / 'native_lifecycle.py'
+            installed.write_bytes(LIFECYCLE.read_bytes())
+            source = operations / 'runtime_process.py'
+            source.write_text('def find_processes(script):\n    return ["old"]\n')
+            lifecycle_spec = importlib.util.spec_from_file_location('installed_transition_test', installed)
+            lifecycle = importlib.util.module_from_spec(lifecycle_spec)
+            old_key = 'tavern_operations_runtime_process_' + hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:12]
+            old_spec = importlib.util.spec_from_file_location(old_key, source)
+            old = importlib.util.module_from_spec(old_spec)
+            old_spec.loader.exec_module(old)
+            lock = types.ModuleType('runtime_lock')
+            with mock.patch.dict(sys.modules, {lifecycle_spec.name: lifecycle, 'runtime_process': old,
+                                                old_key: old, 'runtime_lock': lock}):
+                lifecycle_spec.loader.exec_module(lifecycle)
+                old_path = source.with_suffix('.previous')
+                source.rename(old_path)
+                source.write_text('def find_processes(script, *, strict, executable):\n    return [script, strict, executable]\n')
+                runtime = lifecycle.NativeRuntime(root, app, root / 'state', types.SimpleNamespace(source_dir='engine'))
+                current = runtime.process_module()
+                self.assertEqual(current.find_processes('script', strict=True, executable='node'), ['script', True, 'node'])
+                self.assertIs(runtime.process_module(), current)
+                self.assertIs(runtime.operations_module('runtime_lock'), lock)
+                self.assertIs(sys.modules['runtime_process'], old)
 
 
 class NonReentrantLock:

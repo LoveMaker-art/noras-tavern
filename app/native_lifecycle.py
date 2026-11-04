@@ -231,6 +231,7 @@ class NativeRuntime:
         self.ready_marker = self.runtime_state / "ready.json"
         self.dependencies_marker = self.runtime_state / "dependencies.json"
         self._children = {}
+        self._runtime_modules = {}
 
     @classmethod
     def from_environment(cls):
@@ -717,25 +718,26 @@ class NativeRuntime:
             child.wait(timeout=3)
 
     def operations_module(self, name):
-        if name == 'service_manager':
-            self.operations_module('runtime_process')
         folder = 'installer' if name in ('operation_control','operation_cli') else 'updater'
         source = Path(__file__).resolve().parents[1] / 'ops' / folder / (name + '.py')
         if not source.is_file():
             source = self.app_root.parent / 'tavern-ops' / folder / (name + '.py')
-        existing = sys.modules.get(name)
-        # During update, staged/installed source paths change. Maintenance
-        # ownership stays with the executing updater, not the staged module.
+        # Updates replace the installed files at the same paths. A new runtime
+        # must use its own readers while the updater keeps its existing lock.
+        per_runtime = name in ('runtime_process', 'service_manager')
+        existing = None if per_runtime else sys.modules.get(name)
         if existing and (name == 'runtime_lock' or Path(existing.__file__).resolve() == source.resolve()):
             return existing
         key = 'tavern_operations_' + name + '_' + hashlib.sha256(str(source).encode()).hexdigest()[:12]
-        if key not in sys.modules:
+        modules = self._runtime_modules if per_runtime else sys.modules
+        if key not in modules:
             spec = importlib.util.spec_from_file_location(key, source)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            sys.modules[key] = module
-            sys.modules.setdefault(name, module)
-        return sys.modules[key]
+            modules[key] = module
+            if not per_runtime:
+                sys.modules.setdefault(name, module)
+        return modules[key]
 
     def assert_operation(self):
         if getattr(sys, '_nora_operation_delegate', None) is not None or os.environ.get('NORA_OPERATION_DELEGATE_ENDPOINT'):
