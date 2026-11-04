@@ -725,6 +725,27 @@ def _preserve_services(original, selected):
     return selected
 
 
+@contextmanager
+def _candidate_directory(*, prefix, dir):
+    temporary = tempfile.TemporaryDirectory(prefix=prefix, dir=dir)
+    primary = None
+    try:
+        yield temporary.name
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            temporary.cleanup()
+        except Exception as cleanup:
+            if primary is None:
+                raise
+            # A locked candidate can prevent cleanup after validation or
+            # rollback already failed. Keep that original outcome authoritative;
+            # cleanup still failed and remains explicit secondary evidence.
+            primary.secondary_errors = [*getattr(primary, 'secondary_errors', []), cleanup]
+
+
 def configure(home, instance, body, *, wizard=False, region="", tavern_sync_pending=False):
     phase = {'committing': False}
     try:
@@ -754,7 +775,7 @@ def _configure(home, instance, body, *, wizard, region, tavern_sync_pending, pha
         before = _snapshot((root, home), paths)
         import yaml
         original = yaml.safe_load(before[home / "config.yaml"][0])
-        with tempfile.TemporaryDirectory(prefix=".model-candidate-", dir=directory) as temporary:
+        with _candidate_directory(prefix=".model-candidate-", dir=directory) as temporary:
             candidate = Path(temporary).resolve()
             _private(candidate)
             for name in FILES:

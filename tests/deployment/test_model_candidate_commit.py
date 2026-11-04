@@ -204,6 +204,69 @@ class ModelCandidateCommitTests(unittest.TestCase):
         self.assert_data_preserved()
         self.assert_candidates_cleaned()
 
+    @contextlib.contextmanager
+    def candidate_cleanup_failure(self):
+        original = tempfile.TemporaryDirectory
+        workspaces = []
+        cleanup = PermissionError('fixture candidate cleanup WinError 32')
+        cleanup.__cause__ = PermissionError('fixture candidate cleanup WinError 5')
+        class CleanupFailure:
+            def __init__(self, *args, **kwargs):
+                self.inner = original(*args, **kwargs)
+                self.name = self.inner.name
+                workspaces.append(self)
+            def __enter__(self):
+                return self.name
+            def cleanup(self):
+                raise cleanup
+            def __exit__(self, *_args):
+                self.cleanup()
+        try:
+            with patch.object(self.module.tempfile, 'TemporaryDirectory', CleanupFailure):
+                yield cleanup
+        finally:
+            for workspace in workspaces:
+                workspace.inner.cleanup()
+
+    def test_candidate_cleanup_keeps_the_original_validation_refusal_and_its_http_status(self):
+        refusal = self.module.ModelConfigurationFailure('fixture provider refusal', code='MODEL_FIXTURE_REFUSED', http_status=401)
+        def reject(*args, **kwargs):
+            self.make_candidate(*args, **kwargs)
+            raise refusal
+        with self.candidate_cleanup_failure() as cleanup:
+            with self.assertRaises(self.module.ModelConfigurationFailure) as failed:
+                self.configure(reject)
+            self.assertIs(failed.exception, refusal)
+            self.assertEqual(failed.exception.http_status, 401)
+            self.assertEqual(failed.exception.failure_phase, 'candidate')
+            self.assertIn(cleanup, failed.exception.secondary_errors)
+            self.assert_old_configuration()
+            self.assert_data_preserved()
+        self.assert_candidates_cleaned()
+
+    def test_candidate_cleanup_does_not_replace_the_verified_restoration_result(self):
+        with self.candidate_cleanup_failure() as cleanup, \
+                patch.object(self.module, '_write_marker', side_effect=OSError('fixture marker publish failed')):
+            with self.assertRaises(self.module.ModelConfigurationFailure) as failed:
+                self.configure()
+            self.assertEqual(failed.exception.code, 'MODEL_CONFIG_RESTORED')
+            self.assertEqual(failed.exception.failure_phase, 'restored')
+            self.assertIn(cleanup, failed.exception.secondary_errors)
+            self.assert_old_configuration()
+            self.assert_data_preserved()
+        self.assert_candidates_cleaned()
+
+    def test_candidate_cleanup_after_commit_cannot_report_success_or_an_untouched_candidate(self):
+        with self.candidate_cleanup_failure() as cleanup:
+            with self.assertRaises(PermissionError) as failed:
+                self.configure()
+            self.assertIs(failed.exception, cleanup)
+            self.assertNotEqual(getattr(failed.exception, 'failure_phase', None), 'candidate')
+            self.assertEqual(yaml.safe_load(self.config.read_text())['model']['default'], 'glm-5')
+            self.assertTrue(read_verified_model(self.root, self.home))
+            self.assert_data_preserved()
+        self.assert_candidates_cleaned()
+
     def test_exit_success_without_real_verification_is_not_commit_authority(self):
         for update in ({"verified": False}, {"validation": "configuration-only"}, {"ok": False}):
             with self.subTest(update=update):
