@@ -453,9 +453,12 @@ def helper_runtime(ctx):
             or not re.fullmatch(r'python/(?:bin/python\d+\.\d+|python\.exe)', ref.get('executable', ''))):
         raise ValueError('APP助手运行引用无效，已保留程序现场')
     base = ctx['home'] / 'installer/app-helper-runtime'
-    root = base / ref['imageSha256']
+    root = Path(ref.get('root', '')).absolute()
+    allowed = {base / ref['imageSha256']}
+    if ctx['plan']['platform'] == 'win32':
+        allowed.add(base / ref['imageSha256'][:20])
     descriptor_file = base / (ref['imageSha256'] + '.json')
-    if (Path(ref.get('root', '')).absolute() != root or io_path(root).is_symlink()
+    if (root not in allowed or io_path(root).is_symlink()
             or io_path(base).is_symlink() or io_path(descriptor_file).is_symlink()
             or not io_path(root).is_dir() or not io_path(descriptor_file).is_file()
             or io_path(descriptor_file).stat().st_size > 8 * 1024 * 1024):
@@ -517,7 +520,7 @@ def recovery_entry(ctx):
     owned = helper_runtime(ctx)
     if owned is not None:
         ref = ctx['plan']['helperRuntime']
-        relative = '../../app-helper-runtime/' + ref['imageSha256'] + '/' + ref['executable']
+        relative = '../../app-helper-runtime/' + Path(ref['root']).name + '/' + ref['executable']
         python = owned
         if platform == 'win32':
             script = job / '恢复旧启动器.cmd'

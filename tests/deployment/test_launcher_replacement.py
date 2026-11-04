@@ -786,11 +786,16 @@ class OperationReplacementTests(unittest.TestCase):
         return f
 
     def test_prepare_and_recovery_bind_the_packaged_helper_without_hermes(self):
+        for short in (False, True):
+            with self.subTest(short=short):
+                self.packaged_helper_recovery(short=short)
+
+    def packaged_helper_recovery(self, *, short):
         f = self.fixture()
         shutil.rmtree(worker.io_path(f['home'] / 'hermes'))
         image_id = '1' * 64
         base = f['home'] / 'installer/app-helper-runtime'
-        image = base / image_id
+        image = base / (image_id[:20] if short else image_id)
         executable = 'python/python.exe'
         files = []
         for relative, contents in [(executable, b'APP interpreter fixture'), ('python/psutil.py', b'APP psutil fixture')]:
@@ -809,7 +814,7 @@ class OperationReplacementTests(unittest.TestCase):
         receipt = worker.read_json(f['job'] / 'recovery.json')
         self.assertEqual(receipt['helperRuntime'], f['plan']['helperRuntime'])
         script = worker.io_path(f['job'] / '恢复旧启动器.cmd').read_text()
-        self.assertIn(f'app-helper-runtime\\{image_id}\\python\\python.exe', script)
+        self.assertIn(f'app-helper-runtime\\{image.name}\\python\\python.exe', script)
         self.assertIn(' -I -B ', script)
         worker.io_path(image / executable).write_bytes(b'replaced APP interpreter')
         with self.assertRaisesRegex(ValueError, 'APP助手文件已变化'):

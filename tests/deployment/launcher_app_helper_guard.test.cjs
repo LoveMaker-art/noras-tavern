@@ -8,7 +8,8 @@ const {resolveAppExecution}=require('../installer/desktop/managed-python');
 function fixture(t){
   const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-guard-')));
   t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
-  const directory=path.join(home,'installer'),imageSha256='a'.repeat(64),root=path.join(directory,'app-helper-runtime',imageSha256);
+  const directory=path.join(home,'installer'),imageSha256='a'.repeat(64);
+  const root=path.join(directory,'app-helper-runtime',process.platform==='win32'?imageSha256.slice(0,20):imageSha256);
   const managedPythonRoot=path.join(root,'python'),command=path.join(managedPythonRoot,process.platform==='win32'?'python.exe':'bin/python3');
   fs.mkdirSync(path.dirname(command),{recursive:true});fs.writeFileSync(command,'isolated non-executed fixture');
   const runtime={root,managedPythonRoot,command,imageSha256,descriptorSha256:'b'.repeat(64),

@@ -38,7 +38,8 @@ test('APP-owned closure is copied outside the APP and uses a private environment
   const f=await fixture(t),before=await runtime.inventory(f.image),execution=await runtime.resolve(f.options());
   assert.equal(runtime.isVerified(execution),true);assert.equal(Object.isFrozen(execution),true);
   assert.equal(Object.isFrozen(execution.env),true);
-  assert.equal(execution.root,path.join(f.home,'installer/app-helper-runtime',f.descriptor.imageSha256));
+  const imageDirectory=process.platform==='win32'?f.descriptor.imageSha256.slice(0,20):f.descriptor.imageSha256;
+  assert.equal(execution.root,path.join(f.home,'installer/app-helper-runtime',imageDirectory));
   assert.equal(execution.command.startsWith(execution.root+path.sep),true);
   assert.equal(execution.launchCommand,path.toNamespacedPath(execution.command));
   assert.equal(f.probes[0].command,execution.launchCommand);

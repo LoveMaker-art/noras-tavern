@@ -2,6 +2,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {spawn}=require('node:child_process');
+const {appHelperDirectoryName}=require('./managed-python');
 const io=process.versions.electron?require('original-fs'):fs;
 const SCHEMA='nora-app-helper-runtime/1';
 const DESCRIPTOR='app-helper-runtime.json';
@@ -177,7 +178,9 @@ async function resolve({home,executable,resourcesRoot,descriptorSha256,platform=
   const installer=path.join(home,'installer');io.mkdirSync(installer,{recursive:true,mode:0o700});directory(installer);
   const base=path.join(installer,'app-helper-runtime');io.mkdirSync(base,{recursive:true,mode:0o700});directory(base);
   if(within(app,base)||within(base,app)||within(source,base)||within(base,source))throw failure('APP助手必须位于交换程序树之外。');
-  const target=path.join(base,descriptor.imageSha256);let command;
+  // The full digest still binds the descriptor and every file. Keep room
+  // for the Windows native loader's dependency paths within the image.
+  const target=path.join(base,appHelperDirectoryName(descriptor.imageSha256,platform));let command;
   if(io.existsSync(target))command=await verifyTree(target,descriptor);
   else{
     await verifyTree(source,descriptor);
