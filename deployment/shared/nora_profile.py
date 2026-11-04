@@ -58,6 +58,27 @@ def verify_account(profile, user_id):
         raise RuntimeError("ClawChat 返回的账号与当前配对不一致，未修改资料。")
 
 
+def _timed_out_write(error):
+    seen = set()
+    timeout_seen = False
+    for _ in range(4):
+        if error is None:
+            return timeout_seen
+        if id(error) in seen:
+            return False
+        seen.add(id(error))
+        response = getattr(error, "response", None)
+        statuses = (getattr(response, "status_code", None), getattr(error, "status", None))
+        if any(type(status) is int and 400 <= status <= 599 for status in statuses):
+            return False
+        if isinstance(error, TimeoutError):
+            timeout_seen = True
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    # A timeout may wrap a definite refusal. Verify only after the complete
+    # bounded chain is checked; cycles and unexplored causes stay uncertain.
+    return timeout_seen and error is None
+
+
 async def initialize(home, user_id, client):
     target = receipt_path(home)
     if not user_id or account_id(home) != user_id:
@@ -70,14 +91,32 @@ async def initialize(home, user_id, client):
     desired = {"nickname": nickname, "avatar_url": AVATAR_URL}
     # Read-back also recovers a successful PATCH interrupted before the receipt was saved.
     current_avatar = before.get("avatar_url") or before.get("avatarUrl")
+    pending_write = None
     if before.get("nickname") != nickname or current_avatar != AVATAR_URL:
-        await client.update_my_profile(**desired)
-    after = profile_detail(await client.get_my_profile())
-    verify_account(after, user_id)
-    if after.get("nickname") != nickname or (after.get("avatar_url") or after.get("avatarUrl")) != AVATAR_URL:
-        raise RuntimeError("ClawChat 尚未保存诺拉的名字和头像，请重试。")
-    save_json(target, {"schema": 1, "userId": user_id, "verified": True, **desired})
-    return {"ok": True, "alreadyInitialized": False}
+        try:
+            await client.update_my_profile(**desired)
+        except Exception as error:
+            if not _timed_out_write(error):
+                raise
+            # A timed-out response does not prove that the server rejected the
+            # write. Continue the existing verification GET; never resend PATCH.
+            pending_write = error
+    try:
+        after = profile_detail(await client.get_my_profile())
+        verify_account(after, user_id)
+        if after.get("nickname") != nickname or (after.get("avatar_url") or after.get("avatarUrl")) != AVATAR_URL:
+            raise RuntimeError("ClawChat 尚未保存诺拉的名字和头像，请重试。")
+    except Exception as verification:
+        if pending_write is None:
+            raise
+        # The bundled ClawChat exception is a frozen dataclass. Attach only
+        # diagnostic metadata and raise outside the handler to keep its cause.
+        secondary = [*getattr(pending_write, "secondary_errors", ()), verification]
+        object.__setattr__(pending_write, "secondary_errors", secondary)
+    else:
+        save_json(target, {"schema": 1, "userId": user_id, "verified": True, **desired})
+        return {"ok": True, "alreadyInitialized": False}
+    raise pending_write
 
 
 def main():

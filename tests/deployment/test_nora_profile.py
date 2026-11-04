@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
@@ -32,6 +33,24 @@ class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
         self.client = AsyncMock()
         self.client.get_my_profile.side_effect = [dict(self.before), dict(self.after)]
         self.client.get_agent_owner.return_value = {'user': {'locale': 'zh'}}
+
+    async def _assert_patch_failure_outcome(self, failure, *, may_verify):
+        profile.receipt_path(self.home).unlink(missing_ok=True)
+        self.client.reset_mock()
+        self.client.get_my_profile.side_effect = [dict(self.before), dict(self.after)]
+        self.client.update_my_profile.side_effect = failure
+        original_cause = failure.__cause__
+        if may_verify:
+            result = await profile.initialize(self.home, 'usr_test', self.client)
+            self.assertTrue(result['ok'])
+        else:
+            with self.assertRaises(Exception) as failed:
+                await profile.initialize(self.home, 'usr_test', self.client)
+            self.assertIs(failed.exception, failure)
+        self.assertIs(failure.__cause__, original_cause)
+        self.assertEqual(self.client.get_my_profile.await_count, 2 if may_verify else 1)
+        self.client.update_my_profile.assert_awaited_once()
+        self.assertEqual(profile.ready(self.home), may_verify)
 
     async def test_first_connection_updates_both_fields_and_verifies(self):
         self.assertFalse(profile.ready(self.home))
@@ -66,6 +85,100 @@ class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, 'network failed'):
             await profile.initialize(self.home, 'usr_test', self.client)
         self.assertFalse(profile.ready(self.home))
+
+    async def test_timed_out_patch_can_finish_only_after_the_existing_readback_confirms_it(self):
+        class ClawChatApiError(RuntimeError):
+            pass
+        failure = ClawChatApiError('fixture PATCH response lost')
+        failure.__cause__ = TimeoutError('fixture timeout')
+        self.client.update_my_profile.side_effect = failure
+        # The server applied the PATCH, but its response never reached the client.
+        self.client.get_my_profile.side_effect = [self.before, self.after]
+        result = await profile.initialize(self.home, 'usr_test', self.client)
+        self.assertTrue(result['ok'])
+        self.assertTrue(profile.ready(self.home))
+        self.assertEqual(self.client.get_my_profile.await_count, 2)
+        self.client.update_my_profile.assert_awaited_once()
+
+    async def test_timed_out_patch_without_confirmed_fields_retains_the_original_failure(self):
+        for after in (self.before, {**self.after, 'id': 'usr_other'}):
+            with self.subTest(after=after):
+                self.client.reset_mock()
+                failure = RuntimeError('fixture PATCH response lost')
+                failure.__cause__ = TimeoutError('fixture timeout')
+                self.client.update_my_profile.side_effect = failure
+                self.client.get_my_profile.side_effect = [self.before, after]
+                with self.assertRaises(RuntimeError) as failed:
+                    await profile.initialize(self.home, 'usr_test', self.client)
+                self.assertIs(failed.exception, failure)
+                self.assertFalse(profile.ready(self.home))
+                self.assertEqual(self.client.get_my_profile.await_count, 2)
+                self.client.update_my_profile.assert_awaited_once()
+
+    async def test_timed_out_patch_and_readback_keeps_the_write_timeout_as_primary(self):
+        @dataclass(frozen=True)
+        class ClawChatApiError(Exception):
+            message: str
+            status: int | None = None
+
+        wrapped = ClawChatApiError('fixture PATCH response lost')
+        object.__setattr__(wrapped, '__cause__', TimeoutError('fixture write timeout'))
+        for failure in (wrapped, TimeoutError('fixture write timeout')):
+            with self.subTest(failure=type(failure).__name__):
+                self.client.reset_mock()
+                original_context = failure.__context__
+                verify = TimeoutError('fixture verification timeout')
+                self.client.update_my_profile.side_effect = failure
+                self.client.get_my_profile.side_effect = [self.before, verify]
+                with self.assertRaises(type(failure)) as failed:
+                    await profile.initialize(self.home, 'usr_test', self.client)
+                self.assertIs(failed.exception, failure)
+                self.assertIs(failed.exception.__context__, original_context)
+                self.assertIn(verify, failed.exception.secondary_errors)
+                self.assertFalse(profile.ready(self.home))
+                self.assertEqual(self.client.get_my_profile.await_count, 2)
+                self.client.update_my_profile.assert_awaited_once()
+
+    async def test_a_definite_profile_refusal_does_not_add_a_verification_request(self):
+        for order in ['refusal-then-timeout', 'timeout-then-refusal', 'wrapper-timeout-refusal']:
+            with self.subTest(order=order):
+                refused = RuntimeError('fixture forbidden')
+                if order == 'refusal-then-timeout':
+                    refused.response = SimpleNamespace(status_code=403)
+                else:
+                    refused.status = 403
+                timed = TimeoutError('fixture timeout cannot override a definite HTTP refusal')
+                if order == 'refusal-then-timeout':
+                    refused.__cause__ = timed
+                    failure = refused
+                else:
+                    timed.__cause__ = refused
+                    failure = timed
+                    if order == 'wrapper-timeout-refusal':
+                        failure = RuntimeError('fixture SDK wrapper')
+                        failure.__cause__ = timed
+                await self._assert_patch_failure_outcome(failure, may_verify=False)
+
+    async def test_a_cyclic_timeout_chain_cannot_authorize_profile_verification(self):
+        for wrapped_cycle in [False, True]:
+            with self.subTest(wrapped_cycle=wrapped_cycle):
+                failure = TimeoutError('fixture cyclic timeout')
+                tail = RuntimeError('fixture cyclic SDK wrapper') if wrapped_cycle else failure
+                failure.__cause__ = tail
+                tail.__cause__ = failure
+                await self._assert_patch_failure_outcome(failure, may_verify=False)
+
+    async def test_profile_verification_requires_the_bounded_chain_to_end(self):
+        for depth, timeout_at, may_verify in [(4, 0, True), (4, 3, True),
+                                              (5, 0, False), (5, 4, False)]:
+            with self.subTest(depth=depth, timeout_at=timeout_at):
+                errors = [RuntimeError('fixture SDK wrapper') for _ in range(depth)]
+                errors[timeout_at] = TimeoutError('fixture PATCH timeout')
+                if depth == 5 and timeout_at == 0:
+                    errors[-1].response = SimpleNamespace(status_code=403)
+                for error, cause in zip(errors, errors[1:]):
+                    error.__cause__ = cause
+                await self._assert_patch_failure_outcome(errors[0], may_verify=may_verify)
 
     async def test_successful_patch_without_saved_remote_fields_is_not_success(self):
         self.client.get_my_profile.side_effect = [self.before, self.before]
