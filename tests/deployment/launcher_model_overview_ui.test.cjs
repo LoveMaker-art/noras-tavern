@@ -139,7 +139,7 @@ function fixture({ current, initial = {}, providers, read, switchSaved, deleteSa
   const context = vm.createContext({ api, $, snapshot: { ...state }, busy: false, daily: true, running: true,
     stage: 2, labels: ['诺拉', '酒馆', '模型', 'ClawChat', '启动'], milestoneStates: [], view: 'daily', modelFormGeneration: 0, modelSelectionUncertain:false,modelSelectionOperation:null,
     pageReturnFocus: null, statusUnknown: false, lastStatusAt: 0, alive: true, refreshing: false, launcherRecoveryConfirmed: false,
-    uninstallChoiceAvailable: false, statusQuerySequence: 0,
+    uninstallChoiceAvailable: false, launcherUpdateCheckAvailable: false, statusQuerySequence: 0,
     lastFailure: null, firstCompletionPending: false, sawIncompleteSetup: false, operationCancelled: false,
     activeAction: '', activeService: 'all', versionInfo: null, autoStartAttempted: true, bundledUpgradeAttempted: false,
     launchHint: new Element('p'), pollTimer: null, pairTimer: null,
@@ -152,7 +152,7 @@ function fixture({ current, initial = {}, providers, read, switchSaved, deleteSa
     run: (action, options) => { calls.push({ action, ...options }); }, checkVersionsInBackground() {},
     setTimeout: () => 1, clearTimeout() {}, clearInterval() {}, Date, URL,
   });
-  const names = ['textError', 'errorCopy', 'operationFailure', 'currentOperation', 'allowedActions', 'noraUpdateGuidance', 'unknownStatusCopy',
+  const names = ['textError', 'errorCopy', 'operationFailure', 'currentOperation', 'isAppUpdate', 'actionableUpdateRecovery', 'appVersionEvidence', 'canInstallAppOffer', 'allowedActions', 'noraUpdateGuidance', 'unknownStatusCopy',
     'operationFact', 'retryLabel', 'canCheckNewUpdate', 'hasLogs', 'appendActions', 'recoveredOperation', 'settledUpdateOperation', 'complete', 'canReturnHome',
     'serviceRunning', 'allRunning', 'syncState', 'readStatus', 'hideMenu', 'controls', 'displaySteps', 'setupStage', 'renderServices',
     'renderConversationEntry', 'showVersionNotice', 'dailyHome', 'closeEdit', 'savedModelConfiguration', 'modelActivation', 'modelAuthLabel', 'modelConnectionText', 'renderModelList', 'unresolvedModelOperation', 'recheckModelOperation', 'modelSettings', 'modelForm',

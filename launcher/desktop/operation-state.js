@@ -47,8 +47,12 @@ const modelValidation=(record,target=record?.target)=>record?.kind==='model'&&ta
 
 // The operation record stores references and outcomes. File swap inventories
 // and installed-version truth stay in their journal and receipt owners.
+const isAppUpdate=record=>record?.kind==='update'&&record.target?.request?.launcherOnly===true;
+const mayAffectApp=record=>isAppUpdate(record)||Boolean(record.handoffRef)
+  ||record.kind==='update'&&record.target?.request?.includeLauncher===true;
+
 function createOperationController({directory,lock,executors={},recoverers={},recheckers={},captureConditions,identifyFailureCondition,evidence,
-  observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
+  observeEffects,observeAppEffects=observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
   verifyResult=result=>result?.verification==='confirmed',verifyHandoff,verifyRecoveryHandoff,verifyRestoredHandoff,retention={}}={}) {
   if(!lock?.acquire||!lock?.probe)throw new TypeError('An OS lock adapter is required');
   const root=()=>path.join(typeof directory==='function'?directory():directory,'operations');
@@ -124,11 +128,11 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(cachedRecords){cachedRecords=cachedRecords.filter(value=>value.operationId!==record.operationId).concat(JSON.parse(JSON.stringify(record)))
       .sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.ownerEpoch-b.ownerEpoch||a.sequence-b.sequence);cachedGeneration=id;}
   }
-  async function reclaim(kind,lease){
+  async function reclaim(kind,lease,{appOnly=false}={}){
     const history=records(),latest=history.at(-1)?.operationId,cutoff=Date.parse(now())-budget.detailDays*86400000;
     let full=history.filter(record=>!record.archived).length;
     for(const record of history){
-      if(record.archived||record.operationId===latest||Date.parse(record.updatedAt)>cutoff&&full<budget.fullRecords||!TERMINAL.has(record.state)
+      if(appOnly&&!isAppUpdate(record)||record.archived||record.operationId===latest||Date.parse(record.updatedAt)>cutoff&&full<budget.fullRecords||!TERMINAL.has(record.state)
         ||!['untouched','restored'].includes(record.effectState)||record.handoffRef
         ||record.effectState==='restored'&&record.verification!=='confirmed'
         ||['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome)
@@ -320,9 +324,9 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       ...(serviceCommand(record)?{serviceRetryAt:retryAt}:{}),
       ...(record.kind==='pair'?{pairRetryAt:Number.isSafeInteger(record.pairRetryAt)&&record.pairRetryAt>Date.parse(now())?record.pairRetryAt:null}:{}),...fields};
   }
-  async function snapshot(id){
+  async function snapshot(id,{appOnly=false,inspectEffects=true}={}){
     if(!id){
-      const history=records();
+      const history=appOnly?records().filter(isAppUpdate):records();
       // A later safe service stop must not hide a still unresolved file effect.
       // This selection stays read-only and uses the journals' actual facts.
       for(const pending of history.slice().reverse().filter(value=>!TERMINAL.has(value.state)
@@ -337,7 +341,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(!record)return null;
     const observed=await lock.probe({directory:typeof directory==='function'?directory():directory,operationId:record.operationId});
     const fields={busy:Boolean(observed.busy)};
-    if((!TERMINAL.has(record.state)||record.recoveryOutcome==='recovery-required')&&!observed.busy){
+    if(inspectEffects&&(!TERMINAL.has(record.state)||record.recoveryOutcome==='recovery-required')&&!observed.busy){
       const effects=observeEffects?await observeEffects(record):{effectState:record.effectState==='untouched'?'untouched':'unknown'};
       // A previous writer may have restored files/services before its verifier
       // failed. Keep explicit same-operation recovery reachable so the next
@@ -581,12 +585,16 @@ function createOperationController({directory,lock,executors={},recoverers={},re
           throw fail('OPERATION_REQUEST_CONFLICT','A request ID cannot choose another operation target');
         await lease.release();return snapshot(committed.operationId);
       }
-      await reclaim(kind,lease);
+      const appOnly=isAppUpdate({kind,target});
+      await reclaim(kind,lease,{appOnly});
       // A positively owned stop remains available while files need recovery.
       // It still acquires the same native lock and may not guess process identity.
-      for(const unfinished of ['stop','shutdown'].includes(kind)?[]:records().filter(value=>!TERMINAL.has(value.state)
-        ||['recovery-required','files-restored-start-failed'].includes(value.recoveryOutcome))){
-        const effects=observeEffects?await observeEffects(unfinished):{effectState:unfinished.effectState==='untouched'?'untouched':'unknown'};
+      for(const unfinished of ['stop','shutdown'].includes(kind)?[]:records().filter(value=>
+        (!appOnly||mayAffectApp(value))&&(!TERMINAL.has(value.state)
+        ||['recovery-required','files-restored-start-failed'].includes(value.recoveryOutcome)))){
+        const inspect=appOnly?observeAppEffects:observeEffects;
+        const effects=inspect?await inspect(unfinished):{effectState:unfinished.effectState==='untouched'?'untouched':'unknown'};
+        if(appOnly&&!isAppUpdate(unfinished)&&effects.appSegmentSettled===true)continue;
         const servicesOnly=TERMINAL.has(unfinished.state)&&unfinished.effectState==='restored'
           &&effects.effectState==='restored'&&effects.recoveryOutcome==='files-restored-start-failed';
         if(!['untouched','restored'].includes(effects.effectState)
@@ -706,7 +714,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     try{
       const record=read(id);
       if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
-      const appOnly=record.kind==='update'&&record.target?.request?.launcherOnly===true;
+      const appOnly=isAppUpdate(record);
       if(record.handoffRef&&verifyRestoredHandoff&&(record.state==='awaiting-handoff'||appOnly&&!TERMINAL.has(record.state))){
         const check=()=>{
           lease.assertActive?.();
@@ -731,7 +739,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         }
         const untouched=outcome?.status==='cancelled'&&outcome.effectState==='untouched'
           &&outcome.value?.notAppliedVerification==='confirmed';
-        if(record.state==='awaiting-handoff'&&(outcome?.status==='restored'||untouched)&&outcome.verification==='confirmed'
+        if((record.state==='awaiting-handoff'||appOnly&&!TERMINAL.has(record.state))
+          &&(outcome?.status==='restored'||untouched)&&outcome.verification==='confirmed'
           &&outcome.operationId===id&&outcome.planDigest===record.planDigest&&outcome.job===record.handoffRef){
           const terminal=untouched?'failed':'rolled-back';
           const error=outcome.failure||fail('LAUNCHER_START_FAILED',untouched

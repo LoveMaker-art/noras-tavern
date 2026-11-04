@@ -538,14 +538,31 @@ test('shared helper failures preserve native HTTP metadata through diagnostics w
   });
 });
 
+function appHelperSeam(context) {
+  // These tests exercise main/diagnostic routing. Runtime authentication is
+  // exercised by launcher_app_helper_runtime; no core interpreter is borrowed.
+  context.fixtureAppHelper=Object.freeze({command:process.env.NORA_TEST_PYTHON||'/isolated/app-python',env:{PYTHONUTF8:'1'}});
+  context.fixtureAppHelperRequests=[];
+  vm.runInContext('ensureAppHelperRuntime=async(options={})=>{fixtureAppHelperRequests.push(options);appHelperRuntimeValue=fixtureAppHelper;return fixtureAppHelper;};',context);
+}
+function managedRecoveryJob(root) {
+  const job=path.join(root,'installer/launcher-update/job-fixture');fs.mkdirSync(job,{recursive:true});
+  fs.writeFileSync(path.join(job,'backup-proof.json'),'preserved original APP backup evidence');return job;
+}
 function recoveryControllerFixture(context,pending) {
   const operationId='11111111-1111-4111-8111-111111111111';
   pending.operationId=operationId;
-  const snapshot={operationId,snapshotSequence:1,state:'interrupted',kind:'repair',allowedActions:['recover']};
-  context.fixtureOperations={snapshot:async()=>snapshot,recover:async(_id,options)=>{
+  const snapshot={operationId,snapshotSequence:1,state:'failed',kind:'update',allowedActions:['recover'],
+    effectState:'changed',recoveryOutcome:'recovery-required',handoffRef:pending.job,
+    target:{request:{action:'update',launcherOnly:true}}};
+  context.fixtureRecoverySnapshot=snapshot;
+  context.fixtureOperations={snapshot:async id=>{if(id)assert.equal(id,operationId);return snapshot;},recover:async(id,options)=>{
+    assert.equal(id,operationId);assert.equal(options.snapshotSequence,snapshot.snapshotSequence);
+    assert.equal(options.recoveryHandoff.job,pending.job);
     let handoffRef;
-    const result=await options.prepareHandoff({operationId,snapshot,observe(){},handoff:async ref=>{handoffRef=ref;}});
+    const result=await options.prepareHandoff({operationId,snapshot,observe(){},handoff:async ref=>{assert.equal(ref,pending.job);handoffRef=ref;}});
     assert.equal(result.handoff,true);
+    assert.equal(handoffRef,pending.job);
     return {...snapshot,state:'awaiting-handoff',handoffRef,result:result.value};
   }};
   vm.runInContext('operations=()=>fixtureOperations;',context);
@@ -554,15 +571,19 @@ function recoveryControllerFixture(context,pending) {
 test('launcher recovery waits for preparation and cannot bypass busy or unknown ownership', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-recovery-main-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  let pending={job:path.join(root,'job'),status:'unknown',canRecover:false,reason:'无法确认旧启动器归属。'};
+  let pending={job:managedRecoveryJob(root),status:'unknown',canRecover:false,reason:'无法确认旧启动器归属。'};
   const calls=[];
   const context=mainContext(root,{'./launcher-update':{
-    assessPending:async()=>pending,
-    prepareRecovery:async()=>({parentCreationTime:1}),
-    recover:async options=>{calls.push(options);return{job:options.job,restarting:true};},
+    assessPending:async options=>{assert.equal(options.appHelperRuntime,context.fixtureAppHelper);return pending;},
+    restore:async options=>{
+      assert.equal(options.appHelperRuntime,context.fixtureAppHelper);assert.equal(options.job,pending.job);calls.push(options);
+      if(options.context){await options.context.handoff(options.job);return {handoff:true,value:{parentCreationTime:1}};}
+      assert.equal(options.operation.operationId,pending.operationId);return {job:options.job,restarting:true};
+    },
   }});
+  appHelperSeam(context);
   context.serviceCalls=[];
-  vm.runInContext('app.isPackaged=true; app.quit=()=>{globalThis.didQuit=true;}; findPython=()=>({command:"python-fixture"}); runBridge=async(command,options)=>{serviceCalls.push([command,options.service]);return {running:false,tavernProcessRunning:false,gatewayRunning:false};}; activeRun=true;',context);
+  vm.runInContext('app.isPackaged=true; app.quit=()=>{globalThis.didQuit=true;}; findPython=()=>({command:"python-fixture"}); runBridge=async(command,options)=>{serviceCalls.push([command,options.service]);throw new Error("APP recovery must not control core services");}; activeRun=true;',context);
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/当前任务/);
   vm.runInContext('activeRun=false;',context);
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/归属/);
@@ -572,11 +593,16 @@ test('launcher recovery waits for preparation and cannot bypass busy or unknown 
   assert.deepEqual(context.serviceCalls,[],'busy or unconfirmed recovery must not stop services');
   pending={...pending,busy:false};
   recoveryControllerFixture(context,pending);
+  const original=JSON.stringify(context.fixtureRecoverySnapshot),backup=fs.readFileSync(path.join(pending.job,'backup-proof.json'));
+  await assert.rejects(vm.runInContext('recoverLauncher({expectedOperationId:"22222222-2222-4222-8222-222222222222"})',context),{code:'OPERATION_SNAPSHOT_CHANGED'});
+  assert.equal(calls.length,0);
   const result=await vm.runInContext('recoverLauncher()',context);
   assert.equal(result.restarting,true);
   assert.equal(calls[0].job,pending.job);
-  assert.equal(context.serviceCalls.length,1);
-  assert.deepEqual(Array.from(context.serviceCalls[0]),['stop','all'],'owned recovery confirms service shutdown before APP handoff');
+  assert.equal(calls.length,2,'prepare under the original writer, then restore after releasing its handoff');
+  assert.deepEqual(context.serviceCalls,[],'APP restoration does not stop independently owned core services');
+  assert.equal(JSON.stringify(context.fixtureRecoverySnapshot),original);
+  assert.deepEqual(fs.readFileSync(path.join(pending.job,'backup-proof.json')),backup);
   assert.equal(vm.runInContext('quitReady',context),true);
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(context.didQuit,true);
@@ -585,36 +611,45 @@ test('launcher recovery waits for preparation and cannot bypass busy or unknown 
 
 // APP-only handoff proof and completion are exercised by launcher_self_update
 // and launcher_app_only_update; desktop execution no longer applies core here.
-test('launcher recovery remains offered after failed status inspection, but handoff requires confirmed service shutdown', async t => {
+test('APP recovery remains offered after failed core status; its own preparation must succeed before handoff', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-recovery-status-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const pending={job:path.join(root,'job'),canRecover:true,status:'resumed',reason:'可恢复旧启动器。'};
-  let assessed=0;
-  const context=mainContext(root,{'./launcher-update':{assessPending:async()=>{assessed++;return pending;},prepareRecovery:async()=>({parentCreationTime:1}),recover:async()=>({job:pending.job,restarting:true})},'./system-update':{pending:()=>false}});
-  recoveryControllerFixture(context,pending);
+  const pending={job:managedRecoveryJob(root),canRecover:true,busy:false,status:'resumed',reason:'可恢复旧启动器。'};
+  let assessed=0,preparationDenied=true;
+  const inspection=Object.assign(new Error('fixture inspection denied'),{code:'EACCES'});
+  const context=mainContext(root,{'./retained-installation':{inspect:()=>{throw inspection;}},
+    './launcher-update':{
+      assessPending:async options=>{assert.equal(options.appHelperRuntime,context.fixtureAppHelper);assessed++;return pending;},
+      restore:async options=>{
+        assert.equal(options.job,pending.job);assert.equal(options.appHelperRuntime,context.fixtureAppHelper);
+        if(options.context){
+          if(preparationDenied)throw Object.assign(new Error('APP backup preparation denied'),{code:'EACCES'});
+          await options.context.handoff(options.job);return {handoff:true,value:{parentCreationTime:1}};
+        }
+        assert.equal(options.operation.operationId,pending.operationId);return {job:pending.job,restarting:true};
+      }
+    }});
+  appHelperSeam(context);recoveryControllerFixture(context,pending);
+  const original=JSON.stringify(context.fixtureRecoverySnapshot),backup=fs.readFileSync(path.join(pending.job,'backup-proof.json'));
   const sent=[];
   const client=createTelemetry({file:path.join(root,'telemetry.json'),launcherVersion:'fixture',automatic:false,
     fetcher:async (_url,options)=>{const data=JSON.parse(options.body);sent.push(...data.events);return Response.json({accepted_event_ids:data.events.map(event=>event.event_id),rejected_event_ids:[]});}});
   client.setEnabled(true);t.after(()=>client.close());context.testTelemetry=client;
-  vm.runInContext('app.isPackaged=true; app.quit=()=>{}; findPython=()=>({command:"python-fixture"}); telemetry=testTelemetry; globalThis.bridgeCalls=0; runBridge=async()=>{bridgeCalls++;throw Object.assign(new Error("fixture inspection denied"),{code:"EACCES"});};',context);
+  vm.runInContext('app.isPackaged=true; app.quit=()=>{}; findPython=()=>({command:"python-fixture"}); telemetry=testTelemetry; globalThis.bridgeCalls=0; runBridge=async()=>{bridgeCalls++;throw new Error("APP recovery must not stop core services");};',context);
   const status=mainCallback(context,'nora:status'),result=await status();
-  assert.equal(result.statusUnavailable,true);
-  assert.equal(result.launcherRecovery,pending);
-  assert.equal(result.busy,false);
-  assert.equal(Object.hasOwn(result,'running'),false);
-  assert.equal(context.bridgeCalls,0,'the failed directory inspection must not invent runtime facts');
-  await assert.rejects(vm.runInContext('recoverLauncher()',context),/fixture inspection denied/);
-  assert.equal(context.bridgeCalls,1);
-  assert.notEqual(vm.runInContext('quitReady',context),true,'failed service shutdown must not authorize APP exit');
-  vm.runInContext('runBridge=async(command,options)=>{bridgeCalls++;if(command!=="stop"||options.service!=="all")throw new Error("unexpected bridge request");return {running:false,tavernProcessRunning:false,gatewayRunning:false};};',context);
-  const recovery=await vm.runInContext('recoverLauncher()',context);
-  assert.equal(recovery.restarting,true);
-  assert.equal(assessed,3,'each explicit recovery must reassess its own identity');
-  assert.equal(context.bridgeCalls,2,'retry confirms both services have stopped before the handoff');
-  const busy=await status();
-  assert.equal(busy.statusUnavailable,true);
-  assert.equal(busy.busy,true);
-  assert.equal(Object.hasOwn(busy,'running'),false);
+  assert.equal(result.statusUnavailable,true);assert.equal(result.launcherRecovery,pending);assert.equal(result.busy,false);
+  assert.equal(result.running,undefined);assert.equal(result.gatewayRunning,undefined);
+  assert.equal(context.bridgeCalls,0,'failed inspection does not invent runtime facts or perform a service action');
+  await assert.rejects(vm.runInContext('recoverLauncher()',context),/APP backup preparation denied/);
+  assert.notEqual(vm.runInContext('quitReady',context),true,'unconfirmed APP preparation cannot authorize exit');
+  assert.equal(context.bridgeCalls,0);assert.equal(JSON.stringify(context.fixtureRecoverySnapshot),original);
+  preparationDenied=false;
+  const recovery=await vm.runInContext('recoverLauncher()',context);assert.equal(recovery.restarting,true);
+  assert.equal(assessed,3,'each explicit recovery reassesses its own identity');assert.equal(context.bridgeCalls,0);
+  const busy=await status();assert.equal(busy.statusUnavailable,true);assert.equal(busy.busy,true);
+  assert.equal(busy.running,undefined);assert.equal(busy.gatewayRunning,undefined);
+  assert.equal(JSON.stringify(context.fixtureRecoverySnapshot),original);
+  assert.deepEqual(fs.readFileSync(path.join(pending.job,'backup-proof.json')),backup);
   await client.flush();
   const finished=sent.filter(event=>event.event==='operation_finished'&&event.action==='repair');
   assert.equal(finished.at(-1).status,'handoff');
@@ -632,30 +667,47 @@ for(const verified of [false,true])test(`checking the current APP without an own
     updateCompatibility:{schema:'nora-core-launcher-compatibility/1',coreVersion:'2.4.2',launcherVersions:['2.0.2'],capabilities:releases.LAUNCHER_CAPABILITIES}};
   const body=JSON.stringify(manifest),release={tag_name:'v2.4.2',assets:[{name:'release-manifest.json',size:Buffer.byteLength(body),
     browser_download_url:'https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/release-manifest.json'}]};
-  const selectedPlan=await releases.selectPlan({selectedRelease:release,launcherVersion:'2.0.2',fetcher:async()=>new Response(body)});
+  const admitted=new Set(require('../installer/desktop/release-sources').sourceCandidates(release.assets[0].browser_download_url).map(item=>item.url));
+  const selectedPlan=await releases.selectAppPlan({releaseEvidence:{release,checkedAt:'2026-11-03T00:00:00.000Z',source:'network',latestConfirmed:true},
+    launcherVersion:'2.0.2',fetcher:async url=>{
+      assert.ok(admitted.has(String(url)),`Only the fixed APP manifest may be read: ${url}`);
+      const response=new Response(body);Object.defineProperty(response,'url',{value:String(url)});return response;
+    }});
   const installed=path.join(root,'tavern/tavern-updates');fs.mkdirSync(installed,{recursive:true});
   fs.writeFileSync(path.join(installed,'installed-manifest.json'),body);
   fs.writeFileSync(path.join(installed,'installed.json'),JSON.stringify({schema:2,version:'2.4.2',commit:manifest.commit}));
   fs.mkdirSync(path.join(root,'hermes'));
   fs.writeFileSync(path.join(root,'hermes/nora-instance.json'),JSON.stringify({schema:1,noraHome:root,
     hermesHome:path.join(root,'hermes'),installRoot:path.join(root,'tavern'),port:8799}));
+  const backup=path.join(root,'preserved-app-backup.json');fs.writeFileSync(backup,'original APP backup');
+  const protectedFiles=[backup,path.join(installed,'installed-manifest.json'),path.join(installed,'installed.json'),path.join(root,'hermes/nora-instance.json')]
+    .map(file=>({file,bytes:fs.readFileSync(file),ino:fs.statSync(file).ino}));
+  // Use the actual APP module with one offline selector seam. Its parser,
+  // seal/prepare/ownership checks remain production code. Any helper dispatch
+  // without the original handoff would fail this comparison fixture.
+  const updateFile=path.resolve(__dirname,'../installer/desktop/launcher-update.js'),localRequire=createRequire(updateFile),loaded={exports:{}};
+  vm.runInNewContext(fs.readFileSync(updateFile,'utf8'),{module:loaded,process,Buffer,setTimeout,clearTimeout,
+    require:name=>name==='./releases'?{...releases,selectAppPlan:async()=>selectedPlan}
+      :name==='node:child_process'?{spawn:()=>assert.fail('a current APP without a handoff must not dispatch a replacement helper')}:localRequire(name)},
+  {filename:updateFile});
   const context=mainContext(root,{electron:{app:{getPath:()=>root,getVersion:()=> '2.0.2'}},'./test-build':{testBuild:()=>null},
-    './releases':{...releases,selectPlan:async()=>selectedPlan},'./launcher-update':{
-    prepare:async()=>({tag:'v2.4.2',manifest:{versions:{tavern:'2.4.2'}}}),
-    finalize:async options=>calls.push(options),
-  }},[`--nora-self-update=${path.join(root,'job')}`]);
+    './launcher-update':{...loaded.exports,finalize:async options=>calls.push(options)}},[`--nora-self-update=${path.join(root,'job')}`]);
+  appHelperSeam(context);
   context.AbortController=AbortController;
   context.coreVerified=verified;context.bridgeRequests=[];
   vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>{bridgeRequests.push(command);return {version:"2.4.2",systemReady:coreVerified};};',context);
   // This is an APP-only comparison. A startup marker no longer selects a
   // legacy core executor; the request must state its actual update scope.
   const pending=mainCallback(context,'runAction')({sender:null},{action:'update',runId:'comparison-fixture',launcherOnly:true,expectedCoreVersion:'2.4.2'});
-  const result=await pending,operation=result.operation;assert.equal(result.version,'2.4.2');
-  assert.equal(result.systemReady,verified);assert.equal(result.appUpdateComplete,true);assert.equal(result.coreUpdateComplete,false);
-  assert.equal(context.bridgeRequests.filter(command=>command==='verify-current-update').length,0);
+  const result=await pending,operation=result.operation;assert.equal(result.launcherVersion,'2.0.2');
+  assert.equal(result.version,undefined);assert.equal(result.systemReady,undefined);
+  assert.equal(result.appUpdateComplete,true);assert.equal(result.coreUpdateComplete,false);
+  assert.deepEqual(context.bridgeRequests,[],'APP comparison neither queries nor certifies independent core health');
   assert.equal(calls.length,0);
   assert.equal(operation.effectState,'untouched');
   assert.equal(operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));
+  assert.equal(operation.target.releasePlan.client,'app');assert.equal(operation.target.releasePlan.version,'2.0.2');
+  for(const item of protectedFiles){assert.equal(fs.statSync(item.file).ino,item.ino);assert.deepEqual(fs.readFileSync(item.file),item.bytes);}
 });
 
 test('model progress cache failure releases its task lock and preserves the provider failure', async t => {
@@ -761,7 +813,7 @@ test('open logs uses only a freshly assessed managed launcher log and preserves 
   const opened=[];
   const context=mainContext(root,{electron:{app:{isPackaged:true,getPath:()=>root,getVersion:()=> 'fixture'},shell:{openPath:async file=>{opened.push(file);return '';}}},
     './launcher-update':{assessPending:async()=>{assessments++;return pending;}}});
-  vm.runInContext('findPython=()=>({command:"python-fixture"});',context);
+  appHelperSeam(context);
   const openLogs=mainCallback(context,'nora:open-logs');
   await openLogs();
   assert.equal(opened.at(-1),log);

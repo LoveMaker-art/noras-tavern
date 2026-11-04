@@ -480,5 +480,31 @@ console.log(JSON.stringify({code,output,errors,jobs,frozen,packet}));process.exi
         self.run_seed_writer(extended=True)
 
 
+class InterpreterIsolationTests(unittest.TestCase):
+    def test_isolated_delegate_does_not_add_the_job_directory_to_imports(self):
+        with tempfile.TemporaryDirectory(prefix='nora-delegate-import-') as temporary:
+            root = Path(temporary)
+            job = root / 'job'
+            job.mkdir()
+            (job / 'nora_shadow_fixture.py').write_text("value = 'JOB_IMPORT_LOADED'\n", encoding='utf-8')
+            actor = job / 'actor.py'
+            actor.write_text("try:\n import nora_shadow_fixture\n print(nora_shadow_fixture.value)\nexcept ModuleNotFoundError:\n print('JOB_IMPORT_BLOCKED')\n", encoding='utf-8')
+            driver = root / 'driver.py'
+            driver.write_text("import importlib.util, sys\nspec=importlib.util.spec_from_file_location('control',sys.argv[1])\ncontrol=importlib.util.module_from_spec(spec)\nspec.loader.exec_module(control)\ncontrol.require_operation=lambda:None\ncontrol._exec_python((['-I'] if sys.flags.isolated else [])+['-B',sys.argv[2]])\n", encoding='utf-8')
+            for flags, expected in [(['-I', '-B'], 'JOB_IMPORT_BLOCKED'), (['-B'], 'JOB_IMPORT_LOADED')]:
+                with self.subTest(flags=flags):
+                    result = subprocess.run([sys.executable, *flags, str(driver), str(SOURCE), str(actor)],
+                                            cwd=job, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
+
+    def test_inner_isolation_flag_cannot_claim_an_isolated_wrapper(self):
+        with patch.object(control, 'require_operation', return_value=None):
+            if sys.flags.isolated:
+                self.skipTest('This rejection requires a non-isolated source test interpreter')
+            with self.assertRaisesRegex(ValueError, 'isolated wrapper'):
+                control._exec_python(['-I', '-B', 'must-not-execute.py'])
+
+
 if __name__ == '__main__':
     unittest.main()

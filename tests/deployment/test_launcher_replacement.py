@@ -712,6 +712,39 @@ class OperationReplacementTests(unittest.TestCase):
         f['launcher'].write_text(launcher)
         return f
 
+    def test_prepare_and_recovery_bind_the_packaged_helper_without_hermes(self):
+        f = self.fixture()
+        shutil.rmtree(worker.io_path(f['home'] / 'hermes'))
+        image_id = '1' * 64
+        base = f['home'] / 'installer/app-helper-runtime'
+        image = base / image_id
+        executable = 'python/python.exe'
+        files = []
+        for relative, contents in [(executable, b'APP interpreter fixture'), ('python/psutil.py', b'APP psutil fixture')]:
+            file = worker.io_path(image / relative)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(contents)
+            files.append({'path': relative, 'type': 'file', 'size': len(contents), 'sha256': worker.digest(file)})
+        descriptor_file = base / f'{image_id}.json'
+        worker.write_json(descriptor_file, {'schema': 'nora-app-helper-runtime/1', 'imageSha256': image_id,
+            'platform': 'win32', 'arch': 'x64', 'root': 'app-helper-runtime', 'pythonRoot': 'python',
+            'executable': executable, 'files': files})
+        f['plan']['helperRuntime'] = {'schema': 'nora-app-helper-runtime-ref/1', 'imageSha256': image_id,
+            'descriptorSha256': worker.digest(descriptor_file), 'root': str(image), 'executable': executable}
+        worker.write_json(f['job'] / 'plan.json', f['plan'])
+        self.assertTrue(worker.prepare(f['job'])['prepared'])
+        receipt = worker.read_json(f['job'] / 'recovery.json')
+        self.assertEqual(receipt['helperRuntime'], f['plan']['helperRuntime'])
+        script = worker.io_path(f['job'] / '恢复旧启动器.cmd').read_text()
+        self.assertIn(f'app-helper-runtime\\{image_id}\\python\\python.exe', script)
+        self.assertIn(' -I -B ', script)
+        worker.io_path(image / executable).write_bytes(b'replaced APP interpreter')
+        with self.assertRaisesRegex(ValueError, 'APP助手文件已变化'):
+            worker.recover(f['job'])
+        self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['phase'], 'recovery-failed')
+        self.assertEqual(worker.io_path(f['app'] / 'launcher.exe').read_text(), 'old')
+        self.assertEqual(worker.io_path(f['home'] / 'world.json').read_text(), 'user-world')
+
     @unittest.skipUnless(os.name == 'nt', 'Requires the native Windows current-directory handle')
     def test_real_windows_directory_lock_ends_untouched_and_reopens_original(self):
         f = self.fixture(); f['plan']['parentCreationTime'] -= 100

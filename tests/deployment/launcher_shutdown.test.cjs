@@ -267,27 +267,42 @@ test('Windows window close waits for shutdown and remains open on failure', () =
   }
 });
 
-test('APP recovery confirms background shutdown under the writer before releasing the handoff',async()=>{
-  for(const stopped of [{running:false,tavernProcessRunning:false,gatewayRunning:false},{running:false,tavernProcessRunning:true,gatewayRunning:false}]){
-    const calls=[];
+test('APP recovery delegates only its own restoration and exits after the writer releases its handoff',async()=>{
+  for(const failedPreparation of [false,true]){
+    const calls=[],lease={};
     const context=vm.createContext({activeRun:false,modelBusy:false,uninstalling:false,selectingLocation:false,quitting:false,
-      statusRequest:null,quitReady:false,activeOperationContext:null,path,process,setImmediate,verifyWorkflowResult,
-      app:{isPackaged:true,getVersion:()=> '2.2.4',quit:()=>calls.push('quit')},
+      statusRequest:null,quitReady:false,activeOperationContext:null,path,process,setImmediate,
+      app:{isPackaged:true,getVersion:()=> '2.2.9',quit:()=>calls.push('quit')},
+      ensureAppHelperRuntime:async options=>{
+        if(options.lease){assert.equal(options.lease,lease);calls.push('private-cache');}
+        else{assert.equal(options.refresh,true);calls.push('runtime');}
+      },
       readLauncherRecovery:async()=>({canRecover:true,busy:false,job:'/owned/job',operationId:'owned-operation'}),
-      operations:()=>({snapshot:async()=>({snapshotSequence:1}),recover:async(_id,options)=>{
-        const value=await options.prepareHandoff({operationId:'owned-operation',snapshot:{},handoff:async()=>calls.push('handoff')});
-        calls.push('writer-released');return {state:'awaiting-handoff',result:value.value};
+      operations:()=>({snapshot:async()=>({operationId:'owned-operation',snapshotSequence:1,kind:'update',target:{request:{launcherOnly:true}}}),recover:async(id,options)=>{
+        assert.equal(id,'owned-operation');assert.equal(options.recoveryHandoff.job,'/owned/job');
+        try{const prepared=await options.prepareHandoff({operationId:id,snapshot:{operationId:id},lease});
+          return {state:'awaiting-handoff',handoffRef:'/owned/job',result:prepared};
+        }finally{calls.push('writer-released');}
       }}),
-      launcherRecoveryOptions:()=>({}),hermesHome:()=>'/owned/hermes',
-      launcherUpdate:{prepareRecovery:async()=>{calls.push('prepare');return {parentCreationTime:1};},
-        recover:async()=>{calls.push('recover-helper');return {restarting:true};}},
-      runBridge:async(command,options)=>{assert.equal(command,'stop');assert.equal(options.service,'all');calls.push('stop');return stopped;},
+      launcherRecoveryOptions:()=>({}),
+      launcherUpdate:{restore:async options=>{
+        assert.equal(options.job,'/owned/job');
+        if(options.context){calls.push('prepare');if(failedPreparation)throw Error('APP proof unconfirmed');return {parentCreationTime:1};}
+        assert.ok(calls.includes('writer-released'));calls.push('restore-helper');return {restarting:true};
+      }},
+      runBridge:async()=>assert.fail('main APP recovery must not operate on core services'),
       diagnostics:{begin(){},event(){},write(){},error(){},finish(){},clean:String},
       telemetry:{begin(){},stage(){},report(){}},rememberOperationFailure(){},finishOperationTelemetry(){},
-      launcherError:(message)=>new Error(message),requireOperationResult:()=>({}),
+      launcherError:message=>new Error(message),requireOperationResult:()=>({}),
     });
     const node=functions.get('recoverLauncher'),recover=vm.runInContext(`(${source.slice(node.start,node.end)})`,context);
-    if(stopped.tavernProcessRunning){await assert.rejects(recover(),/停止/);assert.deepEqual(calls,['prepare','stop']);assert.equal(context.quitReady,false);}
-    else{await recover();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(calls,['prepare','stop','handoff','writer-released','recover-helper','quit']);assert.equal(context.quitReady,true);}
+    if(failedPreparation){
+      await assert.rejects(recover(),/APP proof unconfirmed/);assert.deepEqual(calls,['runtime','private-cache','prepare','writer-released']);
+      assert.equal(context.quitReady,false);assert.equal(context.activeRun,false);
+    }else{
+      await recover();await new Promise(resolve=>setImmediate(resolve));
+      assert.deepEqual(calls,['runtime','private-cache','prepare','writer-released','restore-helper','quit']);assert.equal(context.quitReady,true);
+    }
+    assert.equal(context.activeOperationContext,null);
   }
 });

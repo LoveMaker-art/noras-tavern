@@ -45,6 +45,16 @@ function change(...names) {
 }
 const noEnvironment = plan => assert.ok(Object.values(plan.build.environment).every(values => values.length === 0));
 
+test('changing the APP helper packer rebuilds the launcher without rebuilding the source runtime', () => {
+    const plan = createReleasePlan(change('tooling/release/package-app-helper-runtime.mjs'));
+    assert.equal(plan.mode, 'launcher');
+    assert.equal(plan.requiresReview, false);
+    assert.deepEqual(plan.build.launcher, [...PLATFORMS].sort());
+    assert.deepEqual(plan.build.modules, []);
+    noEnvironment(plan);
+});
+
+
 test('step titles cannot exempt changed unknown executable commands from review', () => {
     for (const title of ['Accept the exact component delivery without publishing', 'Verify contracts', 'Test contracts', 'Require evidence']) {
         const before = workflow.replace('Test contracts', title);

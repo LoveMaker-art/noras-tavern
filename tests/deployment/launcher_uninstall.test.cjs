@@ -1887,7 +1887,7 @@ function pythonInspectionHarness({now,onChild,ipc=false,pythonScript,environment
 }
 const inspectionFrame=(sequence,bytes,entries)=>JSON.stringify({schema:'nora-uninstall-progress/1',sequence,bytes,entries})+'\n';
 
-async function systemHistoryFixture(t,{sameVersion=false,handoff=false,managedRepair=false}={}) {
+async function systemHistoryFixture(t,{sameVersion=false,handoff=false,managedRepair=false,port=8799,capabilityPort=port}={}) {
   const f=fixture(t),crypto=require('node:crypto'),releases=require('../installer/desktop/releases');
   const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
   const capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
@@ -1917,7 +1917,7 @@ async function systemHistoryFixture(t,{sameVersion=false,handoff=false,managedRe
     const selected=await releases.selectPlan({selectedRelease:release,launcherVersion:'2.1.2',mode:managedRepair?'install':'update',
       platform:process.platform,arch:process.arch,fetcher:async url=>new Response(url.includes('/nora-launcher-')?JSON.stringify(launcher):bodies[String(url).split('/').at(-1)])});
     const releasePlan=releases.sealPlan(selected,{operationDirectory:base,assertOwner:()=>{},launcherVersion:'2.1.2'});
-    const target={request:{action:'update',port:8799,tag:`v${version}`},releasePlan,currentVersion:before};
+    const target={request:{action:'update',port,tag:`v${version}`},releasePlan,currentVersion:before};
     const record={schema:'nora-operation/1',operationId:id,ownerEpoch:index,sequence:8,kind:'update',state:'succeeded',
       stageId:'verifying',effectState:'changed',verification:'confirmed',createdAt:`2026-10-11T0${index}:00:00.000Z`,
       updatedAt:`2026-10-11T0${index}:01:00.000Z`,target,planDigest:hash(JSON.stringify(target)),planSelected:true,
@@ -1943,7 +1943,7 @@ async function systemHistoryFixture(t,{sameVersion=false,handoff=false,managedRe
       previousManifest:digestFile(path.join(backup,'host/update-receipts/installed-manifest.json'))}};
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),localRequire=createRequire(file);
   const context=vm.createContext({require:name=>name==='./launcher-capability'?{validate:async()=>({noraHome:f.home,
-    hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),launcherVersion:'2.1.2',platform:process.platform,arch:process.arch,channel:'stable',port:8799,resources:{}})}:
+    hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),launcherVersion:'2.1.2',platform:process.platform,arch:process.arch,channel:'stable',port:capabilityPort,resources:{}})}:
     name==='./managed-python'?{resolveExecution:()=>({})}:localRequire(name),__filename:file,__dirname:path.dirname(file),module:{exports:{}},
     process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
@@ -1959,6 +1959,21 @@ test('historical verified system updates are accepted only after the current sea
     await f.inspect();assert.equal(f.inspections(),1,'history must reach the full read-only Python check');
     for(const name of [...f.data,...f.programs])assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture');
   }
+});
+
+test('KEEP binds system history to the installed instance port while the APP receipt is stale',async t=>{
+  const port=18799,f=await systemHistoryFixture(t,{port,capabilityPort:8799});
+  const noraHome=fs.realpathSync(f.home),hermesHome=path.join(noraHome,'hermes'),installRoot=path.join(noraHome,'tavern');
+  const instance={schema:1,noraHome,hermesHome,installRoot,port,releaseChannel:'stable'};
+  const save=value=>f.write('hermes/nora-instance.json',JSON.stringify(value));
+  save(instance);
+  await f.inspect();
+  assert.equal(f.inspections(),1);
+  for(const altered of [{port:8799},{installRoot:f.directory},{releaseChannel:'beta'}]){
+    save({...instance,...altered});
+    await assert.rejects(f.inspect(),{code:'UNINSTALL_RECOVERY_REQUIRED'});
+  }
+  for(const name of [...f.data,...f.programs])assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture');
 });
 
 test('managed repair install plans retain full validation when consumed as successful system history and handoffs',async t=>{

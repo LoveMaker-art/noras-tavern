@@ -5,7 +5,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {parse}=require('../installer/desktop/node_modules/acorn');
 function loadOperationProjection(source,ast,context){
-  for(const name of ['desktopSequenceForOperation','projectDesktopOperation']){
+  for(const name of ['ownsDesktopOperation','projectDesktopOperation']){
     const definition=ast.body.find(node=>node.id?.name===name);assert.ok(definition,name);
     vm.runInContext(source.slice(definition.start,definition.end),context);
   }
@@ -20,7 +20,7 @@ test('status polling reports a pending legacy transaction without stopping servi
   let stops=0,writes=0;
   const installer={phase:'update',task:'old unfinished task'};
   const recovery={status:'applying',kind:'legacy',canRecover:true};
-  const context=vm.createContext({quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
+  const context=vm.createContext({quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
     require:require('node:module').createRequire(path.join(__dirname,'../installer/desktop/main.js')),
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,desktopUpdateNotice:null,
     readLauncherRecovery:async()=>null,systemUpdate:{pending:()=>true,inspect:()=>recovery,recover:async()=>{stops++;}},noraHome:()=>'/fixture',
@@ -37,6 +37,8 @@ test('status polling reports a pending legacy transaction without stopping servi
   assert.equal(writes,0);
   assert.equal(response.running,true);
   assert.equal(response.updateRecovery.kind,'legacy');
+  assert.equal(response.updateRecovery.readOnly,true);
+  assert.equal(response.updateRecovery.canRecover,false);
   assert.equal(response.installer.phase,'update');
 });
 
@@ -48,7 +50,7 @@ test('reopening never exposes a bundled core target, including a newer unattempt
     for(const value of Object.values(node)){if(Array.isArray(value))value.forEach(visit);else if(value&&typeof value==='object')visit(value);}}
   const ast=parse(source,{ecmaVersion:'latest'});visit(ast);
   let target='v2.5.1',writes=0,updates=0;
-  const context=vm.createContext({quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
+  const context=vm.createContext({quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
     require:require('node:module').createRequire(path.join(__dirname,'../installer/desktop/main.js')),
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,desktopUpdateNotice:null,
     readLauncherRecovery:async()=>null,systemUpdate:{inspect:()=>null},noraHome:()=>'/fixture',
@@ -80,7 +82,7 @@ test('a bound files-only recovery reports service facts after later tasks withou
   let record={operationId:id,kind:'update',state:'rolled-back',effectState:'restored',verification:'failed',busy:false,
     currentFailure:null,recoveryOutcome:'files-restored-start-failed',secondaryFailures:[{code:'SERVICE_START_FAILED'}]};
   const current={operationId:'00000000-0000-4000-8000-000000000002',state:'succeeded',kind:'stop',busy:false};
-  const context=vm.createContext({quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
+  const context=vm.createContext({quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
     require:require('node:module').createRequire(path.join(__dirname,'../installer/desktop/main.js')),
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,desktopUpdateNotice:null,
     readLauncherRecovery:async()=>null,systemUpdate:{inspect:()=>legacy},noraHome:()=>'/fixture',
@@ -97,9 +99,9 @@ test('a bound files-only recovery reports service facts after later tasks withou
   assert.equal(response.updateRecovery,null);assert.equal(response.operation,current);
   assert.equal(response.running,false);assert.equal(response.gatewayRunning,false);assert.equal(response.warning,'服务未启动');
   for(const change of [{effectState:'unknown'},{busy:true},{operationId:current.operationId}]){
-    const saved=record;record={...record,...change};assert.equal((await query()).updateRecovery,recovery);record=saved;
+    const saved=record;record={...record,...change};assert.equal((await query()).updateRecovery?.status,recovery.status);record=saved;
   }
-  recovery={status:'recovery-failed'};assert.equal((await query()).updateRecovery,recovery);
+  recovery={status:'recovery-failed'};assert.equal((await query()).updateRecovery?.status,recovery.status);
   recovery={status:'recovery-failed',operationId:id};legacy={kind:'legacy',status:'applying'};
   assert.ok((await query()).updateRecovery,'a separate unfinished legacy recovery remains a blocker');
 });

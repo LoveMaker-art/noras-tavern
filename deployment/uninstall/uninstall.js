@@ -708,6 +708,18 @@ function runPythonInspection(execution,input,policy=INSPECTION_POLICY){
     child.stdin.end(input);
   });
 }
+function historyCapability(root,plan,capability){
+  if(capability.installedManifest)return capability;
+  const file=contained(root,path.join(plan.hermes,'nora-instance.json'));
+  if(!present(file))return capability;
+  const instance=readJournal(file,32*1024);
+  const roots={noraHome:root,hermesHome:contained(root,plan.hermes),installRoot:contained(root,plan.tavern)};
+  if(instance.schema!==1||!Number.isInteger(instance.port)||instance.port<1024||instance.port>65535
+    ||instance.releaseChannel!==undefined&&instance.releaseChannel!==capability.channel
+    ||Object.entries(roots).some(([key,expected])=>typeof instance[key]!=='string'||!path.isAbsolute(instance[key])
+      ||path.relative(expected,path.resolve(instance[key]))!==''))throw recoveryRequired();
+  return {...capability,port:instance.port};
+}
 async function inspectSealedTransactions(plan,{captureContext}={}){
   const root=validate(plan),catalog=transactionCatalog(root,plan);
   const {historical,partialRuntimes,closureHistory}=runtimeEffects(root,plan,catalog);
@@ -734,8 +746,10 @@ async function inspectSealedTransactions(plan,{captureContext}={}){
   try{
     if(handoffs.length&&(facts.handoffs?.count!==handoffs.length
       ||facts.handoffs.sha256!==crypto.createHash('sha256').update(JSON.stringify(objectContent(handoffs))).digest('hex')))throw recoveryRequired();
-    verifiedSystemHistory(root,plan,catalog,historical,capability,facts.system);
-    verifiedPartialRuntimes(root,plan,catalog,partialRuntimes,capability,facts.system);
+    // The APP can publish its capability before it binds the installed core.
+    const history=historical.length||partialRuntimes.length?historyCapability(root,plan,capability):capability;
+    verifiedSystemHistory(root,plan,catalog,historical,history,facts.system);
+    verifiedPartialRuntimes(root,plan,catalog,partialRuntimes,history,facts.system);
     if(closureHistory.closed.size)verifiedCurrentSystem(root,plan,catalog,capability,facts.system);
   }
   catch(error){if(error.code==='UNINSTALL_RECOVERY_REQUIRED')throw error;throw recoveryRequired(error);}

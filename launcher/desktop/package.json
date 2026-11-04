@@ -47,6 +47,7 @@
       "skill-update.js",
       "local-release.js",
       "launcher-update.js",
+      "app-helper-runtime.js",
       "test-build.js",
       "install-cleanup.js",
       "install-location.js",
@@ -86,6 +87,14 @@
       "launcher-capability.js"
     ],
     "extraResources": [
+      {
+        "from": "../app-helper-runtime",
+        "to": "app-helper-runtime"
+      },
+      {
+        "from": "../app-helper-runtime.json",
+        "to": "app-helper-runtime.json"
+      },
       {
         "from": "replace-launcher.py",
         "to": "replace-launcher.py"
@@ -189,9 +198,11 @@
     ],
     "mac": {
       "category": "public.app-category.games",
-      "identity": "-"
+      "identity": "-",
+      "signIgnore": ["/Contents/Resources/app-helper-runtime/"]
     },
     "win": {
+      "signExts": ["!python.exe"],
       "target": [
         "nsis",
         "portable",

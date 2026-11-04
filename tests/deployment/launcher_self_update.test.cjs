@@ -173,7 +173,7 @@ test('desktop replacement status does not authorize a bundled core upgrade', asy
   const context = vm.createContext({ handle: (_name, fn) => { status = fn; },
     require: require('node:module').createRequire(path.join(__dirname, '../installer/desktop/main.js')),
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,
-    quitting: false, uninstalling: false, selectingLocation: false, modelBusy: false,
+    quitting: false, shutdownPending: null, uninstalling: false, selectingLocation: false, modelBusy: false,
     statusRequest: null, activeRun: false, activeOperationContext:null, desktopUpdateNotice:null, LOCAL_TEST: null, CHANNEL: 'stable', telemetry: null,
     operations:()=>({snapshot:async()=>null,hasFailedUpdateTarget:()=>false}),systemUpdate: { inspect: () => null }, noraHome: () => f.root,
     readLauncherRecovery: async () => null,
@@ -184,7 +184,7 @@ test('desktop replacement status does not authorize a bundled core upgrade', asy
     statusErrorMessage: error => { throw error; },
   });
   const definitions=require('../installer/desktop/node_modules/acorn').parse(source,{ecmaVersion:'latest'}).body;
-  for(const name of ['taskCancellation','desktopSequenceForOperation','projectDesktopOperation']){
+  for(const name of ['taskCancellation','ownsDesktopOperation','projectDesktopOperation']){
     const definition=definitions.find(node=>node.id?.name===name);assert.ok(definition,name);
     vm.runInContext(source.slice(definition.start,definition.end),context);
   }
@@ -199,7 +199,8 @@ test('corrupt download and mismatched platform never reach replacement', async t
   fs.writeFileSync(path.join(f.root, f.item.asset), 'changed');
   await assert.rejects(update.prepare(f.options), /校验失败/);
   fs.writeFileSync(path.join(f.root, 'nora-launcher-win32-x64.json'), JSON.stringify({ ...f.item, arch: 'arm64' }));
-  await assert.rejects(update.prepare(f.options), /清单无效/);
+  await assert.rejects(update.prepare(f.options), /校验信息不一致/);
+  await assert.rejects(update.prepare({...f.options,fetcher:createLocalRelease(f.root)}), /清单无效/);
 });
 test('resume readiness remains bound to the same operation and fixed plan on repeated queries', t => {
   const { root } = fixture(t);
@@ -210,7 +211,11 @@ test('resume readiness remains bound to the same operation and fixed plan on rep
   fs.writeFileSync(path.join(job, 'plan.json'), JSON.stringify(plan));
   assert.equal(update.resume(job, { home: root, executable, version: '1.1.0' }).operationId, plan.operationId);
   assert.equal(update.resume(job, { home: root, executable, version: '1.1.0' }).planDigest,plan.planDigest);
-  const ready=JSON.parse(fs.readFileSync(path.join(job,'ready.json')));
+  const readyFile=path.join(job,'ready.json');
+  assert.equal(fs.existsSync(readyFile),false,'read-only queries cannot acknowledge the replacement');
+  const operation={operationId:plan.operationId,planDigest:plan.planDigest,handoffRef:job};
+  update.resume(job,{home:root,executable,version:'1.1.0',operation});
+  const ready=JSON.parse(fs.readFileSync(readyFile));
   assert.deepEqual(ready,{schema:'nora-launcher-handoff/1',token:plan.token,version:'1.1.0',operationId:plan.operationId,planDigest:plan.planDigest});
   assert.throws(() => update.resume(job, { home: root, executable, version: '1.0.0' }), {code:'OPERATION_CAPABILITY_REQUIRED'});
   assert.equal(update.resume('/untrusted/job-test', { home: root, executable, version: '1.1.0' }), null);

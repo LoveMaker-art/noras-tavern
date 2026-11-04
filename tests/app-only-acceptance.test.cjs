@@ -7,6 +7,16 @@ test('native APP-only evidence refuses any core or protected-data mutation befor
  fs.writeFileSync(path.join(root,'program/main'),'changed core');assert.throws(()=>tool.assertSnapshot(path.join(root,'program'),before),/changed/);
  fs.writeFileSync(path.join(root,'program/main'),'actual core');fs.writeFileSync(path.join(root,'program/extra'),'unowned');assert.throws(()=>tool.assertSnapshot(path.join(root,'program'),before),/changed/);
 });
+test('native APP-only proof binds the new APP version and keeps historical results readable',()=>{
+ const facts={version:'2.2.3',running:false,coreIdentity:{version:'2.5.2',commit:'a'.repeat(40)}};
+ const operation={state:'succeeded',verification:'confirmed',target:{releasePlan:{client:'app'}},
+  result:{updateVerified:true,appUpdateComplete:true,coreUpdateComplete:false,launcherVersion:facts.version}};
+ assert.doesNotThrow(()=>tool.assertAppHandoffResult(operation,facts));
+ assert.throws(()=>tool.assertAppHandoffResult({...operation,result:{...operation.result,launcherVersion:'2.2.2'}},facts));
+ assert.throws(()=>tool.assertAppHandoffResult({...operation,result:{...operation.result,coreUpdateComplete:true}},facts));
+ assert.doesNotThrow(()=>tool.assertAppHandoffResult({...operation,target:{releasePlan:{client:'launcher'}},
+  result:{updateVerified:true,running:false,...facts.coreIdentity}},facts));
+});
 test('APP-only source identities bind unchanged original core and a true APP version increase',()=>{
  const baseline={schema:'tavern-release/v2',candidate:false,dirty:false,commit:'a'.repeat(40),versions:{tavern:'2.5.2'}};
  const product={schema:'tavern-release/v2',candidate:false,dirty:false,commit:'b'.repeat(40),versions:{tavern:'2.5.2'},launcherVersion:'2.2.3'};

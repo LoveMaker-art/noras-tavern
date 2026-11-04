@@ -28,13 +28,20 @@ if (!fs.existsSync(modules)) {
   else fs.symlinkSync(sourceModules, modules, 'dir');
 }
 const pkg = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
-for (const file of ['package.json', ...pkg.build.files]) {
+const candidatePkg = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
+const helperDescriptor = fs.readFileSync(path.join(launcher, 'app-helper-runtime.json'));
+if (crypto.createHash('sha256').update(helperDescriptor).digest('hex') !== candidatePkg.noraAppHelperRuntimeSha256) {
+  throw new Error('Local candidate APP helper descriptor does not match its sealed package');
+}
+pkg.noraAppHelperRuntimeSha256 = candidatePkg.noraAppHelperRuntimeSha256;
+fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+for (const file of pkg.build.files.filter(name => name !== 'package.json')) {
   fs.copyFileSync(path.join(source, file), path.join(desktop, file));
 }
 fs.copyFileSync(path.join(source, pkg.build.nsis.include), path.join(desktop, pkg.build.nsis.include));
 // Refresh launcher resources too; the pinned system payload remains unchanged.
 for (const resource of pkg.build.extraResources) {
-  if (resource.to === 'payload') continue;
+  if (['payload', 'app-helper-runtime', 'app-helper-runtime.json'].includes(resource.to)) continue;
   const origin = resource.to === 'operation-delegate.js' ? path.join(source, 'operation-delegate.js')
     : resource.to === 'update_paths.py' ? path.resolve(source, '../../updater/bootstrap.py')
       : path.resolve(source, resource.from);

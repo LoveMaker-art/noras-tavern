@@ -35,7 +35,7 @@ function fixture(overrides = {}) {
     if(!elements.has(id))elements.set(id,element());return elements.get(id);
   };
   const context = vm.createContext({snapshot:{},busy:false,daily:true,running:false,stage:0,view:'daily',
-    uninstallChoiceAvailable:false,statusQuerySequence:0,
+    uninstallChoiceAvailable:false,launcherUpdateCheckAvailable: false, statusQuerySequence:0,
     refreshing:false,statusUnknown:false,launcherRecoveryConfirmed:false,lastStatusError:'',lastStatusAt:0,versionInfo:null,alive:true,pollTimer:null,activeAction:'',activeService:'all',lastFailure:null,operationCancelled:false,
     firstCompletionPending:false,sawIncompleteSetup:false,modelSelectionUncertain:false,launchHint:element(),api:{},
     document:{createElement:element,querySelectorAll:selector=> {
@@ -47,7 +47,7 @@ function fixture(overrides = {}) {
     renderConversationEntry(){},showVersionNotice(){},
     button:(text,onclick)=>Object.assign(element(),{textContent:text,onclick}),
     clearTimeout(){},clearInterval(){},setTimeout:()=>1,checkVersionsInBackground(){},...overrides});
-  vm.runInContext(['textError','errorCopy','operationFailure','currentOperation','allowedActions','noraUpdateGuidance','recheckFailure','refreshFailure','recoveryReason','hasLogs','appendActions','checkedTime','unknownStatusCopy','operationFact','retryLabel','complete','canReturnHome','serviceRunning','allRunning','syncState','readStatus',
+  vm.runInContext(['textError','errorCopy','operationFailure','currentOperation','isAppUpdate','actionableUpdateRecovery','appVersionEvidence','canInstallAppOffer','allowedActions','noraUpdateGuidance','recheckFailure','refreshFailure','recoveryReason','hasLogs','appendActions','checkedTime','unknownStatusCopy','operationFact','retryLabel','complete','canReturnHome','serviceRunning','allRunning','syncState','readStatus',
     'controls','renderServices','dailyHome','openLogs','openLauncherDownload','recoveredOperation','settledUpdateOperation','route','poll'].map(definition).join('\n'),context);
   return {context,$,descendants};
 }

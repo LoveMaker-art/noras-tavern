@@ -41,7 +41,7 @@ async function descriptor(file){
 function rootFor(executable,platform){
   return platform==='darwin'?path.resolve(executable,'../../Resources'):path.join(path.dirname(executable),'resources');
 }
-function checkShape(value,{noraHome,platform,arch,currentExecutable}={}){
+function checkShape(value,{noraHome,platform,arch,currentExecutable,appOnly=false}={}){
   if(!value||value.schema!==SCHEMA||value.capabilityVersion!==1||value.executorProtocol!=='nora-operation-executor/1'
     ||value.operationSchema!=='nora-operation/1'||value.telemetrySchema!==3||value.faultSchema!==2
     ||!['darwin-arm64','darwin-x64','win32-x64'].includes(`${value.platform}-${value.arch}`)
@@ -56,17 +56,17 @@ function checkShape(value,{noraHome,platform,arch,currentExecutable}={}){
   for(const directory of [value.hermesHome,value.installRoot]){
     const relative=typeof directory==='string'?path.relative(value.noraHome,directory):'..';
     if(!relative||relative.startsWith(`..${path.sep}`)||relative==='..'||path.isAbsolute(relative))throw failure();
-    safePath(directory,{directory:true,allowMissing:true,owner:true});
+    if(!appOnly)safePath(directory,{directory:true,allowMissing:true,owner:true});
   }
   for(const name of RESOURCE_NAMES)if(!samePath(value.resources?.[name]?.path||'',path.join(value.resourcesRoot,name),platform))throw failure();
   if(Object.keys(value.resources||{}).length!==RESOURCE_NAMES.length)throw failure();
-  for(const item of [value.executable,value.asar,value.native,...Object.values(value.resources),...Object.values(value.managed||{})]){
+  for(const item of [value.executable,value.asar,value.native,...Object.values(value.resources),...(!appOnly?Object.values(value.managed||{}):[])]){
     if(!item||!path.isAbsolute(item.path||'')||!Number.isSafeInteger(item.size)||item.size<1||!/^[a-f0-9]{64}$/.test(item.sha256||''))throw failure();
   }
   const sourceHash=sha(JSON.stringify([value.asar.sha256,value.native.sha256,RESOURCE_NAMES.map(name=>[name,value.resources[name].sha256])]));
   if(value.sourceHash!==sourceHash)throw failure();
 }
-async function register({noraHome,hermesHome,installRoot,executable,resourcesRoot,isPackaged,launcherVersion,platform=process.platform,arch=process.arch,port,channel='stable'}={}){
+async function register({noraHome,hermesHome,installRoot,executable,resourcesRoot,isPackaged,launcherVersion,platform=process.platform,arch=process.arch,port,channel='stable',includeCore=true}={}){
   if(isPackaged!==true)throw failure('OPERATION_CAPABILITY_REQUIRED');
   noraHome=path.resolve(noraHome);executable=path.resolve(executable);resourcesRoot=path.resolve(resourcesRoot);
   hermesHome=path.resolve(hermesHome||path.join(noraHome,'hermes'));installRoot=path.resolve(installRoot||path.join(noraHome,'tavern'));
@@ -82,8 +82,8 @@ async function register({noraHome,hermesHome,installRoot,executable,resourcesRoo
     executable:await descriptor(executable),asar,native,entry:path.join(asar.path,'operation-cli.js'),resources,
     sourceHash:sha(JSON.stringify([asar.sha256,native.sha256,RESOURCE_NAMES.map(name=>[name,resources[name].sha256])])),
     managed:{},registeredAt:new Date().toISOString()};
-  await bindCore(receipt);
-  checkShape(receipt,{noraHome,platform,arch});
+  if(includeCore)await bindCore(receipt);
+  checkShape(receipt,{noraHome,platform,arch,appOnly:!includeCore});
   saveReceipt(receipt);
   return receipt;
 }
@@ -120,7 +120,7 @@ async function validateApp({receiptPath:file,noraHome,platform=process.platform,
     if(!samePath(path.resolve(file),receiptPath(noraHome),platform))throw failure();
     safePath(noraHome,{directory:true,owner:true});safePath(path.dirname(file),{directory:true,owner:true});
     safePath(file,{owner:true});if(physicalFs.statSync(file).size>128*1024)throw failure();
-    const receipt=JSON.parse(physicalFs.readFileSync(file,'utf8'));checkShape(receipt,{noraHome,platform,arch,currentExecutable});
+    const receipt=JSON.parse(physicalFs.readFileSync(file,'utf8'));checkShape(receipt,{noraHome,platform,arch,currentExecutable,appOnly:true});
     for(const item of [receipt.executable,receipt.asar,receipt.native,...Object.values(receipt.resources)]){
       const actual=await descriptor(item.path);if(actual.size!==item.size||actual.sha256!==item.sha256)throw failure();
     }
@@ -130,6 +130,7 @@ async function validateApp({receiptPath:file,noraHome,platform=process.platform,
 async function validate(options={}){
   try{
     const receipt=await validateApp(options),platform=options.platform||process.platform;
+    checkShape(receipt,{...options,platform,arch:options.arch||process.arch});
     for(const item of [...Object.values(receipt.managed||{}),...(receipt.installedManifest?[receipt.installedManifest,receipt.installedReceipt]:[])]){
       const actual=await descriptor(item.path);if(actual.size!==item.size||actual.sha256!==item.sha256)throw failure();
     }

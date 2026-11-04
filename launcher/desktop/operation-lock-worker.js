@@ -5,7 +5,7 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const net = require('node:net');
 const osLock = require('./os-lock');
-const {resolveExecution}=require('./managed-python');
+const {resolveExecution,resolveAppExecution}=require('./managed-python');
 const {creationIdentity,projectDiagnostic}=require('./operation-delegate');
 const {createEvidenceStore,OPERATION_BUDGET}=require('./evidence-store');
 const faultText=require('./fault-packet').createFaultPackets().text;
@@ -216,10 +216,16 @@ function spawnJob(message,sink,parentJobId) {
   const args=[...message.args],options={...message.options};let command=message.command;
   const managedPythonRoot=options.managedPythonRoot,venvHome=options.venvHome,managedNodeRoot=options.managedNodeRoot;
   const runtimeRoot=options.runtimeRoot,purpose=options.purpose;
+  const appHelperRuntime=options.appHelperRuntime;delete options.appHelperRuntime;
   delete options.managedPythonRoot;delete options.venvHome;delete options.managedNodeRoot;delete options.runtimeRoot;delete options.purpose;
   let childEnv={...(options.env || process.env)};
   if(message.kind==='python-maintenance') {
     const resolved=resolveExecution(command,{managedPythonRoot,venvHome,env:childEnv});
+    command=resolved.command;childEnv=resolved.env;job.executionIdentity=resolved.executionIdentity;
+  }
+  if(message.kind==='app-helper'){
+    if(parentJobId)throw Object.assign(new Error('APP helper must be started by its original controller'),{code:'LOCK_CHILD_IDENTITY'});
+    const resolved=resolveAppExecution(command,{runtime:appHelperRuntime,directory:context.directory});
     command=resolved.command;childEnv=resolved.env;job.executionIdentity=resolved.executionIdentity;
   }
   if(message.kind==='runtime-bootstrap') {
@@ -286,7 +292,10 @@ function spawnJob(message,sink,parentJobId) {
     args.splice(1,0,job.executionIdentity.jobArgument);
   }
   const delegateIndex=args.indexOf('--delegate-exec');
-  if(message.kind==='python-maintenance' && delegateIndex>0
+  if(message.kind==='app-helper'&&(delegateIndex<1||!path.isAbsolute(args[delegateIndex-1])
+    ||path.basename(args[delegateIndex-1])!=='operation_control.py'))
+    throw Object.assign(new Error('APP helper requires its acknowledged execution wrapper'),{code:'LOCK_CHILD_IDENTITY'});
+  if(['python-maintenance','app-helper'].includes(message.kind) && delegateIndex>0
       && path.isAbsolute(args[delegateIndex-1]) && path.basename(args[delegateIndex-1])==='operation_control.py') {
     job.executionIdentity={...job.executionIdentity,script:fs.realpathSync(args[delegateIndex-1]),
       jobArgument:`--nora-operation-job=${message.jobId}`};

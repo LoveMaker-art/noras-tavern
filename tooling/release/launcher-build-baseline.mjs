@@ -22,7 +22,7 @@ const allowedFiles = new Set([
     'deployment/shared/nora_profile.py', 'deployment/shared/nora_system.py',
     'tooling/release/package-launcher-update.cjs', 'tooling/release/package-local-launcher.mjs',
     'tooling/release/verify-launcher-release.cjs', 'tooling/release/launcher-release-notes.cjs',
-    'tooling/release/acceptance-baseline.mjs',
+    'tooling/release/acceptance-baseline.mjs', 'tooling/release/package-app-helper-runtime.mjs',
 ]);
 
 const appOnlyFiles=new Set([

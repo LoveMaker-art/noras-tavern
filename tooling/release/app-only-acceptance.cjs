@@ -126,9 +126,23 @@ function appSourceProof(options){
  assert.deepEqual(proof.modules,expected,'Actual new APP production modules differ from fixed product source');for(const [name,hash]of Object.entries(proof.actors))assert.equal(hash,product.artifacts['ops/installer/'+name]);
  return proof;
 }
-function assertPostHandoffReady(checkpoint){
+function assertAppHandoffResult(operation,{version,coreIdentity,running}){
+ assert.equal(operation.state,'succeeded',JSON.stringify(operation.currentFailure||operation.primaryFailure));
+ assert.equal(operation.verification,'confirmed');
+ assert.equal(operation.result?.updateVerified,true);
+ if(operation.target?.releasePlan?.client==='app'){
+  assert.equal(operation.result.appUpdateComplete,true);
+  assert.equal(operation.result.coreUpdateComplete,false);
+  assert.equal(operation.result.launcherVersion,version);
+ }else{
+  assert.equal(operation.result.running,running);
+  assert.equal(operation.result.version,coreIdentity.version);
+  assert.equal(operation.result.commit,coreIdentity.commit);
+ }
+}
+function assertPostHandoffReady(checkpoint,{appOnly=false}={}){
  const state=json(path.join(checkpoint.options.home,'installer/state.json'));
- assert.equal(state.phase,'ready','APP-only installer phase did not return to ready');
+ assert.ok((appOnly?['ready','idle']:['ready']).includes(state.phase),'APP-only installer phase did not return to an idle state');
  assert.equal(state.resumeTarget,null,'APP-only installer still has a resume target');
  assert.equal(state.error,'','APP-only installer still projects an error');
  assert.equal(state.task,'','APP-only installer still projects an unfinished task');
@@ -142,9 +156,7 @@ async function observe(output){
  const operations=newOperations.filter(op=>op.kind==='update');
  const actual=operations.filter(op=>op.target?.request?.launcherOnly===true&&op.target?.releasePlan?.tag===checkpoint.targetTag);
  assert.equal(actual.length,1,'Expected one genuine APP-only canonical operation');const operation=actual[0];
- assert.equal(operation.state,'succeeded',JSON.stringify(operation.currentFailure||operation.primaryFailure));assert.equal(operation.verification,'confirmed');assert.equal(operation.result?.updateVerified,true);
- assert.equal(operation.result.running,options.state==='running','APP handoff must verify the state it actually inherited');
- assert.equal(operation.result.version,checkpoint.coreIdentity.version);assert.equal(operation.result.commit,checkpoint.coreIdentity.commit);
+ assertAppHandoffResult(operation,{version:checkpoint.targetLauncher.version,coreIdentity:checkpoint.coreIdentity,running:options.state==='running'});
  assert.ok(!operations.some(op=>op.target?.request?.launcherOnly!==true),'APP-only must not execute a core update operation');
  assert.deepEqual(operation.target.releasePlan.launcherManifest,json(path.join(options.target,`nora-launcher-${checkpoint.platform}.json`)));
  assert.ok(operation.handoffRef);const ready=json(path.join(operation.handoffRef,'ready.json')),plan=json(path.join(operation.handoffRef,'plan.json'));
@@ -154,7 +166,8 @@ async function observe(output){
  assert.ok(after.asarSha256!==checkpoint.baselineLauncher.asarSha256||after.executableSha256!==checkpoint.baselineLauncher.executableSha256,'APP did not change actual bytes');
  // Inspect the real UI projection and all intervening starts before any probe
  // can temporarily own the Tavern port. A ready APP must not retain old errors.
- const readiness=assertPostHandoffReady(checkpoint),sourceProof=appSourceProof(options),runtimeProof=runtimeProbe(options);
+ const readiness=assertPostHandoffReady(checkpoint,{appOnly:operation.target.releasePlan.client==='app'}),
+   sourceProof=appSourceProof(options),runtimeProof=runtimeProbe(options);
  const now=inventories(options);assert.deepEqual(now,checkpoint.before,'Core program, receipts, user data or configuration changed');
  const current=status(options);assert.equal(current.systemReady,true);
  const continuationOperations=newOperations.filter(op=>op.kind==='start'&&Date.parse(op.createdAt)>=Date.parse(operation.updatedAt));
@@ -246,4 +259,4 @@ function options(argv){const result={};for(let i=0;i<argv.length;i++){const name
  const converted={};for(const [name,value]of Object.entries(result))converted[name.replace(/-([a-z])/g,(_,n)=>n.toUpperCase())]=value;if(converted.port!==undefined){converted.port=Number(converted.port);assert.ok(Number.isInteger(converted.port)&&converted.port>=1024&&converted.port<=65535);}return converted;}
 async function main(){const opts=options(process.argv.slice(2));assert.ok(opts.output);let value;if(opts.phase==='run')value=await runNative(opts);else if(opts.phase==='combine')value=combine(opts.running,opts.stopped,opts.output);else if(opts.phase==='prepare')value=await prepare(opts);else if(opts.phase==='launch'){const c=json(path.join(opts.output,'checkpoint.json'));value={pid:launch(c.options)};}else if(opts.phase==='observe')value=await observe(opts.output);else if(opts.phase==='finish')value=await finish(opts.output);else throw Error('Use --phase prepare|launch|observe|finish|combine|run (native UI clicks occur between launch and observe)');console.log(JSON.stringify(value));}
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
-module.exports={snapshotTree,assertSnapshot,assertTransition,prepare,observe,finish,application,options,launch,combine,runNative,stageTarget,runtimeOptions,settleStoppedPrecondition,runtimeProbe,processCensus,nativeUI,observeAfterNativeReady,assertPostHandoffReady};
+module.exports={snapshotTree,assertSnapshot,assertTransition,prepare,observe,finish,application,options,launch,combine,runNative,stageTarget,runtimeOptions,settleStoppedPrecondition,runtimeProbe,processCensus,nativeUI,observeAfterNativeReady,assertPostHandoffReady,assertAppHandoffResult};

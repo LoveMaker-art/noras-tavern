@@ -67,7 +67,7 @@ test('restored GUI startup waits for the helper writer and verifies its task onc
     },recheck:async(id,options)=>{
       checks++;assert.equal(id,pending.operationId);assert.equal(options.snapshotSequence,9);return {state:'rolled-back'};
     }};
-    const context=vm.createContext({operations:()=>controller,setTimeout:fn=>{waits++;queueMicrotask(fn);}});
+    const context=vm.createContext({operations:()=>controller,ensureAppHelperRuntime:async()=>{},setTimeout:fn=>{waits++;queueMicrotask(fn);}});
     const node=nodes.reconcileRestoredHandoff;
     const run=vm.runInContext('('+source.slice(node.start,node.end)+')',context);
     await run();

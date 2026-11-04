@@ -51,7 +51,7 @@ function uiContext(values = {}) {
   const elements = new Map();
   const element = () => ({ hidden: false, dataset:{}, setAttribute() {}, append() {}, classList: { add() {}, remove() {}, toggle() {} } });
   const context = vm.createContext({
-    busy: false, snapshot: {}, view: 'daily', statusUnknown: false, launcherRecoveryConfirmed:false, lastStatusAt:0, api:{}, refreshFailure(){},lastFailure:null,
+    busy: false, snapshot: {}, view: 'daily', statusUnknown: false, launcherRecoveryConfirmed:false, launcherUpdateCheckAvailable:false, lastStatusAt:0, api:{}, refreshFailure(){},lastFailure:null,
     $: id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     hideMenu() {}, renderServices() {}, renderConversationEntry() {}, controls() {}, showVersionNotice() {},
     firstCompletionPending: false, sawIncompleteSetup: false,
@@ -60,7 +60,7 @@ function uiContext(values = {}) {
     button: () => ({}), textError: String,
     ...values,
   });
-  vm.runInContext(['renderUpdateVersions','currentOperation','isNewUpdateTarget','hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','settledUpdateOperation','complete','canReturnHome','serviceRunning'].map(definition).join('\n'),context);
+  vm.runInContext(['renderUpdateVersions','currentOperation','isAppUpdate','actionableUpdateRecovery','appVersionEvidence','canInstallAppOffer','isNewUpdateTarget','hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','settledUpdateOperation','complete','canReturnHome','serviceRunning'].map(definition).join('\n'),context);
   return context;
 }
 

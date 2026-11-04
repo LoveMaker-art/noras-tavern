@@ -9,6 +9,7 @@ import { assertNoraSystemArtifacts, collectRuntimeFiles, createReleaseSource, di
 import { assertLauncherVersion, readBaseline, restoreBuiltPayload, reuseArchive } from './launcher-build-baseline.mjs';
 
 import {overlayCorePayload} from './app-only-release.mjs';
+import {packageAppHelperRuntimeFromArchive,stampAppHelperRuntime} from './package-app-helper-runtime.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const appOnly=process.argv.includes('--app-only');
@@ -40,6 +41,9 @@ if (candidateTelemetry && !runtimeManifestPath && !baselineDirectory) throw new 
 if (componentsOnly && runtimeManifestPath) throw new Error('Component builds reuse published environments; do not supply --hermes-runtime-manifest');
 if (baselineDirectory && (componentsOnly || runtimeManifestPath)) throw new Error('Launcher baseline cannot be combined with another packaging mode');
 if(appOnly&&(!baselineDirectory||!publicationTag))throw new Error('APP-only packaging requires --launcher-baseline and an explicit --publication-tag');
+if(!componentsOnly&&!runtimeManifestPath&&!baselineDirectory)
+    throw Object.assign(new Error('APP packaging requires a verified same-platform runtime manifest or launcher baseline for its private helper'),
+        {code:'APP_HELPER_BUILD_INPUT_REQUIRED'});
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
@@ -297,6 +301,13 @@ try {
     copyPackageFile(path.join(stage,'ops/updater/bootstrap.py'),path.join(starterRoot,'update_paths.py'));
     copyPackageTree(path.join(stage, 'ops/installer/assets'), path.join(starterRoot, 'assets'));
     copyPackageTree(path.join(stage, 'ops/installer/desktop'), path.join(starterRoot, 'desktop'));
+    // Both fresh runtime manifests and authenticated baseline reuse have been
+    // copied and verified above. The APP receives its own selected CPython /
+    // locked psutil image; no Hermes or user directory is installed at runtime.
+    const helperManifest=JSON.parse(fs.readFileSync(path.join(release,'nora-hermes-runtime.json'),'utf8'));
+    const appHelper=await packageAppHelperRuntimeFromArchive({manifest:helperManifest,
+        archive:path.resolve(release,helperManifest.archive),resourcesRoot:starterRoot});
+    stampAppHelperRuntime(path.join(starterRoot,'desktop/package.json'),appHelper);
     // Keep the flat Node wrapper helper and the ASAR module from one source.
     // extraResources inside desktop would exclude that module from ASAR.
     copyPackageFile(path.join(stage, 'ops/installer/desktop/operation-delegate.js'), path.join(starterRoot, 'operation-delegate.js'));

@@ -422,6 +422,7 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 const MAX_MANIFEST_BYTES=4*1024*1024;
+const MAX_APP_MANIFEST_BYTES=16*1024;
 const MAX_PLAN_ARTIFACTS=4;
 const OPERATION_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const bytesHash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
@@ -447,6 +448,7 @@ function planDigest(plan) {
     version:plan.version||plan.releaseManifest?.versions?.tavern,
     manifestSha256:bytes?bytesHash(bytes):plan.manifestSha256,manifestSize:bytes?bytes.length:plan.manifestRef?.size,
     launcherManifest:plan.launcherManifest,systemManifest:plan.systemManifest,
+    ...(plan.client==='app'&&plan.launcherManifestText!==undefined?{launcherManifestText:plan.launcherManifestText}:{}),
     checkedAt:plan.checkedAt,metadataSource:plan.metadataSource,latestConfirmed:plan.latestConfirmed};
   return bytesHash(canonical(content));
 }
@@ -481,7 +483,7 @@ function readManifestArtifact(plan,options){
 // records carry only its relative reference and bounded download contract.
 function sealPlan(plan,{operationDirectory,assertOwner,...options}={}){
   if(typeof assertOwner!=='function')throw new TypeError('A current operation owner check is required');
-  if(!updaterClient(options)&&typeof options.launcherVersion!=='string')throw new TypeError('The current launcherVersion is required to seal a plan');
+  if((plan?.client==='app'||!updaterClient(options))&&typeof options.launcherVersion!=='string')throw new TypeError('The current launcherVersion is required to seal a plan');
   assertOwner();
   const checked=validatePlan(plan,{platform:plan.platform,arch:plan.arch,channel:plan.channel,...options,operationDirectory,
     launcherVersion:options.launcherVersion});
@@ -490,10 +492,12 @@ function sealPlan(plan,{operationDirectory,assertOwner,...options}={}){
   const contract={schema:checked.schema,mode:checked.mode,tag:checked.tag,channel:checked.channel,platform:checked.platform,arch:checked.arch,
     ...(checked.client!==undefined?{client:checked.client}:{}),
     ...(checked.candidateAcceptance!==undefined?{candidateAcceptance:checked.candidateAcceptance}:{}),
-    release:releaseSnapshot(checked.release),commit:checked.commit,version:checked.releaseManifest.versions.tavern,
+    release:releaseSnapshot(checked.release),commit:checked.commit,
+    version:checked.client==='app'?checked.releaseManifest.launcherVersion:checked.releaseManifest.versions.tavern,
     manifestSha256:bytesHash(bytes),manifestRef:{schema:'nora-operation-manifest/1',operationId:path.basename(operationDirectory),
       file:`release-plan/${bytesHash(bytes)}.json`,size:bytes.length,sha256:bytesHash(bytes)},
     launcherManifest:checked.launcherManifest,systemManifest:checked.systemManifest,
+    ...(checked.client==='app'&&checked.launcherManifestText!==undefined?{launcherManifestText:checked.launcherManifestText}:{}),
     checkedAt:checked.checkedAt,metadataSource:checked.metadataSource,latestConfirmed:checked.latestConfirmed,planId:checked.planId};
   if(Buffer.byteLength(JSON.stringify(contract))>64*1024)throw new Error('固定发布下载合同超过受支持的记录预算。');
   const folder=path.join(operationDirectory,'release-plan');
@@ -517,6 +521,7 @@ function freezePlan(value) {
   return value;
 }
 function validatePlan(plan, {launcherVersion,platform = process.platform,arch = process.arch,channel = 'stable',tag,mode,operationDirectory,client,updaterCapabilities,allowCandidate,explicitLocalRelease} = {}) {
+  if(plan?.client==='app')return validateAppPlan(plan,{launcherVersion,platform,arch,channel,tag,mode,operationDirectory,client});
   const updater=updaterClient({client});
   if(plan?.manifestRef){
     try{
@@ -551,6 +556,156 @@ function validatePlan(plan, {launcherVersion,platform = process.platform,arch = 
     validateInstallManifestText(plan.releaseManifestText,plan.systemManifest);
   }
   return freezePlan(JSON.parse(JSON.stringify(plan)));
+}
+function validateAppPublishedAsset(release,name,{sha256,size}) {
+  const asset=release.assets.find(item=>item.name===name);
+  if (asset.digest!=null && asset.digest!==`sha256:${sha256}`
+      || Number.isSafeInteger(asset.size) && asset.size!==size)
+    throw new Error(`APP 发布资产 ${name} 的校验信息不一致。`);
+}
+function appCatalogueIdentity(asset) {
+  return { ...(/^sha256:[a-f0-9]{64}$/.test(asset.digest||'')?{sha256:asset.digest.slice(7)}:{}),
+    ...(Number.isSafeInteger(asset.size)?{size:asset.size}:{}) };
+}
+
+// APP selection shares the trusted catalogue, transport and sealed raw manifest,
+// but never validates or prepares a core bootstrap, archive or local receipt.
+function validateAppPlan(plan,{launcherVersion,platform=process.platform,arch=process.arch,channel='stable',tag,mode,operationDirectory,client}={}){
+  if(client!==undefined&&!['app','launcher'].includes(client))throw new Error('APP计划不能用于核心维护。');
+  if(plan?.manifestRef){
+    const text=readManifestArtifact(plan,{operationDirectory}),manifest=JSON.parse(text);
+    if(plan.version!==manifest.launcherVersion||plan.commit!==manifest.commit)throw new Error('APP发布引用与封存原文不符。');
+    plan={...plan,releaseManifestText:text,releaseManifest:manifest};
+  }
+  if(!plan||plan.schema!=='nora-release-plan/1'||plan.client!=='app'||plan.mode!=='update'||mode&&mode!=='update'
+    ||plan.planId!==planDigest(plan)||plan.platform!==platform||plan.arch!==arch||plan.channel!==channel
+    ||tag&&plan.tag!==tag||plan.tag!==plan.release?.tag_name||!accepts(plan.release,channel)
+    ||!Number.isFinite(Date.parse(plan.checkedAt))||plan.systemManifest)
+    throw new Error('APP固定计划无效，原程序未修改。');
+  const manifest=JSON.parse(plan.releaseManifestText);
+  if(canonical(manifest)!==canonical(plan.releaseManifest)||manifest.schema!=='tavern-release/v2'||manifest.candidate
+    ||!/^[a-f0-9]{40}$/.test(manifest.commit||'')||manifest.commit!==plan.commit
+    ||compare(manifest.launcherVersion,manifest.launcherVersion)!==0
+    ||plan.version!==undefined&&plan.version!==manifest.launcherVersion
+    ||manifest.publication&&(manifest.publication.schema!=='nora-component-publication/1'||manifest.publication.tag!==plan.tag))
+    throw new Error('APP发布身份与固定清单不符。');
+  validateCapabilities(manifest,{client:'launcher'});
+  releaseManifestAsset(plan.release,{mode:'update'});
+  validateAppPublishedAsset(plan.release,'release-manifest.json',{
+    sha256:bytesHash(plan.releaseManifestText),size:Buffer.byteLength(plan.releaseManifestText)});
+  validateAssetRelease(manifest,plan.release,plan.launcherManifest?.version||launcherVersion);
+  if(plan.launcherManifest){
+    const name=`nora-launcher-${platform}-${arch}.json`,text=plan.launcherManifestText;
+    if(typeof text!=='string'||Buffer.byteLength(text)>MAX_APP_MANIFEST_BYTES
+      ||canonical(JSON.parse(text))!==canonical(plan.launcherManifest))throw new Error('固定APP描述清单与封存原文不符。');
+    assetUrl(plan.release,name);
+    validateAppPublishedAsset(plan.release,name,{sha256:bytesHash(text),size:Buffer.byteLength(text)});
+    require('./launcher-update').validateManifest(plan.launcherManifest,{release:plan.release,manifest,platform,arch});
+    const target=`${platform}-${arch}-update.zip`;
+    if(![`Nora-Tavern-Launcher-${manifest.launcherVersion}-${target}`,`Nora-Tavern-Launcher-${target}`].includes(plan.launcherManifest.asset))
+      throw new Error('APP压缩包的目标平台或版本不一致。');
+    validateAppPublishedAsset(plan.release,plan.launcherManifest.asset,plan.launcherManifest);
+  }
+  else if(compare(launcherVersion,manifest.launcherVersion)===-1||plan.launcherManifestText!==undefined)
+    throw new Error('APP计划缺少目标启动器资源或资源与目标不符。');
+  return freezePlan(JSON.parse(JSON.stringify(plan)));
+}
+async function selectAppPlan({fetcher=fetch,signal,launcherVersion,platform=process.platform,arch=process.arch,
+  channel='stable',tag,releaseEvidence,metadataCache,networkPolicy,operationDirectory}={}){
+  networkPolicy={...operationNetworkPolicy(networkPolicy),deadlineAt:networkPolicy?.deadlineAt
+    ??(networkPolicy?.now||Date.now)()+(networkPolicy?.totalBudgetMs??100000)};
+  let lookup=releaseEvidence,candidates=[];
+  const evidence=[],options={metadataCache,networkPolicy,channel,withEvidence:true};
+  if(!lookup&&!tag){
+    const rows=[],stable=channel==='stable',pageSize=stable?100:RELEASE_PAGE_SIZE;let complete=false;
+    for(let page=1;page<=(stable?5:RELEASE_MAX_PAGES);page++){
+      const url=stable?`https://api.github.com/repos/${REPO}/releases?per_page=100&page=${page}`:releaseListUrl(page);
+      const item=await requestJson(url,fetcher,signal,options);
+      if(!Array.isArray(item.value)||item.value.length>pageSize&&item.catalogueComplete!==true)throw new Error('APP发布目录无效。');
+      rows.push(...item.value);evidence.push(item);
+      if(item.value.length<pageSize||item.catalogueComplete===true){complete=true;break;}
+    }
+    if(!complete)throw new Error('APP发布目录超过本次查询范围。');
+    candidates=rows.filter(value=>accepts(value,channel)).sort((a,b)=>compare(b.tag_name,a.tag_name));
+    if(!candidates.length)throw new Error('尚未找到适用的APP发布。');
+    lookup={release:candidates[0]};
+  }else{
+    lookup ||= await latest(fetcher,signal,channel,tag,options);
+    evidence.push(lookup);
+  }
+  let release=lookup.release;
+  if(!accepts(release,channel)||tag&&release.tag_name!==tag)throw new Error('APP发布与所选目标不符。');
+  const readManifest=async(candidate,request=options)=>{
+    const url=releaseManifestAsset(candidate,{mode:'update'});
+    const sourceContext=createReleaseSourceContext({tag:candidate.tag_name});
+    const preferred=request.networkPolicy.sourceContext.preferredSource(url);
+    if(preferred)sourceContext.rememberAssetResponse(url,preferred);
+    const item=await requestJson(url,fetcher,signal,{...request,networkPolicy:{...request.networkPolicy,sourceContext},
+      conditionIdentity:appCatalogueIdentity(candidate.assets.find(asset=>asset.name==='release-manifest.json'))});
+    return {...item,url,preferredSource:sourceContext.preferredSource(url)};
+  };
+  let metadata=await readManifest(release);
+  if(channel==='stable'&&Object.hasOwn(metadata.value,'coreRelease')){
+    // A component batch proves its publication against the remote stable
+    // anchor. No installed core, bootstrap or core payload enters this check.
+    const anchorOptions={...options,networkPolicy:{...networkPolicy,sourceContext:createReleaseSourceContext()}};
+    const catalogue=await requestJson(API,fetcher,signal,anchorOptions),anchor=catalogue.value;
+    if(!anchor||!accepts(anchor,'stable'))throw new Error('当前稳定核心发布目录无法核验。');
+    const original=await readManifest(anchor,anchorOptions),core=discoveryManifest(anchor,original);
+    if(core.schema!=='tavern-release/v2'||core.candidate||Object.hasOwn(core,'coreRelease')
+      ||publicationTag(core)!==anchor.tag_name||compare(core.versions?.tavern,anchor.tag_name)!==0
+      ||!/^[a-f0-9]{40}$/.test(core.commit||''))throw new Error('当前稳定核心发布身份无法核验。');
+    evidence.push(catalogue,original);
+    const matches=(candidate,item)=>{
+      const product=discoveryManifest(candidate,item),ref=coreReference(product,platform,arch);
+      if(!ref||ref.tag!==anchor.tag_name||ref.commit!==core.commit||product.versions?.tavern!==core.versions.tavern)return false;
+      const published=anchor.assets.filter(asset=>asset.name===ref.asset);
+      if(published.length!==1||published[0].state!=='uploaded'||published[0].asset_release_tag!==undefined
+        ||published[0].digest!==`sha256:${ref.sha256}`||published[0].size!==ref.size)
+        throw new Error('APP发布引用的原平台清单证明与稳定核心不一致。');
+      assetUrl(anchor,ref.asset);
+      return true;
+    };
+    let matched=matches(release,metadata);
+    if(tag&&(!matched||!catalogue.latestConfirmed))throw new Error('所选APP发布与已确认的稳定核心锚点不一致。');
+    for(const candidate of candidates.slice(1)){
+      if(matched||compare(candidate.tag_name,anchor.tag_name)!==1)break;
+      const item=await readManifest(candidate);
+      evidence.push(item);
+      if(matches(candidate,item)){release=candidate;metadata=item;matched=true;}
+    }
+    if(!matched){release=anchor;metadata=original;}
+  }
+  networkPolicy.sourceContext.bindTarget(release.tag_name);
+  validateAppPublishedAsset(release,'release-manifest.json',{
+    sha256:bytesHash(metadata.body),size:Buffer.byteLength(metadata.body)});
+  if(metadata.preferredSource)networkPolicy.sourceContext.rememberAssetResponse(metadata.url,metadata.preferredSource);
+  if(release.assetIndexText===undefined)release=await withAssetReferences(release,fetcher,signal,options,evidence);
+  let launcherMetadata;
+  if(compare(launcherVersion,metadata.value.launcherVersion)===-1){
+    if(!['darwin-arm64','darwin-x64','win32-x64'].includes(`${platform}-${arch}`))throw new Error('此系统暂不支持自动替换启动器。');
+    const name=`nora-launcher-${platform}-${arch}.json`,url=assetUrl(release,name);
+    const descriptor=release.assets.find(item=>item.name===name);
+    launcherMetadata=await requestJson(url,fetcher,signal,{withEvidence:true,metadataCache,networkPolicy,channel,
+      conditionIdentity:{expectedVersion:metadata.value.launcherVersion,...appCatalogueIdentity(descriptor)}});
+  }
+  const plan={schema:'nora-release-plan/1',client:'app',mode:'update',tag:release.tag_name,channel,platform,arch,
+    release:releaseSnapshot(release),commit:metadata.value.commit,version:metadata.value.launcherVersion,
+    releaseManifest:metadata.value,releaseManifestText:metadata.body,launcherManifest:launcherMetadata?.value||null,systemManifest:null,
+    ...(launcherMetadata?{launcherManifestText:launcherMetadata.body}:{}),
+    checkedAt:evidence.map(item=>item.checkedAt).sort()[0],
+    metadataSource:evidence.some(item=>item.source==='cache')?'cache':evidence.some(item=>item.source==='revalidated')?'revalidated':'network',
+    latestConfirmed:evidence.every(item=>item.latestConfirmed)};
+  plan.planId=planDigest(plan);
+  return validateAppPlan(plan,{launcherVersion,platform,arch,channel,tag,operationDirectory});
+}
+async function checkApp(options={}){
+  const plan=await selectAppPlan(options),available=compare(options.launcherVersion,plan.releaseManifest.launcherVersion)===-1;
+  return {launcherVersion:options.launcherVersion,launcherLatest:plan.releaseManifest.launcherVersion,
+    launcherUpdateAvailable:available,launcherInstallable:available&&Boolean(plan.launcherManifest),
+    launcherState:available?'available':compare(options.launcherVersion,plan.releaseManifest.launcherVersion)>0?'ahead':'current',
+    launcherCheckedAt:plan.checkedAt,launcherLatestConfirmed:plan.latestConfirmed,
+    releaseTag:plan.tag,releasePlan:plan,releaseUrl:`https://github.com/${REPO}/releases/tag/${plan.tag}`};
 }
 async function selectPlan(options) { return selectPlanWithMetadata(options); }
 async function selectPlanWithMetadata({fetcher = fetch,signal,launcherVersion,platform = process.platform,arch = process.arch,channel = 'stable',tag,mode = 'update',selectedRelease,releaseEvidence,metadataCache,networkPolicy,client,updaterCapabilities,allowCandidate,explicitLocalRelease}, knownMetadata) {
@@ -673,6 +828,7 @@ async function check({ installRoot, launcherVersion, fetcher = fetch, platform, 
 async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, signal, onEvent = () => {},
   channel = 'stable', tag, plan, selectedPlan, operationDirectory,platform = process.platform, arch = process.arch,metadataCache,networkPolicy,client,updaterCapabilities,allowCandidate,explicitLocalRelease }) {
   networkPolicy=operationNetworkPolicy(networkPolicy);
+  if(selectedPlan?.client==='app')throw new Error('APP计划不能用于核心维护。');
   onEvent({ event: 'task', stage_id: 'release_check', task: '检查更新清单' });
   const fixed = selectedPlan ? validatePlan(selectedPlan,{launcherVersion,platform,arch,channel,tag,operationDirectory,client,updaterCapabilities,allowCandidate,explicitLocalRelease})
     : await selectPlan({fetcher,signal,launcherVersion,platform,arch,channel,tag,metadataCache,networkPolicy,client,updaterCapabilities,allowCandidate,explicitLocalRelease});
@@ -842,4 +998,4 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validatePayload(bundledRoot, system, platform, arch,{client,updaterCapabilities,allowCandidate,explicitLocalRelease});
   return bundledRoot;
 }
-module.exports = { compare, publicationTag, coreReference, coreIdentity, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem,validateSystemDescriptor, validateUpdate,validateCapabilities, LAUNCHER_CAPABILITIES, UPDATER_CAPABILITIES, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,fixedPlanSourceEvidence,createMetadataCache };
+module.exports = { compare, publicationTag, coreReference, coreIdentity, check, checkApp, selectAppPlan, validateAppPlan, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem,validateSystemDescriptor, validateUpdate,validateCapabilities, LAUNCHER_CAPABILITIES, UPDATER_CAPABILITIES, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,fixedPlanSourceEvidence,createMetadataCache };

@@ -329,6 +329,8 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
             reason('environment', 'Runtime packer, fixed ClawChat input or runtime audit/probe changed'); add(hermesRuntime); add(launcher); metadata = true;
         } else if (name === 'tooling/release/restore-launcher-runtime.cjs' || name === 'tooling/release/launcher-build-baseline.mjs') {
             full('Runtime restoration/reuse gate is part of the build closure');
+        } else if (name === 'tooling/release/package-app-helper-runtime.mjs') {
+            reason('launcher', 'The launcher package derives its private helper from an already verified environment'); add(launcher); metadata = true;
         } else if (name === 'tooling/release/package-launcher-update.cjs') { reason('launcher', 'Lightweight launcher archive construction changed'); add(launcher); metadata = true; }
         else if (name === 'tooling/release/package-component-update.mjs') { reason('components', 'Component assembly changed; rebuild module descriptors without assuming environment equivalence'); knownModules.forEach(module => modules.add(module)); metadata = true; }
         else {

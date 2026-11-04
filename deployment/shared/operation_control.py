@@ -471,16 +471,20 @@ def _managed_run(delegate, args, *, input=None, capture_output=False, timeout=No
 def _exec_python(args):
     require_operation()
     # Supported flags have already been applied to the wrapper interpreter.
-    while args and args[0] in ('-B', '-u'):
+    while args and args[0] in ('-B', '-u', '-I'):
+        if args[0] == '-I' and not sys.flags.isolated:
+            raise ValueError('Isolated maintenance requires an isolated wrapper interpreter')
         args = args[1:]
     if not args:
         raise ValueError('A maintenance script or module is required')
     if args[0] == '-c':
-        sys.path.insert(0, os.getcwd())
+        if not sys.flags.isolated:
+            sys.path.insert(0, os.getcwd())
         sys.argv = ['-c', *args[2:]]
         exec(compile(args[1], '<string>', 'exec'), {'__name__': '__main__', '__file__': '<string>'})
     elif args[0] == '-m':
-        sys.path.insert(0, os.getcwd())
+        if not sys.flags.isolated:
+            sys.path.insert(0, os.getcwd())
         sys.argv = [args[1], *args[2:]]
         runpy.run_module(args[1], run_name='__main__', alter_sys=True)
     else:
@@ -488,7 +492,8 @@ def _exec_python(args):
             raise ValueError('Unsupported maintenance interpreter option')
         script = Path(args[0]).resolve(strict=True)
         sys.argv = [str(script), *args[1:]]
-        sys.path.insert(0, str(script.parent))
+        if not sys.flags.isolated:
+            sys.path.insert(0, str(script.parent))
         runpy.run_path(str(script), run_name='__main__')
 
 

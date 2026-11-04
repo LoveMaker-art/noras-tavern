@@ -76,9 +76,10 @@ function hasManagedRecords({noraHome=path.dirname(hermesHome),hermesHome,install
 
 // A bounded write probe verifies effective directory access. It does not create
 // missing installation trees or treat lookup times as changed conditions.
-function inspectConditions({home,hermesHome,installRoot},context={}){
+function inspectConditions({home,hermesHome,installRoot},context={},scope){
   const directories=[];
-  for(const [name,input] of Object.entries({noraHome:home,hermesHome,installRoot})){
+  const roots=scope==='app'?{noraHome:home}:{noraHome:home,hermesHome,installRoot};
+  for(const [name,input] of Object.entries(roots)){
     const directory=path.resolve(value(input));context.lease?.assertActive?.();
     let stat;try{stat=fs.lstatSync(directory);}catch(error){if(error.code==='ENOENT'){directories.push({name,identity:null,writable:null});continue;}throw error;}
     if(!stat.isDirectory()||stat.isSymbolicLink()){directories.push({name,identity:null,writable:null});continue;}
@@ -91,13 +92,16 @@ function inspectConditions({home,hermesHome,installRoot},context={}){
     if(after.isSymbolicLink()||String(after.dev)!==identity[0]||String(after.ino)!==identity[1])throw failure('CONDITIONS_CHANGED','条件检查期间安装目录身份已变化。');
     directories.push({name,identity,writable});
   }
-  const facts={directories,networkReads:[]};return {schema:CONDITION_SCHEMA,fingerprint:conditionFingerprint(facts),facts};
+  const facts={...(scope==='app'?{scope:'app'}:{}),directories,networkReads:[]};
+  return {schema:CONDITION_SCHEMA,fingerprint:conditionFingerprint(facts),facts};
 }
 
 function validConditions(proof){
+  const names=proof?.facts?.scope==='app'?['noraHome']:['noraHome','hermesHome','installRoot'];
   return proof?.schema===CONDITION_SCHEMA&&/^[a-f0-9]{64}$/.test(proof.fingerprint||'')
-    &&Array.isArray(proof.facts?.directories)&&proof.facts.directories.length===3
-    &&proof.facts.directories.every((item,index)=>item?.name===['noraHome','hermesHome','installRoot'][index]
+    &&[undefined,'app'].includes(proof.facts?.scope)
+    &&Array.isArray(proof.facts?.directories)&&proof.facts.directories.length===names.length
+    &&proof.facts.directories.every((item,index)=>item?.name===names[index]
       &&(item.identity===null||Array.isArray(item.identity)&&item.identity.length===2&&item.identity.every(part=>/^\d+$/.test(part)))
       &&[true,false,null].includes(item.writable))&&Array.isArray(proof.facts.networkReads)&&proof.facts.networkReads.length<=8
     &&proof.facts.networkReads.every(item=>item?.readable===true&&/^[a-f0-9]{64}$/.test(item.identity||'')&&/^[a-f0-9]{64}$/.test(item.routeHash||''))
@@ -108,7 +112,7 @@ function validConditions(proof){
 }
 
 function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=runtime.inspect,
-  inspectLauncher=async()=>null,inspectLauncherOutcome=async()=>null,
+  inspectLauncher=async()=>null,inspectLauncherOutcome=async()=>null,observeApp,reconcileAppHandoff,
   inspectLegacy=()=>require('./system-update').inspect(value(home)),runLegacy,checkConditions,
   networkFetch=globalThis.fetch,launcherVersion='2.0.2',channel='stable',platform=process.platform,arch=process.arch,now=Date.now,
   client,updaterCapabilities,systemEffects,allowCandidate,explicitLocalRelease}={}){
@@ -127,9 +131,12 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
   const locations=id=>({noraHome:value(home),hermesHome:value(hermesHome),operationId:id});
   const firstJournal=id=>path.join(value(home),'installer','operations',id,'first-install','transaction.json');
   const systemJournal=()=>path.join(value(installRoot),'tavern-updates','transaction.json');
-  const collect=checkConditions||((record,context)=>inspectConditions({home,hermesHome,installRoot},context));
+  const isApp=record=>record?.kind==='update'&&record.target?.request?.launcherOnly===true;
+  const collect=checkConditions||((record,context)=>inspectConditions({home,hermesHome,installRoot},context,isApp(record)?'app':undefined));
   async function prepareEffects(context){
     context.check();
+    // The APP has no authority over earlier core journals or closure receipts.
+    if(isApp(context.snapshot))return;
     const roots={noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot)};
     // Empty first installs have no historical effect to retire. Existing
     // closure refs are strict; a malformed source never becomes an empty list.
@@ -552,6 +559,8 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     }
     if(!['install','update','repair','recover'].includes(record.kind))return {effectState:'untouched',recoveryOutcome:'not-required'};
     try{
+      if(isApp(record)&&observeApp)
+        return await observeApp(record)||{effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false};
       const parts=[inspectRuntime(locations(record.operationId)),await system(record)];
       const legacy=inspectLegacy();
       if(legacy)parts.push({effectState:legacy.canRecover?'changed':'unknown',canRecover:legacy.canRecover});
@@ -568,6 +577,9 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     context.check();
     const appOnly=record.kind==='update'&&record.target?.request?.launcherOnly===true;
     if(!record.handoffRef||!maintenanceKinds.has(record.kind)||record.state!=='awaiting-handoff'&&!appOnly)return null;
+    if(appOnly&&reconcileAppHandoff){
+      const outcome=await reconcileAppHandoff(record,context);context.check();return outcome;
+    }
     const app=await inspectLauncherOutcome(record.handoffRef,record,context);
     if(app?.verification!=='confirmed'||app.busy!==false||app.workerOffline!==true
       ||app.operationId!==record.operationId||app.planDigest!==record.planDigest||app.job!==record.handoffRef)return null;

@@ -11,6 +11,12 @@ const sourceRoot = fileURLToPath(new URL('../../', import.meta.url));
 const javascript = [
     'launcher_install_source.test.cjs',
     'launcher_release_plan.test.cjs',
+    'launcher_app_plan.test.cjs',
+    'launcher_app_helper_runtime.test.cjs',
+    'launcher_app_helper_guard.test.cjs',
+    'launcher_app_update_module.test.cjs',
+    'launcher_app_only_update.test.cjs',
+    'launcher_self_update.test.cjs',
     'launcher_process_output.test.cjs',
     'launcher_diagnostics.test.cjs',
     'launcher_lifecycle_diagnostics.test.cjs',
@@ -41,6 +47,7 @@ const javascript = [
 const python = [
     'test_first_install',
     'test_first_install_transaction',
+    'test_operation_control',
     'test_managed_partial_repair',
     'test_update_partial_repair',
     'test_update_recovery',

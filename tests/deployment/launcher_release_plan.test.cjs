@@ -32,6 +32,7 @@ function fixtureResource(url,release,sourceOptions={}) {
     }
   };
   add(api+'latest',{kind:'release',name:'latest'});
+  add(`${api.slice(0,-1)}?per_page=100&page=1`,{kind:'catalogue',name:'launcher-list'});
   add(api+'tags/'+encodeURIComponent(release.tag_name),{kind:'release',name:'tags/'+release.tag_name});
   for(const asset of release.assets) {
     const canonical=`https://github.com/LoveMaker-art/noras-tavern/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
@@ -166,9 +167,9 @@ function releaseFixture(t) {
   const fetcher=async url=>{
     requests.push(String(url));
     const resource=fixtureResource(url,release);
-    if(resource.kind==='release') {
+    if(['release','catalogue'].includes(resource.kind)) {
       if(forbidMetadata) throw new Error('latest changed after the user selected a release');
-      return fixtureResponse(JSON.stringify(release),url,{'Content-Type':'application/json'});
+      return fixtureResponse(JSON.stringify(resource.kind==='catalogue'?[release]:release),url,{'Content-Type':'application/json'});
     }
     const name=resource.name;assert.ok(Object.hasOwn(bytes,name),`Fixture bytes missing for sealed asset: ${name}`);
     if(forbidMetadata && name==='nora-launcher-win32-x64.json')
@@ -568,14 +569,18 @@ test('main creates one fresh source context per execution and passes it to every
   const first=vm.runInNewContext(initializer,{require:name=>{assert.equal(name,'./release-network');return network;}});
   const second=vm.runInNewContext(initializer,{require:()=>network});
   assert.notEqual(first.sourceContext,second.sourceContext,'resumed/handoff executions do not inherit a previous source preference');
-  const expected=new Map([['releases.selectPlan',1],['launcherUpdate.prepare',1],['releases.prepareInstall',1],['releases.prepareUpdate',0]]);
+  const expected=new Map([['releases.selectPlan',0],['launcherUpdate.prepare',0],['launcherUpdate.start',1],['releases.prepareInstall',1],['releases.prepareUpdate',0]]);
   for(const [callee,count]of expected){
     const calls=inner.filter(node=>node.type==='CallExpression'&&node.callee.type==='MemberExpression'&&`${node.callee.object.name}.${node.callee.property.name}`===callee);
     assert.equal(calls.length,count,callee);
     for(const call of calls){const property=call.arguments[0].properties.find(p=>p.key?.name==='networkPolicy');assert.equal(property?.value?.name,'networkPolicy',`${callee} must receive the one execution-owned policy`);}
   }
-  const appCall=inner.find(node=>node.type==='CallExpression'&&node.callee.name==='runLauncherUpdate');
-  assert.equal(appCall.arguments[1].properties.find(property=>property.key?.name==='networkPolicy').value.name,'networkPolicy');
+  const appCalls=inner.filter(node=>node.type==='CallExpression'&&node.callee.name==='runLauncherUpdate');
+  assert.ok(appCalls.length>0,'APP actions use the APP-specific adapter');
+  for(const call of appCalls){
+    const property=call.arguments[1].properties.find(item=>item.key?.name==='networkPolicy');
+    assert.equal(property?.value?.name,'networkPolicy','the APP adapter receives the execution-owned source policy');
+  }
   assert.equal(inner.filter(node=>node.type==='AssignmentExpression'&&node.left.object?.name==='networkPolicy').length,0,'main does not install a selector deadline on the execution policy');
 });
 

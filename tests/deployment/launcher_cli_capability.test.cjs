@@ -118,3 +118,28 @@ test('managed CLI script requires matching installed-manifest hashes and that re
   fs.appendFileSync(receipt.installedManifest.path,'\n');
   await assert.rejects(capability.validate({receiptPath:capability.receiptPath(receipt.noraHome),noraHome:receipt.noraHome}),{code:'OPERATION_CAPABILITY_INVALID'});
 });
+
+test('APP-only receipt skips damaged core bindings and full registration restores the legacy updater route',async t=>{
+  const f=fixture(t),{noraHome}=f.options,installRoot=path.join(noraHome,'tavern');
+  const target=path.join(installRoot,'apps/tavern-ops/updater/update.py');
+  const manifest=path.join(installRoot,'tavern-updates/installed-manifest.json');
+  const receiptOptions={receiptPath:capability.receiptPath(noraHome),noraHome};
+  f.write(manifest,'unavailable core manifest');
+  const appReceipt=await capability.register({...f.options,includeCore:false});
+  assert.deepEqual(appReceipt.managed,{});
+  assert.equal((await capability.validateApp(receiptOptions)).sourceHash,appReceipt.sourceHash);
+
+  const program='trusted updater',sha=require('node:crypto').createHash('sha256').update(program).digest('hex');
+  f.write(target,program);
+  f.write(manifest,JSON.stringify({schema:'tavern-release/v2',commit:'a'.repeat(40),versions:{tavern:'2.4.0'},artifacts:{'ops/updater/update.py':sha}}));
+  f.write(path.join(installRoot,'tavern-updates/installed.json'),JSON.stringify({schema:1,version:'2.4.0',commit:'a'.repeat(40)}));
+  await capability.register({...f.options,port:18799});
+  const fullReceipt=await capability.validate(receiptOptions);
+  assert.equal(fullReceipt.port,18799);
+  assert.equal(capability.authorizeTarget(fullReceipt,target).type,'update');
+
+  const verifier=path.resolve(__dirname,'../installer/operation_cli.py');
+  const source='import importlib.util,sys; s=importlib.util.spec_from_file_location("receipt",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.authorize_target(m.validate_receipt(sys.argv[2]),sys.argv[3])';
+  const legacy=spawnSync(python,['-B','-c',source,verifier,noraHome,target],{encoding:'utf8'});
+  assert.equal(legacy.status,0,legacy.stderr);
+});

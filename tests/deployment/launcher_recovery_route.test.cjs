@@ -51,7 +51,7 @@ function recovery(version, updateRecovery, extra = {}, apiExtra = {}, contextExt
     api: { recover() {}, openLogs() {}, ...apiExtra }, openLogs: () => calls.push(['logs']), snapshot: { installed: true, hermesInstalled: true, systemReady: false, version, updateRecovery,
       running: true, systemProblems: ['技能文件内容与安装记录不一致'], ...extra },
     autoStartAttempted: false, bundledUpgradeAttempted: false, complete: () => false, statusUnknown: false, launcherRecoveryConfirmed:false,
-    uninstallChoiceAvailable: false, statusQuerySequence: 0,
+    uninstallChoiceAvailable: false, launcherUpdateCheckAvailable: false, statusQuerySequence: 0,
     versionInfo:null,lastFailure:null,lastStatusError:'',busy:false,
     $: id => {
       const nested = [...elements.values()].flatMap(descendants).find(node => node.id === id);

@@ -51,7 +51,7 @@
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
   let statusUnknown = false, lastStatusAt = 0, launcherRecoveryConfirmed = false;
-  let uninstallChoiceAvailable = false, statusQuerySequence = 0;
+  let uninstallChoiceAvailable = false, launcherUpdateCheckAvailable = false, statusQuerySequence = 0;
   let logsOpen = false, logTimer, logCursor, logOperationId, logGeneration = 0, logFollow = true, logOutcome;
   let logRecords = [], logBytes = 0, logErrorLocated = false, logFirstError, logReturnFocus;
   const logIds = new Set(), logMissing = new Set();
@@ -188,9 +188,16 @@
     return operation && current?.operationId === operation.operationId && current.snapshotSequence >= operation.snapshotSequence
       ? current : operation;
   }
+  function isAppUpdate(operation) {
+    return operation?.kind === 'update' && operation.target?.request?.launcherOnly === true && operation.readOnly !== true;
+  }
+  function actionableUpdateRecovery() {
+    return snapshot.updateRecovery?.readOnly === true ? null : snapshot.updateRecovery;
+  }
   function allowedActions(error) {
-    if (statusUnknown) return ['recheck', 'logs'];
     const operation = currentOperation(error);
+    if (operation?.readOnly === true) return ['logs'];
+    if (statusUnknown && !(launcherUpdateCheckAvailable && isAppUpdate(operation))) return ['recheck', 'logs'];
     const actions = operation?.allowedActions || error?.allowedActions;
     if (!Array.isArray(actions)) return ['recheck', 'logs'];
     if (operation?.kind !== 'update' || operation.target?.request?.launcherOnly === true) return actions;
@@ -206,7 +213,7 @@
   async function recheckFailure() {
     if (busy) return;
     const primary = lastFailure, operation = currentOperation(primary?.error) || snapshot.operation;
-    if (!operation || statusUnknown || typeof api.recheckOperation !== 'function') { await refreshFailure(); return; }
+    if (!operation || statusUnknown && !(launcherUpdateCheckAvailable && isAppUpdate(operation)) || typeof api.recheckOperation !== 'function') { await refreshFailure(); return; }
     busy = true; controls();
     try {
       const result = await api.recheckOperation({ operationId: operation.operationId, snapshotSequence: operation.snapshotSequence });
@@ -279,12 +286,27 @@
       && current.kind === 'update' && ['failed', 'cancelled', 'blocked'].includes(current.state)
       && current.effectState === 'untouched' && current.recoveryOutcome === 'not-required'
       && !current.handoffRef && current.busy === false && snapshot.busy === false
-      && !busy && !statusUnknown && !snapshot.updateRecovery && !snapshot.launcherRecovery);
+      && !busy && (!statusUnknown || launcherUpdateCheckAvailable && isAppUpdate(current))
+      && !actionableUpdateRecovery() && !snapshot.launcherRecovery);
+  }
+  function appVersionEvidence(result) {
+    const independent = result && ['launcherState','launcherLatestConfirmed','launcherCheckedAt'].some(key => Object.hasOwn(result, key));
+    return { independent, confirmed: (independent ? result.launcherLatestConfirmed : result?.latestConfirmed) === true,
+      checkedAt: independent ? result.launcherCheckedAt : result?.checkedAt };
+  }
+  function canInstallAppOffer(result, tag = result?.releaseTag || result?.latest) {
+    const evidence = appVersionEvidence(result), target = result?.releaseTag || result?.latest;
+    return result?.launcherUpdateAvailable === true && result.launcherInstallable === true
+      && typeof tag === 'string' && tag === target
+      && (!evidence.independent || evidence.confirmed && result.launcherState === 'available')
+      && (!statusUnknown || launcherUpdateCheckAvailable && evidence.independent && evidence.confirmed)
+      && !snapshot.busy && snapshot.operation?.busy !== true
+      && !actionableUpdateRecovery() && !snapshot.launcherRecovery;
   }
   function isNewUpdateTarget(tag, operation = snapshot.operation) {
     const selectedTag = versionInfo?.releaseTag || versionInfo?.latest;
     if (!canCheckNewUpdate(operation) || versionInfo?.launcherUpdateAvailable !== true || versionInfo.launcherInstallable !== true
-      || versionInfo.latestConfirmed !== true || typeof tag !== 'string' || typeof selectedTag !== 'string'
+      || !appVersionEvidence(versionInfo).confirmed || typeof tag !== 'string' || typeof selectedTag !== 'string'
       || tag.replace(/^v/, '') !== selectedTag.replace(/^v/, '')) return false;
     const previous = operation.target?.releasePlan ? operation.target.releasePlan.tag : operation.target?.request?.tag;
     const releaseTag = /^v?\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
@@ -295,9 +317,9 @@
   function complete() { return Boolean(snapshot.setupCompleted ?? snapshot.installer?.setupCompleted) && snapshot.systemReady !== false; }
   function canReturnHome() {
     if (!complete() || snapshot.systemReady !== true || statusUnknown || busy || snapshot.busy
-      || snapshot.updateRecovery || snapshot.launcherRecovery || snapshot.modelSyncPending) return false;
+      || actionableUpdateRecovery() || snapshot.launcherRecovery || snapshot.modelSyncPending) return false;
     const operation = snapshot.operation || lastFailure?.error?.operation;
-    if (!operation || !['install','update','repair','recover','recoverLauncher'].includes(operation.kind)) return true;
+    if (!operation || operation.readOnly === true || !['install','update','repair','recover','recoverLauncher'].includes(operation.kind)) return true;
     return settledUpdateOperation(operation) || operation.state === 'succeeded'
       || operation.effectState === 'restored' && operation.verification === 'confirmed'
         && !['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome)
@@ -322,8 +344,9 @@
   }
   async function readStatus({ allowUnavailable = false } = {}) {
     launcherRecoveryConfirmed = false;
-    const query = ++statusQuerySequence, hadUninstallChoice = uninstallChoiceAvailable;
+    const query = ++statusQuerySequence, hadUninstallChoice = uninstallChoiceAvailable, hadAppChoice = launcherUpdateCheckAvailable;
     uninstallChoiceAvailable = false;
+    launcherUpdateCheckAvailable = false;
     try {
       const value = await api.status();
       if (query !== statusQuerySequence) throw new Error('状态查询已更新，请重新查询状态。');
@@ -333,11 +356,17 @@
         if (typeof value.busy === 'boolean') snapshot.busy = value.busy;
         launcherRecoveryConfirmed = value.busy === false && value.launcherRecovery?.canRecover === true;
       }
+      launcherUpdateCheckAvailable = value.launcherUpdateCheckAvailable === true
+        && value.busy === false && typeof api.checkUpdate === 'function';
       if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled && !value.retainedUninstallPending)) {
         if (value.statusUnavailable === true && value.uninstallChoiceAvailable === true
           && value.busy === false && typeof api.uninstall === 'function') {
           uninstallChoiceAvailable = true;
           snapshot.busy = false;
+        }
+        if (launcherUpdateCheckAvailable) {
+          snapshot.busy = false;
+          if (Object.hasOwn(value, 'operation')) snapshot.operation = isAppUpdate(value.operation) ? value.operation : null;
         }
         if (allowUnavailable) { statusUnknown = true; return value; }
         throw new Error(value.warning || '暂时无法查询后台状态。');
@@ -348,7 +377,10 @@
       if (query === statusQuerySequence) statusUnknown = true;
       throw error;
     }
-    finally { if (query === statusQuerySequence && hadUninstallChoice && !uninstallChoiceAvailable) hideMenu(); }
+    finally {
+      if (query === statusQuerySequence
+        && (hadUninstallChoice && !uninstallChoiceAvailable || hadAppChoice && !launcherUpdateCheckAvailable)) hideMenu();
+    }
   }
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
@@ -359,17 +391,19 @@
     else delete $('main').dataset.layout;
     if (view === 'model-overview') $('main').dataset.modelView = 'list';
     else delete $('main').dataset.modelView;
-    const recoveryView = view === 'recovery' && Boolean(snapshot.updateRecovery || snapshot.launcherRecovery);
-    const uninstallOnly = statusUnknown && uninstallChoiceAvailable;
-    const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.retainedInstallation && !snapshot.operation && !snapshot.installer?.startedAt
+    const recoveryView = view === 'recovery' && Boolean(actionableUpdateRecovery() || snapshot.launcherRecovery);
+    const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.retainedInstallation
+      && (!snapshot.operation || snapshot.operation.readOnly === true) && !snapshot.installer?.startedAt
       && !snapshot.installed && !snapshot.hermesInstalled && !snapshot.noraInstalled && !serviceRunning();
-    $('management').hidden = freshInstall || recoveryView || view === 'error' && !snapshot.retainedUninstallPending && !uninstallOnly
+    const restrictedChoices = (statusUnknown || freshInstall) && (uninstallChoiceAvailable || launcherUpdateCheckAvailable);
+    $('management').hidden = freshInstall && !launcherUpdateCheckAvailable || recoveryView || view === 'error' && !snapshot.retainedUninstallPending && !restrictedChoices
       || view !== 'daily' && (busy || Boolean(snapshot.busy));
-    if (freshInstall) hideMenu();
+    if (freshInstall && !launcherUpdateCheckAvailable) hideMenu();
     document.querySelectorAll('#management [data-action]').forEach(control => {
       const action = control.dataset.action;
-      control.hidden = uninstallOnly ? action !== 'uninstall' : !complete() && !['uninstall', 'logs', 'update'].includes(action);
-      if (!uninstallOnly && action === 'logs') control.hidden = !hasLogs();
+      control.hidden = restrictedChoices ? !(action === 'uninstall' && uninstallChoiceAvailable || action === 'update' && launcherUpdateCheckAvailable)
+        : !complete() && !['uninstall', 'logs', 'update'].includes(action);
+      if (!restrictedChoices && action === 'logs') control.hidden = !hasLogs();
     });
     $('launchbar').hidden = recoveryView || !complete() || view !== 'daily';
     $('status').hidden = !recoveryView && complete() && !statusUnknown && view !== 'error';
@@ -405,7 +439,9 @@
     });
     if (statusUnknown) document.querySelectorAll('.services button, .conversation-entry button, #stopAll').forEach(item => { item.disabled = true; });
     if (statusUnknown) document.querySelectorAll('#management [data-action]').forEach(item => {
-      if (uninstallOnly ? item.dataset.action !== 'uninstall' : ['stop-all', 'uninstall'].includes(item.dataset.action)) item.disabled = true;
+      const action = item.dataset.action;
+      if (restrictedChoices ? !(action === 'uninstall' && uninstallChoiceAvailable || action === 'update' && launcherUpdateCheckAvailable)
+        : ['stop-all', 'uninstall', 'update'].includes(action)) item.disabled = true;
     });
     const submit = $('inline').querySelector('button[type="submit"]');
     if (submit) {
@@ -604,10 +640,10 @@
       if(hasLogs())$('inline').append(button('查看日志',openLogs,false));
       controls();return;
     }
-    if (snapshot.updateRecovery || snapshot.launcherRecovery) {
+    if (actionableUpdateRecovery() || snapshot.launcherRecovery) {
       view = 'recovery'; daily = false; clearInline();
       $('main').classList.remove('welcome', 'daily', 'editing'); $('main').classList.add('update-recovery'); $('steps').hidden = true;
-      const appRecovery = snapshot.updateRecovery, launcherRecovery = snapshot.launcherRecovery;
+      const appRecovery = actionableUpdateRecovery(), launcherRecovery = snapshot.launcherRecovery;
       const filesRestored=snapshot.operation?.recoveryOutcome==='files-restored-start-failed';
       const coreReadOnly=appRecovery && appRecovery.kind!=='legacy'
         && (!snapshot.operation || snapshot.operation.kind==='update' && snapshot.operation.target?.request?.launcherOnly!==true
@@ -667,7 +703,7 @@
       controls(); $('launchbar').hidden = true; $('status').hidden = false; $('status').textContent = '需要恢复'; return;
     }
     const partial=snapshot.updateSequence;
-    if(['partial','blocked'].includes(partial?.status)){
+    if(partial?.readOnly!==true&&['partial','blocked'].includes(partial?.status)){
       const original=partial.operation||snapshot.operation?.operationId===partial.operationId&&snapshot.operation;
       const operation=original?currentOperation({operation:original}):undefined;
       const settled=(partial.settled===true||partial.firstOperationId===operation?.operationId)&&settledUpdateOperation(operation);
@@ -680,7 +716,7 @@
         return;
       }
     }
-    const operation = snapshot.operation;
+    const operation = snapshot.operation?.readOnly === true ? null : snapshot.operation;
     const restoredSuccessfully = recoveredOperation(operation);
     const settled = settledUpdateOperation(operation);
     if (operation && !settled&&['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)) {
@@ -838,7 +874,8 @@
     const partial = snapshot.updateSequence?.operation;
     const operation = expected?.operationId === partial?.operationId ? partial : snapshot.operation;
     if (expected?.operationId !== operation?.operationId) return;
-    if (busy || statusUnknown || !operation || !allowedActions({operation}).some(action => mode === 'recover' ? ['recover','start-restored'].includes(action) : ['retry','resume'].includes(action))) return;
+    if (busy || statusUnknown && !(launcherUpdateCheckAvailable && isAppUpdate(operation) && mode === 'resume')
+      || !operation || !allowedActions({operation}).some(action => mode === 'recover' ? ['recover','start-restored'].includes(action) : ['retry','resume'].includes(action))) return;
     const endpoint = mode === 'recover' ? 'recoverOperation' : 'resumeOperation';
     if (typeof api[endpoint] !== 'function') return;
     const service = mode === 'resume' ? operation.target?.request?.service : undefined;
@@ -901,11 +938,18 @@
   }
   async function run(action, options = {}, endpoint = action) {
     if (busy) return;
-    if (statusUnknown && !(action === 'recoverLauncher' && launcherRecoveryConfirmed)) {
+    const knownOperation = snapshot.operation;
+    const appResume = endpoint === 'resumeOperation' && isAppUpdate(knownOperation)
+      && options.operationId === knownOperation.operationId && options.snapshotSequence === knownOperation.snapshotSequence
+      && knownOperation.allowedActions?.some(value => ['retry','resume'].includes(value));
+    const independentUpdate = action === 'update' && launcherUpdateCheckAvailable
+      && (appResume || endpoint === 'update' && canInstallAppOffer(versionInfo, options.tag));
+    if (action === 'update' && (snapshot.busy || knownOperation?.busy === true)) return;
+    if (statusUnknown && !independentUpdate && !(action === 'recoverLauncher' && launcherRecoveryConfirmed)) {
       const primary = lastFailure;
       fail(primary?.error || '状态暂时无法确认，请先重新查询状态。', primary?.action || action, primary?.retry, primary || {}); return;
     }
-    const operation = snapshot.operation;
+    const operation = action === 'update' && knownOperation?.readOnly === true ? null : knownOperation;
     const serviceAction = ['start', 'stop', 'restart'].includes(action), service = options.service || 'all';
     const sameAction = operation?.kind === action && (!serviceAction || (operation.target?.request?.service || 'all') === service);
     if (operation && !recoveredOperation(operation) && ['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)
@@ -913,7 +957,8 @@
       && !['resumeOperation','recoverOperation'].includes(endpoint)
       && !(action==='pair'&&endpoint==='pair'&&canSubmitPair(operation))
       && !(action === 'update' && endpoint === 'update' && isNewUpdateTarget(options.tag, operation))) { route(); return; }
-    if ((snapshot.updateRecovery || snapshot.launcherRecovery) && !['recover', 'recoverLauncher'].includes(action)) { route(); return; }
+    if ((snapshot.updateRecovery && !(action === 'update' && snapshot.updateRecovery.readOnly === true) || snapshot.launcherRecovery)
+      && !['recover', 'recoverLauncher'].includes(action)) { route(); return; }
     const wasComplete = complete();
     if (wasComplete) firstCompletionPending = false;
     busy = true; operationCancelled = false; activeAction = action; activeService = service; lastFailure = null;
@@ -932,7 +977,12 @@
         if (!recovery?.canRecover || snapshot.busy || (statusUnknown && (action !== 'recoverLauncher' || !launcherRecoveryConfirmed)) || typeof api[action] !== 'function') { busy = false; activeAction = ''; clearInterval(taskTimer); route(); return; }
       }
       const result = await api[endpoint]({ port: snapshot.port || 8799, ...options, onEvent });
-      if (result.restarting) { currentTask = action === 'recoverLauncher' ? '正在恢复旧启动器，等待窗口重新打开' : '正在重启，随后继续更新'; updateTask(); return; }
+      if (result.restarting) {
+        currentTask = '正在重启，随后继续更新';
+        if (action === 'recoverLauncher') currentTask = result.appSegmentOnly === true
+          ? '正在恢复旧启动器，窗口关闭后请手动重新打开' : '正在恢复旧启动器，等待窗口重新打开';
+        updateTask(); return;
+      }
       if (action === 'recoverLauncher' && result.restored === true) {
         snapshot.launcherRecovery = null; launcherRecoveryConfirmed = false;
         busy = false; activeAction = ''; clearInterval(taskTimer);
@@ -945,7 +995,7 @@
       // A confirmed stop can still be acknowledged if the general status query
       // fails. A newer known fact for the selected service takes precedence.
       const current = await readStatus({allowUnavailable: action === 'stop'}).catch(error => {
-        if (action !== 'stop' || !serviceStopped(result, service)) throw error;
+        if (!(action === 'stop' && serviceStopped(result, service) || action === 'update' && result.appUpdateComplete === true)) throw error;
         return {};
       });
       const noraReady = current.gatewayRunning === true && current.clawchatConnected === true;
@@ -969,14 +1019,16 @@
         if (options.openAfter) await openTavern();
       } else if (['update', 'repair', 'recover', 'recoverLauncher'].includes(action)) {
         versionInfo = null; autoVersionChecked = false; route();
+        if (action === 'update' && result.appUpdateComplete === true && statusUnknown)
+          say('启动器更新已完成。', '诺拉与酒馆的运行状态暂待确认。');
       } else route();
     } catch (error) {
       busy = false; activeAction = ''; clearInterval(taskTimer);
       if (error.operation) syncState({ operation: error.operation });
       lastFailure = { error, action, options, retry: () => run(action, options) };
       try { await readStatus(); } catch {}
-      if(action==='update'&&['partial','blocked'].includes(snapshot.updateSequence?.status)) { route(); return; }
-      if (['update', 'repair', 'recover', 'recoverLauncher'].includes(action) && (snapshot.updateRecovery || snapshot.launcherRecovery)) {
+      if(action==='update'&&snapshot.updateSequence?.readOnly!==true&&['partial','blocked'].includes(snapshot.updateSequence?.status)) { route(); return; }
+      if (['update', 'repair', 'recover', 'recoverLauncher'].includes(action) && (actionableUpdateRecovery() || snapshot.launcherRecovery)) {
         if (!statusUnknown) snapshot.installer = { ...snapshot.installer, phase: 'error', error: textError(error) };
         route(); return;
       }
@@ -1403,11 +1455,13 @@
     const appAvailable = result.launcherUpdateAvailable === true;
     const definitions = [
       { id:'launcher', name:'启动器', current:result.launcherVersion, latest:result.launcherLatest,
+        ...appVersionEvidence(result), status:result.launcherState,
         available:appAvailable, error:result.launcherError, compatibility:result.launcherCompatibilityError,
-        blocked:appAvailable && result.launcherInstallable !== true },
+        blocked:result.launcherState === 'blocked' || appAvailable && result.launcherInstallable !== true },
       { id:'core', name:'诺拉与酒馆', current:result.current, latest:result.latest,
+        confirmed:result.latestConfirmed === true, checkedAt:result.checkedAt, status:result.coreState || result.state,
         available:coreAvailable, error:result.error, compatibility:result.compatibilityError,
-        blocked:result.state === 'blocked', hint:coreAvailable ? '请与诺拉对话更新。' : '' },
+        blocked:(result.coreState || result.state) === 'blocked', hint:coreAvailable ? '请与诺拉对话更新。' : '' },
     ];
     for (const item of definitions) {
       const row = document.createElement('section'); row.className = 'update-component'; row.dataset.component = item.id;
@@ -1415,13 +1469,13 @@
       const name = document.createElement('span'); name.className = 'update-name'; name.textContent = item.name;
       const state = document.createElement('span'); state.className = 'update-state';
       const same = item.current && item.latest && String(item.current).replace(/^v/, '') === String(item.latest).replace(/^v/, '');
-      const confirmed = result.latestConfirmed === true;
+      const confirmed = item.confirmed;
       state.dataset.state = item.error ? 'unavailable' : item.compatibility || item.blocked ? 'blocked'
         : item.available || same ? confirmed ? item.available ? 'available' : 'current' : 'cached' : 'unknown';
       state.textContent = item.error ? '检查未完成' : item.compatibility || item.blocked ? '暂不可更新' : item.available
-        ? confirmed ? '有新版本' : result.checkedAt ? '上次发现新版' : '待确认'
-        : same ? confirmed ? '已是最新' : result.checkedAt ? '上次检查一致' : '待确认'
-        : item.id === 'core' && result.state === 'ahead' ? '本机较新' : '待确认';
+        ? confirmed ? '有新版本' : item.checkedAt ? '上次发现新版' : '待确认'
+        : same ? confirmed ? '已是最新' : item.checkedAt ? '上次检查一致' : '待确认'
+        : item.status === 'ahead' ? '本机较新' : '待确认';
       const versions = document.createElement('p'); versions.className = 'update-versions';
       versions.textContent = `当前 ${item.current || '待确认'}${item.latest ? `  →  ${item.latest}` : ''}`;
       row.append(name, state, versions);
@@ -1445,27 +1499,35 @@
     try {
       const result = await api.checkUpdate(); busy = false; versionInfo = result;
       const channelName = result.channel === 'beta' ? 'Beta 测试版' : '正式版';
-      const reused = result.latestConfirmed !== true && Boolean(result.checkedAt);
-      say('版本更新', [channelName, result.checkedAt
-        ? `${reused ? '上次检查结果' : '检查时间'}：${checkedTime(result.checkedAt)}` : ''].filter(Boolean).join(' · '));
+      const checks = [['启动器', appVersionEvidence(result)], ['诺拉与酒馆', {confirmed:result.latestConfirmed === true, checkedAt:result.checkedAt}]];
+      say('版本更新', [channelName, ...checks.filter(([, evidence]) => evidence.checkedAt)
+        .map(([name,evidence]) => `${name}${evidence.confirmed ? '检查时间' : '上次检查结果'}：${checkedTime(evidence.checkedAt)}`)].join(' · '));
       renderUpdateVersions(result);
-      const operation = snapshot.operation, entries = [], links = [];
+      const history = snapshot.coreMaintenance || (snapshot.operation?.readOnly === true || snapshot.updateRecovery?.readOnly === true
+        || snapshot.updateSequence?.readOnly === true ? {} : null);
+      if (history) {
+        const note = document.createElement('p'); note.className = 'update-guidance';
+        note.textContent = history.message || '核心维护请在诺拉对话中处理。';
+        $('inline').append(note);
+      }
+      const operation = snapshot.operation?.readOnly === true ? null : snapshot.operation, entries = [], links = [];
       const unresolved = operation && !recoveredOperation(operation) && ['install','update','repair','recover'].includes(operation.kind)
         && ['failed','cancelled','blocked','interrupted','rolled-back'].includes(operation.state);
       const newTarget = unresolved && isNewUpdateTarget(result.releaseTag || result.latest, operation);
       const fixed = operation ? currentOperation({operation}) : undefined;
       const tag = result.releaseTag || result.latest;
       const fixedTag = fixed?.target?.releasePlan?.tag || fixed?.target?.request?.tag;
-      const retryOperation = !snapshot.updateSequence && fixed?.kind === 'update' && fixed.target?.request?.launcherOnly === true
+      const retryOperation = (!snapshot.updateSequence || snapshot.updateSequence.readOnly === true) && fixed?.kind === 'update' && fixed.target?.request?.launcherOnly === true
         && settledUpdateOperation(fixed) && typeof tag === 'string' && typeof fixedTag === 'string'
         && tag.replace(/^v/,'') === fixedTag.replace(/^v/,'') && Number.isSafeInteger(fixed.snapshotSequence)
         && fixed.allowedActions?.some(action=>['retry','resume'].includes(action)) && typeof api.resumeOperation === 'function' ? fixed : null;
       if (statusUnknown) {
         const note = document.createElement('p'); note.className = 'model-feedback'; note.textContent = unknownStatusCopy(); $('inline').append(note);
         entries.push({label:'重新查询状态', run:refreshFailure, primary:true});
-      } else if (result.launcherUpdateAvailable === true && result.launcherInstallable === true && (!unresolved || newTarget || retryOperation)) {
+      }
+      if (canInstallAppOffer(result, tag) && (!unresolved || newTarget || retryOperation)) {
         entries.push({label:retryOperation ? '重试启动器更新' : '更新启动器', run:() => {
-          if (newTarget && !isNewUpdateTarget(tag, operation)) { route(); return; }
+          if (!canInstallAppOffer(versionInfo, tag) || newTarget && !isNewUpdateTarget(tag, operation)) { route(); return; }
           if (retryOperation) return run('update', {operationId:retryOperation.operationId,snapshotSequence:retryOperation.snapshotSequence}, 'resumeOperation');
           return run('update', {tag,launcherOnly:true});
         }, primary:true});
@@ -1495,8 +1557,10 @@
     if (view !== 'daily' || busy || !versionInfo || $('versionNotice')) return;
     if (!versionInfo.available && !versionInfo.launcherUpdateAvailable && !['blocked', 'unknown', 'unavailable'].includes(versionInfo.state)) return;
     const notice = document.createElement('div'); notice.id = 'versionNotice'; notice.className = 'note';
-    const summary = versionInfo.state === 'unavailable' ? '检查更新未完成' : versionInfo.state === 'blocked' ? '此版本暂时无法安装' : versionInfo.state === 'unknown' ? '本机版本暂时无法确认'
-      : versionInfo.launcherUpdateAvailable ? `启动器有新版本 ${versionInfo.launcherLatest || ''}` : versionInfo.releaseAvailable ? '诺拉与酒馆有新版本'
+    const evidence = appVersionEvidence(versionInfo);
+    const summary = versionInfo.launcherUpdateAvailable ? `${evidence.confirmed ? '启动器有新版本' : evidence.checkedAt ? '上次发现启动器新版' : '启动器版本待确认'} ${versionInfo.launcherLatest || ''}`
+      : versionInfo.state === 'unavailable' ? '检查更新未完成' : versionInfo.state === 'blocked' ? '此版本暂时无法安装' : versionInfo.state === 'unknown' ? '本机版本暂时无法确认'
+      : versionInfo.releaseAvailable ? '诺拉与酒馆有新版本'
       : versionInfo.available ? `${versionInfo.latestConfirmed === true ? '发现' : '上次检查发现'}可用更新 ${versionInfo.latest}` : `本机酒馆版本高于最新${versionInfo.channel === 'beta' ? 'Beta 测试版' : '正式版'}`;
     const details = button('检查更新', checkUpdates, false); details.className = 'quiet';
     const label = document.createElement('span'); label.textContent = summary; label.title = summary;
@@ -1512,14 +1576,17 @@
   }
   document.querySelectorAll('[data-action]').forEach(control => { control.onclick = () => {
     const action = control.dataset.action;
-    if (statusUnknown && (uninstallChoiceAvailable ? action !== 'uninstall' : action === 'uninstall')) return;
+    if (statusUnknown) {
+      if (action === 'update' && !launcherUpdateCheckAvailable || action === 'uninstall' && !uninstallChoiceAvailable) return;
+      if ((uninstallChoiceAvailable || launcherUpdateCheckAvailable) && !['update','uninstall'].includes(action)) return;
+    }
     if (action === 'logs' && hasLogs()) { hideMenu(); openLogs({ currentTarget: control }); return; }
     if (busy) return; hideMenu();
     if (['model','claw','community','update','settings'].includes(action)) pageReturnFocus = control.closest('#more') ? $('moreButton') : control;
     if (action === 'model') modelSettings();
     if (action === 'claw') clawForm();
     if (action === 'community') { view = 'community'; community(canReturnHome() ? '返回酒馆' : '返回操作页'); }
-    if (action === 'update') checkUpdates();
+    if (action === 'update') return checkUpdates();
     if (action === 'stop-all') run('stop', { service: 'all' });
     if (action === 'uninstall') {
       if (snapshot.busy || typeof api.uninstall !== 'function') return;

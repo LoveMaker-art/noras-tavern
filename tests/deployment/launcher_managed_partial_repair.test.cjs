@@ -268,13 +268,13 @@ test('actual no-Python status guides core repair to Nora; corrupt history cannot
   const main=fs.readFileSync(path.join(desktop,'main.js'),'utf8'),ast=parse(main,{ecmaVersion:'latest'});
   const definition=name=>{const node=ast.body.find(node=>node.type==='FunctionDeclaration'&&node.id.name===name);return main.slice(node.start,node.end);};
   let callback;const walk=node=>{if(!node||typeof node!=='object')return;if(node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.value==='nora:status')callback=node.arguments[1];for(const value of Object.values(node)){if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);}};walk(ast);
-  let bridgeCalls=0;const context=vm.createContext({fs,path,require:id=>id==='./operation-policy'?policy:desktopRequire(id),DEFAULT_PORT:18899,
+  let bridgeCalls=0;const context=vm.createContext({fs,path,require:id=>id==='./operation-policy'?policy:desktopRequire(id),DEFAULT_PORT:18899,app:{isPackaged:true},
    installRoot:()=>f.tavern,noraHome:()=>f.root,hermesHome:()=>f.home,readVerifiedModel:()=>null,findHermes:()=>null,
    readInstallerState:()=>({phase:'idle',port:18899}),installationPort:()=>18899,locationStatus:()=>({noraHome:f.root}),quitting:false,uninstalling:false,selectingLocation:false,
-   modelBusy:false,activeRun:false,statusRequest:null,activeOperationContext:null,releaseAbort:null,cancelled:false,updatingSystem:false,activeProcess:null,
+   modelBusy:false,activeRun:false,statusRequest:null,shutdownPending:null,activeOperationContext:null,releaseAbort:null,cancelled:false,updatingSystem:false,activeProcess:null,
    readLauncherRecovery:async()=>null,operations:()=>({snapshot:async()=>null}),systemUpdate:{inspect:()=>null},findPython:()=>null,
    runBridge:async()=>{bridgeCalls++;throw Error('no old Python should execute');},statusErrorMessage:error=>error.message,LOCAL_TEST:null});
-  vm.runInContext(['nodeStatus','taskCancellation','desktopSequenceForOperation','projectDesktopOperation'].map(definition).join('\n'),context);
+  vm.runInContext(['nodeStatus','taskCancellation','ownsDesktopOperation','projectDesktopOperation'].map(definition).join('\n'),context);
   const query=vm.runInContext('('+main.slice(callback.start,callback.end)+')',context),status=await query();
   assert.equal(status.installed,false);assert.equal(status.managedInstallation,true);assert.equal(status.version,'2.4.5');assert.equal(status.running,null);assert.equal(bridgeCalls,0);
   const source=fs.readFileSync(path.join(desktop,'../launcher-controller.js'),'utf8'),html=fs.readFileSync(path.join(desktop,'../launcher-conversation-prototype.html'),'utf8');

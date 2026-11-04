@@ -61,7 +61,7 @@ function fixture(extra={}) {
   };
   const button=(text,onclick,primary=true)=>Object.assign(element('button'),{textContent:text,onclick,className:primary?'button primary':'button'});
   const context=vm.createContext({snapshot:{},view:'daily',busy:false,statusUnknown:false,launcherRecoveryConfirmed:false,daily:false,running:false,stage:0,
-    uninstallChoiceAvailable:false,statusQuerySequence:0,
+    uninstallChoiceAvailable:false,launcherUpdateCheckAvailable:false,statusQuerySequence:0,
     activeAction:'',activeService:'all',lastFailure:null,lastStatusError:'',lastStatusAt:0,taskTimer:null,pairTimer:null,logsOpen:false,operationCancelled:false,versionInfo:null,autoVersionChecked:false,
     versionChecking:false,modelFormGeneration:0,pageReturnFocus:null,firstCompletionPending:false,sawIncompleteSetup:false,autoStartAttempted:true,bundledUpgradeAttempted:false,
     launchHint:element(),labels:['Nora','酒馆','模型','ClawChat','检查'],milestoneStates:[],currentTask:'',startedAt:0,lastEvent:0,taskStage:'',stageStartedAt:0,taskProgress:null,lastProgressAt:0,alive:true,refreshing:false,pollTimer:null,launchHint:element(),api:{openLogs:async()=>{calls.push(['logs']);return {ok:true};}},$,button,
@@ -368,6 +368,19 @@ test('a harmless failed update does not block a separate service action or a tru
   await h.invoke('run("start",{service:"tavern"})');assert.equal(starts,1);
   h.context.snapshot.launcherRecovery={canRecover:true};await h.invoke('route()');assert.ok(action(h,'恢复旧启动器'));
   await action(h,'恢复旧启动器').onclick();assert.equal(restores,1);
+});
+
+test('historical APP segment recovery tells users to reopen the old launcher manually',async()=>{
+  const recovery={canRecover:true,operationId:'55555555-5555-4555-8555-555555555555'};
+  for(const appSegmentOnly of [true,false]){
+    const snapshot={...ready,busy:false,launcherRecovery:recovery};
+    const h=fixture({snapshot,api:{status:async()=>snapshot,
+      recoverLauncher:async()=>({restarting:true,appSegmentOnly})}});
+    await h.invoke('route()');
+    await action(h,'恢复旧启动器').onclick();
+    assert.match(h.inline.querySelector('#jobTitle').textContent,appSegmentOnly?/窗口关闭后请手动重新打开/:/等待窗口重新打开/);
+    assert.doesNotMatch(h.inline.querySelector('#jobTitle').textContent,/酒馆|诺拉/);
+  }
 });
 
 test('retrying a failed service task after reopening updates only the recorded service',async()=>{
@@ -821,5 +834,100 @@ test('a settled historical dual plan is not resumed by the APP control',async()=
     await h.invoke('checkUpdates()');h.context.run=async(action,payload,endpoint)=>requests.push({action,payload,endpoint});
     await action(h,'更新启动器').onclick();
     assert.deepEqual(JSON.parse(JSON.stringify(requests)),[{action:'update',payload:{tag:'v2.4.3',launcherOnly:true}}]);
+  }
+});
+
+
+test('a fresh APP offer can be installed from the update menu while core status is unavailable',async()=>{
+  const calls=[], appResult={...updateResult,state:'unavailable',coreState:'unavailable',error:'核心状态不可读。',
+    latestConfirmed:false,checkedAt:'2026-11-01T08:00:00Z',
+    launcherState:'available',launcherLatestConfirmed:true,launcherCheckedAt:'2026-11-03T08:00:00Z',
+    launcherUpdateAvailable:true,launcherInstallable:true,launcherVersion:'2.2.8',launcherLatest:'2.2.9',releaseTag:'v2.6.5'};
+  const h=fixture({view:'loading',snapshot:{...ready},autoVersionChecked:true,api:{
+    status:async()=>({statusUnavailable:true,launcherUpdateCheckAvailable:true,operation:null,busy:false}),
+    checkUpdate:async()=>appResult,
+    update:async options=>{calls.push(options);return {appUpdateComplete:true,launcherVersion:'2.2.9'};},
+  }});
+  await h.invoke('poll()');
+  assert.equal(h.context.statusUnknown,true);
+  assert.equal(h.output().managementVisible,true);
+  const update=h.menu.find(n=>n.dataset.action==='update');assert.equal(update.hidden,false);
+  assert.equal(update.disabled,false);
+  assert.equal(h.menu.find(n=>n.dataset.action==='uninstall').hidden,true);
+  await update.onclick();
+  await new Promise(resolve=>setImmediate(resolve));
+  const app=descendants(h.inline).find(n=>n.dataset.component==='launcher');
+  const core=descendants(h.inline).find(n=>n.dataset.component==='core');
+  assert.match(app.textContent,/有新版本/);
+  assert.match(core.textContent,/检查未完成/);
+  assert.match(h.output().copy.join(' '),/启动器检查时间/);
+  assert.match(h.output().copy.join(' '),/诺拉与酒馆上次检查结果/);
+  const install=action(h,'更新启动器');assert.ok(install);
+  await install.onclick();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].tag,'v2.6.5');
+  assert.equal(calls[0].launcherOnly,true);
+  assert.match(h.output().copy.join(' '),/启动器更新已完成/);
+});
+
+test('old core history is read-only and does not divert a fresh APP offer to core recovery',async()=>{
+  const calls=[], operation={operationId:'55555555-5555-4555-8555-555555555555',snapshotSequence:2,
+    kind:'update',state:'failed',readOnly:true,busy:false,allowedActions:['logs']};
+  const core={...ready,operation,busy:false,updateRecovery:{readOnly:true,canRecover:false}};
+  const h=fixture({snapshot:core,api:{status:async()=>core,
+    checkUpdate:async()=>({...updateResult,launcherState:'available',launcherLatestConfirmed:true,
+      launcherUpdateAvailable:true,launcherInstallable:true,releaseTag:'v2.6.5'}),
+    update:async options=>{calls.push(options);return {restarting:true};}}});
+  await h.invoke('route()');
+  assert.equal(h.context.view,'daily');
+  await h.invoke('checkUpdates()');
+  assert.match(h.inline.textContent,/核心维护.*诺拉对话/);
+  const update=action(h,'更新启动器');assert.ok(update);
+  await update.onclick();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].tag,'v2.6.5');
+});
+
+test('packaged first install exposes only APP update in More when the desktop confirms it is idle',async()=>{
+  const historicalCore={kind:'update',state:'failed',readOnly:true,busy:false,allowedActions:['logs']};
+  for (const operation of [null,historicalCore]) {
+    const calls=[];
+    let qualified=true;
+    const h=fixture({view:'loading',autoVersionChecked:true,api:{
+      status:async()=>({installed:false,hermesInstalled:false,systemReady:false,busy:false,operation,
+        launcherUpdateCheckAvailable:qualified,updateRecovery:operation&&{readOnly:true,canRecover:false}}),
+      checkUpdate:async()=>({...updateResult,state:'unknown',coreState:'unknown',launcherState:'available',
+        launcherLatestConfirmed:true,launcherInstallable:true,releaseTag:'v2.6.5'}),
+      update:async options=>{calls.push(options);return {restarting:true};},
+    }});
+    await h.invoke('poll()');
+    assert.equal(h.context.view,'welcome');
+    assert.ok(action(h,'安装酒馆'));
+    assert.equal(h.output().managementVisible,true);
+    assert.deepEqual(h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action),['update']);
+    await h.menu.find(item=>item.dataset.action==='update').onclick();
+    await action(h,'更新启动器').onclick();
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].tag,'v2.6.5');
+    assert.equal(calls[0].launcherOnly,true);
+
+    qualified=false;
+    await h.invoke('busy=false; view="welcome"; poll()');
+    assert.equal(h.output().managementVisible,false);
+  }
+});
+
+test('stale or missing independent APP check evidence does not authorize update during core outage',async()=>{
+  for(const authority of [false,true]){
+    let updates=0;
+    const h=fixture({view:'loading',snapshot:{...ready},autoVersionChecked:true,api:{
+      status:async()=>({statusUnavailable:true,launcherUpdateCheckAvailable:authority,operation:null,busy:false}),
+      checkUpdate:async()=>({...updateResult,launcherState:'available',launcherLatestConfirmed:false,launcherCheckedAt:'2026-11-03T08:00:00Z'}),
+      update:async()=>{updates++;return {restarting:true};}}});
+    await h.invoke('poll()');
+    await h.invoke('checkUpdates()');
+    assert.equal(action(h,'更新启动器'),undefined);
+    await h.invoke('run("update",{tag:"v2.4.3",launcherOnly:true})');
+    assert.equal(updates,0);
   }
 });

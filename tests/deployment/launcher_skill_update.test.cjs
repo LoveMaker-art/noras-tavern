@@ -232,7 +232,9 @@ test('legacy receiver rejects execution while the independent core task remains 
   assert.match(source, /handle\('nora:run', runAction\)/);
   assert.match(source, /CORE_UPDATE_CHAT_REQUIRED/);
   assert.doesNotMatch(source.slice(source.indexOf('  const skillUpdates = createSkillUpdateReceiver('),source.indexOf("  handle('nora:cancel'")), /runAction\(/);
-  assert.match(source, /apps\/tavern-ops\/updater\/task.py/);
+  assert.doesNotMatch(source, /apps\/tavern-ops\/updater\/task\.py/);
+  const updater = fs.readFileSync(path.join(__dirname, '../updater/task.py'), 'utf8');
+  assert.match(updater, /if __name__ == ['"]__main__['"]/);
 });
 test('real Python skill refuses an unverified raw terminal record without a query closure', async t => {
   const f = await fixture(t, () => assert.fail('read-only query must not execute'));

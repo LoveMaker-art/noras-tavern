@@ -433,12 +433,88 @@ def checkpoint(ctx, snapshot, phase, **extra):
         'operationId': snapshot.get('operationId'), 'planDigest': snapshot.get('planDigest'), **extra})
 
 
+def helper_runtime(ctx):
+    ref = ctx['plan'].get('helperRuntime')
+    if ref is None: return None  # Preserve the original old-job contract.
+    if (not isinstance(ref, dict) or ref.get('schema') != 'nora-app-helper-runtime-ref/1'
+            or not re.fullmatch(r'[a-f0-9]{64}', ref.get('imageSha256', ''))
+            or not re.fullmatch(r'[a-f0-9]{64}', ref.get('descriptorSha256', ''))
+            or not re.fullmatch(r'python/(?:bin/python\d+\.\d+|python\.exe)', ref.get('executable', ''))):
+        raise ValueError('APP助手运行引用无效，已保留程序现场')
+    base = ctx['home'] / 'installer/app-helper-runtime'
+    root = base / ref['imageSha256']
+    descriptor_file = base / (ref['imageSha256'] + '.json')
+    if (Path(ref.get('root', '')).absolute() != root or io_path(root).is_symlink()
+            or io_path(base).is_symlink() or io_path(descriptor_file).is_symlink()
+            or not io_path(root).is_dir() or not io_path(descriptor_file).is_file()
+            or io_path(descriptor_file).stat().st_size > 8 * 1024 * 1024):
+        raise ValueError('APP助手运行目录或清单与原任务不符')
+    file_identity(base); root_identity = file_identity(root); file_identity(descriptor_file)
+    descriptor_bytes = io_path(descriptor_file).read_bytes()
+    if hashlib.sha256(descriptor_bytes).hexdigest() != ref['descriptorSha256']:
+        raise ValueError('APP助手清单与原任务摘要不符')
+    descriptor = json.loads(descriptor_bytes)
+    if (descriptor.get('schema') != 'nora-app-helper-runtime/1' or descriptor.get('imageSha256') != ref['imageSha256']
+            or descriptor.get('platform') != ctx['plan']['platform'] or descriptor.get('arch') != ctx['plan']['arch']
+            or descriptor.get('root') != 'app-helper-runtime' or descriptor.get('pythonRoot') != 'python'
+            or not isinstance(descriptor.get('files'), list) or not 1 < len(descriptor['files']) <= 25000):
+        raise ValueError('APP助手清单不适用于原任务')
+    expected = {item['path']: item for item in descriptor['files']}
+    if len(expected) != len(descriptor['files']): raise ValueError('APP助手清单路径重复')
+    seen, total, visited = set(), 0, 0
+    def visit(directory, prefix='', depth=0):
+        nonlocal total, visited
+        if depth > 64: raise ValueError('APP助手运行目录层级超限')
+        for file in io_path(directory).iterdir():
+            visited += 1
+            if visited > 50000: raise ValueError('APP助手运行资源数量超限')
+            name = prefix + file.name
+            value = file.lstat()
+            if getattr(value, 'st_file_attributes', 0) & 0x400:
+                raise ValueError('APP助手运行目录含重定向文件')
+            if stat.S_ISDIR(value.st_mode): visit(file, name + '/', depth + 1); continue
+            item = expected.get(name)
+            if item is None: raise ValueError('APP助手含未封存文件')
+            seen.add(name)
+            if stat.S_ISLNK(value.st_mode):
+                if (item.get('type') != 'symlink' or os.readlink(file) != item.get('target')
+                        or not contained(file.resolve(strict=True), io_path(root).resolve(strict=True))):
+                    raise ValueError('APP助手链接无法核验')
+            elif stat.S_ISREG(value.st_mode):
+                total += value.st_size
+                if (total > 512 * 1024 * 1024 or item.get('type') != 'file' or value.st_size != item.get('size')
+                        or digest(file) != item.get('sha256')): raise ValueError('APP助手文件已变化')
+                after = file.lstat()
+                if (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                    raise ValueError('APP助手文件在校验期间变化')
+            else: raise ValueError('APP助手文件类型无效')
+    visit(root)
+    if seen != set(expected) or file_identity(root) != root_identity:
+        raise ValueError('APP助手文件缺失或运行目录在校验期间变化')
+    python = io_path(root / ref['executable']).resolve(strict=True)
+    if (not contained(python, io_path(root / 'python').resolve(strict=True))
+            or python != io_path(root / descriptor.get('executable', '')).resolve(strict=True)):
+        raise ValueError('APP助手解释器与原任务不符')
+    return python
+
+
 def recovery_entry(ctx):
     job, home, platform = ctx['job'], ctx['home'], ctx['plan']['platform']
     helper = job / 'replace.py'
     if not io_path(helper).is_file() or io_path(helper).is_symlink():
         raise ValueError('缺少本地启动器恢复程序，旧启动器未退出')
-    if platform == 'win32':
+    owned = helper_runtime(ctx)
+    if owned is not None:
+        ref = ctx['plan']['helperRuntime']
+        relative = '../../app-helper-runtime/' + ref['imageSha256'] + '/' + ref['executable']
+        python = owned
+        if platform == 'win32':
+            script = job / '恢复旧启动器.cmd'
+            body = '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n"%~dp0' + relative.replace('/', '\\') + '" -I -B "%~dp0replace.py" --recover "%~dp0."\r\nif errorlevel 1 pause\r\n'
+        else:
+            script = job / '恢复旧启动器.command'
+            body = '#!/bin/sh\nset -eu\njob=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)\nexec "$job/' + relative + '" -I -B "$job/replace.py" --recover "$job"\n'
+    elif platform == 'win32':
         python = home / 'hermes/hermes-agent/venv/Scripts/python.exe'
         script = job / '恢复旧启动器.cmd'
         body = '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n"%~dp0..\\..\\..\\hermes\\hermes-agent\\venv\\Scripts\\python.exe" -B "%~dp0replace.py" --recover "%~dp0."\r\nif errorlevel 1 pause\r\n'
@@ -475,7 +551,7 @@ def validate_snapshot(ctx, *, full):
         raise ValueError('启动器恢复计划与原安装身份不一致，未覆盖程序')
     if plan['schema'] == 2:
         bound = ('operationId', 'ownerEpoch', 'planDigest', 'releasePlan', 'executorProtocol', 'rollbackCompatibility',
-            'parentPid', 'parentCreationTime')
+            'parentPid', 'parentCreationTime', 'helperRuntime')
         if (any(snapshot.get(key) != plan.get(key) for key in bound)
                 or snapshot.get('planSeal') != hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                 or not isinstance(snapshot.get('resourceDigests'), dict)
@@ -532,7 +608,7 @@ def ready_acknowledged(ctx):
     return file_identity(ready) is not None and io_path(ready).is_file() and read_json(ready) == expected
 
 
-def inspect_outcome(job):
+def inspect_outcome(job, *, typed=False):
     """Explicit full proof of a terminal handoff, never status polling."""
     ctx = context(job)
     if ctx['plan']['schema'] != 2:
@@ -548,6 +624,7 @@ def inspect_outcome(job):
             return None
         if parent_alive(snapshot['workerPid'], snapshot['workerCreationTime']):
             return None
+        extra = {'target': snapshot['target']} if typed else {}
         if phase == 'committed':
             if not ready_acknowledged(ctx):
                 return None
@@ -556,18 +633,69 @@ def inspect_outcome(job):
             return {'job': str(ctx['job']), 'status': phase, 'verification': 'confirmed',
                     'effectState': 'changed', 'busy': False, 'workerOffline': True,
                     'operationId': snapshot['operationId'], 'planDigest': snapshot['planDigest'],
-                    'version': snapshot['version']}
+                    'version': snapshot['version'], **extra}
         if phase == 'cancelled' and (not untouched(ctx, snapshot) or exists(ctx['failed'])):
             return None
-        status = read_json(ctx['job'] / 'status.json')
-        if status.get('status') != phase or any(status.get(key) != snapshot.get(key)
-                for key in ('operationId', 'planDigest', 'workerPid', 'workerCreationTime')):
-            return None
+        status = {}
+        segment_only = snapshot.get('appSegmentOnly') is True
+        if not typed or (snapshot['releasePlan'].get('client') != 'app' and not segment_only):
+            # Keep the original proof format for old recovery writers.
+            status = read_json(ctx['job'] / 'status.json')
+            if status.get('status') != phase or any(status.get(key) != snapshot.get(key)
+                    for key in ('operationId', 'planDigest', 'workerPid', 'workerCreationTime')):
+                return None
         return {'job': str(ctx['job']), 'status': phase, 'verification': 'confirmed',
                 'effectState': 'untouched' if phase == 'cancelled' else 'restored', 'busy': False, 'workerOffline': True,
                 'operationId': snapshot['operationId'], 'planDigest': snapshot['planDigest'],
                 'version': snapshot['old']['version'],
-                'diagnosticError': snapshot.get('diagnosticError') or status.get('diagnosticError')}
+                **({'appSegmentOnly': True} if typed and segment_only else {}),
+                'diagnosticError': snapshot.get('diagnosticError') or status.get('diagnosticError'), **extra}
+
+
+def inspect_prepared(job):
+    """Read the narrow prepare-before-controller-handoff interruption window."""
+    ctx = context(job)
+    try:
+        with job_lock(ctx['job'], readonly=True):
+            snapshot = validate_snapshot(ctx, full=True)
+            if ctx['plan']['schema'] != 2 or snapshot['phase'] != 'prepared' or not untouched(ctx, snapshot):
+                return None
+            pid, created = snapshot.get('workerPid'), snapshot.get('workerCreationTime')
+            if (type(pid) is not int or pid <= 0 or type(created) not in (int, float)
+                    or not math.isfinite(created) or created <= 0 or parent_alive(pid, created)):
+                return None
+            return {'job': str(ctx['job']), 'status': 'prepared', 'verification': 'confirmed',
+                    'operationId': ctx['plan']['operationId'], 'planDigest': ctx['plan']['planDigest'],
+                    'effectState': 'untouched', 'workerOffline': True, 'busy': False, 'canRecover': True}
+    except RuntimeError:
+        return None  # An active job writer is not an unpublished preparation.
+
+
+def read_outcome(job):
+    """Typed APP facts: absence, a live handoff and a terminal are distinct."""
+    ctx = context(job)
+    if not exists(ctx['job'] / 'recovery.json'):
+        state = assess(job)
+        return {'kind': 'unknown' if state else 'idle', 'job': str(ctx['job']),
+                **({'state': state} if state else {})}
+    snapshot = validate_snapshot(ctx, full=False)
+    phase = snapshot['phase']
+    if phase in ('committed', 'restored', 'cancelled'):
+        pid, created = snapshot.get('workerPid'), snapshot.get('workerCreationTime')
+        if (type(pid) is not int or pid <= 0 or type(created) not in (int, float)
+                or not math.isfinite(created) or created <= 0):
+            return {'kind': 'unknown', 'job': str(ctx['job']), 'reason': 'APP执行者身份缺失，已保留现场'}
+        if parent_alive(pid, created):
+            return {'kind': 'pending', 'job': str(ctx['job']), 'state': {
+                'status': phase, 'effectState': 'unknown', 'busy': True, 'workerOffline': False,
+                'canRecover': False, 'reason': 'APP助手尚未退出，等待同一任务完成'}}
+        outcome = inspect_outcome(job, typed=True)
+        if outcome is not None:
+            return {'kind': 'terminal', 'job': str(ctx['job']), 'outcome': outcome}
+        return {'kind': 'unknown', 'job': str(ctx['job']), 'reason': 'APP终态程序事实尚未确认'}
+    state = assess(job)
+    return {'kind': 'unknown' if not state or state.get('effectState') == 'unknown' else 'pending',
+            'job': str(ctx['job']), 'state': state}
 
 
 def assess(job, *, allow_legacy=False):
@@ -824,9 +952,10 @@ def wait_parent(pid, created, *, cancel=None):
         time.sleep(0.1)
 
 
-def cancel_untouched(ctx, snapshot, *, error=None):
+def cancel_untouched(ctx, snapshot, *, error=None, historical_segment=False):
     if not untouched(ctx, snapshot): raise ValueError('原程序现场发生变化，未取消恢复')
     extra = {'diagnosticError': error_data(error)} if error is not None else {}
+    if historical_segment: extra['appSegmentOnly'] = True
     checkpoint(ctx, snapshot, 'cancelled', diagnosticVerification='confirmed', **worker_identity(), **extra)
     try: clean_stage(ctx, snapshot)
     except (OSError, ValueError) as cleanup:
@@ -834,13 +963,42 @@ def cancel_untouched(ctx, snapshot, *, error=None):
     return {'restored': False, 'untouched': True, 'restarting': False}
 
 
-def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False):
+def verify_historical_app_segment(ctx, sequence):
+    plan = ctx['plan']
+    if plan['schema'] != 2 or plan['releasePlan'].get('client') == 'app' or not 0 < sequence <= 2**53 - 1:
+        raise ValueError('历史任务的APP交接协议无效')
+    operations = ctx['home'] / 'installer/operations'
+    directory = operations / plan['operationId']
+    file = directory / 'operation.json'
+    if (file_identity(operations) is None or not io_path(operations).is_dir()
+            or file_identity(directory) is None or not io_path(directory).is_dir()
+            or file_identity(file) is None or not io_path(file).is_file()
+            or io_path(file).stat().st_size > 256 * 1024):
+        raise ValueError('无法确认历史任务的原操作记录')
+    record = read_json(file)
+    target = record.get('target')
+    request = target.get('request') if isinstance(target, dict) else None
+    epoch = record.get('ownerEpoch')
+    if (record.get('schema') != 'nora-operation/1' or record.get('kind') != 'update'
+            or record.get('operationId') != plan['operationId'] or record.get('sequence') != sequence
+            or type(epoch) is not int or not plan['ownerEpoch'] <= epoch <= 2**53 - 1
+            or record.get('state') == 'succeeded'
+            or record.get('state') == 'rolled-back' and record.get('verification') == 'confirmed'
+            or record.get('handoffRef') != str(ctx['job']) or record.get('planDigest') != plan['planDigest']
+            or not isinstance(request, dict) or request.get('action') != 'update' or request.get('launcherOnly') is True
+            or target.get('releasePlan') != plan['releasePlan']
+            or hashlib.sha256(json.dumps(target, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest() != plan['planDigest']):
+        raise ValueError('历史任务的APP交接与原操作记录不符，未修改程序')
+
+
+def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_segment=False):
+    helper_runtime(ctx)
     snapshot = validate_snapshot(ctx, full=True)
     if snapshot.get('phase') == 'cancelled': return {'restored': False, 'untouched': True, 'restarting': False}
     if snapshot.get('phase') == 'committed': raise ValueError('此启动器更新已提交，无需恢复')
     if snapshot.get('phase') == 'restored': return {'restored': True, 'restarting': False}
     if snapshot['phase'] in ('prepared', 'waiting-parent', 'moving-old') and untouched(ctx, snapshot):
-        return cancel_untouched(ctx, snapshot)
+        return cancel_untouched(ctx, snapshot, historical_segment=historical_segment)
     if ctx['plan']['schema'] != 2 and not allow_legacy:
         raise ValueError('旧启动器回滚协议未知，未覆盖程序')
     if parent_pid and ctx['plan']['schema'] == 2:
@@ -858,6 +1016,11 @@ def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False)
             checkpoint(ctx, snapshot, 'moving-failed'); retry_rename(ctx['app'], ctx['failed'])
         checkpoint(ctx, snapshot, 'restoring-old'); retry_rename(ctx['backup'], ctx['app'])
     validate_snapshot(ctx, full=True)
+    if historical_segment:
+        # The restored binary may still have a legacy joint-update entrypoint.
+        # Keep the original task and installer state read-only.
+        checkpoint(ctx, snapshot, 'restored', appSegmentOnly=True, diagnosticVerification='confirmed')
+        return {'restored': True, 'restarting': False, 'appSegmentOnly': True}
     should_launch = not snapshot.get('launchAttempted')
     checkpoint(ctx, snapshot, 'restored', launchAttempted=True, diagnosticVerification='confirmed')
     state_file = ctx['home'] / 'installer/state.json'
@@ -876,9 +1039,10 @@ def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False)
     return {'restored': True, 'restarting': False}
 
 
-def prepare_recovery(job, *, parent_pid, parent_creation_time):
+def prepare_recovery(job, *, parent_pid, parent_creation_time, historical_sequence=None):
     ctx = context(job)
     with writer_lock(ctx, successor=True), job_lock(ctx['job']):
+        if historical_sequence is not None: verify_historical_app_segment(ctx, historical_sequence)
         snapshot = validate_snapshot(ctx, full=True)
         if ctx['plan']['schema'] != 2 and not untouched(ctx, snapshot):
             raise ValueError('旧启动器回滚协议未知，未覆盖程序')
@@ -888,14 +1052,16 @@ def prepare_recovery(job, *, parent_pid, parent_creation_time):
         return {'prepared': True, 'job': str(ctx['job']), 'operationId': ctx['plan'].get('operationId')}
 
 
-def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False):
+def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_sequence=None):
     ctx = context(job)
     with writer_lock(ctx, successor=True), job_lock(ctx['job']):
+        if historical_sequence is not None: verify_historical_app_segment(ctx, historical_sequence)
         snapshot = validate_snapshot(ctx, full=True)
         # No default legacy rollback across an unrecognized operation protocol.
         if ctx['plan']['schema'] != 2 and not allow_legacy and not untouched(ctx, snapshot):
             raise ValueError('旧启动器回滚协议未知，未覆盖程序')
-        try: return restore(ctx, parent_pid=parent_pid, parent_creation_time=parent_creation_time, allow_legacy=allow_legacy)
+        try: return restore(ctx, parent_pid=parent_pid, parent_creation_time=parent_creation_time, allow_legacy=allow_legacy,
+                            historical_segment=historical_sequence is not None)
         except Exception as error:
             try: phase = read_json(ctx['job'] / 'recovery.json').get('phase')
             except Exception as recording:
@@ -998,6 +1164,7 @@ def prepare_context(ctx):
         if plan['schema'] == 2:
             snapshot.update({key: plan[key] for key in ('operationId', 'ownerEpoch', 'planDigest', 'releasePlan', 'executorProtocol',
                 'rollbackCompatibility', 'parentPid', 'parentCreationTime')})
+            if 'helperRuntime' in plan: snapshot['helperRuntime'] = plan['helperRuntime']
             snapshot['planSeal'] = hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             snapshot['resourceDigests'] = {name: digest(job / name) for name in
                 ('operation_control.py', 'operation_evidence.py', 'error_diagnostics.py', 'operation-budget.json')}
@@ -1034,6 +1201,7 @@ def replace(ctx, *, allow_legacy=False):
         checkpoint(ctx, snapshot, 'waiting-parent', **worker_identity())
         wait_parent(plan['parentPid'], plan.get('parentCreationTime'), cancel=job / 'cancel')
         if exists(job / 'cancel'): raise RuntimeError('更新已取消')
+        helper_runtime(ctx)
         validate_snapshot(ctx, full=True)
         if not untouched(ctx, snapshot): raise ValueError('原启动器在准备期间发生变化，未替换程序')
         checkpoint(ctx, snapshot, 'moving-old'); retry_rename(app, backup); moved = True
@@ -1103,6 +1271,8 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--assess', metavar='JOB')
     modes.add_argument('--inspect-outcome', metavar='JOB')
+    modes.add_argument('--read-outcome', metavar='JOB')
+    modes.add_argument('--inspect-prepared', metavar='JOB')
     modes.add_argument('--diagnostics', metavar='JOB')
     modes.add_argument('--prepare', metavar='JOB')
     modes.add_argument('--prepare-recovery', metavar='JOB')
@@ -1116,9 +1286,12 @@ def main():
     parser.add_argument('--version')
     parser.add_argument('--verified', action='store_true')
     parser.add_argument('--no-diagnostic-details', action='store_true')
+    parser.add_argument('--historical-app-segment-sequence', type=int)
     args = parser.parse_args()
-    job = Path(args.assess or args.inspect_outcome or args.diagnostics or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
-    if not (args.assess or args.inspect_outcome or args.diagnostics or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
+    if args.historical_app_segment_sequence is not None and not (args.prepare_recovery or args.recover):
+        parser.error('历史任务的APP操作只支持原地恢复')
+    job = Path(args.assess or args.inspect_outcome or args.read_outcome or args.inspect_prepared or args.diagnostics or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
+    if not (args.assess or args.inspect_outcome or args.read_outcome or args.inspect_prepared or args.diagnostics or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
         parser.error('缺少更新任务目录')
     try:
         if args.recover or args.job:
@@ -1128,15 +1301,21 @@ def main():
         elif args.prepare:
             result = prepare(job)
         elif args.prepare_recovery:
-            result = prepare_recovery(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created)
+            result = prepare_recovery(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created,
+                                      historical_sequence=args.historical_app_segment_sequence)
         elif args.assess:
             result = assess(job)
         elif args.inspect_outcome:
             result = inspect_outcome(job)
+        elif args.read_outcome:
+            result = read_outcome(job)
+        elif args.inspect_prepared:
+            result = inspect_prepared(job)
         elif args.diagnostics:
             result = inspect_diagnostics(job, details=not args.no_diagnostic_details)
         elif args.recover:
-            result = recover(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created)
+            result = recover(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created,
+                             historical_sequence=args.historical_app_segment_sequence)
         elif args.finalize:
             result = finalize(job, target=args.target or '', version=args.version or '', verified=args.verified)
         else:
@@ -1147,7 +1326,7 @@ def main():
         # Never change a corrupt/unowned recovery plan merely to report its rejection.
         if args.job and not exists(job / 'status.json'):
             write_json(job / 'status.json', {'status': 'error', 'error': str(error), 'workerPid': os.getpid(), 'diagnosticError': error_data(error)})
-        elif args.recover:
+        elif args.recover and args.historical_app_segment_sequence is None:
             try:
                 status = read_json(job / 'status.json')
                 if status.get('workerPid') != os.getpid():

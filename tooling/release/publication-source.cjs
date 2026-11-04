@@ -8,6 +8,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const { verifyArchive, extractScript } = require('./reuse-windows-build.cjs');
 const {stageArtifacts,verifyPublishedStages} = require('./build-stage.cjs');
+const {assertAppHandoffResult} = require('./app-only-acceptance.cjs');
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const fullNames = ['nora-tavern-shared', ...platforms.map(p => `nora-tavern-${p}`),
   ...platforms.map(p => `nora-operation-acceptance-${p}`)];
@@ -205,12 +206,12 @@ async function verifyAppOnlyHistory(reports,proof,{identity,readLauncher,reposit
     assert.equal(digestBytes(JSON.stringify(before.before.protectedData.files)),evidence.protectedDataSha256);
     assert.equal(digestBytes(JSON.stringify(before.before.config)),evidence.userConfigurationDigest);
     assert.equal(Object.values(before.before.core).reduce((count,tree)=>count+tree.files.length,0)+Object.keys(before.before.receipts).length,evidence.coreFilesCount);
-    assert.equal(before.status.running,state==='running');assert.equal(after.operation.result.running,state==='running');
+    assert.equal(before.status.running,state==='running');
     if(state==='stopped'&&after.status.running){assert.ok(after.continuationOperations?.length);for(const start of after.continuationOperations){assert.equal(start.kind,'start');assert.equal(start.target?.request?.service,'tavern');assert.equal(start.state,'succeeded');assert.equal(start.verification,'confirmed');assert.ok(Date.parse(start.createdAt)>=Date.parse(after.operation.updatedAt));}}else assert.equal(after.status.running,state==='running');
     for(const runtime of [before.runtimeProof,after.runtimeProof]){for(const key of ['hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration','sessionReadable'])assert.equal(runtime?.[key],true);assert.equal(runtime.httpStatus,200);assert.ok(Number.isSafeInteger(runtime.worldCount)&&runtime.worldCount>0);}
     assert.deepEqual(after.sourceProof.modules,value.moduleHashes);assert.deepEqual(after.sourceProof.actors,value.actorSourceFiles);
     assert.equal(after.operation.state,'succeeded');assert.equal(after.operation.verification,'confirmed');assert.equal(after.operation.target?.request?.launcherOnly,true);assert.equal(after.operation.target?.releasePlan?.tag,proof.targetTag);
-    assert.equal(after.operation.result?.updateVerified,true);assert.equal(after.operation.result?.version,proof.coreIdentity.version);assert.equal(after.operation.result?.commit,proof.coreIdentity.commit);
+    assertAppHandoffResult(after.operation,{version:proof.targetLauncher.version,coreIdentity:proof.coreIdentity,running:state==='running'});
     assert.equal(after.operations.length,1);assert.equal(after.ready.operationId,after.operation.operationId);assert.equal(after.ready.planDigest,after.operation.planDigest);assert.equal(after.ready.version,proof.targetLauncher.version);
     assert.equal(finished.status.running,false);assert.equal(finished.status.systemReady,true);assert.equal(finished.offline,true);assert.deepEqual(finished.processes,[]);assert.equal(finished.lockProof.busy,false);
 

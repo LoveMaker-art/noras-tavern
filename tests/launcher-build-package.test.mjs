@@ -75,13 +75,32 @@ for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} w
     const system = { schema: 'nora-system/v1', platform: process.platform, arch: process.arch,
         candidate: false, channel: 'stable', commit: baseline.commit, version: baseline.versions.tavern, files: {} };
     const write = (name, value) => {
-        fs.writeFileSync(path.join(temporary, name), typeof value === 'string' ? value : JSON.stringify(value));
+        fs.writeFileSync(path.join(temporary, name), typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
         system.files[name] = { size: fs.statSync(path.join(temporary, name)).size, sha256: fileDigest(path.join(temporary, name)) };
     };
     for (const [name, key] of [['nora-hermes-runtime.json', 'hermesRuntime'], ['nora-tavern-dependencies.json', 'dependencies']]) {
         const archive = `${key}.tar.gz`;
-        write(archive, 'synthetic environment');
-        baseline[key] = { schema: 1, platform: process.platform, arch: process.arch, archive, ...system.files[archive] };
+        let fields={};
+        if(key==='hermesRuntime'){
+            // The packager now consumes the actual helper closure, so this
+            // packaging-only baseline has real archive structure and hashes.
+            // Its executable/native bytes remain synthetic and are never run.
+            const tree=path.join(temporary,'runtime-source'),runtime=path.join(tree,'hermes-runtime');
+            const put=(relative,text)=>{const file=path.join(runtime,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,text);};
+            const windows=process.platform==='win32',lib=windows?'Lib':'lib/python3.11';
+            put(`python/${windows?'python.exe':'bin/python3.11'}`,'synthetic CPython executable; not runnable');
+            put(`python/${lib}/os.py`,'synthetic standard library');put('python/LICENSE','CPython license');
+            const site=`hermes-agent/venv/${lib}/site-packages`;
+            put(`${site}/psutil/__init__.py`,"__version__ = '7.0.0'\n");
+            put(`${site}/psutil/${windows?'_psutil_windows.cp311-win_amd64.pyd':'_psutil_osx.abi3.so'}`,'synthetic native extension; not runnable');
+            put(`${site}/psutil-7.0.0.dist-info/METADATA`,'Name: psutil\nVersion: 7.0.0\n');
+            put(`${site}/psutil-7.0.0.dist-info/LICENSE`,'psutil license');
+            const command=buildCommand('tar',['-czf',path.join(temporary,archive),'-C',tree,'hermes-runtime']);
+            execFileSync(command.command,command.args);
+            write(archive,fs.readFileSync(path.join(temporary,archive)));
+            fields={format:'tar.gz',pythonVersion:'3.11.9'};
+        }else write(archive, 'synthetic environment');
+        baseline[key] = { schema: 1, platform: process.platform, arch: process.arch, archive, ...fields, ...system.files[archive] };
         write(name, baseline[key]);
     }
     if(appOnly){baseline.launcherVersion='2.2.1';for(const entry of [...Object.values(baseline.archives),...Object.values(baseline.modules)])system.files[entry.name]={asset:`${process.platform}-${process.arch}-${entry.name}`,size:fs.statSync(path.join(temporary,entry.name)).size,sha256:entry.sha256};write('SHA256SUMS','original core checksum table\n');}
@@ -116,6 +135,10 @@ for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} w
     if(appOnly){assert.deepEqual(fs.readFileSync(path.join(payload,'release-manifest.json')),fs.readFileSync(path.join(temporary,'release-manifest.json')));assert.equal(result.coreRelease.manifests[`${process.platform}-${process.arch}`].sha256,fileDigest(path.join(payload,'release-manifest.json')));assert.notEqual(fileDigest(path.join(release,'release-manifest.json')),fileDigest(path.join(payload,'release-manifest.json')));}
     const desktop = path.join(release, 'nora-tavern-launcher/desktop');
     assert.ok(fs.existsSync(path.join(desktop, 'main.js')));
+    const helperDescriptor=path.join(release,'nora-tavern-launcher/app-helper-runtime.json');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(desktop,'package.json'))).noraAppHelperRuntimeSha256,fileDigest(helperDescriptor));
+    assert.equal(JSON.parse(fs.readFileSync(helperDescriptor)).psutilVersion,'7.0.0');
+    assert.ok(fs.existsSync(path.join(release,'nora-tavern-launcher/app-helper-runtime/python',process.platform==='win32'?'python.exe':'bin/python3.11')));
     assert.ok(fs.existsSync(path.join(release, 'nora-tavern-launcher/launcher_services.py')));
     assert.deepEqual(fs.readFileSync(path.join(release, 'nora-tavern-launcher/launcher_services.py')), services);
     assert.ok(fs.existsSync(path.join(payload, 'nora-system.json')));
