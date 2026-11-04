@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
@@ -16,8 +17,15 @@ function fixture(overrides = {}) {
     quitting: false, quitReady: false, shutdownPending: null, uninstalling: false, MOCK_SCENARIO: '',
     setImmediate, setTimeout, clearTimeout, verifyWorkflowResult,
     activeRun: false, modelBusy: false, selectingLocation: false, statusRequest: null,
+    activeOperationContext: null, activeProcess: null,
     noraHome: () => '/private/test-instance',
-    require: name => { assert.equal(name,'./updater-task'); return {query:async()=>({status:'none',busy:false,settled:true})}; },
+    installerDirectory: () => '/private/test-instance/installer',
+    launcherError: (message, fields) => Object.assign(new Error(message),fields),
+    operationLock: {probe:async()=>({busy:true,inspectionRequired:false,errors:[]})},
+    require: name => {
+      if(name==='./os-lock')return {acquire:()=>({release(){}})};
+      assert.equal(name,'./updater-task'); return {query:async()=>({status:'none',busy:false,settled:true})};
+    },
     runOwnedTask: async (kind,target,work) => { calls.push(['owned',kind,target]); return work({stage:async()=>{}}); },
     findPython: () => '/managed/python', nodeStatus: () => ({ installed: false, hermesInstalled: false }),
     runBridge: async (command, options) => { calls.push([command, options.service]); return { running: false, tavernProcessRunning: false, gatewayRunning: false }; },
@@ -30,8 +38,10 @@ function fixture(overrides = {}) {
   });
   const node = functions.get('requestQuit');
   assert.ok(node, 'Full exit must have a managed shutdown handler');
-  const deadline = functions.get('awaitLifecycleStep');
-  if (deadline) vm.runInContext(source.slice(deadline.start, deadline.end), context);
+  for(const name of ['awaitLifecycleStep','hasLocalShutdownWork','confirmExitWithoutStopping']){
+    const fn=functions.get(name);
+    vm.runInContext(source.slice(fn.start,fn.end),context);
+  }
   const quit = vm.runInContext(`(${source.slice(node.start, node.end)})`, context);
   const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
   return { context, calls, dialogs, quit, event };
@@ -78,15 +88,18 @@ test('stop error or surviving service keeps the launcher alive and permits retry
     assert.equal(f.context.quitReady, false);
     assert.equal(f.context.quitting, false);
     assert.equal(f.calls.includes('quit'), false);
-    assert.match(f.dialogs[0].message, /未退出/);
+    assert.deepEqual([...f.dialogs[0].buttons],['返回启动器','仅退出启动器']);
+    assert.equal(f.dialogs[0].defaultId,0);
+    assert.equal(f.dialogs[0].cancelId,0);
+    assert.match(f.dialogs[0].detail,/后台服务可能继续运行/);
     f.context.runBridge = async () => ({ running: false, tavernProcessRunning: false, gatewayRunning: false });
     await f.quit(f.event());
     assert.equal(f.calls.includes('quit'), true);
   }
 });
 
-test('install, model save and directory selection cannot race quitting', async () => {
-  for (const flag of ['activeRun', 'modelBusy', 'selectingLocation']) {
+test('local tasks and their still-active executors cannot race quitting', async () => {
+  for (const flag of ['activeRun', 'modelBusy', 'selectingLocation','activeOperationContext','activeProcess']) {
     const f = fixture({ [flag]: true });
     await f.quit(f.event());
     assert.deepEqual(f.calls, []);
@@ -135,11 +148,56 @@ test('quit waits for an independent update without stopping services and works a
 });
 
 test('pending or unconfirmed updater inspection keeps the window open without a shutdown attempt',async()=>{
-  for(const state of [{status:'submitting',busy:false,settled:false},{status:'inspection-required',busy:null,settled:false},{status:'unknown',busy:null,settled:true}]){
+  for(const state of [{status:'submitting',busy:false,settled:false},{status:'unknown',busy:null,settled:true}]){
     const f=fixture({require:()=>({query:async()=>state})});await f.quit(f.event());
     await new Promise(resolve=>setImmediate(resolve));
     assert.deepEqual(f.calls,[]);assert.equal(f.context.quitReady,false);assert.equal(f.dialogs.length,1);
   }
+});
+
+test('only-exit accepts broken history after proving no writer or executor remains',async t=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-quit-only-'));
+  t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const directory=path.join(home,'installer');
+  const native=require('../installer/desktop/os-lock'),guard=require('../installer/desktop/operation-lock');
+  const updater=require('../installer/desktop/updater-task');
+  const job=path.join(directory,'update-jobs','76dff6a7-1cf2-45c7-9da0-a14354c50a61');
+  fs.mkdirSync(job,{recursive:true});
+  const damaged=path.join(job,'operation-ref.json');
+  fs.writeFileSync(damaged,'{incomplete');
+  assert.equal((await updater.query(home)).status,'inspection-required');
+  const f=fixture({noraHome:()=>home,installerDirectory:()=>directory,operationLock:guard,
+    require:name=>name==='./os-lock'?native:updater,
+    diagnostics:{write:(event,detail)=>f.calls.push([event,detail?.servicesStopped]),error(){}},
+    dialog:{showMessageBox:async options=>{
+      f.dialogs.push(options);
+      assert.throws(()=>native.acquire({directory}),{code:'OPERATION_BUSY'});
+      return {response:1};
+    }},
+  });
+  await f.quit(f.event());
+  assert.deepEqual(f.calls,[['shutdown.exit-only',false],'quit']);
+  assert.equal(fs.readFileSync(damaged,'utf8'),'{incomplete');
+  assert.equal(native.acquire({directory,probe:true}).busy,false);
+});
+
+test('a native writer or unresolved executor prevents offering only-exit',async t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-quit-held-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const native=require('../installer/desktop/os-lock'),guard=require('../installer/desktop/operation-lock');
+  const f=fixture({installerDirectory:()=>directory,operationLock:guard,
+    require:name=>name==='./os-lock'?native:{query:async()=>({status:'inspection-required',busy:null,settled:false})},
+  });
+  const lease=native.acquire({directory});
+  try{await f.quit(f.event());}finally{lease.release();}
+  const ledger=path.join(directory,'operations','.guards','orphan.json');
+  fs.mkdirSync(path.dirname(ledger));
+  fs.writeFileSync(ledger,JSON.stringify({schema:'nora-operation-guard/1',jobs:[{pid:process.pid}]}));
+  await f.quit(f.event());
+  assert.equal(f.dialogs.length,2);
+  for(const dialog of f.dialogs)assert.deepEqual([...dialog.buttons],['知道了']);
+  assert.deepEqual(f.calls,[]);
+  assert.equal(native.acquire({directory,probe:true}).busy,false);
 });
 
 test('uninstalled home exits without Python; missing Python for installed services is an error', async () => {

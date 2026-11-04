@@ -1239,6 +1239,41 @@ async function awaitLifecycleStep(work, timeoutMs, message, code='SHUTDOWN_NOT_C
   } finally { clearTimeout(timer); }
 }
 
+function hasLocalShutdownWork() {
+  return activeRun || modelBusy || selectingLocation || shutdownPending || activeOperationContext || activeProcess;
+}
+
+async function confirmExitWithoutStopping(error) {
+  let lease;
+  try {
+    const directory = installerDirectory();
+    lease = require('./os-lock').acquire({directory});
+    // A free native lock is insufficient after a guard crash. Check the
+    // executor ledger while holding the lock, independently of update history.
+    const history = await awaitLifecycleStep(operationLock.probe({directory}),5000,
+      '尚未确认维护执行器已退出，请查看日志或稍后重试退出。');
+    if (history.busy !== true || history.inspectionRequired !== false || history.errors?.length)
+      throw launcherError('尚未确认维护执行器已退出。',{code:'OPERATION_EXECUTOR_UNCONFIRMED'});
+    if (hasLocalShutdownWork()) throw launcherError('当前任务尚未结束。',{code:'OPERATION_BUSY'});
+    const choice = await dialog.showMessageBox({
+      type:'warning', title:'后台停止未确认', message:'尚未确认后台已停止，是否仅退出启动器？',
+      detail:`${error.code==='SHUTDOWN_NOT_CONFIRMED'?error.message:formatUserError(error,{action:'stop'})}\n\n后台服务可能继续运行。现有任务和恢复记录会保留。`,
+      buttons:['返回启动器','仅退出启动器'], defaultId:0, cancelId:0, noLink:true,
+    });
+    if (choice?.response !== 1) return;
+    if (hasLocalShutdownWork()) throw launcherError('当前任务尚未结束。',{code:'OPERATION_BUSY'});
+    diagnostics.write('shutdown.exit-only',{servicesStopped:false});
+    quitReady = true;
+    await new Promise(resolve=>setImmediate(resolve));
+    app.quit();
+  } catch (blocked) {
+    diagnostics.error('shutdown.exit-blocked',blocked);
+    await dialog.showMessageBox({type:'info',title:'暂未退出',
+      message:'后台维护仍在执行或其占用无法确认，暂不能退出启动器',
+      detail:blocked.code==='SHUTDOWN_NOT_CONFIRMED'?blocked.message:formatUserError(blocked,{action:'stop'}),buttons:['知道了']});
+  } finally { lease?.release(); }
+}
+
 async function requestQuit(event) {
   // Uninstall owns its shutdown; a second instance never registers this handler.
   if (quitReady || uninstalling || MOCK_SCENARIO) return;
@@ -1246,7 +1281,7 @@ async function requestQuit(event) {
   if (quitting) return;
   quitting = true;
   try {
-    if (activeRun || modelBusy || selectingLocation || shutdownPending) {
+    if (hasLocalShutdownWork()) {
       await dialog.showMessageBox({ type: 'info', title: '暂未退出',
         message: '任务尚未结束，暂不能退出启动器', detail: '请等待任务结束；当前阶段允许取消时，可先点击“取消任务”。', buttons: ['知道了'] });
       return;
@@ -1255,6 +1290,8 @@ async function requestQuit(event) {
     // protection and never stop services while an independent task may own them.
     const updating=await awaitLifecycleStep(require('./updater-task').query(noraHome()),5000,
       '尚未确认后台维护状态，请查看日志或稍后重试退出。');
+    if (updating.status==='inspection-required' && updating.busy!==true)
+      throw launcherError(updating.message || '后台维护历史无法查询。',{code:'SHUTDOWN_NOT_CONFIRMED'});
     if(updating.busy!==false||updating.settled!==true
       ||updating.operation&&['selecting','downloading','prepared','applying','verifying','recovering'].includes(updating.status)){
       await dialog.showMessageBox({type:'info',title:'暂未退出',
@@ -1286,9 +1323,12 @@ async function requestQuit(event) {
   } catch (error) {
     diagnostics.error('shutdown.failed', error);
     telemetry?.report(error,{source:'launcher_process',site:'process.stop'});
-    await dialog.showMessageBox({ type: 'error', title: '退出未完成',
-      message: '后台服务停止失败，启动器未退出',
-      detail: error.code==='SHUTDOWN_NOT_CONFIRMED'?error.message:formatUserError(error, {action:'stop'}), buttons: ['知道了'] });
+    if (hasLocalShutdownWork()) {
+      await dialog.showMessageBox({type:'info',title:'暂未退出',message:'任务尚未结束，暂不能退出启动器',
+        detail:error.code==='SHUTDOWN_NOT_CONFIRMED'?error.message:formatUserError(error,{action:'stop'}),buttons:['知道了']});
+      return;
+    }
+    await confirmExitWithoutStopping(error);
   } finally { quitting = false; }
 }
 
