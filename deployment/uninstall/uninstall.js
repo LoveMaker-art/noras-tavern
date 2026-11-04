@@ -177,13 +177,15 @@ function statIfPresent(file, options) {
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 function present(file) { return statIfPresent(file) !== null; }
-function readJournal(file,limit=4*1024*1024){
+function readJournal(file,limit=4*1024*1024,reviver){
   const stat=fs.lstatSync(file);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.size>limit)throw recoveryRequired();
-  const value=JSON.parse(fs.readFileSync(file,'utf8'));
+  const value=JSON.parse(fs.readFileSync(file,'utf8'),reviver);
   if(!value||typeof value!=='object'||Array.isArray(value))throw recoveryRequired();
   return value;
 }
+const exactIdentityNumbers=(_key,value,context)=>typeof value==='number'&&Number.isInteger(value)
+  &&!Number.isSafeInteger(value)?context.source:value;
 function transactionCatalog(root,plan){
   const directory=contained(root,'installer/operations'),operations=[];
   for(const name of fs.readdirSync(directory)){
@@ -201,7 +203,7 @@ function transactionCatalog(root,plan){
     const runtimeFile=contained(root,path.join('installer/operations',name,'runtime-bootstrap.json'));
     const firstFile=contained(root,path.join('installer/operations',name,'first-install/transaction.json'));
     const runtime=present(runtimeFile)?readJournal(runtimeFile):null;
-    const first=present(firstFile)?readJournal(firstFile,2*1024*1024):null;
+    const first=present(firstFile)?readJournal(firstFile,2*1024*1024,exactIdentityNumbers):null;
     if(first&&(first.schema!==1||first.owner!=='nora-first-install'||first.operationId!==name
       ||canonical(first.noraHome||'')!==root||canonical(first.roots?.hermes||'')!==contained(root,plan.hermes)
       ||canonical(first.roots?.tavern||'')!==contained(root,plan.tavern)))throw recoveryRequired();
@@ -608,10 +610,96 @@ function verifiedPartialRuntimes(root,plan,catalog,candidates,capability,proof){
   }
   if(proof.journalSha256!==hash(fs.readFileSync(catalog.systemFile)))reject();
 }
-function assertNoPendingTransaction(root,plan){
+const keepExchangeTargets=new Set(['tavern/apps/tavern-runtime','tavern/apps/tavern-ops','tavern/apps/nora-mcp',
+  'tavern/tavern-state/native-runtime/config.yaml','tavern/tavern-state/native-runtime/dependencies.json',
+  'tavern/tavern-state/native-runtime/ready.json','tavern/tavern-state/native-runtime/runs',
+  'hermes/plugins/clawchat/clawchat_gateway/adapter.py','hermes/plugins/clawchat/clawchat_gateway/storage.py']);
+const keepExchangeParents=new Set([...keepExchangeTargets].map(file=>path.posix.dirname(file)));
+const firstExchangeNames={
+  old:/^\.(?:nfi-o-|nora-first-install-old-)[a-f0-9]{32}$/i,
+  apply:/^\.(?:nfi-a-|nora-first-install-apply-)[a-f0-9]{32}$/i,
+  restore:/^\.(?:nfi-r-|nora-first-install-restore-)[a-f0-9]{32}$/i,
+};
+function isKeepExchangeAsset(relative){
+  return typeof relative==='string'&&keepExchangeParents.has(path.posix.dirname(relative))
+    &&Object.values(firstExchangeNames).some(pattern=>pattern.test(path.posix.basename(relative)));
+}
+function keepExchangeAssets(root){
+  const files=new Map();
+  for(const parent of keepExchangeParents){
+    const directory=contained(root,parent);
+    if(!present(directory))continue;
+    for(const name of fs.readdirSync(directory)){
+      const relative=parent+'/'+name;
+      if(isKeepExchangeAsset(relative)){
+        const stat=fs.lstatSync(contained(root,relative),{bigint:true});
+        const kind=stat.isDirectory()?'directory':stat.isFile()?'file':null;
+        if(!kind)throw keepAssetUnconfirmed(relative);
+        files.set(relative,{device:String(stat.dev),inode:String(stat.ino),kind});
+      }
+      else if(/^\.nora-maintenance-(?:[a-f0-9]{24}|prepare-[a-f0-9]{32})$/i.test(name))
+        throw keepAssetUnconfirmed(relative);
+    }
+  }
+  return files;
+}
+function keepAssetUnconfirmed(relative){
+  const error=recoveryRequired();
+  error.message='保留数据卸载无法安全保留恢复副本 '+relative+'，未删除程序。请保留日志。';
+  return error;
+}
+function boundFirstInstallAssets(root,catalog,assets){
+  const remaining=new Set(assets.keys()),owners=new Set();
+  if(!remaining.size)return owners;
+  const sameIdentity=(file,saved)=>{
+    const stat=statIfPresent(file,{bigint:true});
+    return stat&&(stat.isDirectory()||stat.isFile())&&Array.isArray(saved)&&saved.length===2
+      &&String(stat.dev)===String(saved[0])&&String(stat.ino)===String(saved[1]);
+  };
+  for(const {id,first,record} of catalog.operations){
+    if(!first||record&&record.kind!=='install'||!Array.isArray(first.targets)||first.targets.length>128
+      ||first.applyIntent!==true||!/^[a-f0-9]{64}$/.test(first.targetDigest||'')
+      ||!['intent','result','failed'].includes(first.checkpoints?.apply?.state)
+      ||!['applying','restoring','recovery_failed','restored','installed'].includes(first.status))continue;
+    const roots={hermes:'hermes',tavern:'tavern',...(first.roots?.state?{state:'tavern/tavern-state'}:{})};
+    if(Object.entries(roots).some(([name,relative])=>{
+      const expected=contained(root,relative),reported=first.roots?.[name];
+      return typeof reported!=='string'||!path.isAbsolute(reported)||path.relative(expected,reported)!==''
+        ||!sameIdentity(expected,first.rootIdentities?.[name]);
+    }))continue;
+    for(const target of first.targets){
+      const relative=roots[target?.namespace]+'/'+target?.path;
+      if(!keepExchangeTargets.has(relative))continue;
+      const bind=(source,kind,identity)=>{
+        if(typeof source!=='string'||path.posix.dirname(source)!==path.posix.dirname(target.path)
+          ||source!==source.toLowerCase()||!firstExchangeNames[kind].test(path.posix.basename(source)))return;
+        const asset=roots[target.namespace]+'/'+source;
+        if(!assets.has(asset))return;
+        if(!remaining.has(asset)||!sameIdentity(contained(root,asset),identity))throw keepAssetUnconfirmed(asset);
+        remaining.delete(asset);owners.add(id);
+      };
+      bind(target.staged,'restore',target.stagedIdentity);
+      for(const exchange of Array.isArray(target.exchanges)?target.exchanges:[]){
+        bind(exchange?.old,'old',exchange?.oldIdentity);
+        bind(exchange?.staged,'apply',exchange?.newIdentity);
+      }
+    }
+  }
+  if(remaining.size)throw keepAssetUnconfirmed(remaining.values().next().value);
+  return owners;
+}
+function assertNoPendingTransaction(root,plan,assets){
   try{
     const catalog=transactionCatalog(root,plan);
     runtimeEffects(root,plan,catalog);
+    const owners=boundFirstInstallAssets(root,catalog,assets);
+    // A single, physically bound first-install exchange can be kept as-is.
+    // Other recovery histories still go through their original sealed readers.
+    if(owners.size===1&&!catalog.system&&!catalog.legacy&&!catalog.appJobs.length
+      &&catalog.operations.every(item=>!item.runtime&&(!item.first||owners.has(item.id))
+        &&(!item.record||owners.has(item.id)||['succeeded','rolled-back','cancelled'].includes(item.record.state)
+          &&['untouched','restored','changed'].includes(item.record.effectState)
+          &&!['recovery-required','files-restored-start-failed'].includes(item.record.recoveryOutcome))))return;
     if(!catalog.system&&!catalog.appJobs.length&&!catalog.operations.some(item=>item.first))return;
     // Keep the public cleanup synchronous. This bounded child only reads
     // sealed current-APP resources; the parent keeps the native writer fd
@@ -1158,7 +1246,8 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
   // its backups: historical proof cannot be a prerequisite for that choice.
   // Current ownership, the held writer and executor-offline checks above still
   // apply to both modes; no path from a historical journal grants deletion.
-  if(plan.mode==='keep'&&retainedState?.state!=='prepared'&&!retainedState?.legacy)assertNoPendingTransaction(root,plan);
+  const assets=plan.mode==='keep'?keepExchangeAssets(root):null;
+  if(plan.mode==='keep'&&retainedState?.state!=='prepared'&&!retainedState?.legacy)assertNoPendingTransaction(root,plan,assets);
   // Resolve every top-level deletion before changing anything. Node rm does not
   // follow links inside a removed tree; redirected deletion roots are rejected.
   const relatives = plan.mode === 'all'
@@ -1174,8 +1263,8 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
   }
   const targets = relatives.map(relative => contained(root, relative));
   if (plan.mode === 'keep') publishRetainedConfig(root, plan.tavern);
-  const keepJournal=plan.mode==='keep'?retained.begin(plan):null;
-  if(keepJournal)retained.preserveMigrationBackup(plan,keepJournal);
+  const keepJournal=plan.mode==='keep'?retained.begin(plan,{assets}):null;
+  if(keepJournal)retained.preserveDeletionAssets(plan,keepJournal);
   for (let index = 0; index < targets.length; index++) {
     onProgress({ stage: 'cleanup', current: index + 1, total: targets.length, path: targets[index] });
     remove(targets[index]);
@@ -1291,5 +1380,5 @@ function notify(message) {
   spawnSync('/usr/bin/osascript', ['-e', 'on run argv', '-e', 'display dialog (item 1 of argv) with title "诺拉·酒馆" buttons {"好"} default button "好"', '-e', 'end run', message], { timeout: 120000 });
 }
 
-module.exports = { own, makePlan, cleanup, restoreRetained, worker, RETAINED, PROGRAMS, safeRoot, contained,canOfferFullUninstall,inspectSealedTransactions,inspectExecutorHistory,prepareHistory };
+module.exports = { own, makePlan, cleanup, restoreRetained, worker, RETAINED, PROGRAMS, safeRoot, contained,canOfferFullUninstall,inspectSealedTransactions,inspectExecutorHistory,prepareHistory,isKeepExchangeAsset };
 if (require.main === module) worker(process.argv[2]);

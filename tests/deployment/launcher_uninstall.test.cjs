@@ -96,6 +96,80 @@ test('KEEP stops before deletion when the migration backup cannot be moved intac
   cleanup(plan);
 });
 
+test('changing a user migration backup after completed KEEP does not block reinstall',t=>{
+  const relative='tavern/apps/tavern-runtime/engine/sillytavern/backups';
+  const retained=require('../installer/desktop/retained-installation');
+  for(const replacement of ['missing','file','directory']){
+    const f=fixture(t),plan=f.plan('keep');
+    f.write(relative+'/migration.json','owned backup');
+    cleanup(plan);
+    const done=retained.inspect(f.home),entry=done.entries.find(item=>item.from===relative),archive=path.join(f.home,entry.to);
+    fs.rmSync(archive,{recursive:true});
+    if(replacement==='file')fs.writeFileSync(archive,'user replacement');
+    if(replacement==='directory')fs.mkdirSync(archive);
+    assert.equal(retained.inspect(f.home).state,'complete');
+    const operationId=require('node:crypto').randomUUID();
+    f.write('installer/operations/'+operationId+'/operation.json',JSON.stringify({
+      schema:'nora-operation/1',kind:'install',state:'created',operationId,
+    }));
+    assert.equal(retained.claim(f.home,operationId).reinstallOperationId,operationId);
+  }
+});
+
+test('KEEP preserves an inode-bound first-install exchange after a real restore was interrupted',t=>{
+  const f=fixture(t),plan=f.plan('keep'),retained=require('../installer/desktop/retained-installation');
+  const script=String.raw`
+import importlib.util,json,os,sys
+from pathlib import Path
+root=Path(sys.argv[1]).resolve()
+spec=importlib.util.spec_from_file_location('keep_restore_fixture',sys.argv[2]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+j=m.FirstInstallJournal.create(root,root/'hermes',root/'tavern')
+target=root/'tavern/apps/tavern-runtime';(target/'before.txt').write_text('original program copy')
+j.prepare({'tavern':[target]},manifest={'commit':'a'*40})
+j.checkpoint('apply','intent')
+incoming=root/'incoming';incoming.mkdir();(incoming/'server.js').write_text('new program')
+j.apply(incoming,target)
+j.record.update(restoreMode='failed-apply',status='restoring');j.checkpoint('restore','intent')
+replace=os.replace
+def interrupt(src,dst):
+    if Path(dst)==target and Path(src).name.startswith('.nfi-r-'):raise RuntimeError('fixture restore interruption')
+    return replace(src,dst)
+os.replace=interrupt
+try:j.restore_target(j.record['targets'][0],0)
+except RuntimeError as error:assert str(error)=='fixture restore interruption'
+else:raise AssertionError('restore did not reach publication')
+finally:os.replace=replace
+print(json.dumps(str((root/'tavern'/j.record['targets'][0]['staged']).relative_to(root).as_posix())))
+`;
+  const relative=JSON.parse(require('node:child_process').execFileSync(process.env.NORA_TEST_PYTHON||'python3',
+    ['-B','-c',script,f.home,path.resolve(__dirname,'../installer/first_install.py')],{encoding:'utf8'}));
+  const source=path.join(f.home,relative),old=fs.statSync(source,{bigint:true});
+  const unbound=source+'-unbound';
+  fs.renameSync(source,unbound);f.write(relative+'/before.txt','replacement fixture');
+  assert.throws(()=>cleanup(plan),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED'&&error.message.includes(relative));
+  assert.equal(fs.readFileSync(path.join(source,'before.txt'),'utf8'),'replacement fixture');
+  fs.rmSync(source,{recursive:true});fs.renameSync(unbound,source);
+  assert.throws(()=>cleanup(plan,()=>{throw Error('fixture interruption before deletion');}),/fixture interruption/);
+  const pending=retained.inspect(f.home,{allowPending:true}),asset=pending.entries.find(entry=>entry.from===relative);
+  const destination=path.join(f.home,asset.to);
+  assert.equal(fs.statSync(destination,{bigint:true}).ino,old.ino);
+  cleanup(plan);
+  assert.equal(retained.inspect(f.home).state,'complete');
+  assert.equal(fs.readFileSync(path.join(destination,'before.txt'),'utf8'),'original program copy');
+  for(const file of f.data)assert.equal(fs.readFileSync(path.join(f.home,file),'utf8'),'fixture');
+});
+
+test('KEEP leaves unbound exchange paths intact instead of removing their containing program',t=>{
+  for(const name of ['.nfi-r-'+'a'.repeat(32),'.NFI-O-'+'A'.repeat(32),'.nora-maintenance-'+'b'.repeat(24)]){
+    const f=fixture(t),plan=f.plan('keep'),relative='tavern/apps/'+name;
+    f.write(relative+'/preserved.txt','unbound');
+    assert.throws(()=>cleanup(plan),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED'&&error.message.includes(relative));
+    assert.equal(fs.readFileSync(path.join(f.home,relative,'preserved.txt'),'utf8'),'unbound');
+    assert.equal(fs.existsSync(path.join(f.home,f.programs[0])),true);
+    assert.equal(fs.existsSync(path.join(f.home,RETAINED)),false);
+  }
+});
+
 test('a completed keep uninstall is eligible for reinstall without presenting removed programs as damaged installation', t => {
   const f=fixture(t),root=fs.realpathSync(f.home),hermes=path.join(root,'hermes'),tavern=path.join(root,'tavern');
   const version='2.4.5',commit='a'.repeat(40);
@@ -621,6 +695,24 @@ test('KEEP can hand off an unavailable old interpreter with the verified port st
     assert.equal(plan.serviceCheck.port,18888);
     assert.equal(plan.serviceMode,'port');
     assert.equal(fs.existsSync(path.join(f.home,f.programs[0])),true);
+  }
+});
+
+test('KEEP refuses handoff when the shutdown guard failed after a Python startup error',async t=>{
+  for(const cause of ['release','persistence','still busy']){
+    const f=wizard(t,[1]);
+    const operation={kind:'shutdown',state:'failed',effectState:'untouched',recoveryOutcome:'not-required',
+      currentFailure:{code:'ENOEXEC'},busy:cause==='still busy',secondaryFailures:[]};
+    if(cause==='release')Object.assign(operation,{effectState:'unknown',recoveryOutcome:'recovery-required',
+      currentFailure:{code:'OPERATION_CHILD_CLOSE_UNCONFIRMED'},secondaryFailures:[{operation:'release'}]});
+    f.context.stopError=Object.assign(Error('old interpreter cannot start'),{code:'ENOEXEC'});
+    f.context.guardError=Object.assign(Error('shutdown did not close safely'),
+      cause==='persistence'?{code:'OPERATION_SNAPSHOT_CHANGED'}:{code:operation.currentFailure.code,operation});
+    vm.runInContext(`findPython=()=>({});runBridge=async()=>{throw stopError;};
+      runOwnedTask=async(...args)=>{try{return await fixtureOwnedTask(...args);}catch{throw guardError;}};`,f.context);
+    await assert.rejects(f.run(),{code:f.context.guardError.code});
+    assert.equal(fs.existsSync(f.planFile),false);
+    assert.deepEqual(f.exits,[]);
   }
 });
 

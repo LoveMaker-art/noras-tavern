@@ -5,6 +5,7 @@ const ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHA=/^[a-f0-9]{64}$/;
 const fileName='nora-retained.json';
 const migrationBackup='tavern/apps/tavern-runtime/engine/sillytavern/backups';
+const earlyArchive=relative=>relative===migrationBackup||require('./uninstall').isKeepExchangeAsset(relative);
 const completionWarning='安装已完成，保留数据卸载记录的收尾尚未完成。现有程序和数据已保留；请检查目录权限及磁盘空间后重新操作。';
 const archiveIo=new Set(['EACCES','EPERM','ENOSPC','EDQUOT','EBUSY','EIO','EROFS']);
 const error=(code='RETAINED_INSTALLATION_UNCONFIRMED')=>Object.assign(new Error(code==='RETAINED_UNINSTALL_INCOMPLETE'
@@ -49,11 +50,13 @@ function metadataSeal(file){
  }visit(file);return files;
 }
 function verifyEntry(root,entry,completed=false,verifyRecreated){
+ // The fixed migration archive is user-owned after completed KEEP. Its
+ // later deletion or replacement does not invalidate the uninstall receipt.
+ if(completed&&entry.from===migrationBackup)return;
  const from=safe(root,entry.from),to=safe(root,entry.to),atSource=present(from),atArchive=present(to);
- if(entry.from===migrationBackup){
-  // The engine can create a new backup directory during a later install.
-  // That directory has no effect on the identity of the original archive.
-  if((completed?!atArchive:atSource===atArchive)||entry.identity?.kind!=='directory'
+ if(earlyArchive(entry.from)){
+  if((completed?!atArchive||atSource:atSource===atArchive)
+   ||entry.from===migrationBackup&&entry.identity?.kind!=='directory'
    ||!same(identity(atArchive?to:from),entry.identity))throw error();
   return {from,to,atSource};
  }
@@ -115,7 +118,8 @@ function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}
   const verifyRecreated=(relative,source)=>recreatedReceipt(value,reinstall,relative,source);
   const seen=new Set();for(const entry of value.entries){if(seen.has(entry.from)
     ||!['installed.json','installed-manifest.json','nora-system.json','transaction.json'].map(name=>'tavern/tavern-updates/'+name)
-      .concat(['installer/system-update','installer/launcher-update',migrationBackup]).includes(entry.from)&&!/^installer\/operations\/[0-9a-f-]{36}$/i.test(entry.from)
+      .concat(['installer/system-update','installer/launcher-update']).includes(entry.from)&&!/^installer\/operations\/[0-9a-f-]{36}$/i.test(entry.from)
+      &&!earlyArchive(entry.from)
     ||entry.from.startsWith('installer/operations/')&&!ID.test(entry.from.slice('installer/operations/'.length))
     ||entry.to!==value.archive+'/history/'+entry.from)throw error();seen.add(entry.from);verifyEntry(root,entry,value.state==='complete',verifyRecreated);}
   const targetNames=new Set();for(const target of value.targets){if(targetNames.has(target.path)||!programs(root).concat(['cache','launcher']).includes(target.path))throw error();targetNames.add(target.path);safe(root,target.path);
@@ -140,11 +144,12 @@ function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}
   return value;
  }catch(cause){if(cause.code?.startsWith('RETAINED_'))throw cause;throw Object.assign(error(),{cause});}
 }
-function begin(plan,{excludeOperationId}={}){
+function begin(plan,{excludeOperationId,assets=new Map()}={}){
  const root=rootOf(plan.root),prior=inspect(root,{allowPending:true});
  const backup=safe(root,migrationBackup);
  if(prior?.state==='prepared'){
-  if(present(backup)&&!prior.entries.some(entry=>entry.from===migrationBackup))throw error();
+  if(present(backup)&&!prior.entries.some(entry=>entry.from===migrationBackup)
+   ||[...assets].some(([from,saved])=>!prior.entries.some(entry=>entry.from===from&&same(entry.identity,saved))))throw error();
   return prior;
  }
  const value={schema:2,id:crypto.randomUUID(),root,owner:owner(root),hermes:plan.hermes,tavern:plan.tavern,port:plan.port||8799,
@@ -164,24 +169,28 @@ function begin(plan,{excludeOperationId}={}){
   if(saved.kind!=='directory')throw error();
   value.entries.push({from:migrationBackup,to:value.archive+'/history/'+migrationBackup,identity:saved});
  }
+ for(const [from,saved] of assets){
+  if(!require('./uninstall').isKeepExchangeAsset(from)||!same(identity(safe(root,from)),saved))throw error();
+  value.entries.push({from,to:value.archive+'/history/'+from,identity:saved});
+ }
  for(const relative of programs(root).concat(['cache','launcher'])){const file=safe(root,relative);value.targets.push({path:relative,identity:present(file)?identity(file):null});}
  atomic(safe(root,fileName),value);return value;
 }
-function preserveMigrationBackup(plan,value){
- const entry=value.entries.find(item=>item.from===migrationBackup);
- if(!entry)return;
+function preserveDeletionAssets(plan,value){
  const root=rootOf(plan.root);if(value.owner!==owner(root)||value.root!==root)throw error();
- const {from,to,atSource}=verifyEntry(root,entry);
- if(atSource){
-  fs.mkdirSync(path.dirname(to),{recursive:true,mode:0o700});
-  fs.renameSync(from,to);
- }
- verifyEntry(root,entry,true);
- if(process.platform!=='win32'){
-  const sync=directory=>{const fd=fs.openSync(directory,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}};
-  if(present(path.dirname(from)))sync(path.dirname(from));
-  for(let directory=path.dirname(to);directory!==root;directory=path.dirname(directory))sync(directory);
-  sync(root);
+ for(const entry of value.entries.filter(entry=>earlyArchive(entry.from))){
+  const {from,to,atSource}=verifyEntry(root,entry);
+  if(atSource){
+   fs.mkdirSync(path.dirname(to),{recursive:true,mode:0o700});
+   fs.renameSync(from,to);
+  }
+  if(verifyEntry(root,entry).atSource)throw error();
+  if(process.platform!=='win32'){
+   const sync=directory=>{const fd=fs.openSync(directory,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}};
+   if(present(path.dirname(from)))sync(path.dirname(from));
+   for(let directory=path.dirname(to);directory!==root;directory=path.dirname(directory))sync(directory);
+   sync(root);
+  }
  }
 }
 function archive(plan,value){const root=rootOf(plan.root);if(value.owner!==owner(root)||value.root!==root)throw error();
@@ -355,4 +364,4 @@ function retryCompletion(home,context){
  const value=inspect(home,{operationId:context.operationId});if(!value?.reinstalled)return null;
  context.check();return archiveCompletion(value);
 }
-module.exports={inspect,begin,archive,preserveMigrationBackup,complete,claim,release,consume,retryCompletion,upgradeLegacy,legacyHistory,absentPrograms,error,fileName};
+module.exports={inspect,begin,archive,preserveDeletionAssets,complete,claim,release,consume,retryCompletion,upgradeLegacy,legacyHistory,absentPrograms,error,fileName};

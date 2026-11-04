@@ -1749,8 +1749,13 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
         await awaitLifecycleStep(shutdownPending,30000,
           '停止服务尚未结束，尚未开始卸载。任务结束后可重试。','UNINSTALL_STATUS_PENDING');
       } catch (error) {
-        if(mode==='keep'&&error.code!=='UNINSTALL_STATUS_PENDING'
-          &&require('./uninstall-offline-check').managedPythonUnavailable(stopFailure)){
+        const stop=error.operation;
+        const originalFailure=stop
+          ?error.code===(stopFailure?.userCode||stopFailure?.code)&&stop.currentFailure?.code===error.code
+            &&stop.kind==='shutdown'&&stop.state==='failed'&&stop.effectState==='untouched'
+            &&stop.recoveryOutcome==='not-required'&&stop.busy!==true&&!stop.secondaryFailures?.length
+          :error===stopFailure;
+        if(mode==='keep'&&originalFailure&&require('./uninstall-offline-check').managedPythonUnavailable(stopFailure)){
           diagnostics.error('uninstall.native-offline-handoff',error,{level:'warning',reason:'managed-python-unavailable'});
         }else{
           if (mode !== 'all' || stopStarted || error.code==='UNINSTALL_STATUS_PENDING') throw error;
