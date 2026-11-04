@@ -15,42 +15,90 @@ const PROGRAMS = ['hermes-agent', 'python', 'node', 'bin', '.local/bin', 'plugin
 
 function canonical(file) {
   const full = path.resolve(file);
-  if (fs.existsSync(full)) return fs.realpathSync(full);
+  if (present(full)) return fs.realpathSync(full);
   const parent = path.dirname(full);
   return parent === full ? full : path.join(canonical(parent), path.basename(full));
 }
 
 function safeRoot(home) {
-  if (fs.existsSync(home) && fs.lstatSync(home).isSymbolicLink()) throw new Error('隔离目录不能是符号链接。');
+  const full = path.resolve(home);
+  if (statIfPresent(full)?.isSymbolicLink()) throw new Error('隔离目录不能是符号链接。');
   // Bootstrap children deliberately use an isolated HOME beneath Nora. That
   // environment profile is not the operating-system account's deletion boundary.
-  const root = canonical(home), userHome = canonical(os.userInfo().homedir);
-  if (root === path.parse(root).root || root === userHome
-    || userHome.startsWith(root + path.sep)) throw new Error('不能卸载用户目录或磁盘根目录。');
+  const root = canonical(full), userHome = canonical(os.userInfo().homedir);
+  if (root === path.parse(root).root || !path.relative(root, userHome)
+    || isChild(root, userHome)) throw new Error('不能卸载用户目录或磁盘根目录。');
   return root;
+}
+
+function isChild(parent, target) {
+  const relative = path.relative(parent, target);
+  return Boolean(relative) && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
 }
 
 function contained(root, relative) {
   const target = path.resolve(root, relative);
-  if (target === root || !target.startsWith(root + path.sep)) throw new Error('卸载路径越过隔离目录。');
+  if (!isChild(root, target)) throw new Error('卸载路径越过隔离目录。');
+  if (statIfPresent(root)?.isSymbolicLink()) throw new Error('隔离目录不能是符号链接。');
   let current = root;
   for (const part of path.relative(root, target).split(path.sep)) {
     current = path.join(current, part);
-    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) {
+    if (statIfPresent(current)?.isSymbolicLink()) {
       throw new Error(`卸载路径被链接重定向：${relative}`);
     }
   }
   return target;
 }
 
+function programDirectories(root, hermes, tavern) {
+  const hermesHome = contained(root, hermes), installRoot = contained(root, tavern);
+  if (!path.relative(hermesHome, installRoot) || isChild(hermesHome, installRoot) || isChild(installRoot, hermesHome))
+    throw new Error('程序目录不能互相包含。');
+  for (const file of [hermesHome, installRoot]) {
+    const stat = statIfPresent(file);
+    if (stat && !stat.isDirectory()) throw new Error('程序目录无效。');
+  }
+  return {hermesHome, installRoot};
+}
+
+function programRelatives(home, root, hermesHome, installRoot) {
+  const relative = file => path.relative(isChild(home, file) ? home : root, file);
+  const hermes = relative(hermesHome), tavern = relative(installRoot);
+  return {hermes, tavern, ...programDirectories(root, hermes, tavern)};
+}
+
+function readOwner(root) {
+  const file = contained(root, OWNER), stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.size > 16 * 1024) throw new Error('安装目录归属记录无效。');
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (value?.schema !== 1 || typeof value.id !== 'string' || !value.id) throw new Error('安装目录归属记录无效。');
+  return value.id;
+}
+
+function writerDirectory(root) {
+  const lock = contained(root, 'installer/operations/.writer.lock'), stat = statIfPresent(lock);
+  if (stat && (!stat.isFile() || stat.nlink !== 1)) throw new Error('维护锁文件无效。');
+  return path.dirname(path.dirname(lock));
+}
+
+function canOfferFullUninstall(options) {
+  try {
+    const {home, hermesHome, installRoot} = options;
+    if (![home, hermesHome, installRoot].every(file => typeof file === 'string' && path.isAbsolute(file))) return false;
+    const root = safeRoot(home);
+    if (!fs.lstatSync(root).isDirectory()) return false;
+    readOwner(root);
+    programRelatives(home, root, hermesHome, installRoot);
+    return osLock.acquire({directory:writerDirectory(root), probe:true}).busy === false;
+  } catch { return false; }
+}
+
 function own(home) {
   const root = safeRoot(home);
   const file = contained(root, OWNER);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify({ schema: 1, id: crypto.randomUUID() }), { mode: 0o600, flag: 'wx' });
-  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (value.schema !== 1 || typeof value.id !== 'string') throw new Error('安装目录归属记录无效。');
-  return value.id;
+  if (!present(file)) fs.writeFileSync(file, JSON.stringify({ schema: 1, id: crypto.randomUUID() }), { mode: 0o600, flag: 'wx' });
+  return readOwner(root);
 }
 
 function makePlan({ home, hermesHome, installRoot, mode, executable = process.execPath, appPath = null, port = 8799, serviceMode = 'port' }) {
@@ -59,13 +107,10 @@ function makePlan({ home, hermesHome, installRoot, mode, executable = process.ex
     throw Object.assign(new Error('卸载现场检查方式无效，未删除文件。'),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
   const root = safeRoot(home);
   if (path.resolve(executable).startsWith(root + path.sep)) throw new Error('启动器位于数据目录内，请将启动器移到独立应用目录后重试。');
-  const hermes = path.relative(root, canonical(hermesHome));
-  const tavern = path.relative(root, canonical(installRoot));
-  contained(root, hermes); contained(root, tavern);
-  if (hermes === tavern || hermes.startsWith(tavern + path.sep) || tavern.startsWith(hermes + path.sep)) throw new Error('程序目录不能互相包含。');
+  const paths = programRelatives(home, root, hermesHome, installRoot), {hermes, tavern} = paths;
   const plan={ schema: 1, root, owner: own(root), hermes, tavern, mode, executable, appPath, port, serviceMode, parentIdentity:processIdentity(process.pid) };
   if(serviceMode==='retained')plan.retainedId=validateRetainedRetry(plan,true);
-  plan.serviceCheck=require('./uninstall-offline-check').capture({root,hermesHome:contained(root,hermes),installRoot:contained(root,tavern),port,mode:serviceMode,executable,
+  plan.serviceCheck=require('./uninstall-offline-check').capture({root,hermesHome:paths.hermesHome,installRoot:paths.installRoot,port,mode:serviceMode,executable,
     entry:__dirname.endsWith('.asar')?__dirname:__filename,resourcesRoot:path.dirname(__dirname)});
   return plan;
 }
@@ -74,9 +119,8 @@ function validate(plan) {
   if (plan.schema !== 1 || !['keep', 'all'].includes(plan.mode)) throw new Error('卸载计划无效。');
   if(plan.serviceMode==='native-root'&&(plan.mode!=='all'||plan.port!==null))throw Object.assign(new Error('卸载现场检查方式无效，未删除文件。'),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
   const root = safeRoot(plan.root);
-  const owner = JSON.parse(fs.readFileSync(contained(root, OWNER), 'utf8'));
-  if (owner.id !== plan.owner) throw new Error('安装目录已变化，已停止卸载。');
-  contained(root, plan.hermes); contained(root, plan.tavern);
+  if (readOwner(root) !== plan.owner) throw new Error('安装目录已变化，已停止卸载。');
+  programDirectories(root, plan.hermes, plan.tavern);
   if(plan.serviceMode==='retained')validateRetainedRetry(plan);
   return root;
 }
@@ -128,7 +172,11 @@ function localDiagnostic(error,depth=0){return {name:String(error.name||'Error')
   ...(error.exitCode===null||Number.isSafeInteger(error.exitCode)?{exitCode:error.exitCode}:{}),
   ...(error.signal===null||typeof error.signal==='string'&&/^SIG[A-Z0-9]+$/.test(error.signal)?{signal:error.signal}:{}),
   ...(error.cause&&depth<3?{cause:localDiagnostic(error.cause,depth+1)}:{})};}
-function present(file){try{fs.lstatSync(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}}
+function statIfPresent(file, options) {
+  try { return fs.lstatSync(file, options); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+function present(file) { return statIfPresent(file) !== null; }
 function readJournal(file,limit=4*1024*1024){
   const stat=fs.lstatSync(file);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.size>limit)throw recoveryRequired();
@@ -591,7 +639,7 @@ function readOnlyNodeCheck(method,plan){
   }
 }
 async function inspectExecutorHistory(plan){
-  const root=validate(plan),history=await require('./operation-lock').probe({directory:contained(root,'installer')});
+  const root=validate(plan),history=await require('./operation-lock').probe({directory:writerDirectory(root)});
   const facts=require('./operation-inspection').inspectExecutors({sessions:history.sessions});
   if(history.errors?.length||!facts.safe)throw Object.assign(new Error('尚未确认上次维护进程已结束，未删除文件。'),{code:'OPERATION_EXECUTOR_UNCONFIRMED'});
 }
@@ -993,8 +1041,92 @@ function remove(file) {
   if (fs.existsSync(file)) throw new Error(`未能删除：${file}`);
 }
 
+function publishRetainedConfig(root, tavern) {
+  const state = path.join(tavern, 'tavern-state');
+  const sourcePath = path.join(state, 'native-runtime/config.yaml');
+  const targetPath = path.join(state, 'nora-retained-config.yaml');
+  const source = contained(root, sourcePath), target = contained(root, targetPath);
+  const options = {bigint:true};
+  const before = statIfPresent(source, options), previous = statIfPresent(target, options);
+  if (previous && !previous.isFile()) throw new Error('保留的酒馆配置路径不是文件。');
+  if (!before) return;
+  if (!before.isFile()) throw new Error('酒馆配置路径不是文件。');
+  const unchanged = (left, right) => left && right
+    ? ['dev','ino','size','mtimeNs','ctimeNs'].every(key => left[key] === right[key])
+    : left === right;
+  const temporaryFiles = new Set();
+  const chunk = Buffer.alloc(64 * 1024);
+  const chunkSize = BigInt(chunk.length);
+  const stage = (file, expected) => {
+    const relative = `${targetPath}.${crypto.randomUUID()}.tmp`;
+    const input = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    try {
+      const opened = fs.fstatSync(input, options);
+      if (!opened.isFile() || !unchanged(expected, opened)) throw new Error('酒馆配置在读取前发生变化。');
+      const output = fs.openSync(contained(root, relative), 'wx', 0o600);
+      temporaryFiles.add(relative);
+      try {
+        let remaining = expected.size;
+        while (remaining > 0n) {
+          const count = fs.readSync(input, chunk, 0, Number(remaining < chunkSize ? remaining : chunkSize), null);
+          if (!count) throw new Error('酒馆配置在读取期间发生变化。');
+          let written = 0;
+          while (written < count) {
+            const bytes = fs.writeSync(output, chunk, written, count - written, null);
+            if (!bytes) throw new Error('未能完整写入保留的酒馆配置。');
+            written += bytes;
+          }
+          remaining -= BigInt(count);
+        }
+        if (!unchanged(expected, fs.fstatSync(input, options))) throw new Error('酒馆配置在读取期间发生变化。');
+        fs.fsyncSync(output);
+        return {relative, stat:fs.fstatSync(output, options)};
+      } finally { fs.closeSync(output); }
+    } finally { fs.closeSync(input); }
+  };
+  const directory = process.platform === 'win32' ? null : fs.openSync(path.dirname(target), 'r');
+  try {
+    const staged = stage(source, before);
+    const rollback = directory !== null && previous ? stage(target, previous) : null;
+    if (!unchanged(before, statIfPresent(contained(root, sourcePath), options))
+        || !unchanged(previous, statIfPresent(contained(root, targetPath), options)))
+      throw new Error('酒馆配置在发布前发生变化。');
+    // Publish only the complete file. Before this rename neither the existing
+    // retained config nor the installed program tree has been touched.
+    fs.renameSync(contained(root, staged.relative), contained(root, targetPath));
+    temporaryFiles.delete(staged.relative);
+    if (directory !== null) {
+      let published;
+      try {
+        const current = statIfPresent(contained(root, targetPath), options);
+        // The rename can update ctime. Other identity fields must still
+        // describe the file we wrote before we acquire a rollback snapshot.
+        if (!current || !['dev','ino','size','mtimeNs'].every(key => current[key] === staged.stat[key]))
+          throw new Error('保留的酒馆配置在发布时发生变化。');
+        published = current;
+        fs.fsyncSync(directory);
+      }
+      catch (error) {
+        // Preserve the previous bytes if the published file changed or the
+        // OS refuses rollback. The original sync error remains primary.
+        if (rollback) temporaryFiles.delete(rollback.relative);
+        try {
+          if (!published || !unchanged(published, statIfPresent(contained(root, targetPath), options)))
+            throw new Error('保留的酒馆配置已发生变化，未覆盖当前文件。');
+          if (rollback) fs.renameSync(contained(root, rollback.relative), contained(root, targetPath));
+          else fs.rmSync(contained(root, targetPath), {force:true});
+        } catch (cause) { error.cause ??= cause; }
+        throw error;
+      }
+    }
+  } finally {
+    if (directory !== null) fs.closeSync(directory);
+    for (const relative of temporaryFiles) fs.rmSync(contained(root, relative), {force:true});
+  }
+}
+
 function cleanup(plan,onProgress=()=>{}) {
-  const root=validate(plan),writer=osLock.acquire({directory:contained(root,'installer')});
+  const root=validate(plan),writer=osLock.acquire({directory:writerDirectory(root)});
   try{cleanupLocked(plan,onProgress);}finally{writer.release();}
 }
 
@@ -1027,11 +1159,7 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
     for(const name of fs.readdirSync(operations).filter(name=>name!=='.writer.lock'))relatives.push(path.join('installer/operations',name));
   }
   const targets = relatives.map(relative => contained(root, relative));
-  if (plan.mode === 'keep') {
-    const config = contained(root, path.join(plan.tavern, 'tavern-state/native-runtime/config.yaml'));
-    const retainedConfig = contained(root, path.join(plan.tavern, 'tavern-state/nora-retained-config.yaml'));
-    if (fs.existsSync(config)) fs.copyFileSync(config, retainedConfig);
-  }
+  if (plan.mode === 'keep') publishRetainedConfig(root, plan.tavern);
   const keepJournal=plan.mode==='keep'?retained.begin(plan):null;
   for (let index = 0; index < targets.length; index++) {
     onProgress({ stage: 'cleanup', current: index + 1, total: targets.length, path: targets[index] });
@@ -1067,7 +1195,7 @@ function restoreRetained(noraHome, previous, current) {
 async function worker(planFile, showMessage = notify) {
   const directory = path.dirname(planFile);
   const resultFile = path.join(directory, 'result.json');
-  let plan,writer,serviceFacts,lifecycle,recordFailure,consentRemoved=false;
+  let plan,writer,serviceFacts,lifecycle,recordFailure,message,consentRemoved=false;
   const report = value => fs.writeFileSync(resultFile, JSON.stringify(value), { mode: 0o600 });
   try {
     plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
@@ -1097,7 +1225,7 @@ async function worker(planFile, showMessage = notify) {
       }
     }
     const root=validate(plan);
-    writer=osLock.acquire({directory:contained(root,'installer')});
+    writer=osLock.acquire({directory:writerDirectory(root)});
     await inspectExecutorHistory(plan);
     // The GUI released its shutdown owner before this helper took over. A
     // service may have restarted in that gap, so prove offline under our own
@@ -1117,7 +1245,7 @@ async function worker(planFile, showMessage = notify) {
       remove(plan.appPath);
     }
     report({ state: 'complete', mode: plan.mode, retained: plan.mode === 'keep' ? plan.root : null, serviceVerification:serviceFacts });
-    if (process.platform === 'darwin') showMessage(plan.mode === 'keep' ? '卸载完成。用户数据已保留，可在重装后继续使用。' : '卸载完成。本地程序和数据已清理。');
+    message = plan.mode === 'keep' ? '卸载完成。用户数据已保留，可在重装后继续使用。' : '卸载完成。本地程序和数据已清理。';
   } catch (error) {
     const result={ state: 'error', code:error.code||'UNINSTALL_FAILED', error: error.message, diagnosticError:localDiagnostic(error) };
     report(result);
@@ -1131,15 +1259,21 @@ async function worker(planFile, showMessage = notify) {
         result.diagnosticDelivery=await handle.flush();report(result);}
     }catch{result.diagnosticDelivery={phase:'unavailable'};try{report(result);}catch{}}
     finally{try{await handle?.close();}catch{}}
-    if (process.platform === 'darwin') showMessage(`卸载未完成。请保留剩余文件并重试。详情：${resultFile}`);
+    message = `卸载未完成。请保留剩余文件并重试。详情：${resultFile}`;
     process.stderr.write(`卸载未完成：${error.message}\n`);
     process.exitCode = 1;
   }finally{try{await lifecycle?.close();}catch{}finally{writer?.release();}}
+  // Notification can wait for the user. Terminal evidence and the native
+  // writer lifetime are already settled when the dialog opens.
+  if (process.platform === 'darwin') {
+    try { showMessage(message); }
+    catch (error) { process.stderr.write(`卸载结果通知未显示：${error.message}\n`); }
+  }
 }
 
 function notify(message) {
   spawnSync('/usr/bin/osascript', ['-e', 'on run argv', '-e', 'display dialog (item 1 of argv) with title "诺拉·酒馆" buttons {"好"} default button "好"', '-e', 'end run', message], { timeout: 120000 });
 }
 
-module.exports = { own, makePlan, cleanup, restoreRetained, worker, RETAINED, PROGRAMS, safeRoot, contained,inspectSealedTransactions,inspectExecutorHistory,prepareHistory };
+module.exports = { own, makePlan, cleanup, restoreRetained, worker, RETAINED, PROGRAMS, safeRoot, contained,canOfferFullUninstall,inspectSealedTransactions,inspectExecutorHistory,prepareHistory };
 if (require.main === module) worker(process.argv[2]);

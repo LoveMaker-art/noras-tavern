@@ -35,6 +35,7 @@ function fixture(overrides = {}) {
     if(!elements.has(id))elements.set(id,element());return elements.get(id);
   };
   const context = vm.createContext({snapshot:{},busy:false,daily:true,running:false,stage:0,view:'daily',
+    uninstallChoiceAvailable:false,statusQuerySequence:0,
     refreshing:false,statusUnknown:false,launcherRecoveryConfirmed:false,lastStatusError:'',lastStatusAt:0,versionInfo:null,alive:true,pollTimer:null,activeAction:'',activeService:'all',lastFailure:null,operationCancelled:false,
     firstCompletionPending:false,sawIncompleteSetup:false,modelSelectionUncertain:false,launchHint:element(),api:{},
     document:{createElement:element,querySelectorAll:selector=> {
@@ -194,13 +195,18 @@ function mainHandler(channel, values) {
 }
 
 test('main status failures return unavailable instead of invented stopped or broken-installation facts', async t => {
-  for(const mode of ['bridge-failed','missing-python','empty-install','healthy']) {
+  for(const mode of ['bridge-failed','missing-python','empty-install','healthy','retained-invalid','retained-owner-invalid','operation-invalid']) {
     const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-ui-status-'));
     t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
     const failures=[], original=new Error('raw status fixture');
+    const uninstall=mainRequire('./uninstall');
+    if(['retained-invalid','operation-invalid'].includes(mode))uninstall.own(home);
+    if(mode.startsWith('retained-'))fs.writeFileSync(path.join(home,'nora-retained.json'),'{malformed');
     const status=mainHandler('nora:status',{
+      app:{isPackaged:true},uninstall,hermesHome:()=>path.join(home,'hermes'),installRoot:()=>path.join(home,'tavern'),
       quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,activeRun:false,statusRequest:null,readLauncherRecovery:async()=>null,
-      lastStatusError:'',activeOperationContext:null,systemUpdate:{pending:()=>false,inspect:()=>null},operations:()=>({snapshot:async()=>null}),noraHome:()=>home,
+      lastStatusError:'',activeOperationContext:null,systemUpdate:{pending:()=>false,inspect:()=>null},
+      operations:()=>({snapshot:async()=>{if(mode==='operation-invalid')JSON.parse('{malformed');return null;}}),noraHome:()=>home,
       readInstallerState:()=>({phase:'ready'}),findPython:()=>!['missing-python','empty-install'].includes(mode),
       nodeStatus:()=>({installed:mode!=='empty-install',running:false,tavernProcessRunning:null,systemReady:false}),
       runBridge:async()=>{if(mode==='bridge-failed')throw original;return {installed:true,running:true,tavernProcessRunning:true,systemReady:true};},
@@ -208,7 +214,8 @@ test('main status failures return unavailable instead of invented stopped or bro
       LOCAL_TEST:true,telemetry:null,locationStatus:()=>({}),
     });
     const result=await status();
-    if(['bridge-failed','missing-python'].includes(mode)) {
+    assert.equal(result.uninstallChoiceAvailable,['retained-invalid','operation-invalid'].includes(mode)?true:undefined,mode);
+    if(['bridge-failed','missing-python','operation-invalid'].includes(mode)||mode.startsWith('retained-')) {
       assert.equal(result.statusUnavailable,true);
       assert.equal(result.running,undefined);assert.equal(result.systemReady,undefined);
       assert.notEqual(result.tavernProcessRunning,false);

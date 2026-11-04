@@ -61,6 +61,7 @@ function fixture(extra={}) {
   };
   const button=(text,onclick,primary=true)=>Object.assign(element('button'),{textContent:text,onclick,className:primary?'button primary':'button'});
   const context=vm.createContext({snapshot:{},view:'daily',busy:false,statusUnknown:false,launcherRecoveryConfirmed:false,daily:false,running:false,stage:0,
+    uninstallChoiceAvailable:false,statusQuerySequence:0,
     activeAction:'',activeService:'all',lastFailure:null,lastStatusError:'',lastStatusAt:0,taskTimer:null,pairTimer:null,logsOpen:false,operationCancelled:false,versionInfo:null,autoVersionChecked:false,
     versionChecking:false,modelFormGeneration:0,pageReturnFocus:null,firstCompletionPending:false,sawIncompleteSetup:false,autoStartAttempted:true,bundledUpgradeAttempted:false,
     launchHint:element(),labels:['Nora','酒馆','模型','ClawChat','检查'],milestoneStates:[],currentTask:'',startedAt:0,lastEvent:0,taskStage:'',stageStartedAt:0,taskProgress:null,lastProgressAt:0,alive:true,refreshing:false,pollTimer:null,launchHint:element(),api:{openLogs:async()=>{calls.push(['logs']);return {ok:true};}},$,button,
@@ -429,6 +430,77 @@ test('a failed Nora stop does not divert an explicitly selected Tavern stop into
   const h=fixture({snapshot:{...ready,operation},api:{stop:async options=>{requested=options.service;return final;},status:async()=>final}});
   await h.invoke('run("stop",{service:"tavern"})');
   assert.equal(requested,'tavern');assert.equal(h.context.view,'daily');
+});
+
+test('a verified uninstall choice exposes only the existing More action during a status outage',async()=>{
+  let choices=0;
+  const h=fixture({view:'loading',snapshot:{...ready},autoVersionChecked:true,api:{
+    status:async()=>({statusUnavailable:true,uninstallChoiceAvailable:true,busy:false,warning:'保留数据卸载记录无法核验。'}),
+    uninstall:async()=>{choices++;return {started:false};},openLogs:async()=>({ok:true}),
+  }});
+  await h.invoke('poll()');
+  assert.equal(h.context.statusUnknown,true);assert.equal(h.output().managementVisible,true);
+  assert.equal(h.elements.get('moreButton').disabled,false);
+  assert.deepEqual(h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action),['uninstall']);
+  assert.ok(action(h,'重新查询状态'));assert.ok(action(h,'查看日志'));
+  assert.equal(h.elements.get('launch').disabled,true);
+  const uninstall=h.menu.find(item=>item.dataset.action==='uninstall');assert.equal(uninstall.disabled,false);
+  uninstall.onclick();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(choices,1);assert.equal(h.context.statusUnknown,true);
+  assert.equal(h.output().managementVisible,true,'cancelling returns to the existing menu entry');
+});
+
+test('a new status query immediately invalidates old uninstall choice authority',async()=>{
+  const qualified={statusUnavailable:true,uninstallChoiceAvailable:true,busy:false};
+  for(const replacement of [{statusUnavailable:true},{...qualified,busy:true},new Error('lost status'),{...ready}]){
+    let choices=0, resolveStatus;
+    const h=fixture({view:'loading',snapshot:{...ready},autoVersionChecked:true,api:{status:async()=>qualified,
+      uninstall:async()=>{choices++;return {started:false};}}});
+    await h.invoke('poll()');
+    assert.equal(h.output().managementVisible,true);
+    const uninstall=h.menu.find(item=>item.dataset.action==='uninstall');
+    h.context.api.status=()=>new Promise((resolve,reject)=>{resolveStatus=()=>replacement instanceof Error?reject(replacement):resolve(replacement);});
+    const pending=h.invoke('poll()');
+    uninstall.onclick();assert.equal(choices,0,'a new query invalidates the previous authorization before it returns');
+    resolveStatus();await pending;
+    if(h.context.statusUnknown){
+      assert.equal(h.output().managementVisible,false);
+      assert.equal(uninstall.disabled,true);
+      uninstall.onclick();assert.equal(choices,0,'a generic unknown response cannot enter uninstall');
+    }else{
+      assert.equal(h.context.view,'daily');
+      assert.ok(h.output().menu.some(item=>item.action==='model'&&!item.hidden));
+    }
+  }
+});
+
+test('a late status result cannot restore an uninstall choice denied by a newer query',async()=>{
+  let releaseOlder;
+  const h=fixture({view:'loading',snapshot:{...ready},autoVersionChecked:true,api:{
+    status:()=>new Promise(resolve=>{releaseOlder=resolve;}),uninstall:async()=>assert.fail('old authority must not reach the wizard'),
+  }});
+  const older=h.invoke('readStatus().catch(()=>{})');
+  h.context.api.status=async()=>({statusUnavailable:true,busy:false});
+  await h.invoke('poll()');
+  releaseOlder({statusUnavailable:true,uninstallChoiceAvailable:true,busy:false});await older;
+  await h.invoke('controls()');
+  assert.equal(h.output().managementVisible,false);
+  const uninstall=h.menu.find(item=>item.dataset.action==='uninstall');
+  assert.equal(uninstall.disabled,true);uninstall.onclick();
+});
+
+test('an older healthy status cannot bypass the latest uninstall-only menu',async()=>{
+  let releaseOlder;
+  const h=fixture({view:'loading',snapshot:{...ready},autoVersionChecked:true,api:{
+    status:()=>new Promise(resolve=>{releaseOlder=resolve;}),uninstall:async()=>({started:false}),
+  }});
+  const older=h.invoke('readStatus().catch(()=>{})');
+  h.context.api.status=async()=>({statusUnavailable:true,uninstallChoiceAvailable:true,busy:false});
+  await h.invoke('poll()');
+  releaseOlder({...ready});await older;
+  await h.invoke('controls()');
+  assert.equal(h.context.statusUnknown,true);
+  assert.deepEqual(h.output().menu.filter(item=>item.action&&!item.hidden).map(item=>item.action),['uninstall']);
 });
 
 test('backend can revoke recovery after reload without changing a trusted backup record',async()=>{

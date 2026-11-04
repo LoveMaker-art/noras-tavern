@@ -221,6 +221,126 @@ test('redirected deletion root aborts before touching any files', t => {
   }
 });
 
+test('dangling symlinks are rejected as roots and as KEEP config sources or destinations', t => {
+  const {safeRoot}=require('../installer/desktop/uninstall');
+  const f=fixture(t),missing=path.join(f.directory,'outside-missing'),alias=path.join(f.directory,'dangling-root');
+  fs.symlinkSync(missing,alias,'junction');
+  assert.throws(()=>safeRoot(alias),/链接/);
+  assert.throws(()=>safeRoot(path.join(alias,'child')),/ENOENT|链接/);
+  for(const relative of ['tavern/tavern-state/native-runtime/config.yaml','tavern/tavern-state/nora-retained-config.yaml']){
+    const item=fixture(t),plan=item.plan('keep'),target=path.join(item.home,relative);
+    fs.rmSync(target,{force:true});fs.symlinkSync(missing,target,process.platform==='win32'?'junction':'file');
+    assert.throws(()=>cleanup(plan),/链接/);
+    assert.equal(fs.lstatSync(target).isSymbolicLink(),true);
+    assert.equal(fs.existsSync(path.join(item.home,item.programs[0])),true);
+    assert.equal(fs.existsSync(missing),false);
+  }
+  const item=fixture(t),plan=item.plan('all'),lock=path.join(item.home,'installer/operations/.writer.lock');
+  fs.mkdirSync(path.dirname(lock),{recursive:true});
+  fs.symlinkSync(missing,lock,process.platform==='win32'?'junction':'file');
+  assert.throws(()=>cleanup(plan),/链接/);
+  assert.equal(fs.existsSync(missing),false);
+  assert.equal(fs.existsSync(path.join(item.home,item.programs[0])),true);
+});
+
+test('a failed KEEP configuration publication preserves previous config and programs for retry', t => {
+  const stages=process.platform==='win32'?['write','rename']:['write','rename','directory-sync'];
+  for(const stage of stages){
+    const f=fixture(t),plan=f.plan('keep'),relative='tavern/tavern-state/nora-retained-config.yaml';
+    f.write(relative,'previous config');
+    const target=path.join(plan.root,relative),rename=fs.renameSync,sync=fs.fsyncSync,write=fs.writeSync;
+    const blocked=()=>Object.assign(new Error('retained config publication blocked'),{code:'EIO'});
+    fs.writeSync=function(file,bytes,offset,length,position){
+      if(stage==='write'&&Buffer.isBuffer(bytes)&&bytes.subarray(offset,offset+length).toString()==='custom: retained'){
+        write.call(this,file,bytes,offset,4,position);
+        throw blocked();
+      }
+      return write.apply(this,arguments);
+    };
+    fs.renameSync=function(from,to){
+      if(stage==='rename'&&to===target)throw blocked();
+      return rename.call(this,from,to);
+    };
+    fs.fsyncSync=function(fd){
+      if(stage==='directory-sync'&&fs.fstatSync(fd).isDirectory())throw blocked();
+      return sync.call(this,fd);
+    };
+    try{assert.throws(()=>cleanup(plan),/retained config publication blocked/,stage);}
+    finally{fs.writeSync=write;fs.renameSync=rename;fs.fsyncSync=sync;}
+    assert.equal(fs.readFileSync(target,'utf8'),'previous config');
+    assert.equal(fs.readFileSync(path.join(f.home,'tavern/tavern-state/native-runtime/config.yaml'),'utf8'),'custom: retained');
+    for(const program of f.programs)assert.equal(fs.existsSync(path.join(f.home,program)),true);
+    assert.deepEqual(fs.readdirSync(path.dirname(target)).sort(),['imports','native','native-runtime','nora-retained-config.yaml']);
+    cleanup(plan);
+    assert.equal(fs.readFileSync(target,'utf8'),'custom: retained');
+  }
+});
+
+test('KEEP directory-sync rollback preserves a concurrent config replacement and original error',
+  {skip:process.platform==='win32'},t=>{
+    for(const previous of [true,false]){
+      const f=fixture(t),plan=f.plan('keep'),relative='tavern/tavern-state/nora-retained-config.yaml';
+      if(previous)f.write(relative,'previous config');
+      const target=path.join(plan.root,relative),replacement=target+'.replacement',sync=fs.fsyncSync;
+      fs.writeFileSync(replacement,'concurrent config');
+      const blocked=Object.assign(new Error('controlled directory flush failure'),{code:'EIO'});
+      fs.fsyncSync=function(fd){
+        if(fs.fstatSync(fd).isDirectory()){fs.renameSync(replacement,target);throw blocked;}
+        return sync.call(this,fd);
+      };
+      try{assert.throws(()=>cleanup(plan),error=>error===blocked&&/未覆盖当前文件/.test(error.cause?.message));}
+      finally{fs.fsyncSync=sync;}
+      assert.equal(fs.readFileSync(target,'utf8'),'concurrent config');
+      assert.equal(fs.readFileSync(path.join(f.home,'tavern/tavern-state/native-runtime/config.yaml'),'utf8'),'custom: retained');
+      for(const program of f.programs)assert.equal(fs.existsSync(path.join(f.home,program)),true);
+      const backups=fs.readdirSync(path.dirname(target)).filter(name=>name.endsWith('.tmp'));
+      assert.equal(backups.length,previous?1:0);
+      if(previous)assert.equal(fs.readFileSync(path.join(path.dirname(target),backups[0]),'utf8'),'previous config');
+    }
+  });
+
+test('offering complete uninstall checks ownership, paths and writer state without creating records', t => {
+  const {canOfferFullUninstall,own}=require('../installer/desktop/uninstall');
+  const f=fixture(t),home=f.home,hermesHome=path.join(home,'hermes'),installRoot=path.join(home,'tavern');
+  const bound={home,hermesHome,installRoot},lockFile=path.join(home,'installer/operations/.writer.lock');
+  assert.equal(canOfferFullUninstall(null),false);
+  assert.equal(canOfferFullUninstall(bound),false);
+  assert.equal(fs.existsSync(path.join(home,'nora-owner.json')),false);
+  own(home);
+  assert.equal(canOfferFullUninstall(bound),true);
+  assert.equal(fs.existsSync(lockFile),false);
+  assert.equal(canOfferFullUninstall({...bound,installRoot:path.join(hermesHome,'nested')}),false);
+  assert.equal(canOfferFullUninstall({...bound,installRoot:f.directory}),false);
+  fs.symlinkSync(hermesHome,path.join(home,'alias'),'junction');
+  assert.equal(canOfferFullUninstall({...bound,hermesHome:path.join(home,'alias')}),false);
+  const osLock=require('../installer/desktop/os-lock');
+  const writer=osLock.acquire({directory:path.join(home,'installer')});
+  try{assert.equal(canOfferFullUninstall(bound),false);}
+  finally{writer.release();}
+  assert.equal(canOfferFullUninstall(bound),true);
+});
+
+test('KEEP copies a multi-chunk config without reading its entire descriptor at once', t => {
+  const f=fixture(t),plan=f.plan('keep'),relative='tavern/tavern-state/native-runtime/config.yaml';
+  const original=Buffer.alloc(210000,'setting: fixture\n');
+  f.write(relative,original);
+  const source=fs.statSync(path.join(f.home,relative)),readFile=fs.readFileSync,read=fs.readSync;
+  const isSource=fd=>typeof fd==='number'&&fs.fstatSync(fd).ino===source.ino;
+  let chunks=0;
+  fs.readFileSync=function(file,...args){
+    assert.equal(isSource(file),false,'configuration should be copied in fixed chunks');
+    return readFile.call(this,file,...args);
+  };
+  fs.readSync=function(fd,buffer,offset,length,position){
+    if(isSource(fd)){assert.ok(length<=64*1024);chunks++;}
+    return read.call(this,fd,buffer,offset,length,position);
+  };
+  try{cleanup(plan);}
+  finally{fs.readFileSync=readFile;fs.readSync=read;}
+  assert.ok(chunks>=4);
+  assert.deepEqual(fs.readFileSync(path.join(f.home,'tavern/tavern-state/nora-retained-config.yaml')),original);
+});
+
 test('nested symlinks are unlinked without following them', t => {
   const f = fixture(t), outside = path.join(f.directory, 'outside');
   fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'keep'), 'unrelated');
@@ -365,6 +485,66 @@ test('all confirmation with unknown instance port hands off to the locked native
   assert.equal(plan.serviceCheck.mode,'native-root');assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
 });
 
+test('only a confirmed full uninstall can bypass an unreadable KEEP receipt',async t=>{
+  for(const choices of [[1],[2,1]]){
+    const f=wizard(t,choices);f.write('nora-retained.json','{malformed');
+    if(choices[0]===1){
+      await assert.rejects(f.run(),{code:'RETAINED_INSTALLATION_UNCONFIRMED'});
+      assert.equal(fs.existsSync(f.planFile),false);
+      assert.deepEqual(f.exits,[]);
+    }else{
+      assert.equal(await f.run(),true);
+      const plan=JSON.parse(fs.readFileSync(f.planFile));
+      assert.equal(plan.serviceMode,'native-root');
+      assert.equal(plan.port,null);
+      assert.equal(f.dialogs.length,2);
+      plan.executable=process.execPath;
+      plan.serviceCheck=f.plan('all',{serviceMode:'native-root',port:null}).serviceCheck;
+      fs.writeFileSync(f.planFile,JSON.stringify(plan));
+      await worker(f.planFile,()=>{});
+      const outcome=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json')));
+      assert.equal(outcome.state,'complete',JSON.stringify(outcome));
+      assertLockShell(f.home);
+    }
+  }
+});
+
+test('a macOS disk image blocks uninstall before prompting or stopping services',async t=>{
+  const f=wizard(t,[]);
+  f.context.process.platform='darwin';
+  f.context.process.execPath='/Volumes/Nora/Nora.app/Contents/MacOS/Nora';
+  await assert.rejects(f.run(),/移入“应用程序”/);
+  assert.deepEqual(f.dialogs,[]);
+  assert.deepEqual(f.exits,[]);
+  assert.equal(fs.existsSync(f.planFile),false);
+});
+
+test('uninstall status wait times out without writing a handoff plan',async t=>{
+  const f=wizard(t,[1]);
+  f.context.setTimeout=callback=>setTimeout(callback,10);
+  vm.runInContext('statusRequest=new Promise(()=>{});',f.context);
+  await assert.rejects(f.run(),/状态检查仍在进行/);
+  assert.equal(vm.runInContext('activeRun',f.context),false);
+  assert.equal(fs.existsSync(f.planFile),false);
+  assert.deepEqual(f.exits,[]);
+});
+
+test('uninstall timed out stop cannot later write a plan or exit, and blocks competing handoff',async t=>{
+  const f=wizard(t,[1]);
+  f.context.setTimeout=callback=>setTimeout(callback,10);
+  let finish;
+  f.context.pendingStop=new Promise(resolve=>{finish=resolve;});
+  vm.runInContext('findPython=()=>({});runBridge=async()=>pendingStop;',f.context);
+  await assert.rejects(f.run(),/停止服务尚未结束/);
+  assert.equal(vm.runInContext('activeRun',f.context),false);
+  await assert.rejects(f.run(),/当前任务/);
+  finish({offline:true,running:false,gatewayRunning:false});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(vm.runInContext('shutdownPending',f.context),null);
+  assert.equal(fs.existsSync(f.planFile),false);
+  assert.deepEqual(f.exits,[]);
+});
+
 test('only all hands off corrupt historical admission after the real controller refuses before stop',async t=>{
   const f=wizard(t,[2,1]),id='11111111-1111-4111-8111-111111111111';
   f.write(`installer/operations/${id}/operation.json`,'{malformed');
@@ -505,14 +685,14 @@ test('parent identity query failure preserves every uninstall file and the origi
   });
 });
 
-function uninstallDiagnosticHarness({sender,missingPackage=false,cleanupFailure}={}){
+function uninstallDiagnosticHarness({sender,missingPackage=false,cleanupFailure,platform='win32'}={}){
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),localRequire=createRequire(file),calls=[];
   const context=vm.createContext({require:name=>{
     if(name==='./lifecycle-diagnostics'){calls.push('load');return {createLifecycleDiagnostics:()=>sender};}
     if(name==='./package.json'&&missingPackage)throw Object.assign(new Error('optional package unavailable'),{code:'MODULE_NOT_FOUND'});
     if(name==='./uninstall-offline-check')return {inspect:async()=>({offline:true})};
     return localRequire(name);
-  },__filename:file,__dirname:path.dirname(file),module:{exports:{}},process:{...process,platform:'win32',stderr:{write(){}},stdout:{write(){}}},
+  },__filename:file,__dirname:path.dirname(file),module:{exports:{}},process:{...process,platform,stderr:{write(){}},stdout:{write(){}}},
     console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   context.inspectExecutorHistory=async()=>{};
@@ -520,6 +700,28 @@ function uninstallDiagnosticHarness({sender,missingPackage=false,cleanupFailure}
   if(cleanupFailure)context.cleanupLocked=(...args)=>{cleanup(...args);throw cleanupFailure;};
   return {worker:context.module.exports.worker,calls};
 }
+test('Mac terminal notifications run after releasing the native uninstall writer on success and failure',async t=>{
+  for(const state of ['complete','error'])await t.test(state,async()=>{
+    const f=fixture(t),plan=f.plan('all'),file=path.join(f.directory,'nora-uninstall.json'),seen=[];
+    const failure=Object.assign(new Error('controlled failure before notification'),{code:'EACCES'});
+    fs.writeFileSync(file,JSON.stringify(plan));
+    const harness=uninstallDiagnosticHarness({platform:'darwin',cleanupFailure:state==='error'?failure:undefined});
+    await harness.worker(file,message=>{
+      const terminal=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json')));
+      let lockError;
+      try{require('../installer/desktop/os-lock').acquire({directory:path.join(f.home,'installer')}).release();}
+      catch(error){lockError=error.code;}
+      seen.push({terminal,lockError,message});
+      throw new Error('controlled notification failure after reacquiring writer');
+    });
+    assert.equal(seen.length,1);
+    assert.equal(seen[0].terminal.state,state);
+    assert.equal(seen[0].lockError,undefined);
+    assert.match(seen[0].message,state==='error'?/未完成/:/卸载完成/);
+    if(state==='error')assert.equal(seen[0].terminal.error,failure.message);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'))),seen[0].terminal);
+  });
+});
 test('post-exit uninstall failure preserves its original result even when diagnostic send and close fail',async t=>{
   const f=fixture(t),plan=f.plan('all'),file=path.join(f.directory,'nora-uninstall.json'),records=[];
   plan.diagnostics={enabled:true,launcherVersion:require('../installer/desktop/package.json').version};

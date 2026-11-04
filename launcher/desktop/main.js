@@ -978,7 +978,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       try { sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() }); }
       catch (error) { onOutputError(error); }
     }, 1000);
-    const timeoutMs = command === 'status' ? 90000 : command === 'stop' ? 60000 : ['repair-preflight','operation-effects'].includes(command) ? 300000 : 30 * 60 * 1000;
+    const timeoutMs = command === 'status' ? 90000 : (command === 'stop' || command === 'recovery-stop' && options.uninstall === true) ? 60000 : ['repair-preflight','operation-effects'].includes(command) ? 300000 : 30 * 60 * 1000;
     const timeout = setTimeout(() => {
       if (['update', 'recover-update'].includes(command)) {
         diagnostics.write('update.waiting-for-transaction', { pid: proc.pid, timeoutMs });
@@ -1127,11 +1127,11 @@ async function recoverLauncher() {
   } finally { activeOperationContext=null;if (!restarting) activeRun=false; }
 }
 
-async function awaitQuitStep(work, timeoutMs, message) {
+async function awaitLifecycleStep(work, timeoutMs, message, code='SHUTDOWN_NOT_CONFIRMED') {
   let timer;
   try {
     return await Promise.race([work,new Promise((_,reject)=>{
-      timer=setTimeout(()=>reject(Object.assign(new Error(message),{code:'SHUTDOWN_NOT_CONFIRMED'})),timeoutMs);
+      timer=setTimeout(()=>reject(Object.assign(new Error(message),{code})),timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
@@ -1150,7 +1150,7 @@ async function requestQuit(event) {
     }
     // A busy shared lock does not identify its owner. Keep the original quit
     // protection and never stop services while an independent task may own them.
-    const updating=await awaitQuitStep(require('./updater-task').query(noraHome()),5000,
+    const updating=await awaitLifecycleStep(require('./updater-task').query(noraHome()),5000,
       '尚未确认后台维护状态，请查看日志或稍后重试退出。');
     if(updating.busy!==false||updating.settled!==true
       ||updating.operation&&['selecting','downloading','prepared','applying','verifying','recovering'].includes(updating.status)){
@@ -1159,7 +1159,7 @@ async function requestQuit(event) {
         detail:'请等待更新或恢复结束后再退出；状态无法确认时请查看日志。',buttons:['知道了']});
       return;
     }
-    if (statusRequest) await awaitQuitStep(statusRequest.catch(() => {}),5000,
+    if (statusRequest) await awaitLifecycleStep(statusRequest.catch(() => {}),5000,
       '状态检查仍在进行，请查看日志或稍后重试退出。');
     diagnostics.write('shutdown.start', { services: ['nora', 'tavern'] });
     if (findPython()) {
@@ -1169,7 +1169,7 @@ async function requestQuit(event) {
         if (!verifyWorkflowResult({action:'shutdown',result})) throw new Error('尚未确认诺拉与酒馆已全部停止。');
         await context.stage('verifying');return {verification:'confirmed',value:result};
       }).finally(()=>{shutdownPending=null;});
-      await awaitQuitStep(shutdownPending,30000,'停止服务尚未结束。可继续查看日志，任务结束后可重试退出。');
+      await awaitLifecycleStep(shutdownPending,30000,'停止服务尚未结束。可继续查看日志，任务结束后可重试退出。');
     } else {
       const status = nodeStatus();
       if (status.installed || status.hermesInstalled || status.managedInstallation) throw new Error('运行环境缺失，无法安全停止服务。请修复安装后再退出。');
@@ -1701,7 +1701,10 @@ function createWindow() {
 
 async function confirmUninstall(planFile, onProgress = () => {}) {
   if (!app.isPackaged) throw new Error('开发模式不删除应用。请使用安装包测试卸载流程。');
-  if (activeRun || modelBusy) throw new Error('请等待当前任务结束后再卸载。');
+  if (activeRun || modelBusy || shutdownPending) throw new Error('请等待当前任务结束后再卸载。');
+  const appPath = process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : null;
+  if (appPath && (!appPath.endsWith('.app') || appPath.startsWith('/Volumes/')))
+    throw new Error('请先将启动器移入“应用程序”，再执行卸载。');
   const home = noraHome();
   const selection = await dialog.showMessageBox({
     type: 'question', title: '卸载诺拉·酒馆', message: '要保留数据吗？',
@@ -1718,13 +1721,14 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
   }
   activeRun = true;
   try {
-    if (statusRequest) await statusRequest.catch(() => {});
+    if (statusRequest) await awaitLifecycleStep(statusRequest.catch(() => {}),5000,
+      '状态检查仍在进行，尚未开始卸载。请稍后重试。','UNINSTALL_STATUS_PENDING');
     let port, serviceMode = 'port';
     const retained=mode==='keep'?require('./retained-installation').inspect(home,{allowPending:true}):null;
     if(retained?.state==='prepared'){port=retained.port;serviceMode='retained';}
     try { if(serviceMode==='port')port = installationPort(); }
     catch (error) {
-      if (mode !== 'all' || error.code !== 'VERIFICATION_FAILED') throw error;
+      if (mode !== 'all' || !['VERIFICATION_FAILED','RETAINED_INSTALLATION_UNCONFIRMED'].includes(error.code)) throw error;
       port = null; serviceMode = 'native-root';
       diagnostics.error('uninstall.native-root-handoff', error, { level: 'warning', reason: 'instance-port-unconfirmed' });
     }
@@ -1734,16 +1738,18 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
     if (serviceMode === 'port' && findPython()) {
       let stopStarted = false;
       try {
-        await runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
+        shutdownPending=runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
           await context.stage('applying');
           stopStarted = true;
-          const stopped=await runBridge('recovery-stop', { port });
+          const stopped=await runBridge('recovery-stop', { port, uninstall: true });
           if(stopped.offline!==true||stopped.running!==false||stopped.gatewayRunning!==false)
             throw launcherError('服务停止状态尚未确认，未开始卸载。',{code:'VERIFICATION_FAILED'});
           return {verification:'confirmed',value:stopped};
-        });
+        }).finally(()=>{shutdownPending=null;});
+        await awaitLifecycleStep(shutdownPending,30000,
+          '停止服务尚未结束，尚未开始卸载。任务结束后可重试。','UNINSTALL_STATUS_PENDING');
       } catch (error) {
-        if (mode !== 'all' || stopStarted) throw error;
+        if (mode !== 'all' || stopStarted || error.code==='UNINSTALL_STATUS_PENDING') throw error;
         port = null; serviceMode = 'native-root';
         diagnostics.error('uninstall.native-root-handoff', error, { level: 'warning', reason: 'shutdown-admission-failed' });
       }
@@ -1751,12 +1757,8 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
     // Without Python, the handoff worker proves offline ownership under its
     // writer lock before deleting anything; residual records are not proof of
     // a running service and must not require repairing an app just to remove it.
-    const appPath = process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : null;
     const plan = uninstall.makePlan({ home, hermesHome: hermesHome(), installRoot: installRoot(), mode, appPath, executable: process.execPath,
       port, serviceMode });
-    if (process.platform === 'darwin' && (!appPath.endsWith('.app') || appPath.startsWith('/Volumes/'))) {
-      throw new Error('请先将启动器移入“应用程序”，再执行卸载。');
-    }
     if (!planFile) {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-uninstall-'));
       fs.chmodSync(directory, 0o700);
@@ -1780,7 +1782,7 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
 
 async function beginUninstall(event) {
   if (!app.isPackaged) throw new Error('开发模式不会删除应用。请使用安装包测试卸载流程。');
-  if (activeRun || modelBusy || uninstalling) throw new Error('请等待当前任务结束后再卸载。');
+  if (activeRun || modelBusy || uninstalling || shutdownPending) throw new Error('请等待当前任务结束后再卸载。');
   uninstalling = true;
   try {
   if (process.platform === 'win32') {
@@ -1899,8 +1901,10 @@ if (primaryInstance) {
     if (statusRequest) return statusRequest;
     statusRequest = (async () => {
       const launcherRecovery=await readLauncherRecovery();
-      const operation=activeOperationContext?.snapshot||await operations().snapshot();
+      let operation, readingOperation=true;
     try {
+      operation=activeOperationContext?.snapshot||await operations().snapshot();
+      readingOperation=false;
       const retained=require('./retained-installation').inspect(noraHome(),{allowPending:true,operationId:operation?.operationId});
       if(retained?.state==='prepared')
         return {...nodeStatus('',operation),...taskCancellation(),launcherRecovery,operation:projectDesktopOperation(operation)};
@@ -1942,8 +1946,16 @@ if (primaryInstance) {
     } catch (error) {
       // Failed inspection provides no evidence that services stopped or that
       // the installation needs repair. Let the renderer retain known facts.
-      return {statusUnavailable:true,warning:statusErrorMessage(error),launcherRecovery,...taskCancellation(),
-        busy:activeRun || modelBusy || quitting || uninstalling || selectingLocation};
+      const busy=activeRun || modelBusy || quitting || uninstalling || selectingLocation || Boolean(shutdownPending);
+      const historicalFailure=error.code==='RETAINED_INSTALLATION_UNCONFIRMED'
+        ||readingOperation&&(error.code==='OPERATION_RECORD_INVALID'||error.name==='SyntaxError');
+      let uninstallChoiceAvailable=false;
+      if(app.isPackaged&&!busy&&!operation?.busy&&historicalFailure){
+        try{uninstallChoiceAvailable=uninstall.canOfferFullUninstall({home:noraHome(),hermesHome:hermesHome(),installRoot:installRoot()});}
+        catch{}
+      }
+      return {statusUnavailable:true,warning:statusErrorMessage(error),launcherRecovery,...taskCancellation(),busy,
+        ...(uninstallChoiceAvailable?{uninstallChoiceAvailable:true}:{})};
     }
     })().finally(() => { statusRequest = null; });
     return statusRequest;

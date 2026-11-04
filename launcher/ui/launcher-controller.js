@@ -51,6 +51,7 @@
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
   let statusUnknown = false, lastStatusAt = 0, launcherRecoveryConfirmed = false;
+  let uninstallChoiceAvailable = false, statusQuerySequence = 0;
   let logsOpen = false, logTimer, logCursor, logOperationId, logGeneration = 0, logFollow = true, logOutcome;
   let logRecords = [], logBytes = 0, logErrorLocated = false, logFirstError, logReturnFocus;
   const logIds = new Set(), logMissing = new Set();
@@ -221,7 +222,7 @@
     busy = true; controls();
     try {
       await readStatus(); busy = false;
-      if (snapshot.updateRecovery || snapshot.launcherRecovery || snapshot.operation || !primary) route();
+      if (snapshot.updateRecovery || snapshot.launcherRecovery || snapshot.operation || !primary || primary.action === 'status') route();
       else fail(primary.error, primary.action, primary.retry, primary);
     } catch {
       busy = false;
@@ -321,8 +322,11 @@
   }
   async function readStatus({ allowUnavailable = false } = {}) {
     launcherRecoveryConfirmed = false;
+    const query = ++statusQuerySequence, hadUninstallChoice = uninstallChoiceAvailable;
+    uninstallChoiceAvailable = false;
     try {
       const value = await api.status();
+      if (query !== statusQuerySequence) throw new Error('状态查询已更新，请重新查询状态。');
       if (Object.hasOwn(value, 'launcherRecovery')) {
         // The launcher backup assessment is independent of runtime status.
         snapshot = { ...snapshot, launcherRecovery: value.launcherRecovery };
@@ -330,12 +334,21 @@
         launcherRecoveryConfirmed = value.busy === false && value.launcherRecovery?.canRecover === true;
       }
       if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled && !value.retainedUninstallPending)) {
+        if (value.statusUnavailable === true && value.uninstallChoiceAvailable === true
+          && value.busy === false && typeof api.uninstall === 'function') {
+          uninstallChoiceAvailable = true;
+          snapshot.busy = false;
+        }
         if (allowUnavailable) { statusUnknown = true; return value; }
         throw new Error(value.warning || '暂时无法查询后台状态。');
       }
       syncState({tavernProcessRunning: null, gatewayRunning: null, ...value}); statusUnknown = false; lastStatusAt = Date.now();
       return value;
-    } catch (error) { statusUnknown = true; throw error; }
+    } catch (error) {
+      if (query === statusQuerySequence) statusUnknown = true;
+      throw error;
+    }
+    finally { if (query === statusQuerySequence && hadUninstallChoice && !uninstallChoiceAvailable) hideMenu(); }
   }
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
@@ -347,13 +360,16 @@
     if (view === 'model-overview') $('main').dataset.modelView = 'list';
     else delete $('main').dataset.modelView;
     const recoveryView = view === 'recovery' && Boolean(snapshot.updateRecovery || snapshot.launcherRecovery);
+    const uninstallOnly = statusUnknown && uninstallChoiceAvailable;
     const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.retainedInstallation && !snapshot.operation && !snapshot.installer?.startedAt
       && !snapshot.installed && !snapshot.hermesInstalled && !snapshot.noraInstalled && !serviceRunning();
-    $('management').hidden = freshInstall || recoveryView || view === 'error' && !snapshot.retainedUninstallPending || view !== 'daily' && (busy || Boolean(snapshot.busy));
+    $('management').hidden = freshInstall || recoveryView || view === 'error' && !snapshot.retainedUninstallPending && !uninstallOnly
+      || view !== 'daily' && (busy || Boolean(snapshot.busy));
     if (freshInstall) hideMenu();
     document.querySelectorAll('#management [data-action]').forEach(control => {
-      control.hidden = !complete() && !['uninstall', 'logs', 'update'].includes(control.dataset.action);
-      if (control.dataset.action === 'logs') control.hidden = typeof api.operationLogs !== 'function' && typeof api.openLogs !== 'function';
+      const action = control.dataset.action;
+      control.hidden = uninstallOnly ? action !== 'uninstall' : !complete() && !['uninstall', 'logs', 'update'].includes(action);
+      if (!uninstallOnly && action === 'logs') control.hidden = !hasLogs();
     });
     $('launchbar').hidden = recoveryView || !complete() || view !== 'daily';
     $('status').hidden = !recoveryView && complete() && !statusUnknown && view !== 'error';
@@ -389,7 +405,7 @@
     });
     if (statusUnknown) document.querySelectorAll('.services button, .conversation-entry button, #stopAll').forEach(item => { item.disabled = true; });
     if (statusUnknown) document.querySelectorAll('#management [data-action]').forEach(item => {
-      if (['stop-all', 'uninstall'].includes(item.dataset.action)) item.disabled = true;
+      if (uninstallOnly ? item.dataset.action !== 'uninstall' : ['stop-all', 'uninstall'].includes(item.dataset.action)) item.disabled = true;
     });
     const submit = $('inline').querySelector('button[type="submit"]');
     if (submit) {
@@ -569,7 +585,7 @@
   }
   function route() {
     $('main').classList.remove('update-recovery');
-    if (statusUnknown && !launcherRecoveryConfirmed) {
+    if (statusUnknown && (!launcherRecoveryConfirmed || uninstallChoiceAvailable)) {
       if (lastFailure?.error) fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);
       else fail('状态暂时无法确认，请等待查询恢复后再继续。', 'status', refreshFailure);
       return;
@@ -1496,6 +1512,7 @@
   }
   document.querySelectorAll('[data-action]').forEach(control => { control.onclick = () => {
     const action = control.dataset.action;
+    if (statusUnknown && (uninstallChoiceAvailable ? action !== 'uninstall' : action === 'uninstall')) return;
     if (action === 'logs' && hasLogs()) { hideMenu(); openLogs({ currentTarget: control }); return; }
     if (busy) return; hideMenu();
     if (['model','claw','community','update','settings'].includes(action)) pageReturnFocus = control.closest('#more') ? $('moreButton') : control;
@@ -1505,6 +1522,7 @@
     if (action === 'update') checkUpdates();
     if (action === 'stop-all') run('stop', { service: 'all' });
     if (action === 'uninstall') {
+      if (snapshot.busy || typeof api.uninstall !== 'function') return;
       busy = true; controls();
       api.uninstall({ onProgress: task => {
         busy = true; view = 'uninstall'; clearInline(); say(task); controls();
@@ -1546,7 +1564,7 @@
           const details = view === 'recovery' && $('inline').querySelector('.recovery-details');
           if (details && detailsOpen) details.open = true;
         } else if (!busy && view === 'error' && (wasUnknown || beforeOperation !== JSON.stringify(snapshot.operation))) {
-          if (snapshot.operation || snapshot.updateRecovery || snapshot.launcherRecovery || !lastFailure) route();
+          if (snapshot.operation || snapshot.updateRecovery || snapshot.launcherRecovery || !lastFailure || lastFailure.action === 'status') route();
           else fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);
         }
         else if (view === 'loading' || (view === 'monitor' && !snapshot.busy)) route();

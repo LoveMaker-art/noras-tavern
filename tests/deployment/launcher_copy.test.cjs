@@ -60,7 +60,7 @@ function uiContext(values = {}) {
     button: () => ({}), textError: String,
     ...values,
   });
-  vm.runInContext(['renderUpdateVersions','currentOperation','isNewUpdateTarget','hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','settledUpdateOperation','complete','canReturnHome'].map(definition).join('\n'),context);
+  vm.runInContext(['renderUpdateVersions','currentOperation','isNewUpdateTarget','hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','settledUpdateOperation','complete','canReturnHome','serviceRunning'].map(definition).join('\n'),context);
   return context;
 }
 

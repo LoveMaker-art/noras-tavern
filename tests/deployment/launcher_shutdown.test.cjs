@@ -30,7 +30,7 @@ function fixture(overrides = {}) {
   });
   const node = functions.get('requestQuit');
   assert.ok(node, 'Full exit must have a managed shutdown handler');
-  const deadline = functions.get('awaitQuitStep');
+  const deadline = functions.get('awaitLifecycleStep');
   if (deadline) vm.runInContext(source.slice(deadline.start, deadline.end), context);
   const quit = vm.runInContext(`(${source.slice(node.start, node.end)})`, context);
   const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });

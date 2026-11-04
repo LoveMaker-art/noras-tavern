@@ -51,6 +51,7 @@ function recovery(version, updateRecovery, extra = {}, apiExtra = {}, contextExt
     api: { recover() {}, openLogs() {}, ...apiExtra }, openLogs: () => calls.push(['logs']), snapshot: { installed: true, hermesInstalled: true, systemReady: false, version, updateRecovery,
       running: true, systemProblems: ['技能文件内容与安装记录不一致'], ...extra },
     autoStartAttempted: false, bundledUpgradeAttempted: false, complete: () => false, statusUnknown: false, launcherRecoveryConfirmed:false,
+    uninstallChoiceAvailable: false, statusQuerySequence: 0,
     versionInfo:null,lastFailure:null,lastStatusError:'',busy:false,
     $: id => {
       const nested = [...elements.values()].flatMap(descendants).find(node => node.id === id);
@@ -234,7 +235,7 @@ test('a missing recovery API never offers an unusable recovery action', () => {
 });
 
 const runSource = source.slice(source.indexOf('  async function run(action'), source.indexOf('  install = () =>'));
-const statusSource = source.slice(source.indexOf('  async function readStatus()'), source.indexOf('  function hideMenu()'));
+const statusSource = source.slice(source.indexOf('  async function readStatus('), source.indexOf('  function hideMenu()'));
 async function failedRun(action, { freshRecovery = null, staleRecovery = null, statusError = null, finishedOperation = null, message = '下载失败（HTTP 403）。' } = {}) {
   const h = recovery('2.3.17', null);
   h.calls.length = 0; h.elements.get('inline').replaceChildren();
