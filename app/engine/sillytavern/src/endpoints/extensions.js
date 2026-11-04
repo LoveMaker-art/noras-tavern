@@ -8,7 +8,7 @@ import { CheckRepoActions, default as simpleGit } from 'simple-git';
 import { PUBLIC_DIRECTORIES } from '../constants.js';
 import { getConfigValue, isValidUrl } from '../util.js';
 import { createGitClient } from '../git/client.js';
-import { builtinPlugins, bundledExtensionPath, bundledExtensionsFor, discoverInstalledExtensions, installDisabledExtension, isManagedExtension, readExtensionLibraryState, setExtensionLibraryState } from '../nora-extension-library.js';
+import { builtinPlugins, bundledExtensionPath, bundledExtensionsFor, discoverInstalledExtensions, installDisabledExtension, isManagedExtension, isReservedExtensionName, readExtensionLibraryState, setExtensionLibraryState } from '../nora-extension-library.js';
 
 const gitBackend = getConfigValue('git.backend', 'auto');
 
@@ -185,7 +185,7 @@ router.post('/install', async (request, response) => {
             return response.status(400).send('Could not determine the extension name from the URL. Please provide a valid git repository URL.');
         }
 
-        if (isManagedExtension(extensionNameSanitized)) return response.status(403).send('内置扩展随诺拉更新，不能覆盖安装。');
+        if (isReservedExtensionName(extensionNameSanitized)) return response.status(403).send('此名称保留给诺拉内置扩展，不能安装。');
         if (request.body.disabled === true) {
             if (global) return response.status(400).send('插件库仅支持安装到当前用户。');
             if (parsedUrl.username || parsedUrl.password) return response.status(400).send('请使用不含账号或密钥的仓库链接。');

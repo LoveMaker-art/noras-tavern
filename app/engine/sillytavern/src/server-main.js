@@ -331,6 +331,16 @@ app.get('/version', async function (_, response) {
 redirectDeprecatedEndpoints(app);
 setupPrivateEndpoints(app);
 
+function consumeMaintenanceContentCheckFlag() {
+    try {
+        fs.unlinkSync(path.join(serverDirectory, '.nora-skip-content-check-once'));
+        return true;
+    } catch (error) {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+    }
+}
+
 /**
  * Tasks that need to be run before the server starts listening.
  * @returns {Promise<void>}
@@ -353,7 +363,9 @@ async function preSetupTasks() {
     console.log();
 
     const directories = await getUserDirectoriesList();
-    await checkForNewContent(directories);
+    if (!consumeMaintenanceContentCheckFlag()) {
+        await checkForNewContent(directories);
+    }
     await diskCache.verify(directories);
     migrateFlatSecrets(directories);
     cleanUploads();

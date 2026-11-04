@@ -1417,10 +1417,21 @@ def recover_standalone(home, root, *, helper=None):
 
 
 @contextmanager
-def temporary_content_check_skip(enabled):
+def temporary_content_check_skip(enabled, *, supervisor_engine=None):
     """Scope the optional content-check override to the spawned runtime."""
     if not enabled:
         yield
+        return
+    if supervisor_engine is not None:
+        # Supervisor launches with its own environment. Hand off the
+        # one-use flag through the new program tree.
+        flag = Path(supervisor_engine) / '.nora-skip-content-check-once'
+        with flag.open('xb'):
+            pass
+        try:
+            yield
+        finally:
+            flag.unlink(missing_ok=True)
         return
     key = 'SILLYTAVERN_SKIPCONTENTCHECK'
     previous = os.environ.get(key)
@@ -1452,7 +1463,8 @@ def install_runtime(hermes_home, install_root, *, skip_content_check=False, port
     if service:
         text = service.node_text(runtime.node_command(port, runtime.native_data_root), runtime.engine_root)
         service.install_text(text, accepted_hash=None, mode=service.file.stat().st_mode & 0o777)
-    with temporary_content_check_skip(skip_content_check and not service):
+    with temporary_content_check_skip(skip_content_check and (not service or app_changed),
+                                      supervisor_engine=runtime.engine_root if service else None):
         return runtime.start(port=port)
 
 
@@ -2133,6 +2145,10 @@ def install(args):
                 liveware_needed = not managed and (app_changed or ops_changed or host_hook is not None)
                 liveware = refresh_liveware(hermes_home, install_root, install_root / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
                 if managed:
+                    if ops_changed:
+                        # The verified operations tree was renamed into place.
+                        # Resolve its sibling probe from the live tree.
+                        managed = module_at("update_nora_system", install_root / "apps/tavern-ops/installer/nora_system.py")
                     with reconcile_probe_configuration(journal, hermes_home):
                         proof = managed.verify_runtime(hermes_home, install_root, port, sys.executable, dict(os.environ))
                     if partial:

@@ -11,6 +11,7 @@ const managedExtensionName = name => [...managedExtensions].find(item => item.to
 export const isManagedExtension = name => Boolean(managedExtensionName(name));
 const obsoleteManagedExtensions = new Set(['nora-shell', 'nora-character-status']);
 export const isObsoleteManagedExtension = name => obsoleteManagedExtensions.has(name.toLowerCase());
+export const isReservedExtensionName = name => isManagedExtension(name) || isObsoleteManagedExtension(name);
 const bundledDirectory = fileURLToPath(new URL('../../../native-extensions/', import.meta.url));
 export const bundledExtensionsFor = handle => handle === DEFAULT_USER.handle ? bundledDirectory : undefined;
 
@@ -66,7 +67,7 @@ export function discoverInstalledExtensions(userDirectory, systemDirectory, glob
 // Clone outside the discovery directory. Persist the disabled state BEFORE publishing
 // the folder, so another tab can never discover an unapproved executable extension.
 export async function installDisabledExtension({ directory, name, url, clone }) {
-    if (isManagedExtension(name)) throw new Error('内置扩展随诺拉更新，不能覆盖安装。');
+    if (isReservedExtensionName(name)) throw new Error('此名称保留给诺拉内置扩展，不能安装。');
     fs.mkdirSync(directory, { recursive: true });
     const target = path.join(directory, name);
     if (!name || path.basename(name) !== name || fs.existsSync(target)) throw new Error('同名插件已存在，未覆盖。');

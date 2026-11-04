@@ -48,7 +48,7 @@ test('malformed/failed installs clean staging; collisions and managed names neve
         assert.deepEqual(fs.readdirSync(path.dirname(f.user)), ['extensions']);
     }
     f.write(f.user, 'Existing');
-    for (const name of ['Existing', 'nora-ui', 'NORA-MVU', 'js-slash-runner', '../outside']) {
+    for (const name of ['Existing', 'nora-ui', 'NORA-MVU', 'js-slash-runner', 'nora-shell', 'NORA-CHARACTER-STATUS', '../outside']) {
         await assert.rejects(installDisabledExtension({ directory: f.user, name, url: 'https://example.org/x', clone: f.clone }));
     }
     assert.equal(JSON.parse(fs.readFileSync(path.join(f.user, 'Existing/manifest.json'))).version, '1');

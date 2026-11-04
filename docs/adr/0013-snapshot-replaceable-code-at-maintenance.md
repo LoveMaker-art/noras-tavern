@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-01
 - Clarified: 2026-10-12, aligning data protection with the accepted existing-instance updater contract of 2026-09-10.
+- Clarified: 2026-11-04, applying the current [validation scope](../product/README.md#validation-boundaries) to newly created ordinary update transactions.
 
 ## Context
 
@@ -30,13 +31,14 @@ For an existing Node installation:
 - The atomic switch compares each replaceable target with that post-stop
   snapshot. A writer that changes code after maintenance begins still aborts
   the switch.
-- Ordinary native program updates do not intentionally convert story content.
-  A launcher-managed system update still stops the runtime, snapshots the full
-  `tavern-state`, and checks preservation using file inventories and the existing
-  read-only WorldStore before and after startup. These checks protect against
-  startup quarantine and other runtime side effects. Damaged-installation repair
-  uses the verified candidate as the reader and requires exact preservation;
-  repair does not authorize a legacy-data conversion.
+- Newly created ordinary native program transactions preserve the active
+  `tavern-state` without taking a tree snapshot or making its content an
+  acceptance condition. Bundled managed extensions belong to the versioned
+  program tree. Maintenance verifies the current service and instance binding
+  without invoking the world reader. Existing recovery records retain their
+  original protocol. Damaged-installation repair uses the verified candidate
+  as the reader and requires exact preservation under its separate repair
+  contract. Repair does not authorize a legacy-data conversion.
 - User-installed Tavern plugins are inventoried again after Tavern stops, so a
   plugin added after review is preserved in the replacement tree.
 
@@ -69,7 +71,8 @@ data and the available failure evidence. No backup is deleted to pass admission.
   rollback authoritative without making live code an immutable review input.
 - Release hashes are checked before startup. Generated runtime output after
   startup cannot turn a healthy installation into a checksum failure.
-- Full data protection has a time and disk cost proportional to the state tree.
-  A non-managed component-only update that replaces no runtime and performs no
-  migration can keep Tavern running; this does not establish the same promise
-  for launcher-managed system updates.
+- Partial repair and actual data migration reserve space for their own data
+  protection. Ordinary updates reserve space for program staging and owned
+  metadata. A non-managed component-only update that replaces no runtime and
+  performs no migration can keep Tavern running. Launcher-managed system
+  updates continue to stop their target runtime before program replacement.

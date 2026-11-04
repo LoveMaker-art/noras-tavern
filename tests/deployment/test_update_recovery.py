@@ -38,12 +38,15 @@ def load_updater():
 
 
 def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resume_writes=False,
-                    write_during_start=None):
+                    write_during_start=None, replace_operations=False):
     """Run the real managed transaction, substituting only release/services."""
     updater=load_updater();base=Path(base).resolve();home=base/'hermes';root=base/'tavern'
     (home/'skills').mkdir(parents=True);(root/'apps/tavern-runtime').mkdir(parents=True)
     (root/'apps/tavern-runtime/program.txt').write_text('old program')
     (root/'apps/tavern-runtime/native-runtime.json').write_text('{}')
+    if replace_operations:
+        (root/'apps/tavern-ops/installer').mkdir(parents=True)
+        (root/'apps/tavern-ops/installer/mcp_probe.mjs').write_text('old probe')
     (root/'tavern-state/native/default-user/chats').mkdir(parents=True)
     (root/'tavern-state/native/default-user/chats/story.jsonl').write_text('old story')
     for relative, content in PRESERVED_USER_FILES.items():
@@ -73,6 +76,9 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         (source/'app').mkdir(parents=True);(source/'app/program.txt').write_text('new program')
         (source/'ops/skills').mkdir(parents=True)
         (source/'ops/skills/agents-tavern.md').write_text('old agents')
+        if replace_operations:
+            (source/'ops/installer').mkdir()
+            (source/'ops/installer/mcp_probe.mjs').write_text('new probe')
         return {'changedModules':['nora-runtime']}
     def service(phase,*_):
         phases.append(phase)
@@ -97,9 +103,15 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
     helpers=SimpleNamespace(extract_dependency_bundle=lambda *_:False,
         snapshot_targets=first_install.snapshot_targets,stop_install_runtime=lambda *_:None,
         install_soul=lambda home,*_args,**_kwargs:(home/'SOUL.md').write_text('new soul'))
+    managed_source = None
+    def verify_runtime(*_):
+        if replace_operations and (managed_source.parent/'mcp_probe.mjs').read_text() != 'new probe':
+            raise RuntimeError('runtime verifier selected the wrong release probe')
+        return {name:True for name in nora_system.PROOFS}
+
     managed=SimpleNamespace(read_json=lambda path:json.loads(path.read_text()),
         seed_clawchat_skills=lambda *_:None,record_files_ready=lambda *_:None,
-        verify_runtime=lambda *_:{name:True for name in nora_system.PROOFS},
+        verify_runtime=verify_runtime,
         record_initialization=nora_system.record_initialization,
         acceptance_record_problems=nora_system.acceptance_record_problems,
         mark_setup_complete=nora_system.mark_setup_complete)
@@ -110,7 +122,11 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
              'simple_skill_names':SimpleNamespace(RETIRED=())}
     original_loader=updater.module_at
     helper=updater.recovery_module()
-    def module(name,path):return helper if name=='tavern_update_recovery' else modules.get(name) or original_loader(name,path)
+    def module(name,path):
+        nonlocal managed_source
+        if name=='update_nora_system':
+            managed_source=Path(path)
+        return helper if name=='tavern_update_recovery' else modules.get(name) or original_loader(name,path)
     original_replace=helper.os.replace
     def start_candidate(*_args, **_kwargs):
         if write_during_start is not None:
@@ -132,7 +148,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None,resu
         stack.enter_context(patch.object(bundle,'read_bundle',return_value=manifest))
         stack.enter_context(patch.object(bundle,'extract_bundle',side_effect=extract))
         stack.enter_context(patch.object(updater,'prepare_dependencies',return_value={}))
-        stack.enter_context(patch.object(updater,'changed_roots',return_value={'app'}))
+        stack.enter_context(patch.object(updater,'changed_roots',return_value={'app','ops'} if replace_operations else {'app'}))
         stack.enter_context(patch.object(updater,'roots_with_unmanaged_files',return_value=set()))
         stack.enter_context(patch.object(updater,'prepare_skills',return_value={}))
         stack.enter_context(patch.object(updater,'prepare_host_hook_swap',return_value=None))
@@ -192,6 +208,12 @@ def interrupted_install_fixture():
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def test_installed_operations_tree_owns_the_probe_after_program_exchange(self):
+        with tempfile.TemporaryDirectory(prefix='nora-managed-probe-') as temporary:
+            base=Path(temporary)
+            install_fixture(base,success=True,replace_operations=True)
+            self.assertEqual((base/'tavern/apps/tavern-ops/installer/mcp_probe.mjs').read_text(),'new probe')
+
     def test_automatic_rollback_preserves_latest_active_user_files(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-live-edits-') as temporary:
             base=Path(temporary)

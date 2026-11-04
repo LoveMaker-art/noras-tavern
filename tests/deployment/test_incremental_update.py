@@ -502,6 +502,20 @@ class IncrementalUpdateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {key: 'false'}), UPDATER.temporary_content_check_skip(False):
             self.assertEqual(os.environ[key], 'false')
 
+    def test_supervisor_receives_one_start_content_flag_without_editing_config(self):
+        with tempfile.TemporaryDirectory(prefix='nora-supervisor-content-') as temporary:
+            engine = Path(temporary)
+            config = engine / 'config.yaml'
+            config.write_bytes(b'skipContentCheck: false\n')
+            flag = engine / '.nora-skip-content-check-once'
+            for consume in (False, True):
+                with UPDATER.temporary_content_check_skip(True, supervisor_engine=engine):
+                    self.assertEqual(flag.read_bytes(), b'')
+                    self.assertEqual(config.read_bytes(), b'skipContentCheck: false\n')
+                    if consume:
+                        flag.unlink()
+                self.assertFalse(flag.exists())
+
     def test_extra_managed_file_forces_clean_root_replacement_but_node_modules_do_not(self):
         with tempfile.TemporaryDirectory(prefix="nora-extra-file-") as temporary:
             home = Path(temporary)
