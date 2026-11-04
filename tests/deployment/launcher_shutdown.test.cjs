@@ -38,7 +38,7 @@ function fixture(overrides = {}) {
   });
   const node = functions.get('requestQuit');
   assert.ok(node, 'Full exit must have a managed shutdown handler');
-  for(const name of ['awaitLifecycleStep','hasLocalShutdownWork','confirmExitWithoutStopping']){
+  for(const name of ['awaitLifecycleStep','hasLocalShutdownWork','acquireExitFence','confirmExitWithoutStopping']){
     const fn=functions.get(name);
     vm.runInContext(source.slice(fn.start,fn.end),context);
   }
@@ -171,7 +171,7 @@ test('only-exit accepts broken history after proving no writer or executor remai
     diagnostics:{write:(event,detail)=>f.calls.push([event,detail?.servicesStopped]),error(){}},
     dialog:{showMessageBox:async options=>{
       f.dialogs.push(options);
-      assert.throws(()=>native.acquire({directory}),{code:'OPERATION_BUSY'});
+      assert.equal(native.acquire({directory,probe:true}).busy,false);
       return {response:1};
     }},
   });
@@ -198,6 +198,28 @@ test('a native writer or unresolved executor prevents offering only-exit',async 
   for(const dialog of f.dialogs)assert.deepEqual([...dialog.buttons],['知道了']);
   assert.deepEqual(f.calls,[]);
   assert.equal(native.acquire({directory,probe:true}).busy,false);
+});
+
+test('confirming only-exit rechecks a writer that arrived while the dialog was open',async t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-quit-race-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const native=require('../installer/desktop/os-lock'),guard=require('../installer/desktop/operation-lock');
+  let arrived;
+  const f=fixture({installerDirectory:()=>directory,operationLock:guard,
+    require:name=>name==='./os-lock'?native:{query:async()=>({status:'inspection-required',busy:null,settled:false})},
+    dialog:{showMessageBox:async options=>{
+      f.dialogs.push(options);
+      if(options.type==='warning'){
+        arrived=native.acquire({directory});
+        return {response:1};
+      }
+    }},
+  });
+  try{await f.quit(f.event());}finally{arrived?.release();}
+  assert.ok(arrived,'a writer can acquire the fence while the user considers the dialog');
+  assert.deepEqual([...f.dialogs[1].buttons],['知道了']);
+  assert.deepEqual(f.calls,[]);
+  assert.equal(f.context.quitReady,false);
 });
 
 test('uninstalled home exits without Python; missing Python for installed services is an error', async () => {

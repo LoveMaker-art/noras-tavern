@@ -1243,11 +1243,11 @@ function hasLocalShutdownWork() {
   return activeRun || modelBusy || selectingLocation || shutdownPending || activeOperationContext || activeProcess;
 }
 
-async function confirmExitWithoutStopping(error) {
-  let lease;
+async function acquireExitFence() {
+  if (hasLocalShutdownWork()) throw launcherError('当前任务尚未结束。',{code:'OPERATION_BUSY'});
+  const directory = installerDirectory();
+  const lease = require('./os-lock').acquire({directory});
   try {
-    const directory = installerDirectory();
-    lease = require('./os-lock').acquire({directory});
     // A free native lock is insufficient after a guard crash. Check the
     // executor ledger while holding the lock, independently of update history.
     const history = await awaitLifecycleStep(operationLock.probe({directory}),5000,
@@ -1255,13 +1255,25 @@ async function confirmExitWithoutStopping(error) {
     if (history.busy !== true || history.inspectionRequired !== false || history.errors?.length)
       throw launcherError('尚未确认维护执行器已退出。',{code:'OPERATION_EXECUTOR_UNCONFIRMED'});
     if (hasLocalShutdownWork()) throw launcherError('当前任务尚未结束。',{code:'OPERATION_BUSY'});
+    return lease;
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+}
+
+async function confirmExitWithoutStopping(error) {
+  let lease;
+  try {
+    // The dialog must not prevent independent maintenance while the user decides.
+    (await acquireExitFence()).release();
     const choice = await dialog.showMessageBox({
       type:'warning', title:'后台停止未确认', message:'尚未确认后台已停止，是否仅退出启动器？',
       detail:`${error.code==='SHUTDOWN_NOT_CONFIRMED'?error.message:formatUserError(error,{action:'stop'})}\n\n后台服务可能继续运行。现有任务和恢复记录会保留。`,
       buttons:['返回启动器','仅退出启动器'], defaultId:0, cancelId:0, noLink:true,
     });
     if (choice?.response !== 1) return;
-    if (hasLocalShutdownWork()) throw launcherError('当前任务尚未结束。',{code:'OPERATION_BUSY'});
+    lease = await acquireExitFence();
     diagnostics.write('shutdown.exit-only',{servicesStopped:false});
     quitReady = true;
     await new Promise(resolve=>setImmediate(resolve));
