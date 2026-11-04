@@ -327,6 +327,17 @@ class FirstInstallJournal:
         self.record['checkpoints'][stage] = {'state': state, 'at': time.time()}
         self.save()
 
+    def commit(self):
+        # A reader must see all three completion facts from the same write.
+        self.record['checkpoints']['commit'] = {'state': 'result', 'at': time.time()}
+        self.record['status'] = 'installed'
+        try:
+            self.checkpoint('apply', 'result')
+        except Exception:
+            self.record['checkpoints'].pop('commit', None)
+            self.record['status'] = 'applying'
+            raise
+
     def item_for(self, target):
         target = Path(filesystem_path(target)).resolve()
         for item in self.record['targets']:
@@ -1045,10 +1056,55 @@ def retained_config_paths(install_root):
 
 def restore_retained_config(install_root: Path, journal=None) -> Path:
     retained, target = retained_config_paths(install_root)
-    if retained.is_file():
-        write = journal.apply_bytes if journal is not None else atomic
-        write(target, retained.read_bytes(), mode=0o600)
+    if not Path(filesystem_path(retained)).is_file():
+        return retained
+    identity = _recovery.identity(retained)
+    descriptor = os.open(filesystem_path(retained),
+        os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    with os.fdopen(descriptor, 'rb') as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or [opened.st_dev, opened.st_ino] != identity:
+            raise RuntimeError('保留的酒馆配置在打开前发生变化，原文件已保留。')
+        contents = stream.read()
+    digest = hashlib.sha256(b'F\0' + contents).hexdigest()
+    if _recovery.identity(retained) != identity or _recovery.digest(retained) != digest:
+        raise RuntimeError('保留的酒馆配置在读取期间发生变化，原文件已保留。')
+    if journal is None:
+        atomic(target, contents, mode=0o600)
+    else:
+        journal.apply_bytes(target, contents, mode=0o600)
+        journal.record['retainedConfig'] = {'identity': identity, 'digest': digest}
+        journal.save()
     return retained
+
+
+def finish_retained_config(journal):
+    record = journal.record
+    source = record.get('retainedConfig')
+    checkpoints = record['checkpoints']
+    if (source is None or record['status'] != 'installed' or 'restore' in checkpoints
+            or any(checkpoints.get(stage, {}).get('state') != 'result' for stage in ('commit', 'apply'))):
+        return None
+    roots = record['roots']
+    root = Path(roots.get('state') or Path(roots['tavern']) / 'tavern-state')
+    warning = '酒馆安装已完成，未确认原保留配置已清理。'
+    try:
+        retained = _recovery.safe_path(root, 'nora-retained-config.yaml')
+        identity = _recovery.identity(retained)
+        if identity is None:
+            return None
+        target = journal.item_for(_recovery.safe_path(root, 'native-runtime/config.yaml'))
+        if (not isinstance(source, dict) or identity != source.get('identity')
+                or not any(exchange.get('newDigest') == source.get('digest')
+                    and exchange.get('phase') == 'new-rename-result' for exchange in target.get('exchanges', ()))
+                or _recovery.digest(retained) != source['digest']):
+            return warning
+        assert_operation()
+        Path(filesystem_path(retained)).unlink(missing_ok=True)
+        fsync_directory(retained.parent)
+    except (OSError, RuntimeError):
+        return warning
+    return None
 
 
 def install_agents(home: Path, document: str, journal=None) -> str:
@@ -1315,9 +1371,7 @@ def _install(args, operation_id, context_ref) -> dict:
             copy_tree(prepared_app, install_root / "apps/tavern-runtime", journal)
             copy_tree(source / "ops", install_root / "apps/tavern-ops", journal)
             copy_tree(source / "nora-mcp", install_root / "apps/nora-mcp", journal)
-            retained_config = restore_retained_config(install_root, journal)
-            retained_identity = _recovery.identity(retained_config)
-            retained_digest = _recovery.digest(retained_config) if retained_config.exists() else None
+            restore_retained_config(install_root, journal)
             mark_bundled_dependencies(source, install_root, manifest, journal)
             journal.checkpoint('tavern_apply', 'result')
             event("task", stage_id="install_verify", milestone=1, task="启动并检查酒馆")
@@ -1336,16 +1390,8 @@ def _install(args, operation_id, context_ref) -> dict:
                 proof = system.verify_runtime(hermes_home, install_root, args.port, sys.executable, dict(os.environ))
                 system.record_initialization(hermes_home, install_root, manifest, proof, journal=journal)
             write_install_receipt(install_root, manifest, journal)
-            if retained_identity is not None:
-                if _recovery.identity(retained_config) != retained_identity or _recovery.digest(retained_config) != retained_digest:
-                    raise RuntimeError('保留配置在安装期间变化，未删除原文件')
-                retained_config.unlink()
-            event("milestone", index=1, state="done", task="酒馆安装检查完成")
-            event("task", task="系统已安装，等待配置模型和连接 ClawChat")
             for index, item in enumerate(journal.record['targets']): journal.archive_exchanges(item, index)
-            journal.checkpoint('commit', 'result')
-            journal.record['status'] = 'installed'
-            journal.checkpoint('apply', 'result')
+            journal.commit()
         except Exception as error:
             # Freeze the actual failure while the launch log and failed tree
             # still exist. Cleanup and persistence failures remain secondary.
@@ -1374,6 +1420,12 @@ def _install(args, operation_id, context_ref) -> dict:
             else: event("milestone", index=0, state="error", task="安装恢复未完成，已保留恢复记录")
             raise
 
+    retained_config_warning = finish_retained_config(journal)
+    event("milestone", index=1, state="done", task="酒馆安装检查完成")
+    event("task", task="系统已安装，等待配置模型和连接 ClawChat")
+    if retained_config_warning:
+        log(retained_config_warning)
+        event('result', retainedConfigWarning=retained_config_warning)
     result = {
         "status": "installed",
         "mode": "first-install",
@@ -1400,6 +1452,7 @@ def _install(args, operation_id, context_ref) -> dict:
         "clawchatGreeting": gateway_report,
         "greeting": greeting_report,
         "next": "请重新启动 Hermes 会话，然后让 Nora 检查 Tavern 状态。",
+        **({"warning": retained_config_warning} if retained_config_warning else {}),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result

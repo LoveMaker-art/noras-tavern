@@ -169,8 +169,9 @@ async function keepCommittedFixture(f,port){
 }
 
 test('a verified KEEP reinstall survives receipt archive I/O failure, reopens readonly and retries only under a writer',{timeout:40000},async t=>{
-  for(const mode of ['EACCES','ENOSPC','resume EACCES','resume unknown EACCES'])await t.test(mode,async t=>{
-    const resumed=mode.startsWith('resume'),unknown=mode==='resume unknown EACCES',code=resumed?'EACCES':mode;
+  for(const mode of ['EACCES','ENOSPC','resume EACCES','resume unknown EACCES','core reference EACCES'])await t.test(mode,async t=>{
+    const resumed=mode.startsWith('resume'),unknown=mode==='resume unknown EACCES',referenced=mode.startsWith('core reference');
+    const code=resumed||referenced?'EACCES':mode;
     const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));f.home=fs.realpathSync(f.home);f.hermes=path.join(f.home,'hermes');
     const retained=require('../installer/desktop/retained-installation');
     const server=require('node:net').createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;await new Promise(resolve=>server.close(resolve));
@@ -221,6 +222,13 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
       &&path.resolve(String(to))===path.join(f.home,keep.archive,'reinstalled-'+observedId+'.json')){
       injected++;throw Object.assign(Error('controlled receipt archive denied'),{code});}return rename.call(this,from,to);};
     let committed;
+    const platform=process.platform,arch=process.arch,asset=`${platform}-${arch}-release-manifest.json`;
+    const releasePlan=referenced?{schema:'nora-release-plan/1',mode:'install',tag:'v2.4.7',version:'2.4.6',
+      commit:'a'.repeat(40),platform,arch,manifestSha256:'b'.repeat(64),
+      systemManifest:{version:'2.4.6',publication:{schema:'nora-component-publication/1',tag:'v2.4.7'},
+        coreRelease:{schema:'nora-core-reference/1',tag:'v2.4.6',commit:'a'.repeat(40),
+          manifests:{[`${platform}-${arch}`]:{asset,sha256:'b'.repeat(64),size:100}}}}}
+      :{schema:'nora-bundled-plan/1',mode:'install',tag:'v2.4.6',commit:'a'.repeat(40)};
     const execute=async operation=>{
       observedId=operation.operationId;await operation.plan(operation.target);
       if(!committed){
@@ -256,7 +264,7 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
       return {verification:'confirmed',value:finish(operation,committed)};
     };
     try{
-      result=await controller.start('install',{target:{request:{action:'install',port},releasePlan:{schema:'nora-bundled-plan/1',mode:'install',tag:'v2.4.6',commit:'a'.repeat(40)}},execute},crypto.randomUUID());
+      result=await controller.start('install',{target:{request:{action:'install',port},releasePlan},execute},crypto.randomUUID());
       if(resumed){assert.equal(result.state,'failed');assert.equal(result.primaryFailure.code,'EPERM');assert.equal(result.effectState,unknown?'unknown':'changed');
         assert.equal(retained.inspect(f.home,{operationId:result.operationId}).id,keep.id,
           'a failed same-operation install must still admit owner-bound inspection for resume');
@@ -340,6 +348,7 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
       if(node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.value==='nora:status')statusCallback=node.arguments[1];
       for(const value of Object.values(node))if(Array.isArray(value))value.forEach(findStatus);else if(value&&typeof value==='object')findStatus(value);
     }findStatus(ast);const cancellation=ast.body.find(node=>node.id?.name==='taskCancellation');
+    const projectOperation=ast.body.find(node=>node.id?.name==='projectDesktopOperation');
     let writes=0,reads=0;const readonly=vm.createContext({require:require('node:module').createRequire(path.join(desktop,'main.js')),
       quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,activeOperationContext:null,desktopUpdateNotice:null,
       activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,noraHome:()=>f.home,
@@ -347,7 +356,7 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
       runBridge:async()=>{reads++;return {...result.result,running:true,gatewayRunning:true};},readInstallerState:()=>({phase:'ready'}),writeInstallerState:()=>{writes++;},
       releases:{bundledUpgradeTarget:()=>null},payloadDirectory:()=>f.payload,app:{getVersion:()=> '2.1.3'},CHANNEL:'stable',LOCAL_TEST:null,
       telemetry:null,locationStatus:()=>roots,lastStatusError:'',statusErrorMessage:error=>error.message});
-    vm.runInContext(main.slice(cancellation.start,cancellation.end),readonly);
+    vm.runInContext(main.slice(cancellation.start,cancellation.end)+'\n'+main.slice(projectOperation.start,projectOperation.end),readonly);
     const query=vm.runInContext('('+main.slice(statusCallback.start,statusCallback.end)+')',readonly);
     const status=await query();assert.equal(status.systemReady,true);assert.equal(status.installed,true);assert.equal(status.running,true);assert.equal(status.retainedCompletionPending,true);
     assert.equal(status.statusUnavailable,undefined);assert.equal(writes,0);assert.equal(reads,1);assert.deepEqual(fs.readFileSync(path.join(f.home,'nora-retained.json')),receipt);

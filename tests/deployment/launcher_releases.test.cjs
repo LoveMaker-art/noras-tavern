@@ -261,6 +261,22 @@ test('offline consent freezes verified local target without calling it latest, d
   await assert.rejects(releases.prepareInstall({...options,confirmBundled:()=>false}),/offline/);
   assert.equal(selected,undefined);
 });
+test('offline full package keeps the publication tag separate from its original core', async t => {
+  const f=fixture(t);
+  const coreCommit=f.system.commit;
+  f.system.commit='b'.repeat(40);
+  f.system.publication={schema:'nora-component-publication/1',tag:'v2.2.9'};
+  f.system.coreRelease={schema:'nora-core-reference/1',tag:'v2.2.8',commit:coreCommit,
+    manifests:{'darwin-arm64':f.system.files['release-manifest.json']}};
+  fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));
+  let selected;
+  await releases.prepareInstall({...f.options,networkPolicy:{attempts:1},fetcher:async()=>{throw new Error('offline');},
+    confirmBundled:()=>true,onPlan:plan=>{selected=plan;}});
+  assert.equal(selected.tag,'v2.2.9');
+  assert.equal(selected.coreTag,'v2.2.8');
+  assert.equal(selected.version,'2.2.8');
+  assert.equal(selected.commit,coreCommit);
+});
 test('offline first install uses verified bundled bytes only after explicit confirmation', async t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));

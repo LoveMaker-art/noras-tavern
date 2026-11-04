@@ -8,6 +8,7 @@ import unittest
 import os
 import re
 import subprocess
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -23,8 +24,8 @@ SPEC.loader.exec_module(MODULE)
 class FirstInstallSnapshotTests(unittest.TestCase):
     def test_headless_external_state_install_and_failure_keep_original_data(self):
         import yaml
-        for fail in (False, True):
-            with self.subTest(runtime_failure=fail), tempfile.TemporaryDirectory() as temporary:
+        for failure in (None, 'runtime', 'archive', 'commit', 'cleanup', 'changed'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 base = Path(temporary).resolve()
                 home, root, state, source = [base / name for name in ('hermes', 'programs', 'stories', 'release')]
                 for folder in (home, state, source / 'app', source / 'nora-mcp'):
@@ -50,10 +51,58 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                     self.assertEqual(port, 18899)
                     self.assertEqual((state / 'native-runtime/config.yaml').read_bytes(), retained.read_bytes())
                     self.assertEqual(json.loads((home / 'nora-instance.json').read_text())['deployment'], 'core')
-                    if fail:
+                    if failure == 'runtime':
                         raise RuntimeError('runtime acceptance failed')
+                    if failure == 'changed':
+                        replacement = retained.with_suffix('.new')
+                        replacement.write_bytes(b'custom_setting: changed by user\n')
+                        replacement.replace(retained)
                     return {'health': {'ok': True}}
+                archive = MODULE.FirstInstallJournal.archive_exchanges
+                archive_failed = False
+                save = MODULE.FirstInstallJournal.save
+                commit_failed = False
+
+                def fail_during_archive(journal, item, index):
+                    nonlocal archive_failed
+                    archive(journal, item, index)
+                    if failure == 'archive' and not archive_failed:
+                        archive_failed = True
+                        raise OSError('install archive failed before commit')
+
+                def fail_during_commit(journal):
+                    nonlocal commit_failed
+                    if (failure == 'commit' and not commit_failed and journal.record['status'] == 'installed'
+                            and journal.record['checkpoints'].get('apply', {}).get('state') == 'result'):
+                        commit_failed = True
+                        raise OSError('install commit write failed')
+                    save(journal)
+
+                operation_id = uuid.uuid4()
+                reuse_operation_id = True
+                unlink = Path.unlink
+
+                def check_cleanup(file, *args, **kwargs):
+                    if file == Path(MODULE.filesystem_path(retained)):
+                        journal = home / 'installer/operations' / str(operation_id) / 'first-install/transaction.json'
+                        record = json.loads(journal.read_bytes())
+                        self.assertEqual(record['status'], 'installed')
+                        self.assertEqual(record['checkpoints']['commit']['state'], 'result')
+                        self.assertEqual(record['checkpoints']['apply']['state'], 'result')
+                        if failure == 'cleanup':
+                            raise PermissionError('retained config cleanup denied')
+                    return unlink(file, *args, **kwargs)
+
+                def make_uuid():
+                    nonlocal reuse_operation_id
+                    # install() uses this module's UUID source before any
+                    # transaction paths are allocated.
+                    if reuse_operation_id:
+                        reuse_operation_id = False
+                        return operation_id
+                    return uuid.uuid4()
                 with patch.dict(os.environ, {'HERMES_HOME': str(home)}, clear=True), \
+                     patch.object(MODULE, 'uuid', SimpleNamespace(uuid4=make_uuid)), \
                      patch.object(MODULE, 'validate_hermes', return_value={}), \
                      patch.object(MODULE, 'source_from_release', return_value=(source, {'commit': 'a' * 40,
                          'versions': {'tavern': '2.5.7'}})), \
@@ -62,20 +111,38 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                      patch.object(MODULE, 'install_host_hook', return_value=None), \
                      patch.object(MODULE, 'install_update_check', return_value={'status': 'installed'}), \
                      patch.object(MODULE, 'start_tavern', side_effect=start) as started, \
+                     patch.object(MODULE.FirstInstallJournal, 'archive_exchanges', fail_during_archive), \
+                     patch.object(MODULE.FirstInstallJournal, 'save', fail_during_commit), \
+                     patch.object(Path, 'unlink', check_cleanup), \
                      patch.object(MODULE, 'stop_install_runtime', return_value={'offline': True}), \
                      patch.object(MODULE, 'event'), patch.object(MODULE, 'log'), patch('builtins.print'):
-                    if fail:
-                        with self.assertRaisesRegex(RuntimeError, 'runtime acceptance failed') as caught:
+                    if failure in ('runtime', 'archive', 'commit'):
+                        failure_pattern = {'runtime': 'runtime acceptance failed', 'archive': 'archive failed',
+                                           'commit': 'commit write failed'}[failure]
+                        with self.assertRaisesRegex(RuntimeError if failure == 'runtime' else OSError, failure_pattern) as caught:
                             MODULE.install(args)
                         self.assertEqual(caught.exception.first_install_recovery['status'], 'restored')
                         self.assertEqual((home / 'config.yaml').read_text(), original)
-                        self.assertTrue(retained.is_file())
+                        self.assertEqual(retained.read_bytes(), b'custom_setting: preserved\n')
+                        self.assertFalse((state / 'native-runtime/config.yaml').exists())
                         self.assertFalse((home / 'nora-instance.json').exists())
                     else:
-                        self.assertEqual(MODULE.install(args)['status'], 'installed')
-                        self.assertFalse(retained.exists())
+                        result = MODULE.install(args)
+                        self.assertEqual(result['status'], 'installed')
+                        if failure in ('cleanup', 'changed'):
+                            self.assertIn('未确认原保留配置已清理', result['warning'])
+                            expected = b'custom_setting: changed by user\n' if failure == 'changed' else b'custom_setting: preserved\n'
+                            self.assertEqual(retained.read_bytes(), expected)
+                        else:
+                            self.assertFalse(retained.exists())
                         self.assertEqual((state / 'native-runtime/config.yaml').read_bytes(), b'custom_setting: preserved\n')
                     started.assert_called_once()
+                    if failure in ('archive', 'commit'):
+                        reuse_operation_id = True
+                        args.force_first_install = True  # Keep the recovered state directory on retry.
+                        self.assertEqual(MODULE.install(args)['status'], 'installed')
+                        self.assertEqual((state / 'native-runtime/config.yaml').read_bytes(), b'custom_setting: preserved\n')
+                        self.assertFalse(retained.exists())
                 for name in ('chat.jsonl', 'character.json', 'world.json', 'preferences.json'):
                     self.assertEqual((state / name).read_bytes(), b'original user content')
                 self.assertFalse((root / 'tavern-state').exists())

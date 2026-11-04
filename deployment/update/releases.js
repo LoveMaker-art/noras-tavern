@@ -783,10 +783,11 @@ async function prepareInstall(options) {
       || ['INVALID_RESPONSE','RESPONSE_TOO_LARGE','CANCELLED'].includes(error.code)) throw error;
     const root = await prepareBundled(options);
     const system = readJson(path.join(root,'nora-system.json'));
+    const core = readJson(path.join(root,'release-manifest.json'));
     if (!await confirmBundled({version:system.version,error})) throw error;
     signal?.throwIfAborted();
     const localPlan={schema:'nora-bundled-plan/1',mode:'install',tag:publicationTag(system),
-      version:system.version,commit:system.commit,platform:system.platform,arch:system.arch,channel,
+      coreTag:publicationTag(core),version:core.versions.tavern,commit:core.commit,platform:system.platform,arch:system.arch,channel,
       manifestSha256:await hash(path.join(root,'release-manifest.json')),metadataSource:'bundled',latestConfirmed:false};
     localPlan.planId=planDigest(localPlan);
     await onPlan(freezePlan(localPlan));signal?.throwIfAborted();

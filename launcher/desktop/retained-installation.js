@@ -192,12 +192,17 @@ function completionFacts(value,record,{result=record.result,terminal=true}={}){
   }
   const instance=metadata['hermes/nora-instance.json'],installed=metadata['tavern/tavern-updates/installed.json'],manifest=metadata['tavern/tavern-updates/installed-manifest.json'];
   const system=readObject(safe(root,'tavern/tavern-updates/nora-system.json')),plan=record.target.releasePlan;
+  const releases=require('./releases');
+  const core=plan?.schema==='nora-release-plan/1'?releases.coreReference(plan.systemManifest,plan.platform,plan.arch):null;
+  const coreTag=core?.tag||(plan?.schema==='nora-bundled-plan/1'&&plan.coreTag)||plan?.tag;
   if(instance.schema!==1||instance.noraHome!==root||instance.hermesHome!==hermes||instance.installRoot!==tavern||instance.port!==value.port
     ||installed.schema!==1||installed.mode!=='first-install'||installed.manifestDigest!==first.targetDigest
     ||manifest.schema!=='tavern-release/v2'||!/^[a-f0-9]{40}$/.test(manifest.commit||'')||!/^[0-9]+\.[0-9]+\.[0-9]+(?:-beta\.[0-9]+)?$/.test(manifest.versions?.tavern||'')
     ||installed.commit!==manifest.commit||installed.version!==manifest.versions.tavern||installed.sourceDigest!==manifest.sourceDigest
     ||!same(installed.components,manifest.versions)||!same(installed.hermesRuntime,manifest.hermesRuntime)
-    ||result.version!==installed.version||result.commit!==installed.commit||!plan||plan.mode!=='install'||plan.commit!==installed.commit||plan.tag!=='v'+installed.version
+    ||result.version!==installed.version||result.commit!==installed.commit||!plan||plan.mode!=='install'||plan.commit!==installed.commit
+    ||plan.version!==undefined&&plan.version!==installed.version||coreTag!==releases.publicationTag(manifest)
+    ||core&&(core.commit!==installed.commit||core.sha256!==plan.manifestSha256)
     ||system.schema!==1||system.version!==installed.version||system.commit!==installed.commit
     ||!targets.has('tavern/tavern-updates/nora-system.json')
     ||['hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration'].some(key=>system.proof?.[key]!==true))throw error();

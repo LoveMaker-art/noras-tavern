@@ -267,7 +267,7 @@ class FirstInstallTransactionTests(unittest.TestCase):
             self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
 
-    def committed_fixture(self, home, *, during_startup=None):
+    def committed_fixture(self, home, *, during_startup=None, retained_config=None):
         hermes, tavern = home / 'hermes', home / 'tavern'
         hermes.mkdir(); tavern.mkdir()
         app = tavern / 'apps/tavern-runtime'
@@ -280,6 +280,11 @@ class FirstInstallTransactionTests(unittest.TestCase):
             'versions': {'tavern': '2.4.2', 'ops': '2.4.2', 'nora-mcp': '1.0.0'},
             'hermesRuntime': {'schema': 1, 'sha256': 'd' * 64}}
         receipts = [tavern / 'tavern-updates' / name for name in ('installed.json', 'installed-manifest.json')]
+        if retained_config is not None:
+            retained, active = first_install.retained_config_paths(tavern)
+            retained.parent.mkdir()
+            retained.write_bytes(retained_config)
+            receipts.append(active)
         journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
         journal.prepare({'hermes': [config], 'tavern': [app, runs, *receipts]}, manifest=manifest)
         journal.checkpoint('apply', 'intent')
@@ -289,8 +294,13 @@ class FirstInstallTransactionTests(unittest.TestCase):
         prepared_runs = home / 'prepared-runs'; prepared_runs.mkdir(); (prepared_runs / 'native.log').write_text('startup')
         journal.apply(prepared_runs, runs)
         if during_startup: during_startup(app)
+        if retained_config is not None:
+            first_install.restore_retained_config(tavern, journal)
         first_install.write_install_receipt(tavern, manifest, journal)
-        journal.checkpoint('commit', 'result'); journal.checkpoint('apply', 'result')
+        if retained_config is not None:
+            journal.commit()
+        else:
+            journal.checkpoint('commit', 'result'); journal.checkpoint('apply', 'result')
         return journal, hermes, tavern, manifest
 
     def test_committed_install_keeps_migration_backups_mutable_without_reauthorizing_program_bytes(self):
@@ -377,6 +387,42 @@ class FirstInstallTransactionTests(unittest.TestCase):
                 self.assertEqual(result['operationId'], OPERATION_ID)
                 self.assertEqual(result['effectState'], 'changed'); self.assertTrue(result['canResume'])
                 self.assertEqual(journal.file.read_bytes(), before)
+
+    def test_committed_install_resume_only_cleans_the_config_consumed_by_that_install(self):
+        from ops.installer import launcher_bridge
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary).resolve()
+                source = b'custom_setting: retained\n'
+                args = SimpleNamespace(nora_home=home, hermes_home=home / 'hermes', install_root=home / 'tavern',
+                    operation_id=OPERATION_ID, port=8799)
+                with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                    journal, _, tavern, manifest = self.committed_fixture(home, retained_config=source)
+                    retained, active = first_install.retained_config_paths(tavern)
+                    if changed:
+                        retained.write_bytes(b'custom_setting: changed\n')
+                    saved = retained.read_bytes()
+                    self.assertEqual(first_install.inspect_first_install(journal.file)['status'], 'committed')
+                    self.assertEqual(retained.read_bytes(), saved)
+                    proof = {name: True for name in launcher_bridge.nora_system.PROOFS}
+                    state = {'version': manifest['versions']['tavern'], 'systemReady': True, 'running': True}
+                    with patch.object(launcher_bridge.operation_control, 'require_operation',
+                                      return_value=SimpleNamespace(operation_id=OPERATION_ID)), \
+                         patch.object(launcher_bridge, 'status_payload', side_effect=lambda *_: dict(state)), \
+                         patch.object(launcher_bridge, 'python_command', return_value='fixture-python'), \
+                         patch.object(launcher_bridge.nora_system, 'inspect', return_value={'ready': True}), \
+                         patch.object(launcher_bridge.nora_system, 'verify_runtime', return_value=proof), \
+                         patch.object(launcher_bridge, 'emit') as emitted:
+                        for _ in range(2):
+                            launcher_bridge.command_resume_committed_install(args)
+                            self.assertTrue(emitted.call_args.kwargs['firstInstallVerified'])
+                            self.assertEqual(active.read_bytes(), source)
+                            if changed:
+                                self.assertEqual(retained.read_bytes(), saved)
+                                self.assertIn('未确认原保留配置已清理', emitted.call_args.kwargs['warning'])
+                            else:
+                                self.assertFalse(retained.exists())
+                                self.assertNotIn('warning', emitted.call_args.kwargs)
 
     def test_committed_install_rejects_changed_manifest_receipt_code_or_root_identity(self):
         for changed in ('manifest', 'receipt', 'code', 'root', 'journal'):

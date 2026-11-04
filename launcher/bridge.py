@@ -716,8 +716,15 @@ def command_install(args) -> None:
             manifest = {}
         if manifest.get("schema") == "tavern-release/v2" and manifest.get("candidate") is True:
             command.append("--allow-candidate")
-    run_stream(command, env=env_for(args.nora_home, args.hermes_home, args.install_root))
-    emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
+    result = run_stream(command, env=env_for(args.nora_home, args.hermes_home, args.install_root))
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    _merge_install_config_warning(state, (result or {}).get('retainedConfigWarning'))
+    emit("result", **state)
+
+
+def _merge_install_config_warning(state, warning):
+    if warning:
+        state['warning'] = '\n'.join(filter(None, (state.get('warning'), warning)))
 
 
 def _same_skill_damage(before, system):
@@ -1176,6 +1183,7 @@ def command_resume_committed_install(args):
             or state.get('running') is not True or not all(proof.get(key) for key in nora_system.PROOFS)
             or str(state.get('version', '')).lstrip('v') != str(effects.get('version', '')).lstrip('v')):
         raise RuntimeError('首装文件已提交，但实际程序和连接尚未通过验收；未重复安装。')
+    _merge_install_config_warning(state, helper.finish_retained_config(journal))
     emit('result', **state, operationVerified=True, firstInstallVerified=True)
 
 
