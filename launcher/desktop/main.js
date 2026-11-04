@@ -171,7 +171,7 @@ function finishOperationTelemetry(operation,{recover=false}={}){
 function operations() {
   return operationController ||= createOperationController({directory:installerDirectory,
     lock:{probe:options=>operationLock.probe(options),acquire:options=>acquireInspected({...options,lock:operationLock,
-      python:appHelperRuntimeValue?.command||findPython()?.command,script:path.join(installerRoot(),'operation_control.py'),
+      python:appHelperRuntimeValue?.launchCommand||findPython()?.command,script:path.join(installerRoot(),'operation_control.py'),
       env:appHelperRuntimeValue?.env||launcherEnv()})},
     executors:operationExecutors,recoverers:operationRecoverers,recheckers:operationRecheckers,evidence:operationEvidence,
     projectResult:result=>result?.value ?? result,
@@ -1215,7 +1215,7 @@ async function restoreHistoricalAppSegment(operation,job){
     throw launcherError('旧APP交接与原更新任务不一致。',{code:'OPERATION_CAPABILITY_REQUIRED'});
   const lease=await acquireInspected({lock:operationLock,directory:installerDirectory(),
     operationId:operation.operationId,ownerEpoch:operation.ownerEpoch,
-    python:appHelperRuntimeValue?.command,script:path.join(installerRoot(),'operation_control.py'),
+    python:appHelperRuntimeValue?.launchCommand,script:path.join(installerRoot(),'operation_control.py'),
     env:appHelperRuntimeValue?.env});
   let prepared;
   try{

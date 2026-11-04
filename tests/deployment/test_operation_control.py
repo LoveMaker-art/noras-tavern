@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -165,6 +167,20 @@ class ServerLifecycleTests(unittest.TestCase):
 
 
 class OperationControlTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows APP helper process identity')
+    def test_inspection_binds_namespaced_app_helper_to_its_canonical_argv(self):
+        executable = str(Path(sys.executable).resolve())
+        argv = [executable, '-I', '-B', '--nora-operation-job=fixture']
+        digest = hashlib.sha256(json.dumps(argv, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        process = SimpleNamespace(pid=4321, info={'pid': 4321, 'create_time': 123,
+            'cmdline': ['\\\\?\\' + executable, *argv[1:]]})
+        job = {'jobId': 'fixture', 'pid': 4321, 'creationIdentity': {'pid': 4321, 'creationTime': 123},
+            'executionIdentity': {'argvDigest': digest, 'appHelperRuntime': str(Path(executable).parent),
+                                  'jobArgument': argv[-1]}}
+        with patch('psutil.process_iter', return_value=[process]):
+            observed = control.inspect_executors([{'operationId': 'fixture-operation', 'jobs': [job]}])
+        self.assertEqual(observed['jobs'][0]['state'], 'active-verified')
+
     def test_async_missing_or_invalid_diagnostic_preserves_guidance_and_omission_reason(self):
         invalid = {'name': 'Error', 'message': 'private-secret', 'code': 'EACCES',
                    'stack': '', 'path': 'PRIVATE_UNREVIEWED_PATH'}

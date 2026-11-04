@@ -17,7 +17,9 @@ function fixture(t){
 }
 test('APP guard binds a direct base interpreter to this home without a core venv',t=>{
   const f=fixture(t),actual=resolveAppExecution(f.runtime.command,f);
-  assert.equal(actual.command,fs.realpathSync(f.runtime.command));
+  const canonical=fs.realpathSync(f.runtime.command);
+  assert.equal(actual.command,path.toNamespacedPath(canonical));
+  assert.equal(actual.executionIdentity.executable,canonical);
   assert.equal(actual.executionIdentity.appHelperRuntime,f.runtime.root);
   assert.equal(actual.env.PYTHONPATH,undefined);assert.equal(actual.env.PYTHONHOME,undefined);
   assert.equal(actual.env.__PYVENV_LAUNCHER__,undefined);assert.equal(actual.env.PYTHONNOUSERSITE,'1');

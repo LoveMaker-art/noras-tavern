@@ -26,7 +26,7 @@ async function fixture(t){
     queueMicrotask(()=>{
       const pythonRoot=path.resolve(command,process.platform==='win32'?'..':'../..');
       child.stdout.emit('data',JSON.stringify({pythonVersion:descriptor.pythonVersion,psutilVersion:descriptor.psutilVersion,
-        basePrefix:pythonRoot,prefix:pythonRoot,requiredApis:true,processExecutable:command,
+        basePrefix:pythonRoot,prefix:pythonRoot,requiredApis:true,processExecutable:command.replace(/^\\\\\?\\/, ''),
         psutilFile:path.join(pythonRoot,'lib/python3.11/site-packages/psutil/__init__.py')}));child.emit('close',0);});
     return child;
   };
@@ -40,6 +40,8 @@ test('APP-owned closure is copied outside the APP and uses a private environment
   assert.equal(Object.isFrozen(execution.env),true);
   assert.equal(execution.root,path.join(f.home,'installer/app-helper-runtime',f.descriptor.imageSha256));
   assert.equal(execution.command.startsWith(execution.root+path.sep),true);
+  assert.equal(execution.launchCommand,path.toNamespacedPath(execution.command));
+  assert.equal(f.probes[0].command,execution.launchCommand);
   assert.equal(fs.existsSync(path.join(f.home,'hermes')),false);
   assert.deepEqual(await runtime.inventory(f.image),before);
   for(const name of ['SYNTHETIC_PRIVATE_KEY','PYTHONPATH','PYTHONHOME','NODE_OPTIONS','NODE_PATH','__PYVENV_LAUNCHER__'])assert.equal(execution.env[name],undefined,name);

@@ -526,6 +526,8 @@ def inspect_executors(sessions):
             else:
                 args = process.get('cmdline') or []
                 normalized = [os.path.realpath(args[0]), *args[1:]] if args else []
+                if normalized and sys.platform == 'win32' and expected.get('appHelperRuntime'):
+                    normalized[0] = _windows_execution_path(normalized[0])
                 argv_digest = hashlib.sha256(json.dumps(normalized, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
                 ctime = process.get('create_time')
                 tolerance = max(float(creation.get('precisionSeconds', 0)), 0.001)

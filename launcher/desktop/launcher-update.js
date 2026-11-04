@@ -126,7 +126,7 @@ function independentPython(options,{detached=false}={}){
     if(!require('./app-helper-runtime').isVerified(options.appHelperRuntime)
       ||detached&&!options.appHelperRuntime.materialized)
       throw launcherError('APP助手运行闭包尚未通过本体校验，未执行程序替换。',{code:'APP_HELPER_RUNTIME_UNTRUSTED'});
-    return {command:options.appHelperRuntime.command,env:{...options.appHelperRuntime.env}};
+    return {command:options.appHelperRuntime.command,launchCommand:options.appHelperRuntime.launchCommand,env:{...options.appHelperRuntime.env}};
   }
   const environment={...options.env||process.env};
   for(const key of Object.keys(environment))if(key.startsWith('NORA_OPERATION_'))delete environment[key];
@@ -140,7 +140,7 @@ async function launchHandoff(options){
   const execution=independentPython(options,{detached:true});
   const log=fs.openSync(path.join(job,'replace.log'),'a',0o600);
   let child;
-  try{child=spawn(execution.command,[...(options.appHelperRuntime?['-I','-B']:['-B']),path.join(job,'replace.py'),job],{cwd:helperCwd(job),env:execution.env,
+  try{child=spawn(execution.launchCommand||execution.command,[...(options.appHelperRuntime?['-I','-B']:['-B']),path.join(job,'replace.py'),job],{cwd:helperCwd(job),env:execution.env,
     detached:true,windowsHide:true,stdio:['ignore',log,log]});}finally{fs.closeSync(log);}
   child.unref();
   return workerReady(child,job,state=>{
@@ -360,7 +360,8 @@ async function readDiagnostics(options,operationId,{details=true}={}){
 }
 function callHelper(options,helper,args,cwd,extra={}){
   const execution=options.appHelperRuntime!==undefined?independentPython(options):{command:options.python};
-  return helperCall(execution.command,helper,args,cwd,{spawnChild:options.spawnChild,onEvent:options.onEvent,...extra,
+  const command=options.spawnChild?execution.command:execution.launchCommand||execution.command;
+  return helperCall(command,helper,args,cwd,{spawnChild:options.spawnChild,onEvent:options.onEvent,...extra,
     ...(options.appHelperRuntime?{environment:execution.env,appHelperRuntime:options.appHelperRuntime}:{})});
 }
 function helperCall(python, helper, args, cwd, {spawnChild,timeoutMs,recordErrors=true,environment,appHelperRuntime,onEvent} = {}) {
@@ -463,7 +464,7 @@ async function recover(options) {
   // The current APP's recovery reader already validates the sealed old plan
   // and resources. Execute that same helper so fixes also reach historical
   // jobs, without replacing their original helper, snapshots or backup proof.
-  try{child=spawn(execution.command,[...(options.appHelperRuntime?['-I','-B']:['-B']),options.helper,'--recover',job,'--parent-pid',String(process.pid),
+  try{child=spawn(execution.launchCommand||execution.command,[...(options.appHelperRuntime?['-I','-B']:['-B']),options.helper,'--recover',job,'--parent-pid',String(process.pid),
     '--parent-created',String(options.parentCreationTime),...historicalRecoveryArgs(options)],{cwd:helperCwd(job),env:execution.env,
       detached:true,windowsHide:true,stdio:['ignore',log,log]});}finally{fs.closeSync(log);}
   child.unref();

@@ -301,7 +301,8 @@ function spawnJob(message,sink,parentJobId) {
       jobArgument:`--nora-operation-job=${message.jobId}`};
     args.splice(delegateIndex,0,job.executionIdentity.jobArgument);
   }
-  const executable=path.isAbsolute(command) ? fs.realpathSync(command) : undefined;
+  const executable=message.kind==='app-helper' ? job.executionIdentity.executable
+    : path.isAbsolute(command) ? fs.realpathSync(command) : undefined;
   job.executionIdentity={...job.executionIdentity,executable,
     argvDigest:crypto.createHash('sha256').update(JSON.stringify([executable || command,...args])).digest('hex'),
     argvEncoding:'realpath-first-json-array'};

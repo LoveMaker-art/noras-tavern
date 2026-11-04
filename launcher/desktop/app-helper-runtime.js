@@ -146,14 +146,17 @@ function probe(command,env,cwd,{spawnProbe=spawn}={}){
   });
 }
 async function inspectedExecution({home,root,descriptor,descriptorFile,descriptorSha256,command,profile,platform,env,spawnProbe,materialized}){
-  const executionEnv=environment(home,root,profile,env),observed=await probe(command,executionEnv,profile,{spawnProbe});
+  // Windows propagates the executable's extended path to native Python modules.
+  // Keep the ordinary path for the cache and the sealed helper reference.
+  const launchCommand=path.toNamespacedPath(command);
+  const executionEnv=environment(home,root,profile,env),observed=await probe(launchCommand,executionEnv,profile,{spawnProbe});
   const pythonRoot=io.realpathSync(path.join(root,descriptor.pythonRoot));
-  const canonical=value=>platform==='win32'?path.resolve(value||'').toLowerCase():path.resolve(value||'');
+  const canonical=value=>platform==='win32'?path.toNamespacedPath(path.resolve(value||'')).toLowerCase():path.resolve(value||'');
   if(observed.requiredApis!==true||canonical(observed.processExecutable)!==canonical(io.realpathSync(command))
     ||observed.pythonVersion!==descriptor.pythonVersion||observed.psutilVersion!==descriptor.psutilVersion
     ||canonical(observed.basePrefix)!==canonical(pythonRoot)||canonical(observed.prefix)!==canonical(pythonRoot)
     ||!within(canonical(pythonRoot),canonical(observed.psutilFile)))throw failure('APP助手加载了闭包之外的Python或模块。');
-  const result=Object.freeze({command:io.realpathSync(command),env:Object.freeze(executionEnv),root,managedPythonRoot:pythonRoot,
+  const result=Object.freeze({command:io.realpathSync(command),launchCommand,env:Object.freeze(executionEnv),root,managedPythonRoot:pythonRoot,
     imageSha256:descriptor.imageSha256,descriptorSha256,descriptorFile,pythonVersion:descriptor.pythonVersion,psutilVersion:descriptor.psutilVersion,
     materialized});
   verified.add(result);return result;

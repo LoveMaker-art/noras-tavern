@@ -34,7 +34,7 @@ function resolveAppExecution(command,{runtime,directory}={}){
   const environment={...runtime.env};
   for(const name of ['PYTHONHOME','PYTHONPATH','__PYVENV_LAUNCHER__','VIRTUAL_ENV','NODE_OPTIONS','NODE_PATH'])delete environment[name];
   environment.PYTHONNOUSERSITE='1';environment.PYTHONDONTWRITEBYTECODE='1';
-  return {command:executable,env:environment,executionIdentity:{executable,managedPythonRoot:pythonRoot,
+  return {command:path.toNamespacedPath(executable),env:environment,executionIdentity:{executable,managedPythonRoot:pythonRoot,
     appHelperRuntime:root,imageSha256:runtime.imageSha256,descriptorSha256:runtime.descriptorSha256}};
 }
 module.exports={resolveExecution,resolveAppExecution};
