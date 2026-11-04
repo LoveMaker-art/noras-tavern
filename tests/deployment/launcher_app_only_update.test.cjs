@@ -95,6 +95,23 @@ test('historical APP restoration holds the shared writer for preparation and lea
   assert.deepEqual(calls,['acquired','private-cache','owned','prepared','released','detached']);
 });
 
+test('handoff reconciliation prepares the private APP helper under the same writer',async()=>{
+  const calls=[],operation={kind:'update',handoffRef:'/owned/job',target:{request:{launcherOnly:true}}};
+  const active={lease:{assertActive:()=>calls.push('writer')}},result={verification:'confirmed'};
+  const context=vm.createContext({operationController:null,operationLock:{},operationExecutors:{},
+    operationRecoverers:{},operationRecheckers:{},operationEvidence:{},installerDirectory:()=>'/owned/installer',
+    activeOperationContext:null,createOperationController:options=>options,
+    ensureAppHelperRuntime:async options=>{assert.equal(options.lease,active.lease);options.lease.assertActive();calls.push('private-helper');},
+    maintenancePolicy:()=>({reconcileHandoff:async(record,execution)=>{
+      assert.equal(record,operation);assert.equal(execution,active);assert.equal(context.activeOperationContext,active);
+      calls.push('reconciled');return result;
+    }})});
+  load(context,'operations');
+  assert.equal(await context.operations().verifyRestoredHandoff(operation,active),result);
+  assert.deepEqual(calls,['writer','private-helper','reconciled']);
+  assert.equal(context.activeOperationContext,null);
+});
+
 test('the visible same-operation APP retry launches its prepared replacement helper',async()=>{
   const handler=nodes.find(node=>node.type==='CallExpression'&&node.callee.name==='handle'
     &&node.arguments[0]?.quasis?.[0]?.value?.raw==='nora:operation-');

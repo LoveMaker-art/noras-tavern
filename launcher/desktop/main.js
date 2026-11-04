@@ -185,7 +185,10 @@ function operations() {
     verifyRecoveryHandoff:async(record,proof)=>launcherUpdate.verifyRecovery({...launcherRecoveryOptions(),job:proof?.job,operation:record}),
     verifyRestoredHandoff:async(record,context)=>{
       const previous=activeOperationContext;activeOperationContext=context;
-      try{return await maintenancePolicy().reconcileHandoff(record,context);}
+      try{
+        await ensureAppHelperRuntime({lease:context.lease});
+        return await maintenancePolicy().reconcileHandoff(record,context);
+      }
       finally{activeOperationContext=previous;}
     }});
 }
