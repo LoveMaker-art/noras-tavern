@@ -540,16 +540,18 @@ test('a confirmed explicit recovery retains the original failure and returns to 
   assert.doesNotMatch(h.inline.textContent,/上次操作尚未确认/);
 });
 
-test('a confirmed APP restore reports its actual version even when the core state is unknown',async()=>{
-  for(const statusUnknown of [false,true]){
+test('a confirmed APP restore reports its actual version on daily, unknown and incomplete core routes',async()=>{
+  for(const [statusUnknown,core,view] of [
+    [false,ready,'daily'],[true,ready,'error'],[false,{...ready,systemReady:false},'recovery'],[false,{installed:false},'welcome'],
+  ]){
     const operation={...structuredFailure().operation,state:'rolled-back',effectState:'restored',verification:'confirmed',
       recoveryOutcome:'restored-and-verified',currentFailure:null,snapshotSequence:10,
       result:{launcherVersion:'2.2.8',recoveryVerification:'confirmed',appRelaunchFailed:true}};
-    const h=fixture({snapshot:{...ready,operation},statusUnknown,
+    const h=fixture({snapshot:{...core,operation},statusUnknown,
       dailyHome(message){h.context.view='daily';h.copies.push([message]);}});
     await h.invoke('route()');
     assert.match(`${h.inline.textContent}\n${h.output().copy.join(' ')}`,/已恢复启动器 2\.2\.8.*自动重开未成功/);
-    assert.equal(h.context.view,statusUnknown?'error':'daily');
+    assert.equal(h.context.view,view);
   }
 });
 

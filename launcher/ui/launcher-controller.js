@@ -528,9 +528,15 @@
     $('launchbar').classList.remove('enter');
     const introduce = firstCompletionPending && allRunning() && !message && !snapshot.warning && !statusUnknown;
     $('main').classList.toggle('completion', introduce);
+    const operation = snapshot.operation;
+    const appRecovery = isAppUpdate(operation);
+    const restoredVersion = appRecovery ? operation.result?.launcherVersion : snapshot.version;
+    const recoveryLabel = operation?.effectState === 'untouched' ? '更新未应用，原版本可继续使用' : appRecovery ? '已恢复启动器版本' : '已恢复版本';
+    const recoveryDetail = recoveredOperation(operation) && !(appRecovery && message)
+      ? `${recoveryLabel}：${restoredVersion || '版本待确认'}。` : '';
     say(message || (statusUnknown ? '服务状态暂时无法确认。' : introduce ? '酒馆准备好了。' : serviceRunning() ? '欢迎回来，坐一会儿吧。' : '随时可以继续。'),
-      statusUnknown ? unknownStatusCopy() : snapshot.warning ? textError(snapshot.warning) : recoveredOperation(snapshot.operation) ? `${snapshot.operation.effectState==='untouched'?'更新未应用，原版本可继续使用':'已恢复版本'}：${snapshot.version || '版本待确认'}。` : snapshot.gatewayRunning && !snapshot.clawchatConnected
-        ? 'ClawChat 暂未连通，请在更多中检查连接。' : '', '', {animate:false});
+      statusUnknown ? unknownStatusCopy() : snapshot.warning ? textError(snapshot.warning) : recoveryDetail
+        || (snapshot.gatewayRunning && !snapshot.clawchatConnected ? 'ClawChat 暂未连通，请在更多中检查连接。' : ''), '', {animate:false});
     renderServices();
     renderConversationEntry();
     controls();
@@ -625,12 +631,15 @@
     const appRestored = isAppUpdate(latest) && recoveredOperation(latest) && latest.effectState === 'restored'
       && typeof latest.result?.launcherVersion === 'string'
       ? `更新未完成，已恢复启动器 ${latest.result.launcherVersion}。${latest.result.appRelaunchFailed === true ? '自动重开未成功。' : ''}` : '';
+    function showAppRestored() {
+      if (!appRestored) return;
+      const note = document.createElement('p'); note.className = 'note'; note.textContent = appRestored;
+      $('inline').prepend(note);
+    }
     if (statusUnknown && (!launcherRecoveryConfirmed || uninstallChoiceAvailable)) {
       if (lastFailure?.error) fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);
       else fail('状态暂时无法确认，请等待查询恢复后再继续。', 'status', refreshFailure);
-      if (appRestored) {
-        const note = document.createElement('p'); note.className = 'note'; note.textContent = appRestored; $('inline').prepend(note);
-      }
+      showAppRestored();
       return;
     }
     if (snapshot.busy) {
@@ -749,6 +758,7 @@
       $('steps').hidden = true; $('management').hidden = true; clearInline();
       say('当前安装需要修复。', (snapshot.systemProblems || []).slice(0, 2).join('；'));
 
+      showAppRestored();
       const note = document.createElement('p'); note.className = 'install-location';
       note.textContent = '请与诺拉对话检查或修复酒馆。' + (!snapshot.version ? '当前版本待确认，请保留日志。' : '');
       $('inline').append(note);
@@ -761,6 +771,7 @@
       const interrupted = snapshot.hermesInstalled || snapshot.installer?.startedAt;
       say(interrupted ? '接着把酒馆准备好。' : '我是诺拉。欢迎来到酒馆。',
         snapshot.systemProblems?.length ? snapshot.systemProblems.slice(0, 2).join('；') : interrupted ? '已完成的安装会保留。' : '先把我和酒馆安顿在这台电脑上。');
+      showAppRestored();
       $('inline').append(button(serviceRunning() ? '先停止诺拉与酒馆' : interrupted ? '继续安装' : '安装酒馆', serviceRunning() ? () => run('stop') : install));
       const note = document.createElement('div'); note.className = 'install-location';
       const location = document.createElement('span'); location.textContent = snapshot.noraHome || 'NoraTavern';

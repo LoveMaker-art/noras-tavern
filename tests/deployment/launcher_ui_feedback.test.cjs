@@ -142,6 +142,15 @@ test('Tavern service controls follow process evidence when the readiness result 
   assert.equal(toggle.dataset.tip,'启动酒馆');
 });
 
+test('the daily APP rollback detail uses the APP version even when the core has another version',()=>{
+  const operation={kind:'update',target:{request:{launcherOnly:true}},state:'rolled-back',effectState:'restored',
+    verification:'confirmed',currentFailure:null,recoveryOutcome:'restored-and-verified',result:{launcherVersion:'2.2.8'}};
+  const {context}=fixture({snapshot:{operation,version:'2.6.0',running:true,tavernProcessRunning:true}});
+  vm.runInContext('dailyHome()',context);
+  assert.match(context.copy[1],/已恢复启动器版本：2\.2\.8/);
+  assert.doesNotMatch(context.copy.join(' '),/2\.6\.0/);
+});
+
 test('polling failure and recovery do not clear a model form or issue service operations', async () => {
   for(const setupCompleted of [true,false]) {
   const marker={textContent:'unsaved model fixture'};
