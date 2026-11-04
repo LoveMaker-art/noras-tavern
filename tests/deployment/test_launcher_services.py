@@ -81,6 +81,8 @@ class LauncherServicesTests(unittest.TestCase):
              patch.object(bridge, 'python_command', return_value=sys.executable), \
              patch.object(bridge, 'run_stream') as run, \
              patch.object(bridge, 'env_for', return_value={}), \
+             patch.object(bridge, 'run_json', return_value={
+                 'port': args.port, 'health': {'ok': True}, 'process_running': True}), \
              patch.object(bridge, 'status_payload', return_value={'running': True}), \
              patch.object(bridge, 'require_bundled_clawchat', side_effect=RuntimeError('offline')), \
              patch.object(bridge, 'clawchat_paired', return_value=True), \
@@ -503,6 +505,21 @@ class LauncherServicesTests(unittest.TestCase):
         fixture.process.terminate.assert_called_once_with()
         fixture.process.kill.assert_not_called()
         self.assertFalse(fixture.record_path.exists())
+
+    def test_stop_preserves_the_receipt_while_a_targeted_child_is_alive(self):
+        fixture = self.restarted_gateway_fixture()
+        original = fixture.record_path.read_bytes()
+        child = Mock(pid=44)
+        fixture.process.children.return_value = [child]
+        with patch.object(services.sys, 'platform', 'darwin'), \
+                patch('psutil.Process', side_effect=fixture.inspect), \
+                patch('psutil.wait_procs', side_effect=[
+                    ([fixture.process], []), ([], [child]), ([], [child])]):
+            with self.assertRaisesRegex(RuntimeError, '仍在运行'):
+                services.stop_gateway(self.root)
+        child.terminate.assert_called_once_with()
+        child.kill.assert_called_once_with()
+        self.assertEqual(fixture.record_path.read_bytes(), original)
 
     def test_stop_preserves_record_if_an_unknown_gateway_appears_after_termination(self):
         import psutil

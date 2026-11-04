@@ -303,8 +303,13 @@
       || operation.effectState === 'untouched' && !operation.handoffRef
         && (!operation.recoveryOutcome || operation.recoveryOutcome === 'not-required');
   }
-  function serviceRunning() { return Boolean(snapshot.running || snapshot.gatewayRunning); }
+  function serviceRunning() { return Boolean(snapshot.tavernProcessRunning === true || snapshot.running || snapshot.gatewayRunning); }
   function allRunning() { return !statusUnknown && Boolean(snapshot.running && snapshot.gatewayRunning && snapshot.clawchatConnected); }
+  function serviceStopped(state, service, fallback) {
+    const nora = (state.gatewayRunning ?? fallback?.gatewayRunning) === false;
+    const tavern = (state.tavernProcessRunning ?? fallback?.tavernProcessRunning) === false;
+    return service === 'nora' ? nora : service === 'tavern' ? tavern : nora && tavern;
+  }
   function syncState(value) {
     if (value.operation && snapshot.operation && value.operation.operationId === snapshot.operation.operationId
       && value.operation.snapshotSequence < snapshot.operation.snapshotSequence) value = { ...value, operation: snapshot.operation };
@@ -314,7 +319,7 @@
     if (!daily) sawIncompleteSetup = true;
     else if (sawIncompleteSetup) { firstCompletionPending = true; sawIncompleteSetup = false; }
   }
-  async function readStatus() {
+  async function readStatus({ allowUnavailable = false } = {}) {
     launcherRecoveryConfirmed = false;
     try {
       const value = await api.status();
@@ -324,9 +329,11 @@
         if (typeof value.busy === 'boolean') snapshot.busy = value.busy;
         launcherRecoveryConfirmed = value.busy === false && value.launcherRecovery?.canRecover === true;
       }
-      if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled && !value.retainedUninstallPending))
+      if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled && !value.retainedUninstallPending)) {
+        if (allowUnavailable) { statusUnknown = true; return value; }
         throw new Error(value.warning || '暂时无法查询后台状态。');
-      syncState(value); statusUnknown = false; lastStatusAt = Date.now();
+      }
+      syncState({tavernProcessRunning: null, gatewayRunning: null, ...value}); statusUnknown = false; lastStatusAt = Date.now();
       return value;
     } catch (error) { statusUnknown = true; throw error; }
   }
@@ -436,9 +443,11 @@
       $('inline').append(footer);
     }
     for (const id of ['nora', 'tavern']) {
-      const name = id === 'nora' ? '诺拉' : '酒馆', isOn = Boolean(id === 'nora' ? snapshot.gatewayRunning : snapshot.running);
+      const name = id === 'nora' ? '诺拉' : '酒馆';
+      const processRunning = id === 'nora' ? snapshot.gatewayRunning : snapshot.tavernProcessRunning;
+      const isOn = processRunning === true, processUnknown = typeof processRunning !== 'boolean';
       const transitioning = busy && ['start', 'stop', 'restart'].includes(activeAction) && [id, 'all'].includes(activeService);
-      const state = transitioning ? activeAction === 'stop' ? 'stopping' : 'starting' : statusUnknown ? 'unknown' : isOn ? 'running' : 'stopped';
+      const state = transitioning ? activeAction === 'stop' ? 'stopping' : 'starting' : statusUnknown || processUnknown ? 'unknown' : isOn ? 'running' : 'stopped';
       let row = [...group.children].find(node => node.dataset.service === id);
       if (!row) {
         row = document.createElement('div'); row.className = 'service-row'; row.dataset.service = id;
@@ -452,7 +461,7 @@
         let control = [...row.children].filter(node => node.className === 'icon-action')[index];
         if (!control) { control = document.createElement('button'); control.className = 'icon-action'; control.innerHTML = '<i class="fa-solid" aria-hidden="true"></i>'; row.append(control); }
         control.dataset.tip = label; control.setAttribute('aria-label', label);
-        control.dataset.unavailable = String(action === 'restart' && !isOn);
+        control.dataset.unavailable = String(processUnknown || action === 'restart' && !isOn);
         control.querySelector('i').className = `fa-solid fa-${({ restart: 'rotate-right', stop: 'stop', start: 'play' })[action]}`;
         control.onclick = () => run(action, { service: id });
       }
@@ -467,7 +476,7 @@
     $('launchbar').classList.remove('enter');
     const introduce = firstCompletionPending && allRunning() && !message && !snapshot.warning && !statusUnknown;
     $('main').classList.toggle('completion', introduce);
-    say(statusUnknown ? '服务状态暂时无法确认。' : message || (introduce ? '酒馆准备好了。' : snapshot.running || snapshot.gatewayRunning ? '欢迎回来，坐一会儿吧。' : '随时可以继续。'),
+    say(message || (statusUnknown ? '服务状态暂时无法确认。' : introduce ? '酒馆准备好了。' : serviceRunning() ? '欢迎回来，坐一会儿吧。' : '随时可以继续。'),
       statusUnknown ? unknownStatusCopy() : snapshot.warning ? textError(snapshot.warning) : recoveredOperation(snapshot.operation) ? `${snapshot.operation.effectState==='untouched'?'更新未应用，原版本可继续使用':'已恢复版本'}：${snapshot.version || '版本待确认'}。` : snapshot.gatewayRunning && !snapshot.clawchatConnected
         ? 'ClawChat 暂未连通，请在更多中检查连接。' : '', '', {animate:false});
     renderServices();
@@ -816,8 +825,9 @@
     if (busy || statusUnknown || !operation || !allowedActions({operation}).some(action => mode === 'recover' ? ['recover','start-restored'].includes(action) : ['retry','resume'].includes(action))) return;
     const endpoint = mode === 'recover' ? 'recoverOperation' : 'resumeOperation';
     if (typeof api[endpoint] !== 'function') return;
+    const service = mode === 'resume' ? operation.target?.request?.service : undefined;
     return run(mode === 'recover' ? 'recover' : operation.kind, {
-      operationId: operation.operationId, snapshotSequence: operation.snapshotSequence }, endpoint);
+      operationId: operation.operationId, snapshotSequence: operation.snapshotSequence, ...(service ? { service } : {}) }, endpoint);
   }
   async function openLauncherDownload(event) {
     const control=event.currentTarget;
@@ -880,16 +890,18 @@
       fail(primary?.error || '状态暂时无法确认，请先重新查询状态。', primary?.action || action, primary?.retry, primary || {}); return;
     }
     const operation = snapshot.operation;
+    const serviceAction = ['start', 'stop', 'restart'].includes(action), service = options.service || 'all';
+    const sameAction = operation?.kind === action && (!serviceAction || (operation.target?.request?.service || 'all') === service);
     if (operation && !recoveredOperation(operation) && ['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)
-      && (operation.kind === action || ['install','update','repair','recover'].includes(action))
+      && (sameAction || ['install','update','repair','recover'].includes(action))
       && !['resumeOperation','recoverOperation'].includes(endpoint)
       && !(action==='pair'&&endpoint==='pair'&&canSubmitPair(operation))
       && !(action === 'update' && endpoint === 'update' && isNewUpdateTarget(options.tag, operation))) { route(); return; }
     if ((snapshot.updateRecovery || snapshot.launcherRecovery) && !['recover', 'recoverLauncher'].includes(action)) { route(); return; }
     const wasComplete = complete();
     if (wasComplete) firstCompletionPending = false;
-    busy = true; operationCancelled = false; activeAction = action; activeService = options.service || 'all'; lastFailure = null;
-    if (wasComplete && ['start', 'stop', 'restart'].includes(action)) { dailyHome(); } else taskView(action);
+    busy = true; operationCancelled = false; activeAction = action; activeService = service; lastFailure = null;
+    if (wasComplete && serviceAction) { dailyHome(); } else taskView(action);
     controls();
     try {
       if (['recover', 'recoverLauncher'].includes(action) && endpoint !== 'recoverOperation') {
@@ -913,8 +925,16 @@
         else route();
         return;
       }
-      syncState(result); await readStatus();
-      const selectedRunning = activeService === 'nora' ? snapshot.gatewayRunning && snapshot.clawchatConnected : activeService === 'tavern' ? snapshot.running : allRunning();
+      syncState(result);
+      // A confirmed stop can still be acknowledged if the general status query
+      // fails. A newer known fact for the selected service takes precedence.
+      const current = await readStatus({allowUnavailable: action === 'stop'}).catch(error => {
+        if (action !== 'stop' || !serviceStopped(result, service)) throw error;
+        return {};
+      });
+      const noraReady = current.gatewayRunning === true && current.clawchatConnected === true;
+      const tavernReady = current.running === true;
+      const selectedRunning = service === 'nora' ? noraReady : service === 'tavern' ? tavernReady : noraReady && tavernReady;
       if (['start', 'restart'].includes(action) && !selectedRunning) throw new Error('所选服务尚未就绪，请先重新查询状态并查看日志。');
       if (['start', 'restart'].includes(action) && activeService === 'all' && !complete()) throw new Error('服务已启动，但安装复核尚未完成，请先重新查询状态。');
       if (action === 'start' && !wasComplete && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -923,8 +943,8 @@
       }
       busy = false; activeAction = ''; clearInterval(taskTimer);
       if (action === 'stop') {
-        const stillRunning = activeService === 'nora' ? snapshot.gatewayRunning : activeService === 'tavern' ? snapshot.running : serviceRunning();
-        if (stillRunning) throw new Error('所选服务尚未停止，请先重新查询状态。');
+        if (!serviceStopped(current, service, statusUnknown ? result : undefined))
+          throw new Error('尚未确认所选服务已停止，请先重新查询状态。');
         if (wasComplete) dailyHome(activeService === 'all' ? '服务已停止，故事还在。' : activeService === 'nora' ? '诺拉已暂停。' : '酒馆已停止。');
         else route();
       } else if (['start', 'restart'].includes(action)) {
@@ -1513,7 +1533,7 @@
       const wasUnknown = statusUnknown;
       try {
         const beforeOperation = JSON.stringify(snapshot.operation);
-        const before = JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]);
+        const before = JSON.stringify([snapshot.running, snapshot.tavernProcessRunning, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]);
         const recoveryView = view === 'recovery';
         const recoverySignature = () => JSON.stringify([snapshot.updateRecovery, snapshot.launcherRecovery].map(value => value
           ? [Boolean(value.canRecover), value.reason || '', value.backup || '', value.job || ''] : null).concat(
@@ -1530,7 +1550,7 @@
           else fail(lastFailure.error, lastFailure.action, lastFailure.retry, lastFailure);
         }
         else if (view === 'loading' || (view === 'monitor' && !snapshot.busy)) route();
-        else if (view === 'daily' && (wasUnknown || before !== JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]))) dailyHome();
+        else if (view === 'daily' && (wasUnknown || before !== JSON.stringify([snapshot.running, snapshot.tavernProcessRunning, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]))) dailyHome();
         controls();
         void checkVersionsInBackground();
       } catch (error) {

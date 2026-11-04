@@ -348,7 +348,9 @@ def stop_gateway(nora_home, *, hermes_home=None, preserve_liveware_home=None):
         _, remaining = psutil.wait_procs(children + alive, timeout=5)
         for child in remaining:
             child.kill()
-        psutil.wait_procs(remaining, timeout=5)
+        _, still_alive = psutil.wait_procs(remaining, timeout=5)
+        if still_alive:
+            raise RuntimeError("诺拉后台或本次停止的子进程仍在运行，尚未确认停止。")
         if owned_gateway(nora_home, require_readable=True):
             raise RuntimeError("Nora 尚未停止，请重试。")
         _check_gateway_hint(home)

@@ -301,7 +301,7 @@ async function dailyInteractionPage(browser,viewport,options={}){
   page.uiErrors=[];page.on('pageerror',error=>page.uiErrors.push(error.message));
   await page.addInitScript(options=>{
     window.state={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
-      modelConfigured:true,clawchatPaired:true,clawchatProfileReady:true,clawchatConnected:true,gatewayRunning:true,running:true,
+      modelConfigured:true,clawchatPaired:true,clawchatProfileReady:true,clawchatConnected:true,gatewayRunning:true,running:true,tavernProcessRunning:true,
       noraHome:'/isolated/NoraTavern',version:'2.4.2',port:8799,url:'http://127.0.0.1:8799',installer:{setupCompleted:true}};
     Object.assign(window.state,options.initialState||{});
     window.calls=[];window.statusReads=0;
@@ -1001,7 +1001,8 @@ test('daily service actions retain body anchors while busy and after each result
         const baseline=await dailyAnchors(page);
         for(const [name,service,patch] of [
           ['stop','nora',{gatewayRunning:false,clawchatConnected:false}],['start','nora',{gatewayRunning:true,clawchatConnected:true}],
-          ['restart','nora',{}],['stop','tavern',{running:false}],['start','tavern',{running:true}],['restart','tavern',{}]
+          ['restart','nora',{}],['stop','tavern',{running:false,tavernProcessRunning:false}],
+          ['start','tavern',{running:true,tavernProcessRunning:true}],['restart','tavern',{}]
         ]){
           const label=({stop:'停止',start:'启动',restart:'重启'})[name]+(service==='nora'?'诺拉':'酒馆');
           await page.getByRole('button',{name:label,exact:true}).click();
@@ -1189,7 +1190,7 @@ test('uninstall confirmation, stop-all and late model responses cannot repeat or
       await page.locator('#moreButton').click();await page.locator('#stopAll').click();
       await page.waitForFunction(()=>typeof window.finishAction==='function');
       sameAnchors(await dailyAnchors(page),baseline,'stop all busy');
-      await page.evaluate(()=>window.finishAction({running:false,gatewayRunning:false,clawchatConnected:false}));
+      await page.evaluate(()=>window.finishAction({running:false,tavernProcessRunning:false,gatewayRunning:false,clawchatConnected:false}));
       await page.waitForFunction(()=>document.querySelectorAll('[data-state="stopped"]').length===2);
       sameAnchors(await dailyAnchors(page),baseline,'stop all completed');
       await page.evaluate(()=>{window.NoraLauncherBridge.modelProviders=()=>new Promise((resolve,reject)=>{window.finishProviders={resolve,reject};});});
@@ -1241,7 +1242,7 @@ test('real controller waits for backend results through install, model, pairing,
     await page.addInitScript(() => {
       window.state = { noraHome: '/isolated/NoraTavern', installed: false, hermesInstalled: false,
         modelConfigured: false, clawchatPaired: false, clawchatConnected: false, gatewayRunning: false,
-        running: false, port: 8799, url: 'http://127.0.0.1:8799', installer: { setupCompleted: false } };
+        running: false, tavernProcessRunning: false, port: 8799, url: 'http://127.0.0.1:8799', installer: { setupCompleted: false } };
       window.calls = [];
       const action = name => options => {
         window.calls.push(name);
@@ -1252,7 +1253,7 @@ test('real controller waits for backend results through install, model, pairing,
           if (error) {
             const operation = { schema:'nora-operation/1',operationId:'22222222-2222-4222-8222-222222222222',
               kind:name,state:'failed',effectState:'untouched',verification:'failed',snapshotSequence:2,
-              allowedActions:['retry','recheck','logs'],primaryFailure:{code:'LOCAL_CONNECT_FAILED',
+              target:{request:{service:options.service}},allowedActions:['retry','recheck','logs'],primaryFailure:{code:'LOCAL_CONNECT_FAILED',
                 guidance:{title:'本地连接未完成。',detail:'服务尚未连接，可以重试一次。'}} };
             window.state.operation = operation;
             reject(Object.assign(new Error(error),{operation,guidance:operation.primaryFailure.guidance}));
@@ -1311,7 +1312,7 @@ test('real controller waits for backend results through install, model, pairing,
     await page.evaluate(() => window.settle({}, 'connection failed'));
     await page.getByRole('button', { name: '重新尝试启动', exact: true }).click();
     await page.waitForFunction(() => window.calls.filter(c => c === 'start').length === 2);
-    await page.evaluate(() => window.settle({ running: true, gatewayRunning: true, clawchatConnected: true, installer: { setupCompleted: true } }));
+    await page.evaluate(() => window.settle({ running: true, tavernProcessRunning: true, gatewayRunning: true, clawchatConnected: true, installer: { setupCompleted: true } }));
     await page.locator('#conversationGuidance').waitFor({state:'visible'});
     await page.locator('#versionNotice').waitFor();
     const dailyLayout = () => page.evaluate(async () => {
@@ -1359,12 +1360,12 @@ test('real controller waits for backend results through install, model, pairing,
     await page.getByRole('button', { name: '停止酒馆', exact: true }).click();
     await page.waitForFunction(() => window.calls.filter(c => c === 'stop').length === 2);
     assert.equal(await page.evaluate(() => window.lastOptions.service), 'tavern');
-    await page.evaluate(() => window.settle({ running: false }));
+    await page.evaluate(() => window.settle({ running: false, tavernProcessRunning: false }));
     await page.locator('[data-service="tavern"][data-state="stopped"]').waitFor();
     await page.locator('#launch').click();
     await page.waitForFunction(() => window.calls.filter(c => c === 'start').length === 3);
     assert.equal(await page.evaluate(() => window.lastOptions.service), 'tavern');
-    await page.evaluate(() => window.settle({ running: true }));
+    await page.evaluate(() => window.settle({ running: true, tavernProcessRunning: true }));
     await page.waitForFunction(() => window.calls.filter(c => c === 'open').length === 3);
     await page.locator('#moreButton').click();
     assert.equal(await page.locator('#more').isVisible(), true);

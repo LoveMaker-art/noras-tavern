@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const { parse } = require('../installer/desktop/node_modules/acorn');
 const { formatUserError } = require('../installer/desktop/error-presentation');
+const { verifyWorkflowResult } = require('../installer/desktop/operation-result');
 
 const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest' });
@@ -12,13 +13,14 @@ const functions = new Map(ast.body.filter(n => n.type === 'FunctionDeclaration')
 function fixture(overrides = {}) {
   const calls = [], dialogs = [];
   const context = vm.createContext({
-    quitting: false, quitReady: false, uninstalling: false, MOCK_SCENARIO: '', setImmediate,
+    quitting: false, quitReady: false, shutdownPending: null, uninstalling: false, MOCK_SCENARIO: '',
+    setImmediate, setTimeout, clearTimeout, verifyWorkflowResult,
     activeRun: false, modelBusy: false, selectingLocation: false, statusRequest: null,
     noraHome: () => '/private/test-instance',
     require: name => { assert.equal(name,'./updater-task'); return {query:async()=>({status:'none',busy:false,settled:true})}; },
     runOwnedTask: async (kind,target,work) => { calls.push(['owned',kind,target]); return work({stage:async()=>{}}); },
     findPython: () => '/managed/python', nodeStatus: () => ({ installed: false, hermesInstalled: false }),
-    runBridge: async (command, options) => { calls.push([command, options.service]); return { running: false, gatewayRunning: false }; },
+    runBridge: async (command, options) => { calls.push([command, options.service]); return { running: false, tavernProcessRunning: false, gatewayRunning: false }; },
     app: { quit: () => calls.push('quit') },
     diagnostics: { write() {}, error() {}, clean: String },
     formatUserError,
@@ -28,6 +30,8 @@ function fixture(overrides = {}) {
   });
   const node = functions.get('requestQuit');
   assert.ok(node, 'Full exit must have a managed shutdown handler');
+  const deadline = functions.get('awaitQuitStep');
+  if (deadline) vm.runInContext(source.slice(deadline.start, deadline.end), context);
   const quit = vm.runInContext(`(${source.slice(node.start, node.end)})`, context);
   const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
   return { context, calls, dialogs, quit, event };
@@ -59,7 +63,7 @@ test('full exit awaits stopping both services before allowing Electron to quit',
   assert.deepEqual(f.calls.map(item=>Array.isArray(item)&&item[0]==='owned'?'owned':item), ['owned',['stop', 'all']]);
   await f.quit(f.event());
   assert.equal(f.calls.length, 2, 'Repeated quit must not race shutdown');
-  finish({ running: false, gatewayRunning: false });
+  finish({ running: false, tavernProcessRunning: false, gatewayRunning: false });
   await pending;
   assert.deepEqual(f.calls.map(item=>Array.isArray(item)&&item[0]==='owned'?'owned':item), ['owned',['stop', 'all'],'quit']);
   const second = f.event();
@@ -75,7 +79,7 @@ test('stop error or surviving service keeps the launcher alive and permits retry
     assert.equal(f.context.quitting, false);
     assert.equal(f.calls.includes('quit'), false);
     assert.match(f.dialogs[0].message, /未退出/);
-    f.context.runBridge = async () => ({ running: false, gatewayRunning: false });
+    f.context.runBridge = async () => ({ running: false, tavernProcessRunning: false, gatewayRunning: false });
     await f.quit(f.event());
     assert.equal(f.calls.includes('quit'), true);
   }
@@ -131,7 +135,7 @@ test('quit waits for an independent update without stopping services and works a
 });
 
 test('pending or unconfirmed updater inspection keeps the window open without a shutdown attempt',async()=>{
-  for(const state of [{status:'submitting',busy:false,settled:false},{status:'inspection-required',busy:null,settled:false}]){
+  for(const state of [{status:'submitting',busy:false,settled:false},{status:'inspection-required',busy:null,settled:false},{status:'unknown',busy:null,settled:true}]){
     const f=fixture({require:()=>({query:async()=>state})});await f.quit(f.event());
     await new Promise(resolve=>setImmediate(resolve));
     assert.deepEqual(f.calls,[]);assert.equal(f.context.quitReady,false);assert.equal(f.dialogs.length,1);
@@ -146,6 +150,53 @@ test('uninstalled home exits without Python; missing Python for installed servic
   await installed.quit(installed.event());
   assert.deepEqual(installed.calls, []);
   assert.equal(installed.dialogs.length, 1);
+});
+
+test('a stuck read releases the exit attempt without stopping services', async () => {
+  const f = fixture({
+    statusRequest: new Promise(() => {}),
+    setTimeout: callback => setTimeout(callback, 10),
+  });
+  await f.quit(f.event());
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.context.quitting, false);
+  assert.equal(f.context.quitReady, false);
+  assert.equal(f.dialogs.length, 1);
+  assert.match(f.dialogs[0].detail,/状态检查仍在进行/);
+  f.context.statusRequest = null;
+  await f.quit(f.event());
+  assert.ok(f.calls.includes('quit'));
+});
+
+test('a late owned shutdown does not exit the app and can only be retried after settling', async () => {
+  let finish;
+  let first = true;
+  const f = fixture({
+    runBridge: async () => {
+      if (!first) return {tavernProcessRunning:false,gatewayRunning:false};
+      first = false;
+      return new Promise(resolve => { finish = resolve; });
+    },
+    setTimeout: callback => setTimeout(callback, 10),
+  });
+  await f.quit(f.event());
+  assert.equal(f.context.quitting, false);
+  assert.equal(f.context.quitReady, false);
+  assert.match(f.dialogs[0].detail,/任务结束后可重试退出/);
+  await f.quit(f.event());
+  assert.equal(f.calls.length, 1, 'second attempt must wait for the original guarded writer');
+  finish({tavernProcessRunning:false,gatewayRunning:false});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.calls.includes('quit'), false, 'a timed out attempt cannot exit later');
+  await f.quit(f.event());
+  assert.equal(f.calls.includes('quit'), true);
+});
+
+test('missing Python cannot treat a partial managed installation as empty', async () => {
+  const f = fixture({findPython: () => null, nodeStatus: () => ({managedInstallation:true})});
+  await f.quit(f.event());
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.dialogs.length, 1);
 });
 
 test('mock and uninstall retain their own lifecycle', async () => {
@@ -217,10 +268,10 @@ test('Windows window close waits for shutdown and remains open on failure', () =
 });
 
 test('APP recovery confirms background shutdown under the writer before releasing the handoff',async()=>{
-  for(const stopped of [{running:false,gatewayRunning:false},{running:true,gatewayRunning:false}]){
+  for(const stopped of [{running:false,tavernProcessRunning:false,gatewayRunning:false},{running:false,tavernProcessRunning:true,gatewayRunning:false}]){
     const calls=[];
     const context=vm.createContext({activeRun:false,modelBusy:false,uninstalling:false,selectingLocation:false,quitting:false,
-      statusRequest:null,quitReady:false,activeOperationContext:null,path,process,setImmediate,
+      statusRequest:null,quitReady:false,activeOperationContext:null,path,process,setImmediate,verifyWorkflowResult,
       app:{isPackaged:true,getVersion:()=> '2.2.4',quit:()=>calls.push('quit')},
       readLauncherRecovery:async()=>({canRecover:true,busy:false,job:'/owned/job',operationId:'owned-operation'}),
       operations:()=>({snapshot:async()=>({snapshotSequence:1}),recover:async(_id,options)=>{
@@ -236,7 +287,7 @@ test('APP recovery confirms background shutdown under the writer before releasin
       launcherError:(message)=>new Error(message),requireOperationResult:()=>({}),
     });
     const node=functions.get('recoverLauncher'),recover=vm.runInContext(`(${source.slice(node.start,node.end)})`,context);
-    if(stopped.running){await assert.rejects(recover(),/停止/);assert.deepEqual(calls,['prepare','stop']);assert.equal(context.quitReady,false);}
+    if(stopped.tavernProcessRunning){await assert.rejects(recover(),/停止/);assert.deepEqual(calls,['prepare','stop']);assert.equal(context.quitReady,false);}
     else{await recover();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(calls,['prepare','stop','handoff','writer-released','recover-helper','quit']);assert.equal(context.quitReady,true);}
   }
 });

@@ -79,7 +79,7 @@ res.end(JSON.stringify({token:'fixture-token'}));}).listen(port,'127.0.0.1');
         module = load('cloud_cli_cleanup', self.app / 'native_lifecycle.py')
         runtime = module.NativeRuntime(self.root, self.app, self.state,
             module.RuntimeContract.from_dict(json.loads((self.app / 'native-runtime.json').read_text())))
-        runtime.stop_run()
+        runtime.stop_run(port=self.port)
         self.temporary.cleanup()
 
     def command(self, action, *, env=None, direct=False, extra=()):

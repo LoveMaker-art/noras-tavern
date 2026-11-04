@@ -355,6 +355,21 @@ class NoraSystemTests(unittest.TestCase):
                 self.assertTrue(state['running'])
         self.assertEqual((self.home / 'skills/creative/tavern/SKILL.md').read_text(), 'my edited skill')
 
+    def test_status_poll_preserves_the_other_service_fact_when_one_inspection_fails(self):
+        self.initialize()
+        for broken in ('nora', 'tavern'):
+            with self.subTest(broken=broken), patch.object(bridge, 'installed', return_value=True), \
+                    patch.object(bridge, 'gateway_status', return_value={
+                        'gatewayRunning': True, 'clawchatConnected': False},
+                        side_effect=RuntimeError('gateway unreadable') if broken == 'nora' else None), \
+                    patch.object(bridge, '_native_lifecycle_status', return_value={
+                        'port': 18899, 'health': {'ok': False}, 'process_running': True},
+                        side_effect=RuntimeError('native unreadable') if broken == 'tavern' else None):
+                state = bridge.status_payload(self.home.parent, self.home, self.root, 18899)
+            self.assertIs(state['gatewayRunning'], None if broken == 'nora' else True)
+            self.assertIs(state['tavernProcessRunning'], None if broken == 'tavern' else True)
+            self.assertIs(state['running'], None if broken == 'tavern' else False)
+
     def exercise_start(self, *, first_setup=False, failure=None):
         self.initialize()
         if not first_setup:

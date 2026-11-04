@@ -369,6 +369,68 @@ test('a harmless failed update does not block a separate service action or a tru
   await action(h,'恢复旧启动器').onclick();assert.equal(restores,1);
 });
 
+test('retrying a failed service task after reopening updates only the recorded service',async()=>{
+  for(const service of ['nora','tavern']){
+    const operation={operationId:'33333333-3333-4333-8333-333333333333',snapshotSequence:2,kind:'start',state:'failed',
+      effectState:'untouched',allowedActions:['retry','recheck','logs'],target:{request:{service}}};
+    const selected=service==='nora'?{gatewayRunning:true,clawchatConnected:true,running:false,tavernProcessRunning:false}
+      :{gatewayRunning:false,clawchatConnected:false,running:true,tavernProcessRunning:true};
+    const final={...ready,...selected,operation:{...operation,state:'succeeded',snapshotSequence:3}};
+    let finish,requested;
+    const h=fixture({snapshot:{...ready,operation,gatewayRunning:false,clawchatConnected:false,running:false,tavernProcessRunning:false},
+      dailyHome(){h.context.view='daily';h.context.renderServices();},api:{status:async()=>final,resumeOperation:options=>{
+        requested=options;return new Promise(resolve=>{finish=resolve;});
+      }}});
+    await h.invoke('route()');
+    const retry=action(h,'重新尝试启动');assert.ok(retry);
+    const done=retry.onclick();
+    assert.equal(requested.operationId,operation.operationId);
+    assert.equal(requested.snapshotSequence,operation.snapshotSequence);
+    const rows=Object.fromEntries(descendants(h.inline).filter(n=>n.className==='service-row').map(n=>[n.dataset.service,n.dataset.state]));
+    assert.deepEqual(rows,service==='nora'?{nora:'starting',tavern:'stopped'}:{nora:'stopped',tavern:'starting'});
+    finish(final);await done;
+    assert.equal(h.context.view,'daily','the unrelated stopped service does not fail this task');
+  }
+});
+
+test('stop success requires exact selected process proof, independent of unrelated service readiness',async()=>{
+  for(const [service,patch,statusUnavailable,success,stopPatch] of [
+    ['tavern',{running:false,tavernProcessRunning:true},false,false],
+    ['tavern',{running:false,tavernProcessRunning:null},false,false],
+    ['tavern',{running:false},false,false],
+    ['tavern',{running:false,tavernProcessRunning:false},false,true],
+    ['nora',{gatewayRunning:null},false,false],
+    ['nora',{gatewayRunning:false,tavernProcessRunning:null},false,true],
+    ['nora',{gatewayRunning:false,tavernProcessRunning:null},true,true],
+    ['nora',{gatewayRunning:null,tavernProcessRunning:null},true,true,{gatewayRunning:false}],
+    ['nora',{gatewayRunning:true,tavernProcessRunning:null},true,false,{gatewayRunning:false}],
+    ['tavern',{running:false,tavernProcessRunning:false},'reject',true],
+    ['all',{running:false,gatewayRunning:false,tavernProcessRunning:null},false,false],
+    ['all',{running:false,gatewayRunning:false,tavernProcessRunning:false},false,true],
+  ]){
+    const final={...ready,...patch};
+    const h=fixture({snapshot:{...ready,tavernProcessRunning:false},dailyHome(message){h.context.view='daily';h.copies.push([message]);},
+      api:{stop:async()=>({...final,...stopPatch}),status:async()=>{
+        if(statusUnavailable==='reject')throw new Error('status transport unavailable');
+        return {...final,statusUnavailable};
+      }}});
+    await h.invoke(`run('stop',{service:${JSON.stringify(service)}})`);
+    assert.equal(h.context.view,success?'daily':'error',JSON.stringify({service,patch,statusUnavailable}));
+    if(success)assert.match(h.output().copy[0],/诺拉已暂停|酒馆已停止|服务已停止/);
+    else assert.doesNotMatch(h.output().copy[0],/诺拉已暂停|酒馆已停止|服务已停止/);
+  }
+});
+
+test('a failed Nora stop does not divert an explicitly selected Tavern stop into the old task',async()=>{
+  const operation={operationId:'33333333-3333-4333-8333-333333333333',snapshotSequence:2,kind:'stop',state:'failed',
+    effectState:'untouched',allowedActions:['retry','recheck','logs'],target:{request:{service:'nora'}}};
+  const final={...ready,running:false,tavernProcessRunning:false,operation:null};
+  let requested;
+  const h=fixture({snapshot:{...ready,operation},api:{stop:async options=>{requested=options.service;return final;},status:async()=>final}});
+  await h.invoke('run("stop",{service:"tavern"})');
+  assert.equal(requested,'tavern');assert.equal(h.context.view,'daily');
+});
+
 test('backend can revoke recovery after reload without changing a trusted backup record',async()=>{
   const original=structuredFailure({actions:['recover','recheck','logs']});let permitted=true;
   const h=fixture({snapshot:{...ready,updateRecovery:{canRecover:true,backup:'/fixture/backup'},operation:original.operation},api:{

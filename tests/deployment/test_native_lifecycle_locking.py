@@ -214,6 +214,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
                     "argv": ["node", "server.js"],
                     "cwd": str(runtime.engine_root),
                 },
+                verify_owned_process=lambda process, _script: process,
                 require_listener=lambda *_args, **_kwargs: None,
             )
             runtime.process_module = mock.Mock(return_value=processes)

@@ -562,7 +562,7 @@ test('launcher recovery waits for preparation and cannot bypass busy or unknown 
     recover:async options=>{calls.push(options);return{job:options.job,restarting:true};},
   }});
   context.serviceCalls=[];
-  vm.runInContext('app.isPackaged=true; app.quit=()=>{globalThis.didQuit=true;}; findPython=()=>({command:"python-fixture"}); runBridge=async(command,options)=>{serviceCalls.push([command,options.service]);return {running:false,gatewayRunning:false};}; activeRun=true;',context);
+  vm.runInContext('app.isPackaged=true; app.quit=()=>{globalThis.didQuit=true;}; findPython=()=>({command:"python-fixture"}); runBridge=async(command,options)=>{serviceCalls.push([command,options.service]);return {running:false,tavernProcessRunning:false,gatewayRunning:false};}; activeRun=true;',context);
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/当前任务/);
   vm.runInContext('activeRun=false;',context);
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/归属/);
@@ -606,7 +606,7 @@ test('launcher recovery remains offered after failed status inspection, but hand
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/fixture inspection denied/);
   assert.equal(context.bridgeCalls,1);
   assert.notEqual(vm.runInContext('quitReady',context),true,'failed service shutdown must not authorize APP exit');
-  vm.runInContext('runBridge=async(command,options)=>{bridgeCalls++;if(command!=="stop"||options.service!=="all")throw new Error("unexpected bridge request");return {running:false,gatewayRunning:false};};',context);
+  vm.runInContext('runBridge=async(command,options)=>{bridgeCalls++;if(command!=="stop"||options.service!=="all")throw new Error("unexpected bridge request");return {running:false,tavernProcessRunning:false,gatewayRunning:false};};',context);
   const recovery=await vm.runInContext('recoverLauncher()',context);
   assert.equal(recovery.restarting,true);
   assert.equal(assessed,3,'each explicit recovery must reassess its own identity');
@@ -1179,4 +1179,19 @@ test('actual runtime extraction failure automatically produces an authorized bou
     assert.equal(last.exit_code,2);assert.equal(last.system_code,'');assert.ok(last.fault.errors.some(e=>e.relation==='child'&&e.syscall==='symlink'));
     assert.equal(last.fault.output.some(line=>line.includes('installer tool')),true,'owned installer stderr is reviewed and retained after redaction');assert.doesNotMatch(JSON.stringify(last.fault),/fixture-secret|Users\/private/);
   } finally {client?.close();fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('selected stop proof keeps confirmed setup when unrelated status is unavailable',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-service-setup-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const context=mainContext(root);
+  vm.runInContext(`writeInstallerState({...readInstallerState(),phase:'ready',setupCompleted:true});
+    runBridge=async()=>({tavernProcessRunning:false,statusUnavailable:true,warning:'unrelated status failed'});`,context);
+  const execute=mainCallback(context,'executeAction');
+  const result=await execute({operationId:'11111111-1111-4111-8111-111111111111',
+    target:{request:{action:'stop',service:'tavern',port:18885}},snapshot:{},check(){},lease:{assertActive(){}},stage:async()=>{}});
+  assert.equal(result.verification,'confirmed');
+  const saved=vm.runInContext('readInstallerState()',context);
+  assert.equal(saved.phase,'ready');
+  assert.equal(saved.setupCompleted,true);
 });

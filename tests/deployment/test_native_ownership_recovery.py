@@ -82,9 +82,9 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
         self.evidence = {**self.current, 'exe': str(self.node), 'owner': 'fixture-user', 'created_at': 200.5}
         self.operations = types.SimpleNamespace(
             process_record=mock.Mock(side_effect=lambda *_: self.current),
-            find_processes=mock.Mock(side_effect=lambda *_: [self.current]),
+            find_processes=mock.Mock(side_effect=lambda *_, **_options: [self.current]),
             same_runtime=self.processes.same_runtime,
-            require_listener=mock.Mock(),
+            require_listener=mock.Mock(side_effect=lambda *_: {**self.evidence}),
             verify_owned_listener=mock.Mock(side_effect=lambda *_: {**self.evidence}),
         )
         r.process_module = mock.Mock(return_value=self.operations)
@@ -168,7 +168,7 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
                 self.assert_unchanged()
 
     def test_recovery_rejects_multiple_instances(self):
-        self.operations.find_processes.side_effect = lambda *_: [self.current, {**self.current, 'pid': 201}]
+        self.operations.find_processes.side_effect = lambda *_, **_options: [self.current, {**self.current, 'pid': 201}]
         with self.assertRaises(self.lifecycle.NativeLifecycleError):
             self.start()
         self.assert_unchanged()
@@ -265,6 +265,164 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
             self.assertTrue(r.status()['health']['ok'])
             self.assertTrue(r.start('production', port)['already_running'])
         r.spawn.assert_not_called()
+
+    def test_foreign_listener_does_not_make_an_owned_unhealthy_node_ready(self):
+        node = resolve_node()
+        self.assertIsNotNone(node, 'requires NORA_TEST_NODE or a local Node executable')
+        self.assertIsNotNone(self.processes.psutil, 'requires psutil')
+        r = self.runtime
+        server = r.engine_root / 'server.js'
+        marker = r.engine_root / 'child-ready'
+        server.write_text("require('fs').writeFileSync('child-ready','ready');setInterval(()=>{},1000);")
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            args = [str(node), str(server), '--configPath', str(r.config_path), '--port', str(port),
+                    '--dataRoot', str(r.native_data_root), '--listen', 'false', '--whitelist', 'false']
+            child = subprocess.Popen(args, cwd=r.engine_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.fixture_children.append(child)
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(marker.is_file())
+            process = self.processes.process_record(child.pid, server)
+            self.assertIsNotNone(process)
+            self.metadata.update(port=port, native_pid=child.pid, process=process)
+            self.write_metadata()
+            (self.run / 'native.pid').write_text(str(child.pid))
+            r.process_module = mock.Mock(return_value=self.processes)
+            with mock.patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE': str(node)}):
+                status = r.status()
+                self.assertTrue(status['process_running'])
+                self.assertFalse(status['health']['ok'])
+                r.health.assert_not_called()
+                with self.assertRaises(RuntimeError):
+                    r.start('production', port)
+                self.assertIsNone(child.poll())
+                with self.assertRaises(RuntimeError):
+                    r.stop_run()
+                self.assertIsNotNone(child.wait(timeout=5))
+                self.assertTrue((self.run / 'native.pid').is_file())
+            self.assertEqual(listener.getsockname()[1], port)
+        with mock.patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE': str(node)}):
+            self.assertTrue(r.stop_run()['offline'])
+            self.assertFalse((self.run / 'native.pid').exists())
+            self.assertIs(r.status()['process_running'], False)
+
+    def test_idle_bound_port_survives_missing_and_stale_receipts_without_claiming_unknown(self):
+        r = self.runtime
+        r.process_module = mock.Mock(return_value=self.processes)
+        with socket.socket() as reserve:
+            reserve.bind(('127.0.0.1', 0))
+            port = reserve.getsockname()[1]
+        metadata = self.run / 'run.json'
+        metadata.unlink()
+        (self.run / 'native.pid').write_text(str(os.getpid()))
+        self.assertIs(r.status(port=port)['process_running'], False)
+        self.assertTrue(r.stop_run(port=port)['offline'])
+        self.assertFalse((self.run / 'native.pid').exists())
+        self.metadata['port'] = port - 1
+        self.write_metadata()
+        self.assertIs(r.status(port=port)['process_running'], False)
+        self.assertTrue(r.stop_run(port=port)['offline'])
+        self.assertEqual(metadata.read_bytes(), self.original)
+        with mock.patch.object(self.processes, 'find_processes', side_effect=RuntimeError('process inspection denied')):
+            self.assertIsNone(r.status(port=port)['process_running'])
+            with self.assertRaisesRegex(RuntimeError, 'inspection denied'):
+                r.stop_run(port=port)
+        with mock.patch.object(self.processes, 'port_open', side_effect=OSError('listener inspection denied')):
+            self.assertIsNone(r.status(port=port)['process_running'])
+            with self.assertRaisesRegex(OSError, 'inspection denied'):
+                r.stop_run(port=port)
+
+    def test_stopping_canary_does_not_stop_its_verified_production_peer(self):
+        node = resolve_node()
+        self.assertIsNotNone(node, 'requires NORA_TEST_NODE or a local Node executable')
+        r = self.runtime
+        server = r.engine_root / 'server.js'
+        server.write_text(
+            "const http=require('http');const args=process.argv;"
+            "http.createServer((req,res)=>res.end(JSON.stringify({token:'fixture-token'})))"
+            ".listen(Number(args[args.indexOf('--port')+1]),'127.0.0.1');"
+        )
+        r.process_module = mock.Mock(return_value=self.processes)
+        r.health = types.MethodType(self.lifecycle.NativeRuntime.health, r)
+        with mock.patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE': str(node)}):
+            def launch(run_id, data):
+                with socket.socket() as reserve:
+                    reserve.bind(('127.0.0.1', 0))
+                    port = reserve.getsockname()[1]
+                child = subprocess.Popen(r.node_command(port, data), cwd=r.engine_root,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.fixture_children.append(child)
+                deadline = time.monotonic() + 5
+                while not r.health(port)['ok'] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(r.health(port)['ok'])
+                process = self.processes.process_record(child.pid, server)
+                self.assertIsNotNone(process)
+                run = r.run_dir(run_id)
+                run.mkdir(exist_ok=True)
+                (run / 'run.json').write_text(json.dumps({'schema': 1, 'run_id': run_id, 'port': port,
+                    'data_root': str(data), 'native_pid': child.pid, 'process': process}))
+                return child, port
+            production, production_port = launch('production', r.native_data_root)
+            canary, canary_port = launch('canary', r.state_root / 'native-canary')
+            self.assertTrue(r.status(port=production_port)['health']['ok'])
+            self.assertTrue(r.stop_run('canary', port=canary_port)['offline'])
+            self.assertIsNotNone(canary.wait(timeout=5))
+            self.assertIsNone(production.poll())
+            self.assertTrue(r.status(port=production_port)['health']['ok'])
+            self.assertTrue(r.stop_run(port=production_port)['offline'])
+            self.assertIsNotNone(production.wait(timeout=5))
+
+    def test_strict_scan_distinguishes_denied_foreign_node_from_unknown_local_node(self):
+        processes = self.processes
+        psutil = processes.psutil
+        self.assertIsNotNone(psutil, 'requires psutil')
+        foreign = mock.Mock()
+        foreign.name.return_value = 'Node.exe'
+        foreign.uids.return_value = types.SimpleNamespace(real=2000)
+        foreign.cmdline.side_effect = psutil.AccessDenied(201)
+        background = mock.Mock()
+        background.name.return_value = 'System'
+        background.cmdline.side_effect = psutil.AccessDenied(202)
+        with mock.patch.object(psutil, 'pids', return_value=[201, 202]), \
+             mock.patch.object(psutil, 'Process', side_effect=lambda pid: {201: foreign, 202: background}[pid]), \
+             mock.patch.object(processes, 'os', types.SimpleNamespace(getuid=lambda: 1000)):
+            self.assertEqual(processes.find_processes(self.current['script'], strict=True), [])
+            background.cmdline.assert_not_called()
+            foreign.uids.return_value.real = 1000
+            with self.assertRaisesRegex(RuntimeError, 'candidate process inspection failed'):
+                processes.find_processes(self.current['script'], strict=True)
+            foreign.uids.side_effect = psutil.AccessDenied(201)
+            with self.assertRaisesRegex(RuntimeError, 'candidate process inspection failed'):
+                processes.find_processes(self.current['script'], strict=True)
+
+    def test_stop_rechecks_birth_and_waits_after_force_signal(self):
+        processes = self.processes
+        psutil = processes.psutil
+        self.assertIsNotNone(psutil, 'requires psutil')
+        for reuse in (True, False):
+            with self.subTest(reused_after_term=reuse):
+                candidate = mock.Mock(pid=200)
+                candidate.status.return_value = psutil.STATUS_RUNNING
+                candidate.create_time.return_value = self.evidence['created_at']
+                if reuse:
+                    candidate.terminate.side_effect = lambda: setattr(candidate.create_time, 'return_value', 999)
+                clock = types.SimpleNamespace(monotonic=mock.Mock(side_effect=[0, 9, 10, 16]), sleep=mock.Mock())
+                with mock.patch.object(psutil, 'Process', return_value=candidate), \
+                     mock.patch.object(processes, 'verify_owned_process', return_value=self.evidence), \
+                     mock.patch.object(processes, 'time', clock):
+                    if reuse:
+                        self.assertTrue(processes.stop_process(self.evidence, self.current['script'])['stopped'])
+                        candidate.kill.assert_not_called()
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'has not stopped'):
+                            processes.stop_process(self.evidence, self.current['script'])
+                        candidate.kill.assert_called_once_with()
+                candidate.terminate.assert_called_once_with()
 
     def test_os_proof_rejects_foreign_owner_executable_listener_and_pid_reuse(self):
         psutil = self.processes.psutil

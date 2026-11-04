@@ -287,6 +287,7 @@ let updatingSystem = false;
 let uninstalling = false;
 let selectingLocation = false;
 let quitting = false;
+let shutdownPending = null;
 let quitReady = false;
 let selectedHome;
 const LOCATION_SCOPE = LOCAL_TEST ? `test-${LOCAL_TEST.buildId}` : CHANNEL;
@@ -746,7 +747,8 @@ function nodeStatus(error = '', operation) {
     modelName: verifiedModel?.model || '',
     modelBaseUrl: verifiedModel?.baseUrl || '',
     running: false,
-    gatewayRunning: false,
+    tavernProcessRunning: null,
+    gatewayRunning: null,
     clawchatConnected: false,
     clawchatPaired: false,
     busy: activeRun || modelBusy,
@@ -1086,7 +1088,7 @@ async function recoverLauncher() {
         // Service children can keep the APP's crash reporter alive after its
         // main process exits. Stop them while this recovery still owns the lock.
         const stopped=await runBridge('stop',{service:'all'});
-        if(stopped.running!==false||stopped.gatewayRunning!==false)
+        if(!verifyWorkflowResult({action:'shutdown',result:stopped}))
           throw new Error('尚未确认诺拉与酒馆已停止，暂未交接启动器恢复。');
         await context.handoff(pending.job);return {handoff:true,value:prepared};
       }});
@@ -1125,6 +1127,15 @@ async function recoverLauncher() {
   } finally { activeOperationContext=null;if (!restarting) activeRun=false; }
 }
 
+async function awaitQuitStep(work, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([work,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Object.assign(new Error(message),{code:'SHUTDOWN_NOT_CONFIRMED'})),timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 async function requestQuit(event) {
   // Uninstall owns its shutdown; a second instance never registers this handler.
   if (quitReady || uninstalling || MOCK_SCENARIO) return;
@@ -1132,33 +1143,36 @@ async function requestQuit(event) {
   if (quitting) return;
   quitting = true;
   try {
-    if (activeRun || modelBusy || selectingLocation) {
+    if (activeRun || modelBusy || selectingLocation || shutdownPending) {
       await dialog.showMessageBox({ type: 'info', title: '暂未退出',
         message: '任务尚未结束，暂不能退出启动器', detail: '请等待任务结束；当前阶段允许取消时，可先点击“取消任务”。', buttons: ['知道了'] });
       return;
     }
     // A busy shared lock does not identify its owner. Keep the original quit
     // protection and never stop services while an independent task may own them.
-    const updating=await require('./updater-task').query(noraHome());
-    if(updating.busy===true||updating.settled===false
+    const updating=await awaitQuitStep(require('./updater-task').query(noraHome()),5000,
+      '尚未确认后台维护状态，请查看日志或稍后重试退出。');
+    if(updating.busy!==false||updating.settled!==true
       ||updating.operation&&['selecting','downloading','prepared','applying','verifying','recovering'].includes(updating.status)){
       await dialog.showMessageBox({type:'info',title:'暂未退出',
         message:'后台任务尚未结束或状态待确认，暂不能退出启动器',
         detail:'请等待更新或恢复结束后再退出；状态无法确认时请查看日志。',buttons:['知道了']});
       return;
     }
-    if (statusRequest) await statusRequest.catch(() => {});
+    if (statusRequest) await awaitQuitStep(statusRequest.catch(() => {}),5000,
+      '状态检查仍在进行，请查看日志或稍后重试退出。');
     diagnostics.write('shutdown.start', { services: ['nora', 'tavern'] });
     if (findPython()) {
-      await runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
+      shutdownPending=runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
         await context.stage('applying');
         const result = await runBridge('stop', { service: 'all' });
-        if (result.running !== false || result.gatewayRunning !== false) throw new Error('尚未确认诺拉与酒馆已全部停止。');
+        if (!verifyWorkflowResult({action:'shutdown',result})) throw new Error('尚未确认诺拉与酒馆已全部停止。');
         await context.stage('verifying');return {verification:'confirmed',value:result};
-      });
+      }).finally(()=>{shutdownPending=null;});
+      await awaitQuitStep(shutdownPending,30000,'停止服务尚未结束。可继续查看日志，任务结束后可重试退出。');
     } else {
       const status = nodeStatus();
-      if (status.installed || status.hermesInstalled) throw new Error('运行环境缺失，无法安全停止服务。请修复安装后再退出。');
+      if (status.installed || status.hermesInstalled || status.managedInstallation) throw new Error('运行环境缺失，无法安全停止服务。请修复安装后再退出。');
     }
     diagnostics.write('shutdown.complete');
     quitReady = true;
@@ -1171,7 +1185,7 @@ async function requestQuit(event) {
     telemetry?.report(error,{source:'launcher_process',site:'process.stop'});
     await dialog.showMessageBox({ type: 'error', title: '退出未完成',
       message: '后台服务停止失败，启动器未退出',
-      detail: formatUserError(error, {action:'stop'}), buttons: ['知道了'] });
+      detail: error.code==='SHUTDOWN_NOT_CONFIRMED'?error.message:formatUserError(error, {action:'stop'}), buttons: ['知道了'] });
   } finally { quitting = false; }
 }
 
@@ -1879,7 +1893,7 @@ if (primaryInstance) {
   });
   handle('nora:recover-launcher',recoverLauncher);
   handle('nora:status', async () => {
-    if (quitting || uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), ...taskCancellation(), busy: true,
+    if (quitting || shutdownPending || uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), ...taskCancellation(), busy: true,
       operation:projectDesktopOperation(activeOperationContext?{...activeOperationContext.snapshot,busy:true,allowedActions:['wait','logs']}:await operations().snapshot()),
       launcherRecovery:await readLauncherRecovery() };
     if (statusRequest) return statusRequest;
@@ -2014,18 +2028,18 @@ if (primaryInstance) {
       if(payload.action==='recover')throw launcherError('核心任务请在诺拉对话中恢复；没有可由启动器恢复的旧快照。',{code:'CORE_UPDATE_CHAT_REQUIRED'});
       diagnostics.write('install.paths', { noraHome: noraHome(), hermesHome: hermesHome(),
         installRoot: installRoot(), payloadRoot: payloadDirectory() });
-      let state = readInstallerState();
-      state = writeInstallerState({
-        ...state,
+      const priorState = readInstallerState();
+      const state = writeInstallerState({
+        ...priorState,
         port: payload.port || installationPort(),
         phase: payload.action === 'install' ? 'installing' : payload.action,
         startedAt: Date.now(),
         error: '',
-        task: payload.action === 'install' ? '准备安装' : state.task,
-        setupCompleted: payload.action === 'install' ? false : Boolean(state.setupCompleted),
+        task: payload.action === 'install' ? '准备安装' : priorState.task,
+        setupCompleted: payload.action === 'install' ? false : priorState.setupCompleted,
         milestones: payload.action === 'install'
           ? MILESTONES.map((label, index) => ({ index, label, state: 'pending', task: '' }))
-          : state.milestones,
+          : priorState.milestones,
       });
       if(payload.action==='update')return await runLauncherUpdate(context,{payload,event,networkPolicy,operationDirectory});
       let selectedPayload;
@@ -2113,8 +2127,11 @@ if (primaryInstance) {
       if(payload.action==='install')result=finishRetainedInstallation(context,result);
       else if(completion?.pending)result={...result,retainedCompletionPending:true,
         warning:[result.warning,completion.warning].filter(Boolean).join('\n')};
-      writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '', resumeTarget: null });
-      telemetry?.status({ ...result, installer: { phase: result.systemReady ? 'ready' : 'idle' } });
+      const ready = typeof result.systemReady === 'boolean' ? result.systemReady : priorState.phase === 'ready';
+      const settled = writeInstallerState({ ...finalState, phase: ready ? 'ready' : 'idle',
+        setupCompleted: typeof result.setupCompleted === 'boolean' ? result.setupCompleted : finalState.setupCompleted,
+        error: '', task: '', resumeTarget: null });
+      telemetry?.status({ ...result, installer: {phase:settled.phase} });
       diagnostics.finish('success');
       return {verification:'confirmed',value:result};
     } catch (error) {

@@ -221,6 +221,19 @@ test('successful start requires observed running service state, not only a resul
   assert.equal(operation.state,'succeeded');assert.equal(operation.verification,'confirmed');
 });
 
+test('selected stop uses action proof if the independent status read fails',async t=>{
+  for(const verified of [true,false]){
+    const f=fixture(t);
+    const operation=await cli.execute({receiptPath:'fixture',request:f.request('stop',['--service','tavern'])},
+      {validate:async()=>f.receipt,lock:f.lock,telemetry:false,policy:{observe:async()=>({effectState:'untouched'})},
+        run:async(_context,_target,_args,{readonly})=>{
+          if(readonly)throw new Error('independent status fixture failed');
+          return {running:false,...(verified?{tavernProcessRunning:false}:{})};
+        }});
+    assert.equal(operation.state,verified?'succeeded':'failed');
+  }
+});
+
 test('first-start setup blockers retain typed guidance and never offer blind retry after reopening',async t=>{
   const {failureResult}=require('../installer/desktop/operation-result');
   for(const [code,message,expected] of [['MODEL_SETUP_REQUIRED','请先配置并测试模型。',/配置.*验证.*模型/],

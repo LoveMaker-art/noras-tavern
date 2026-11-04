@@ -26,9 +26,12 @@ function failureActions(error,{operation}={}){
 function successResult(value){return {schema:SCHEMA,ok:true,value};}
 function verifyWorkflowResult({action,service='all',targetVersion,result,status=result,before}={}){
   if(!status||typeof status!=='object')return false;
-  const checks=service==='tavern'?['running']:service==='nora'?['gatewayRunning']:['running','gatewayRunning'];
-  if(['start','restart'].includes(action))return checks.every(key=>status[key]===true);
-  if(['stop','shutdown'].includes(action))return checks.every(key=>status[key]===false);
+  if(['start','restart','stop','shutdown'].includes(action)){
+    if(!['tavern','nora','all'].includes(service))return false;
+    const stopping=action==='stop'||action==='shutdown';
+    return (service==='nora'||status[stopping?'tavernProcessRunning':'running']===!stopping)
+      &&(service==='tavern'||status.gatewayRunning===!stopping);
+  }
   if(action==='pair')return status.clawchatPaired===true&&status.clawchatProfileReady===true;
   if(action==='recover')return result?.recoveryVerification==='confirmed'
     &&(result.updateRecovered===true||result.firstInstallRecovered===true);

@@ -443,26 +443,53 @@ const observedLock={...lock,acquire:async options=>{
         finally:
             self.close_fixture_children()
 
-    def test_metadata_write_failure_closes_reader_without_changing_stop_semantics(self):
+    def test_each_start_receipt_write_failure_reaps_child_and_preserves_previous_receipts(self):
         self.script("setInterval(() => {}, 1000);\n")
-        children = []
+        run = self.runtime.run_dir('production')
+        run.mkdir(parents=True)
+        pid_file = run / 'native.pid'
+        receipt = run / 'run.json'
+        original_atomic_text = self.lifecycle._atomic_text
         original_spawn = self.runtime.spawn
+        children = []
+
         def capture(*args):
             child = original_spawn(*args)
-            children.append((child, getattr(child, '_nora_startup_log', None)))
+            children.append((child, child._nora_startup_log[0]))
             return child
-        processes = self.runtime.process_module()
-        record = self.current_child_records(processes)
+
         self.runtime.spawn = capture
-        try:
-            with mock.patch.object(processes, 'process_record', side_effect=record), \
-                    mock.patch.object(self.lifecycle, '_atomic_text', side_effect=OSError('metadata write failure')):
-                with self.assertRaisesRegex(OSError, 'metadata write failure'):
-                    self.runtime.start(port=self.port)
-            self.assertIsNone(children[0][0].poll())
-            self.assertTrue(children[0][1][0].closed)
-        finally:
-            self.close_fixture_children()
+        for fail_at, has_previous in [('native.pid', False), ('run.json', False),
+                                      ('native.pid', True), ('run.json', True)]:
+            with self.subTest(fail_at=fail_at, has_previous=has_previous):
+                if has_previous:
+                    pid_file.write_bytes(b'prior invalid hint\r\n')
+                    receipt.write_bytes(b'{"prior":true}\n')
+                primary = OSError('metadata write failure')
+                def publish(path, value, *args):
+                    if path.name == fail_at:
+                        raise primary
+                    original_atomic_text(path, value, *args)
+                try:
+                    with mock.patch.object(self.lifecycle, '_atomic_text', side_effect=publish):
+                        with self.assertRaises(OSError) as error:
+                            self.runtime.start(port=self.port)
+                    self.assertIs(error.exception, primary)
+                    child, reader = children[-1]
+                    self.assertIsNotNone(child.poll(), 'the failed start left its child alive')
+                    self.assertTrue(reader.closed)
+                    self.assertNotIn(child.pid, self.runtime._children)
+                    self.assertIs(self.runtime.status(port=self.port)['process_running'], False)
+                    if has_previous:
+                        self.assertEqual(pid_file.read_bytes(), b'prior invalid hint\r\n')
+                        self.assertEqual(receipt.read_bytes(), b'{"prior":true}\n')
+                    else:
+                        self.assertFalse(pid_file.exists())
+                        self.assertFalse(receipt.exists())
+                finally:
+                    self.close_fixture_children()
+                    pid_file.unlink(missing_ok=True)
+                    receipt.unlink(missing_ok=True)
 
 
 class NativeFixtureCleanupTests(unittest.TestCase):

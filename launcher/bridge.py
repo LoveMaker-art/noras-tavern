@@ -8,6 +8,7 @@ spawn this bridge and forward its JSON events to ``window.NoraLauncherBridge``.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -557,7 +558,60 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
     return model_state_module().read_verified_model(nora_home, hermes_home, problems, allow_pending=allow_pending)
 
 
-def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
+def _native_lifecycle_status(nora_home, hermes_home, install_root, port):
+    lifecycle = install_root / 'apps/tavern-runtime/native_lifecycle.py'
+    return run_json([python_command(hermes_home), '-B', str(lifecycle), 'status', '--port', str(port)],
+                    env=env_for(nora_home, hermes_home, install_root))
+
+
+def _tavern_service_status(nora_home, hermes_home, install_root, port, *, prove_absence=False):
+    args = argparse.Namespace(nora_home=nora_home, hermes_home=hermes_home, install_root=install_root, port=port)
+    if not installed(install_root):
+        if prove_absence:
+            _recovery_require_native_offline(args)
+        return {'running': False, 'tavernProcessRunning': False if prove_absence else None, 'port': port}
+    status = _native_lifecycle_status(nora_home, hermes_home, install_root, port)
+    warning = status.get('inspection_error') or status.get('error')
+    healthy = (status.get('health') or {}).get('ok') is True
+    reported_port = status.get('port')
+    process_running = status.get('process_running')
+    if type(process_running) is not bool or (process_running is False and (warning or reported_port != port or healthy)):
+        process_running = None
+    if 'process_running' not in status:
+        old_process = (status.get('processes') or {}).get('native')
+        if old_process is True:
+            process_running = True
+        elif old_process is False and not warning and not healthy:
+            try:
+                _recovery_require_native_offline(args)
+                process_running = False
+            except Exception as error:
+                if prove_absence:
+                    raise
+                warning = str(error)
+    if healthy and reported_port not in (None, port):
+        warning = warning or '酒馆健康状态来自其他端口，尚未确认当前实例就绪。'
+        healthy = False
+    result = {'running': None if warning and process_running is None else healthy,
+              'tavernProcessRunning': process_running, 'pid': status.get('native_pid'), 'port': port}
+    if warning:
+        result.update(warning=warning, warningCode=status.get('inspection_error_code'))
+    return result
+
+
+def _gateway_service_status(nora_home, hermes_home, *, prove_absence=False):
+    facts = gateway_status(nora_home, hermes_home)
+    hints = (nora_home / 'installer/gateway.json', hermes_home / 'gateway_state.json', hermes_home / 'gateway.pid')
+    if facts.get('gatewayRunning') is False and (
+            prove_absence or any(path.exists() or path.is_symlink() for path in hints)):
+        check_gateway_control(nora_home, hermes_home)
+        # The ownership check can see a newly restarted, legitimately owned
+        # gateway. Recheck the process state before returning absence.
+        facts = gateway_status(nora_home, hermes_home)
+    return facts
+
+
+def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int, *, service_facts=None) -> dict:
     if not installed(install_root) and any((file.exists() or file.is_symlink()) for file in (
             hermes_home / 'nora-instance.json', install_root / 'tavern-updates/nora-system.json',
             install_root / 'tavern-updates/installed.json', install_root / 'tavern-updates/installed-manifest.json')):
@@ -567,7 +621,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
                 'version': partial['version'], 'commit': partial['commit'], 'versionSource': 'receipt',
                 'missingPrograms': partial['missing'], 'systemReady': False, 'setupCompleted': False,
                 'systemProblems': ['已有安装的程序文件缺失，需要保留数据修复。'],
-                'running': None, 'gatewayRunning': None, 'clawchatConnected': None,
+                'running': None, 'tavernProcessRunning': None, 'gatewayRunning': None, 'clawchatConnected': None,
                 'hermesInstalled': bool(hermes_command(nora_home, hermes_home, install_root)),
                 'noraInstalled': False, 'modelConfigured': False, 'clawchatPaired': False,
                 'port': port, 'url': f'http://127.0.0.1:{port}', 'home': str(nora_home),
@@ -581,7 +635,13 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
     verified_model = read_verified_model(nora_home, hermes_home, allow_pending=True)
     model_state = model_state_module().public_model_state(nora_home, hermes_home)
     credentials_ready = bool(verified_model) and not verified_model.get("tavernSyncPending")
-    connection = gateway_status(nora_home, hermes_home)
+    service_facts = service_facts or {}
+    service_warning = {}
+    try:
+        connection = service_facts.get('nora') or _gateway_service_status(nora_home, hermes_home)
+    except Exception as error:
+        connection = {'gatewayRunning': None, 'clawchatConnected': None, 'gatewayActivity': 'unknown'}
+        service_warning = {'warning': str(error), 'warningCode': getattr(error, 'code', None)}
     clawchat_connected = connection["clawchatConnected"]
     paired = clawchat_paired(hermes_home)
     profile_ready = paired and nora_profile.ready(hermes_home)
@@ -592,6 +652,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "systemReady": False,
             "setupCompleted": False,
             "running": False,
+            "tavernProcessRunning": None,
             "hermesInstalled": hermes_ready,
             "noraInstalled": system["noraInstalled"],
             "modelConfigured": credentials_ready,
@@ -604,6 +665,8 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "clawchatConnected": clawchat_connected,
             "clawchatPaired": paired,
             **connection,
+            **service_warning,
+            **service_facts.get('tavern', {}),
             "port": port,
             "url": f"http://127.0.0.1:{port}",
             "home": str(nora_home),
@@ -611,12 +674,11 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "hermesHome": str(hermes_home),
             "installRoot": str(install_root),
         }
-    lifecycle = install_root / "apps/tavern-runtime/native_lifecycle.py"
-    status = run_json(
-        [python_command(hermes_home), "-B", str(lifecycle), "status", "--port", str(port)],
-        env=env_for(nora_home, hermes_home, install_root),
-    )
-    running = bool(status.get("health", {}).get("ok"))
+    try:
+        tavern = service_facts.get('tavern') or _tavern_service_status(nora_home, hermes_home, install_root, port)
+    except Exception as error:
+        tavern = {'running': None, 'tavernProcessRunning': None, 'pid': None, 'port': port,
+                  'warning': str(error), 'warningCode': getattr(error, 'code', None)}
     payload = {
         "installed": True,
         "updateRecovery": recovery,
@@ -624,7 +686,6 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "setupCompleted": system["setupCompleted"] and profile_ready,
         "clawchatProfileReady": profile_ready,
         "systemProblems": system["problems"],
-        "running": running,
         "hermesInstalled": hermes_ready,
         "noraInstalled": system["noraInstalled"],
         "modelConfigured": credentials_ready,
@@ -637,27 +698,35 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "clawchatConnected": clawchat_connected,
         "clawchatPaired": paired,
         **connection,
-        "port": int(status.get("port") or port),
-        "url": f"http://127.0.0.1:{int(status.get('port') or port)}",
+        "warning": "",
+        **service_warning,
+        **tavern,
+        "url": f"http://127.0.0.1:{tavern['port']}",
         "home": str(nora_home),
         "noraHome": str(nora_home),
         "hermesHome": str(hermes_home),
         "installRoot": str(install_root),
-        "pid": status.get("native_pid"),
-        "warning": "",
     }
     payload.update(read_version(install_root))
-    if status.get("inspection_error"):
-        payload["warning"] = status["inspection_error"]
-        payload['warningCode'] = status.get('inspection_error_code')
-    if status.get("error"):
-        payload["warning"] = status["error"]
-    if running and paired:
+    if payload['running'] is True and paired:
         registration = nora_system.read_json(install_root / "tavern-state/liveware-ready.json")
         if registration.get("status") != "ready" and not payload["warning"]:
             payload["warning"] = ("ClawChat 酒馆入口仍在准备，可先与诺拉对话。" if clawchat_connected
                                   else "ClawChat 酒馆入口尚未就绪。")
     return payload
+
+
+def _action_status(args, facts):
+    """An unrelated status read must not discard the selected service's proof."""
+    try:
+        status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port, service_facts=facts)
+    except Exception as error:
+        status = {'statusUnavailable': True, 'warning': str(error), 'warningCode': getattr(error, 'code', None),
+                  'port': args.port, 'noraHome': str(args.nora_home), 'hermesHome': str(args.hermes_home),
+                  'installRoot': str(args.install_root)}
+    for proof in facts.values():
+        status.update(proof)
+    return status
 
 
 def command_status(args) -> None:
@@ -768,11 +837,17 @@ def command_start(args, *, require_clawchat_connection=True) -> None:
         start_gateway(args.nora_home, args.hermes_home,
                       [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env,
                       require_connection=require_clawchat_connection)
-    if service == "nora":
-        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
-        return
-    if service == "tavern":
-        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
+    if service != 'all':
+        if service == 'nora':
+            proof = _gateway_service_status(args.nora_home, args.hermes_home)
+            ready = proof.get('gatewayRunning') is True and (
+                require_clawchat_connection is False or proof.get('clawchatConnected') is True)
+        else:
+            proof = _tavern_service_status(args.nora_home, args.hermes_home, args.install_root, args.port)
+            ready = proof.get('running') is True
+        if not ready:
+            fail('启动检查未通过，请检查服务连接后重试。')
+        emit('result', **_action_status(args, {service: proof}))
         return
     if first_setup:
         emit("task", stage_id="connect", task="正在准备 ClawChat 连接组件")
@@ -821,7 +896,18 @@ def command_stop(args) -> None:
             with lock:
                 if installed(args.install_root):
                     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
-                    run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
+                    command = [python_command(args.hermes_home), "-B", str(lifecycle), "stop"]
+                    if args.port != 8799:
+                        # The previous native CLI did not accept --port for
+                        # stop. The new process proof field identifies the
+                        # CLI with the bound-port stop contract.
+                        try:
+                            native = _native_lifecycle_status(args.nora_home, args.hermes_home, args.install_root, args.port)
+                        except (OSError, subprocess.SubprocessError):
+                            native = {}
+                        if isinstance(native, dict) and 'process_running' in native:
+                            command += ['--port', str(args.port)]
+                    run_stream(command,
                                env=env_for(args.nora_home, args.hermes_home, args.install_root), native_cli=True)
                 stop_liveware(args.hermes_home)
         except SystemExit as error:
@@ -835,10 +921,16 @@ def command_stop(args) -> None:
         failure._bridge_diagnostic_message = '停止服务失败。'
         failure.secondary_errors = errors[1:3]
         raise failure from errors[0]
-    status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
-    if (service != "nora" and status["running"]) or (service != "tavern" and status["gatewayRunning"]):
-        fail("服务尚未完全停止，请重试。")
-    emit("result", **status)
+    facts = {}
+    if service != 'nora':
+        facts['tavern'] = _tavern_service_status(args.nora_home, args.hermes_home, args.install_root, args.port, prove_absence=True)
+        if facts['tavern']['tavernProcessRunning'] is not False:
+            fail('尚未确认酒馆进程已停止，请重试。')
+    if service != 'tavern':
+        facts['nora'] = _gateway_service_status(args.nora_home, args.hermes_home, prove_absence=True)
+        if facts['nora'].get('gatewayRunning') is not False:
+            fail('尚未确认诺拉进程已停止，请重试。')
+    emit('result', **_action_status(args, facts))
 
 
 def require_bundled_clawchat(home: Path) -> None:
@@ -964,8 +1056,11 @@ def _recovery_require_native_offline(args):
         raise RuntimeError('无法核验酒馆进程状态，未恢复文件。') from error
     with socket.socket() as probe:
         probe.settimeout(0.3)
-        if probe.connect_ex(('127.0.0.1', args.port)) == 0:
-            raise RuntimeError('酒馆端口仍被占用，未恢复文件。请先正常退出占用该端口的程序。')
+        result = probe.connect_ex(('127.0.0.1', args.port))
+    if result == 0:
+        raise RuntimeError('酒馆端口仍被占用，未恢复文件。请先正常退出占用该端口的程序。')
+    if result not in (errno.ECONNREFUSED, 10061):  # Winsock WSAECONNREFUSED
+        raise OSError(result, '无法核验酒馆端口状态。')
 
 
 def recovery_stop(args):

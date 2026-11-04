@@ -358,7 +358,8 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
       if(route.kind==='install'&&require('./operation-policy').hasManagedRecords({hermesHome:receipt.hermesHome,installRoot:receipt.installRoot}))throw fail('MANAGED_INSTALLATION_EXISTS','此目录已有受管安装，请使用修复；现有数据已保留，未下载或覆盖程序。');
       const partialRepair=['update','repair'].includes(route.kind)&&(managed?.needsRepair||original?.mode==='install');
       if(partialRepair&&original&&original.mode!=='install')throw fail('RELEASE_COMPATIBILITY','原固定更新计划缺少完整修复资源，未改变已封存目标。');
-      const before=managed?.needsRepair?{installed:false,managedInstallation:true,systemReady:false,version:managed.version,
+      const serviceAction=['start','stop','restart'].includes(route.kind);
+      const before=serviceAction?null:managed?.needsRepair?{installed:false,managedInstallation:true,systemReady:false,version:managed.version,
         commit:managed.commit,running:null,gatewayRunning:null,clawchatConnected:null}:await bridge(
           client==='updater'&&!receipt.managedInstallation?'repair-preflight':'status');
       let args=route.argv.slice(),fixedTarget=original;
@@ -473,7 +474,13 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
           noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,installRoot:receipt.installRoot,port:receipt.port,before,
           ...(before.partialRepair?{partialRepair:before.partialRepair}:{})}}:{})});
       await context.stage('verifying');
-      const status=await bridge('status');
+      let status;
+      try {status=await bridge('status');}
+      catch(error){
+        if(!serviceAction||!workflowVerified(route,result,result,before,fixedTarget,receipt))throw error;
+        status=result;
+      }
+      if(serviceAction&&status.statusUnavailable===true&&workflowVerified(route,result,result,before,fixedTarget,receipt))status=result;
       if(!workflowVerified(route,result,status,before,fixedTarget,receipt))throw fail('VERIFICATION_FAILED','未取得明确的安装、版本或服务验收结果。请检查状态，保留安装和日志。');
       if(['update','repair'].includes(route.kind)){
         const completed=await sharedPolicy.observe(context.snapshot);

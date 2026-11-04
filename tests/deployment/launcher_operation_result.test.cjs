@@ -96,3 +96,12 @@ test('reviewed native missing markers share the sixteen-reason bound and reject 
   assert.deepEqual(privateMarker.missingReasons,['unknown_evidence_gap']);
   assert.doesNotMatch(JSON.stringify(privateMarker),/PRIVATE_NATIVE_/);
 });
+
+
+test('stop proves physical offline state for only the requested service', () => {
+  assert.equal(verifyWorkflowResult({action:'stop',result:{running:false,gatewayRunning:false}}),false);
+  assert.equal(verifyWorkflowResult({action:'shutdown',result:{running:false,tavernProcessRunning:true,gatewayRunning:false}}),false);
+  assert.equal(verifyWorkflowResult({action:'stop',service:'tavern',result:{tavernProcessRunning:false,gatewayRunning:null}}),true);
+  assert.equal(verifyWorkflowResult({action:'stop',service:'nora',result:{tavernProcessRunning:null,gatewayRunning:false}}),true);
+  assert.equal(verifyWorkflowResult({action:'stop',service:'foreign',result:{tavernProcessRunning:false,gatewayRunning:false}}),false);
+});

@@ -94,7 +94,7 @@ test('the recovery log button displays returned failure and rejection without le
 
 test('failed daily polling marks service status unknown and restores it after the next successful query', async () => {
   const ready={installed:true,hermesInstalled:true,setupCompleted:true,systemReady:true,
-    running:true,gatewayRunning:true,clawchatConnected:true,clawchatPaired:false};
+    running:true,tavernProcessRunning:true,gatewayRunning:true,clawchatConnected:true,clawchatPaired:false};
   for(const mode of ['rejection','fallback']) {
     let failed=true;
     const {context,$}=fixture({snapshot:{...ready},api:{status:async()=>{
@@ -121,6 +121,24 @@ test('failed daily polling marks service status unknown and restores it after th
       if(child.className==='icon-action')assert.equal(child.disabled,false);
     }));
   }
+});
+
+test('Tavern service controls follow process evidence when the readiness result stays false',async()=>{
+  let processRunning=true;
+  const status=()=>({installed:true,hermesInstalled:true,setupCompleted:true,systemReady:true,
+    running:false,tavernProcessRunning:processRunning,gatewayRunning:false,clawchatConnected:false});
+  const {context,$}=fixture({snapshot:status(),api:{status:async()=>status()}});
+  vm.runInContext('dailyHome()',context);
+  const row=$('inline').children.find(n=>n.className==='services').children.find(n=>n.dataset.service==='tavern');
+  const toggle=row.children.filter(n=>n.className==='icon-action')[1];
+  assert.equal(row.dataset.state,'running');assert.equal(toggle.disabled,false);
+  assert.equal(toggle.dataset.tip,'停止酒馆');
+  assert.equal($('stopAll').disabled,false);
+  processRunning=null;await vm.runInContext('poll()',context);
+  assert.equal(row.dataset.state,'unknown');assert.equal(toggle.disabled,true);
+  processRunning=false;await vm.runInContext('poll()',context);
+  assert.equal(row.dataset.state,'stopped');assert.equal(toggle.disabled,false);
+  assert.equal(toggle.dataset.tip,'启动酒馆');
 });
 
 test('polling failure and recovery do not clear a model form or issue service operations', async () => {
@@ -181,11 +199,11 @@ test('main status failures return unavailable instead of invented stopped or bro
     t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
     const failures=[], original=new Error('raw status fixture');
     const status=mainHandler('nora:status',{
-      quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,activeRun:false,statusRequest:null,readLauncherRecovery:async()=>null,
+      quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,activeRun:false,statusRequest:null,readLauncherRecovery:async()=>null,
       lastStatusError:'',activeOperationContext:null,systemUpdate:{pending:()=>false,inspect:()=>null},operations:()=>({snapshot:async()=>null}),noraHome:()=>home,
       readInstallerState:()=>({phase:'ready'}),findPython:()=>!['missing-python','empty-install'].includes(mode),
-      nodeStatus:()=>({installed:mode!=='empty-install',running:false,systemReady:false}),
-      runBridge:async()=>{if(mode==='bridge-failed')throw original;return {installed:true,running:true,systemReady:true};},
+      nodeStatus:()=>({installed:mode!=='empty-install',running:false,tavernProcessRunning:null,systemReady:false}),
+      runBridge:async()=>{if(mode==='bridge-failed')throw original;return {installed:true,running:true,tavernProcessRunning:true,systemReady:true};},
       statusErrorMessage:error=>{failures.push(error);return '状态查询未完成。';},
       LOCAL_TEST:true,telemetry:null,locationStatus:()=>({}),
     });
@@ -193,11 +211,13 @@ test('main status failures return unavailable instead of invented stopped or bro
     if(['bridge-failed','missing-python'].includes(mode)) {
       assert.equal(result.statusUnavailable,true);
       assert.equal(result.running,undefined);assert.equal(result.systemReady,undefined);
+      assert.notEqual(result.tavernProcessRunning,false);
       assert.equal(failures.length,1);
       if(mode==='bridge-failed')assert.equal(failures[0],original);
     } else {
       assert.equal(result.statusUnavailable,undefined);
       assert.equal(result.installed,mode==='healthy');
+      assert.equal(result.tavernProcessRunning,mode==='healthy'?true:null);
       assert.equal(failures.length,0);
     }
   }

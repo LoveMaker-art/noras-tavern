@@ -615,6 +615,10 @@ class NativeModelIntegrationTests(unittest.TestCase):
              patch.object(launcher_bridge, "python_command", return_value=sys.executable), \
              patch.object(launcher_bridge, "start_gateway") as start, \
              patch.object(launcher_bridge, "stop_gateway") as stop, \
+             patch.object(launcher_bridge, "gateway_status", side_effect=[
+                 {"gatewayRunning": True, "clawchatConnected": True},
+                 {"gatewayRunning": False, "clawchatConnected": False},
+                 {"gatewayRunning": False, "clawchatConnected": False}]), \
              patch.object(launcher_bridge, "status_payload", return_value={
                  "running": False, "gatewayRunning": True, "clawchatConnected": True}) as status, \
              contextlib.redirect_stdout(io.StringIO()):
