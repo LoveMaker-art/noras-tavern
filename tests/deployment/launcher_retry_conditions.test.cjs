@@ -94,7 +94,13 @@ test('native writer records the baseline before two real permission failures; re
   const record=JSON.parse(fs.readFileSync(path.join(f.home,'installer/operations',first.operationId,'operation.json'),'utf8'));
   assert.equal(record.conditionBaseline.schema,'nora-operation-conditions/1');
   assert.equal(record.conditionBaseline.facts.directories.find(item=>item.name==='hermesHome').writable,false);
-  assert.deepEqual(record.currentFailure.conditionTarget,{kind:'directory-write',directory:'hermesHome'});
+  // The fixture marks the apply intent as changed before the real write.
+  // Verified untouched recovery clears the active failure, retaining its cause.
+  assert.equal(record.effectState,'untouched');
+  assert.equal(record.recoveryOutcome,'not-required');
+  assert.equal(record.currentFailure,null);
+  assert.ok(['EACCES','EPERM'].includes(record.primaryFailure.technical.system_code));
+  assert.deepEqual(record.primaryFailure.conditionTarget,{kind:'directory-write',directory:'hermesHome'});
   const second=await f.controller().start('install',{target:f.target},'second');
   assert.equal(f.runs,2);assert.equal(second.attempt,2);
   for(let index=0;index<3;index++){

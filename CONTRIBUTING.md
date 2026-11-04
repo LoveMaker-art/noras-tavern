@@ -42,6 +42,12 @@ node "$PWD/tooling/checks/launcher-test-environment.mjs" source
 node "$PWD/tooling/checks/verify-launcher-stability.mjs"
 ```
 
+For local diagnosis, pass `--group setup`, `--group app-update`, `--group lifecycle`,
+or `--group core-maintenance`. The same command also accepts `--group javascript`
+or `--group python`. Use the locked Tavern engine dependencies for core recovery
+fixtures and run native process fixtures serially on the same host. The default
+command remains the full source gate. See the [launcher test navigation](tests/deployment/README-nora-acceptance.md#source-test-groups).
+
 For a release, select regression against the accepted baseline and the exact clean,
 committed checkout before executing tests:
 

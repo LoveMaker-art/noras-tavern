@@ -2,11 +2,23 @@
 
 唯一执行范围、验收和阶段状态见 [可靠性交付方案](../../docs/launcher-reliability-plan.md)。本文件只索引既有测试入口，不另维护“已通过”清单。只有确认调用已迁移、没有剩余用途的过期说明和脚本才删除；必要技术报告保留其原候选和场景身份，不能代替当前候选证据。
 
+<a id="source-test-groups"></a>
 ## 选择测试
 
 修改哪个职责，先运行对应现有合同测试；出现通过范围外的问题，再扩展关联检查。不要因为整理文档就运行所有平台完整流程，也不要以测试数证明完成。
 
 产品发布的自动选择入口是源码侧`tooling/checks/launcher-test-impact.mjs`；选择器与工作流合同直接运行`node --test tests/launcher-test-impact.test.mjs tests/release-workflow.test.mjs`。按固定基线决定局部／完整回归、成品验收和证据复用的边界见[发布流程](../../docs/release-process.md#test-impact-selection)，不把未选用例计为本次通过。
+
+源码门禁按用户流程分组。每个源码用例归入一个组。默认执行全部组，每种语言串行运行一遍。使用 `--group` 单独排查时，结果只覆盖所选组。
+
+| 组名 | 源码检查范围 |
+| --- | --- |
+| `setup` | 首装、设置、配对重试、受管部分修复及模型候选保存和清理 |
+| `app-update` | 启动器独立版本计划、下载、助手交接、同任务重试和恢复路由 |
+| `lifecycle` | 任务状态、诊断、启停退出、保留数据重装和卸载 |
+| `core-maintenance` | 独立核心更新、依赖准备、历史恢复、云端实例及数据保留 |
+
+同一台机器按顺序运行含原生进程检查的组。多个投影并发会让离线核验看到其它夹具的进程。涉及真实 Windows 锁、最终 APP、历史发行版升级或实际 ClawChat 连接的验收，按下表对应入口另外取得证据。
 
 | 主题 | 入口示例 |
 | --- | --- |
@@ -40,17 +52,19 @@
 
 清理结果按文件记录保留、修复、移除及验证证据。单组通过不代表整个清单清理完成；旧候选的通过报告不能直接转为当前安装包的验收结论。
 
+<a id="run-from-source"></a>
 ## 从源码运行
 
 交付相对导入通过唯一映射生成，统一从仓库根运行：
 
 ```sh
 node "$PWD/tooling/checks/launcher-test-environment.mjs" source
+node "$PWD/tooling/checks/verify-launcher-stability.mjs" --group lifecycle
 node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_guidance_flow.test.cjs
 node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety
 ```
 
-依赖和隔离 native 输入见 [开发说明](../../CONTRIBUTING.md)。完整源码门禁的 TLS fixture 需要 PATH 中的实际 OpenSSL／Mac LibreSSL，缺少工具应先由前置检查返回 exit 2。不要直接运行不存在的源码 `ops/tests/`，不要在用户安装目录修补代码。
+依赖和隔离 native 输入见[开发说明](../../CONTRIBUTING.md)。使用与 Node 对应的 npm 安装，核心恢复夹具使用锁定的 Tavern 引擎依赖。完整源码门禁的 TLS 夹具需要 PATH 中的实际 OpenSSL／Mac LibreSSL。门禁在缺少引擎备份写入依赖时返回 exit 2。支持 `--group javascript` 或 `--group python` 单独运行某种语言的完整源码组。
 
 发布工具用例 `launcher_publish.test.cjs`、`launcher_jihulab_publication.test.cjs` 从手写源码直接运行：`node --test tests/deployment/launcher_publish.test.cjs tests/deployment/launcher_jihulab_publication.test.cjs`。其余部署合同使用上面的投影入口；不能把整个目录通配交给同一种执行方式。Python 使用上例的 `tests.deployment.<模块名>`，保留包身份和相对导入；不要将目录当作独立脚本目录发现，也不要把源码仓库根目录作为投影文件参数。仍需先满足相应 native 前提，平台／制品缺输入不能记作通过。
 

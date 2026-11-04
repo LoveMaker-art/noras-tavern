@@ -427,6 +427,7 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
         def start_gateway(*_args, **_kwargs): state['gatewayRunning'] = True
         def runtime_status(*_args, **_kwargs):
             return {'health': {'ok': state['running']}, 'port': 18899,
+                    'process_running': state['running'],
                     'native_pid': 111 if state['running'] else None}
         def gateway_status(*_args, **_kwargs):
             return {'gatewayRunning': state['gatewayRunning'], 'clawchatConnected': state['gatewayRunning']}
@@ -452,6 +453,7 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
             self.assertIs(before['setupCompleted'], setup)
             self.assertIs(before['gatewayRunning'], gateway)
             self.assertIs(before['running'], running)
+            self.assertIs(before['tavernProcessRunning'], running)
             self.assertTrue(before['systemReady'])
             plan = {'noraHome': str(base), 'hermesHome': str(home), 'installRoot': str(root),
                     'port': 18899, 'before': before, 'bridge': str(Path(bridge.__file__))}

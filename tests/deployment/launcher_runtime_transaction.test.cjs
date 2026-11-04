@@ -374,16 +374,18 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
     let statusCallback;function findStatus(node){if(!node||typeof node!=='object')return;
       if(node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.value==='nora:status')statusCallback=node.arguments[1];
       for(const value of Object.values(node))if(Array.isArray(value))value.forEach(findStatus);else if(value&&typeof value==='object')findStatus(value);
-    }findStatus(ast);const cancellation=ast.body.find(node=>node.id?.name==='taskCancellation');
-    const projectOperation=ast.body.find(node=>node.id?.name==='projectDesktopOperation');
+    }findStatus(ast);assert.ok(statusCallback,'the production status handler must exist');
     let writes=0,reads=0;const readonly=vm.createContext({require:require('node:module').createRequire(path.join(desktop,'main.js')),
-      quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,activeOperationContext:null,desktopUpdateNotice:null,
+      quitting:false,shutdownPending:null,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,activeOperationContext:null,desktopUpdateNotice:null,
       activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,noraHome:()=>f.home,
       operations:()=>({snapshot:async()=>({...result,kind:'stop'})}),readLauncherRecovery:async()=>null,systemUpdate:{inspect:()=>null},findPython:()=>true,
       runBridge:async()=>{reads++;return {...result.result,running:true,gatewayRunning:true};},readInstallerState:()=>({phase:'ready'}),writeInstallerState:()=>{writes++;},
       releases:{bundledUpgradeTarget:()=>null},payloadDirectory:()=>f.payload,app:{getVersion:()=> '2.1.3'},CHANNEL:'stable',LOCAL_TEST:null,
       telemetry:null,locationStatus:()=>roots,lastStatusError:'',statusErrorMessage:error=>error.message});
-    vm.runInContext(main.slice(cancellation.start,cancellation.end)+'\n'+main.slice(projectOperation.start,projectOperation.end),readonly);
+    for(const name of ['taskCancellation','ownsDesktopOperation','projectDesktopOperation']){
+      const definition=ast.body.find(node=>node.id?.name===name);assert.ok(definition,name);
+      vm.runInContext(main.slice(definition.start,definition.end),readonly);
+    }
     const query=vm.runInContext('('+main.slice(statusCallback.start,statusCallback.end)+')',readonly);
     const status=await query();assert.equal(status.systemReady,true);assert.equal(status.installed,true);assert.equal(status.running,true);assert.equal(status.retainedCompletionPending,true);
     assert.equal(status.statusUnavailable,undefined);assert.equal(writes,0);assert.equal(reads,1);assert.deepEqual(fs.readFileSync(path.join(f.home,'nora-retained.json')),receipt);

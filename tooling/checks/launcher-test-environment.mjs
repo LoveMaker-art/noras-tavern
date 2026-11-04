@@ -76,8 +76,24 @@ function links() {
     } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }
 
+function engineFixture(root) {
+    const directory = path.join(root, 'app/engine/sillytavern');
+    const dependency = 'node_modules/write-file-atomic';
+    try {
+        const lock = JSON.parse(fs.readFileSync(path.join(directory, 'package-lock.json'), 'utf8'));
+        const installed = JSON.parse(fs.readFileSync(path.join(directory, dependency, 'package.json'), 'utf8'));
+        const require = createRequire(path.join(directory, 'package.json'));
+        if (typeof installed.version !== 'string' || installed.version !== lock.packages?.[dependency]?.version
+            || typeof require('write-file-atomic') !== 'function')
+            throw new Error('write-file-atomic does not match the locked engine fixture');
+        return { writeFileAtomic: installed.version };
+    } catch (error) {
+        throw invalid('engine_dependencies', 'install the locked Tavern engine dependencies before recovery fixtures', error);
+    }
+}
+
 function checkEnvironment({ root = rootDirectory, profile = 'source', environment = process.env,
-    run = spawnSync, loadDependencies = dependencies, checkLinks = links } = {}) {
+    run = spawnSync, loadDependencies = dependencies, checkLinks = links, requireEngineFixture = false } = {}) {
     if (!['source', 'native', 'chromium', 'receiver'].includes(profile)) throw invalid('profile', 'unknown test profile');
     let clean = { ...environment, PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
     delete clean.PYTHONPATH; delete clean.PYTHONHOME; delete clean.__PYVENV_LAUNCHER__;
@@ -109,6 +125,7 @@ function checkEnvironment({ root = rootDirectory, profile = 'source', environmen
             throw invalid('npm', 'npm is required on the test PATH before source dependency fixtures start', npm.error);
         facts.npm = { version: npm.stdout.trim() };
     }
+    if (requireEngineFixture) facts.engine = engineFixture(root);
     if(['source','chromium'].includes(profile)){
         const openssl=run('openssl',['version'],{env:clean,encoding:'utf8',timeout:10000});
         if(openssl.error||openssl.signal||openssl.status!==0||!/^(?:OpenSSL|LibreSSL)\s+\S+/.test(openssl.stdout||''))

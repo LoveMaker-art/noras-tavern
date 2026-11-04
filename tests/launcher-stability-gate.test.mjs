@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
 const fixtureGate = options => verifyLauncherStability({ checkEnvironment: () => ({ environment: process.env }), ...options });
@@ -62,6 +63,44 @@ test('invalid test prerequisites stop the stability gate before any test process
     const cause = Object.assign(new Error('fixture Python path is gone'), { category: 'test_environment' });
     assert.throws(() => verifyLauncherStability({ checkEnvironment: () => { throw cause; }, run: () => { calls++; } }), error => error === cause);
     assert.equal(calls, 0);
+});
+
+test('each named launcher journey runs its regressions and the full gate runs their union once', () => {
+    const references = group => {
+        const files = [];
+        fixtureGate({ group, run: (_command, args) => {
+            files.push(...args.filter(arg => arg.endsWith('.test.cjs') || arg.startsWith('tests.deployment.')));
+            return { status: 0 };
+        } });
+        return files;
+    };
+    const expected = {
+        setup: [deploymentTest('launcher_install_source'), deploymentTest('launcher_pair_retry'), 'tests.deployment.test_model_candidate_commit'],
+        'app-update': [deploymentTest('launcher_app_only_update'), deploymentTest('launcher_app_helper_guard')],
+        lifecycle: [deploymentTest('launcher_shutdown'), deploymentTest('launcher_uninstall')],
+        'core-maintenance': [deploymentTest('updater_task_capability'), 'tests.deployment.test_update_recovery'],
+    };
+    const selected = Object.entries(expected).flatMap(([group, required]) => {
+        const files = references(group);
+        for (const name of required) assert.ok(files.includes(name), `${group} must exercise ${name}`);
+        return files;
+    });
+    assert.equal(new Set(selected).size, selected.length, 'A source test has one primary journey');
+    assert.deepEqual(selected.sort(), references(undefined).sort());
+    assert.deepEqual(references('javascript').sort(), selected.filter(file => file.endsWith('.test.cjs')));
+    assert.deepEqual(references('python').sort(), selected.filter(file => file.startsWith('tests.deployment.')));
+});
+
+test('the command rejects an unknown or incomplete group before starting any checks', () => {
+    const entry = path.join(repositoryRoot, 'tooling/checks/verify-launcher-stability.mjs');
+    for (const args of [['--group', 'typo'], ['--group'], ['--typo']]) {
+        const result = spawnSync(process.execPath, [entry, ...args], {
+            env: { ...process.env, NORA_TEST_NODE: path.join(repositoryRoot, 'missing-test-node') },
+            encoding: 'utf8', timeout: 10000,
+        });
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /Unknown launcher source test group|Usage:/);
+    }
 });
 
 test('native platforms give complete serial source groups separate bounded budgets', () => {

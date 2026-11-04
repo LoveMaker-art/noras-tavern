@@ -70,6 +70,24 @@ test('missing or invalid npm fails before source fixtures and Python start',()=>
         assert.equal(pythonCalls,0);
     }
 });
+test('core recovery requires the locked backup writer before starting its Python fixtures', t => {
+    const f = fixture(), root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-engine-fixture-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const engine = path.join(root, 'app/engine/sillytavern');
+    const dependency = path.join(engine, 'node_modules/write-file-atomic');
+    fs.mkdirSync(dependency, { recursive: true });
+    fs.writeFileSync(path.join(engine, 'package-lock.json'),
+        JSON.stringify({ packages: { 'node_modules/write-file-atomic': { version: '5.0.1' } } }));
+    const options = { ...f.options, root, requireEngineFixture: true };
+    const missing = error => error.category === 'test_environment' && error.check === 'engine_dependencies';
+    assert.throws(() => checkLauncherTestEnvironment(options), missing);
+    fs.writeFileSync(path.join(dependency, 'package.json'), JSON.stringify({ version: '4.0.0', main: 'index.cjs' }));
+    assert.throws(() => checkLauncherTestEnvironment(options), missing);
+    fs.writeFileSync(path.join(dependency, 'package.json'), JSON.stringify({ version: '5.0.1', main: 'index.cjs' }));
+    assert.throws(() => checkLauncherTestEnvironment(options), missing);
+    fs.writeFileSync(path.join(dependency, 'index.cjs'), 'module.exports = function write() {};');
+    assert.equal(checkLauncherTestEnvironment(options).facts.engine.writeFileAtomic, '5.0.1');
+});
 test('source TLS prerequisites accept the actual OpenSSL and macOS LibreSSL command families',()=>{
     for(const version of ['OpenSSL 3.5.7','LibreSSL 3.3.6']){
         const f=fixture(),run=f.options.run;
