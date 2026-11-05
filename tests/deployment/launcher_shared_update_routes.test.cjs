@@ -132,8 +132,10 @@ test('first-install retry rebuilds missing Python only for a verified rollback w
   const operationDirectory=path.dirname(location.directory),firstDirectory=path.join(operationDirectory,'first-install');
   fs.mkdirSync(firstDirectory);
   const file=path.join(firstDirectory,'transaction.json'),journal={schema:1,owner:'nora-first-install',operationId,
-    status:'restored',checkpoints:{restore:{state:'result'}},unrestored:[]};
-  fs.writeFileSync(file,JSON.stringify(journal));
+    status:'restored',checkpoints:{restore:{state:'result'}},unrestored:[],
+    rootIdentities:{hermes:[String(identity.dev),String(identity.ino)]}};
+  const writeJournal=value=>fs.writeFileSync(file,JSON.stringify(value).replace(`"${identity.ino}"`,String(identity.ino)));
+  writeJournal(journal);
   const snapshot={attempt:2,effectState:'restored',recoveryOutcome:'restored-and-verified',verification:'confirmed',result:{
     installed:false,hermesInstalled:false,systemReady:false,running:false,gatewayRunning:false,clawchatConnected:false}};
   let python=null;
@@ -142,9 +144,11 @@ test('first-install retry rebuilds missing Python only for a verified rollback w
   const needsProbe=vm.runInContext('hasFirstInstallToResume',context);
   assert.equal(needsProbe({operationId,snapshot},operationDirectory),false);
   assert.equal(needsProbe({operationId,snapshot:{...snapshot,verification:'unconfirmed'}},operationDirectory),true);
-  fs.writeFileSync(file,JSON.stringify({...journal,status:'installed'}));
+  writeJournal({...journal,status:'installed'});
   assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
-  fs.writeFileSync(file,JSON.stringify(journal));
+  writeJournal({...journal,rootIdentities:{hermes:[String(identity.dev),String(identity.ino+1n)]}});
+  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  writeJournal(journal);
   python={command:'python'};
   assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
   python=null;
