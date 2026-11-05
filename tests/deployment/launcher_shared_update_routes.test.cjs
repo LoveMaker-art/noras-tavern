@@ -201,6 +201,18 @@ for(const broken of ['core','app'])test(`a failed ${broken} reader does not eras
   vm.runInContext(definition('checkRelease'),context);const result=await vm.runInContext('checkRelease()',context);
   assert.equal(result.coreState,broken==='core'?'unavailable':'current');assert.equal(result.launcherState,broken==='app'?'unavailable':'available');assert.equal(result.releasePlan?.client,broken==='app'?undefined:'app');
 });
+test('a Beta desktop keeps its channel when both version checks are unavailable',async()=>{
+  const context=vm.createContext({Promise,releaseCheckRequest:null,CHANNEL:'beta',localReleaseDirectory:null,
+    trackLauncher:(_action,_stage,run)=>run(),releaseMetadataCache:()=>({}),updateFetch:()=>{},
+    app:{getVersion:()=> '2.2.8'},installRoot:()=>'/core',diagnostics:{clean:value=>value},
+    releases:{UPDATER_CAPABILITIES:{},check:async()=>({state:'unavailable',error:'offline'}),
+      checkApp:async()=>{throw Error('offline');}}});
+  vm.runInContext(definition('checkRelease'),context);
+  const result=await vm.runInContext('checkRelease()',context);
+  assert.equal(result.coreState,'unavailable');
+  assert.equal(result.launcherState,'unavailable');
+  assert.equal(result.channel,'beta');
+});
 for(const broken of ['core-location','core-reader','app-reader'])test(`synchronous ${broken} failure stays inside its own version result`,async()=>{
   const calls=[];
   const context=vm.createContext({Promise,releaseCheckRequest:null,CHANNEL:'stable',localReleaseDirectory:null,trackLauncher:(_a,_s,run)=>run(),

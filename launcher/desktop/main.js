@@ -86,7 +86,7 @@ function checkRelease(){
     ]);
     const result=core.status==='fulfilled'?core.value:{state:'unavailable',current:null,latest:null,
       releaseAvailable:false,available:false,error:diagnostics.clean(core.reason?.message||'核心版本检查未完成。')};
-    const state={...result,coreState:result.state,launcherVersion:app.getVersion(),launcherInstallable:false,
+    const state={...result,channel:CHANNEL,coreState:result.state,launcherVersion:app.getVersion(),launcherInstallable:false,
       launcherUpdateAvailable:false,releasePlan:undefined};
     if(desktop.status==='fulfilled'){
       Object.assign(state,desktop.value);
