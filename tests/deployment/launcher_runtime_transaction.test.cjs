@@ -195,8 +195,8 @@ async function keepCommittedFixture(f,port){
   context.cleanup(plan);
 }
 
-test('a verified KEEP reinstall survives receipt archive I/O failure, reopens readonly and retries only under a writer',{timeout:40000},async t=>{
-  for(const mode of ['EACCES','ENOSPC','resume EACCES','resume unknown EACCES','core reference EACCES'])await t.test(mode,async t=>{
+test('a verified KEEP reinstall survives receipt archive I/O failure, reopens readonly and retries only under a writer',async t=>{
+  for(const mode of ['EACCES','ENOSPC','resume EACCES','resume unknown EACCES','core reference EACCES'])await t.test(mode,{timeout:40000},async t=>{
     const resumed=mode.startsWith('resume'),unknown=mode==='resume unknown EACCES',referenced=mode.startsWith('core reference');
     const code=resumed||referenced?'EACCES':mode;
     const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));f.home=fs.realpathSync(f.home);f.hermes=path.join(f.home,'hermes');
