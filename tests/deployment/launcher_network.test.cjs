@@ -164,14 +164,30 @@ test('comparison fails when Chromium fails even if Node succeeds', async () => {
     /ERR_CERT_AUTHORITY_INVALID/);
 });
 
-test('online updates and version checks explicitly inject the desktop network transport', () => {
+test('desktop version checks, APP updates and first install explicitly inject the Chromium transport', () => {
   const source = fs.readFileSync(path.join(desktop, 'main.js'), 'utf8');
-  assert.match(source, /releases\.prepareUpdate\(\{\s*fetcher: updateFetch/);
-  assert.match(source, /releases\.check\(\{\s*fetcher: updateFetch/);
+  const check = source.slice(source.indexOf('function checkRelease('), source.indexOf('const systemUpdate ='));
+  assert.match(check, /const options\s*=\s*\{\s*fetcher:\s*updateFetch\b/);
+  assert.match(check, /releases\.check\(\{\s*\.\.\.options\s*,\s*client:\s*'updater'/);
+  assert.match(check, /releases\.checkApp\(options\)/);
+  assert.match(source, /launcherUpdate\.start\(\{[^}]*fetcher:\s*updateFetch\b/);
+  assert.match(source, /releases\.prepareInstall\(\{[\s\S]*?onPlan:\s*fixedTarget,\s*fetcher:\s*updateFetch\b/);
+  assert.doesNotMatch(source, /releases\.prepareUpdate\(/);
   assert.match(source, /createLocalRelease\(localReleaseDirectory\) : releaseNetwork\.fetch/);
   assert.doesNotMatch(source, /await releaseNetwork\.compare/);
+  const appUpdater = fs.readFileSync(path.join(desktop, 'launcher-update.js'), 'utf8');
+  assert.match(appUpdater, /downloadAsset\(\{[\s\S]*?fetcher:\s*options\.fetcher\b/);
   const metadata = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
   assert.ok(metadata.build.files.includes('release-network.js'));
+});
+
+test('standalone core update uses its own transport for the release plan and download', () => {
+  const source = fs.readFileSync(path.join(desktop, 'operation-cli.js'), 'utf8');
+  assert.match(source, /async function execute\([^\n]*\bfetcher\s*=\s*globalThis\.fetch\b/);
+  assert.match(source, /const transport\s*=\s*local\s*\?\s*require\('\.\/local-release'\)\.createLocalRelease\(path\.resolve\(local\)\)\s*:\s*fetcher\b/);
+  assert.match(source, /const options\s*=\s*\{[^}]*fetcher:\s*transport\b/);
+  assert.match(source, /releases\.selectPlan\(\{\s*\.\.\.options\b/);
+  assert.match(source, /releases\.prepareUpdate\(\{\s*\.\.\.options\b/);
 });
 
 test('Chromium abort caused by a deadline is a timeout and HTTP responses retain the final attempt',async()=>{

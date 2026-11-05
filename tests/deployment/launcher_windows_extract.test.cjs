@@ -8,7 +8,7 @@ const filename = path.join(__dirname,'../installer/desktop/runtime.js');
 const realRequire = createRequire(filename);
 function extractor(run) {
   const module = {exports:{}};
-  const context = vm.createContext({module,exports:module.exports,
+  const context = vm.createContext({module,exports:module.exports,Buffer,
     process:{...process,platform:'win32',env:{...process.env,SystemRoot:'D:\\Windows'}},
     require:realRequire});
   vm.runInContext(fs.readFileSync(filename,'utf8'),context);
