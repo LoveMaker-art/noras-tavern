@@ -1278,10 +1278,10 @@ test('Windows retained reinstall distinguishes its Electron profile children fro
   const worker={...controller,pid:42,parentPid:40,commandLine:`"${executable}" runtime-worker.js "${root}"`};
   const child=(pid,args)=>({...controller,pid,parentPid:41,commandLine:`"${executable}" ${args}`});
   const profileArg=`"--user-data-dir=${profile}"`;
-  const renderer=child(43,`--type=renderer ${profileArg} --app-path="C:\\Program Files\\Nora\\resources\\app.asar" --no-sandbox --renderer-client-id=4`);
-  const utility=child(44,`--type=utility --utility-sub-type=network.mojom.NetworkService --user-data-dir="${profile}"`);
-  const gpu=child(45,`--type=gpu-process ${profileArg} --gpu-preferences=UAAAAAAAAAA=`);
-  const crashpad=child(46,`--type=crashpad-handler ${profileArg} "--database=${profile}\\diagnostics\\native-crashes" --initial-client-data=0x100,0x101`);
+  const renderer=child(43,`--type=renderer ${profileArg} --app-path="C:\\Program Files\\Nora\\resources\\app.asar" --no-sandbox --renderer-client-id=4 /prefetch:1`);
+  const utility=child(44,`--type=utility --utility-sub-type=network.mojom.NetworkService --user-data-dir="${profile}" /prefetch:11`);
+  const gpu=child(45,`--type=gpu-process ${profileArg} --gpu-preferences=UAAAAAAAAAA= /prefetch:2`);
+  const crashpad=child(46,`--type=crashpad-handler ${profileArg} /prefetch:4 "--database=${profile}\\diagnostics\\native-crashes" --initial-client-data=0x100,0x101`);
   const check=(children,retainedLauncherExecutable,{legacy=false,guardProcess=guard}={})=>windowsProcesses(JSON.stringify({schema:'nora-uninstall-processes/1',
     processes:[controller,...(legacy?[]:[worker,guardProcess]),...children]}),
     {root,pid:legacy?controller.pid:worker.pid,retainedLauncherExecutable,retainedLauncherViaGuard:!legacy});
@@ -1303,6 +1303,11 @@ test('Windows retained reinstall distinguishes its Electron profile children fro
     child(43,`--type=RENDERER ${profileArg}`),
     child(43,`--type=renderer ${profileArg} --type=utility`),
     child(43,`--type=renderer ${profileArg} ${profileArg}`),
+    child(43,`--type=renderer ${profileArg} /prefetch:1 /prefetch:1`),
+    child(43,`--type=renderer ${profileArg} /prefetch:0`),
+    child(43,`--type=renderer ${profileArg} /prefetch:111`),
+    child(43,`--type=renderer ${profileArg} "/prefetch:${root}\\tavern"`),
+    child(43,`--type=renderer ${profileArg} /prefetch:1 /script`),
     child(43,`--type=renderer "--user-data-dir=${profile}\\other"`),
     child(43,`--type=renderer ${profileArg} "--operation=${root}\\installer\\operations"`),
     child(43,`--type=renderer ${profileArg} "--operation=${root}"`),

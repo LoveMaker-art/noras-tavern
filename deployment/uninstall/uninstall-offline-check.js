@@ -125,8 +125,13 @@ function retainedLauncherChild(item,root,executable){
   if(!args?.length||windowsSpelling(args.shift())!==windowsSpelling(executable))return false;
 
   const rootSpelling=windowsSpelling(root),profile=windowsSpelling(path.win32.join(root,'launcher'));
-  const bindings=new Map();
+  const bindings=new Map();let prefetch=false;
   for(const arg of args){
+    // Windows Chromium uses a numeric prefetch hint alongside its switches.
+    if(/^\/prefetch:[1-9][0-9]?$/.test(arg)){
+      if(prefetch)return false;
+      prefetch=true;continue;
+    }
     const option=/^--([a-z0-9][a-z0-9-]*)(?:=(.*))?$/.exec(arg);
     if(!option||/^(?:nora|operation)(?:-|$)|^service-root$/.test(option[1]))return false;
     const [,key,value]=option;
