@@ -51,7 +51,8 @@ try {
     if(inspector&&fs.existsSync(inspector.root))return preflight(inspector.root,inspector.manifest,true);
     const saved=require('./retained-installation').inspect(noraHome,{operationId});
     if(saved?.reinstallOperationId===operationId&&(retainedPrograms||require('./retained-installation').absentPrograms(noraHome,saved))){
-      const offline=require('./uninstall-offline-check');await offline.portOffline(saved.port);offline.nativeOffline({root:noraHome});await offline.portOffline(saved.port);
+      const offline=require('./uninstall-offline-check');await offline.portOffline(saved.port);
+      offline.nativeOffline({root:noraHome,retainedLauncherExecutable:process.execPath,retainedLauncherViaGuard:true});await offline.portOffline(saved.port);
       return {offline:true,running:false,gatewayRunning:false,clawchatConnected:false};
     }
     const bundle=runtime.findBundledRuntime(payloadRoot);return preflight(hermesHome,bundle.manifest,true);

@@ -78,23 +78,87 @@ async function portOffline(port){
   });
 }
 const candidate=name=>/^(?:node|python(?:w|\d+(?:\.\d+)*)?|hermes|liveware)(?:\.exe)?$/i.test(name);
+const windowsSpelling=value=>value.replaceAll('/','\\').toLowerCase();
 function referencesRoot(text,root,platform=process.platform){
   if(typeof text!=='string')return false;
-  const normalize=value=>platform==='win32'?value.replaceAll('/','\\').toLowerCase():value;
+  const normalize=value=>platform==='win32'?windowsSpelling(value):value;
   const value=normalize(text),prefix=normalize(root);
   return value===prefix||value.includes(prefix+(platform==='win32'?'\\':'/'));
 }
-function windowsProcesses(text,{root,pid}){
+function windowsCommandArgs(value){
+  // Chromium quotes whole arguments containing spaces. Accept the equivalent
+  // attached-value spelling, but reject ambiguous Windows quote escapes.
+  if(typeof value!=='string'||/\\"|[\x00-\x08\x0a-\x1f]/.test(value))return null;
+  const command=value.replace(/[ \t]+$/,'');
+  const token=/[ \t]*("[^"]*"|--[a-z0-9-]+="[^"]*"|[^ \t"]+)(?=[ \t]|$)/y;
+  const args=[];
+  while(token.lastIndex<command.length){
+    const match=token.exec(command);
+    if(!match)return null;
+    args.push(match[1].replaceAll('"',''));
+  }
+  return args;
+}
+function windowsLauncherImage(item,executable){
+  return typeof item?.executable==='string'&&windowsSpelling(item.executable)===windowsSpelling(executable)
+    &&item.name.toLowerCase()===path.win32.basename(executable).toLowerCase();
+}
+const launcherArchive=executable=>path.win32.join(path.win32.dirname(executable),'resources','app.asar');
+function retainedLauncherPid(processes,pid,root,executable,viaGuard){
+  const self=processes.get(pid);
+  if(!path.win32.isAbsolute(executable||'')||referencesRoot(executable,root,'win32')||candidate(path.win32.basename(executable))
+    ||!windowsLauncherImage(self,executable))return null;
+  if(!viaGuard)return pid;
+  // The desktop starts the guard, which starts this runtime worker. Bind the
+  // UI children to that controller using the same OS snapshot as the census.
+  const guard=processes.get(self.parentPid),launcher=processes.get(guard?.parentPid);
+  if(!windowsLauncherImage(guard,executable)||!windowsLauncherImage(launcher,executable)
+    ||guard.pid===pid||launcher.pid===pid||launcher.pid===guard.pid)return null;
+  const args=windowsCommandArgs(guard.commandLine);
+  if(args?.length!==2||windowsSpelling(args[0])!==windowsSpelling(executable)
+    ||windowsSpelling(args[1])!==windowsSpelling(path.win32.join(launcherArchive(executable),'operation-lock-worker.js')))return null;
+  return launcher.pid;
+}
+function retainedLauncherChild(item,root,executable){
+  if(!windowsLauncherImage(item,executable))return false;
+  const args=windowsCommandArgs(item.commandLine);
+  if(!args?.length||windowsSpelling(args.shift())!==windowsSpelling(executable))return false;
+
+  const rootSpelling=windowsSpelling(root),profile=windowsSpelling(path.win32.join(root,'launcher'));
+  const bindings=new Map();
+  for(const arg of args){
+    const option=/^--([a-z0-9][a-z0-9-]*)(?:=(.*))?$/.exec(arg);
+    if(!option||/^(?:nora|operation)(?:-|$)|^service-root$/.test(option[1]))return false;
+    const [,key,value]=option;
+    if(['type','user-data-dir','database','app-path'].includes(key)){
+      if(!value||bindings.has(key))return false;
+      bindings.set(key,key==='type'?value:windowsSpelling(value));
+    }else if(windowsSpelling(arg).includes(rootSpelling))return false;
+  }
+  if(bindings.get('user-data-dir')!==profile)return false;
+  if(bindings.has('app-path')&&bindings.get('app-path')!==windowsSpelling(launcherArchive(executable)))return false;
+  const type=bindings.get('type');
+  if(type==='crashpad-handler')return bindings.get('database')===profile+'\\diagnostics\\native-crashes';
+  return ['renderer','utility','gpu-process'].includes(type)&&!bindings.has('database');
+}
+function windowsProcesses(text,{root,pid,retainedLauncherExecutable,retainedLauncherViaGuard}){
   let value;try{value=JSON.parse(text);}catch{throw failed('系统进程检查未返回有效记录，未删除文件。');}
   if(value?.schema!=='nora-uninstall-processes/1'||!Array.isArray(value.processes)||value.processes.length>10000)
     throw failed('系统进程检查记录不完整，未删除文件。');
-  const seen=new Set();
+  const processes=new Map();
   for(const item of value.processes){
     if(item.pid===0&&item.name==='System Idle Process'&&!item.executable&&!item.commandLine)continue;
-    if(!Number.isSafeInteger(item.pid)||item.pid<1||seen.has(item.pid)||typeof item.name!=='string'||!item.name)
+    if(!Number.isSafeInteger(item.pid)||item.pid<1||processes.has(item.pid)||typeof item.name!=='string'||!item.name)
       throw failed('系统进程检查记录不完整，未删除文件。');
-    seen.add(item.pid);if(item.pid===pid)continue;
-    if(referencesRoot(item.executable,root,'win32')||referencesRoot(item.commandLine,root,'win32'))throw failed('当前安装仍有进程运行，未删除文件。');
+    processes.set(item.pid,item);
+  }
+  if(!processes.has(pid))throw failed('系统进程快照缺少当前辅助程序，未删除文件。');
+  const launcherPid=retainedLauncherPid(processes,pid,root,retainedLauncherExecutable,retainedLauncherViaGuard);
+  for(const item of processes.values()){
+    if(item.pid===pid)continue;
+    if(referencesRoot(item.executable,root,'win32')||(referencesRoot(item.commandLine,root,'win32')
+      &&!(launcherPid&&item.parentPid===launcherPid&&retainedLauncherChild(item,root,retainedLauncherExecutable))))
+      throw failed('当前安装仍有进程运行，未删除文件。');
     if(candidate(item.name)&&(!item.executable||!item.commandLine))throw failed('无法确认候选服务进程归属，未删除文件。');
     if(/^(?:node|python(?:w|\d+(?:\.\d+)*)?)(?:\.exe)?$/i.test(item.name)){
       // CIM has no working directory. A relative Tavern entry cannot be
@@ -120,7 +184,6 @@ function windowsProcesses(text,{root,pid}){
       &&/(?:hermes_cli[.\\/]main|gateway\s+(?:run|restart))/i.test(item.commandLine))
       throw failed('无法确认候选诺拉后台进程归属，未删除文件。');
   }
-  if(!seen.has(pid))throw failed('系统进程快照缺少当前辅助程序，未删除文件。');
 }
 function lsofName(value){
   const blocks=[];
@@ -265,13 +328,13 @@ function macHermesProcess(pid,root,timeout){
     throw failed('候选诺拉后台命令无法核验，未删除文件。');
   return {...value,paths};
 }
-function nativeOffline({root}){
+function nativeOffline({root,retainedLauncherExecutable,retainedLauncherViaGuard}){
   if(process.platform==='win32'){
     const systemRoot=process.env.SystemRoot;
     if(!path.win32.isAbsolute(systemRoot||''))throw failed('系统进程检查入口无效，未删除文件。');
     const command=path.win32.join(systemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
-    const script="$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); $OutputEncoding=[Console]::OutputEncoding; $items=@(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{pid=[int]$_.ProcessId;name=[string]$_.Name;executable=$_.ExecutablePath;commandLine=$_.CommandLine} }); [pscustomobject]@{schema='nora-uninstall-processes/1';processes=$items} | ConvertTo-Json -Depth 4 -Compress";
-    windowsProcesses(bounded(command,['-NoProfile','-NonInteractive','-Command',script]),{root,pid:process.pid});
+    const script="$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); $OutputEncoding=[Console]::OutputEncoding; $items=@(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;name=[string]$_.Name;executable=$_.ExecutablePath;commandLine=$_.CommandLine} }); [pscustomobject]@{schema='nora-uninstall-processes/1';processes=$items} | ConvertTo-Json -Depth 4 -Compress";
+    windowsProcesses(bounded(command,['-NoProfile','-NonInteractive','-Command',script]),{root,pid:process.pid,retainedLauncherExecutable,retainedLauncherViaGuard});
     return;
   }
   if(process.platform!=='darwin')throw failed('当前系统无法核验卸载现场进程，未删除文件。');

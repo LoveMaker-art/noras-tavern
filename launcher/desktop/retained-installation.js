@@ -332,7 +332,8 @@ async function upgradeLegacy(home,port,context){const value=inspect(home);if(!va
  context?.check();const operationId=context?.operationId;const record=installRecord(value.root,operationId);
  if(!['selecting','prepared','applying','recovering'].includes(record.state)||typeof context?.check!=='function')throw error();
  legacyHistory(value.root,operationId);
- const offline=require('./uninstall-offline-check');await offline.portOffline(port);offline.nativeOffline({root:value.root});await offline.portOffline(port);
+ const offline=require('./uninstall-offline-check');await offline.portOffline(port);
+ offline.nativeOffline({root:value.root,retainedLauncherExecutable:process.execPath});await offline.portOffline(port);
  context.check();legacyHistory(value.root,operationId);
  const plan={root:value.root,owner:value.owner,hermes:value.hermes,tavern:value.tavern,port};
  const prepared=begin(plan,{excludeOperationId:operationId});context.check();return complete(plan,prepared);

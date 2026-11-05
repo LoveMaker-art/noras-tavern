@@ -1270,6 +1270,53 @@ test('native process parsers require complete snapshots and reject uncertain ser
     assert.throws(()=>macFiles(text,{root:'/NoraTavern',pid:43}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
 });
 
+test('Windows retained reinstall distinguishes its Electron profile children from active services',()=>{
+  const {windowsProcesses}=require('../installer/desktop/uninstall-offline-check');
+  const root='C:\\Nora Test\\Data',profile=root+'\\launcher',executable='C:\\Program Files\\Nora\\诺拉·酒馆.exe';
+  const controller={pid:41,name:'诺拉·酒馆.exe',executable,commandLine:`"${executable}"`};
+  const guard={...controller,pid:40,parentPid:41,commandLine:`"${executable}" "C:\\Program Files\\Nora\\resources\\app.asar\\operation-lock-worker.js"`};
+  const worker={...controller,pid:42,parentPid:40,commandLine:`"${executable}" runtime-worker.js "${root}"`};
+  const child=(pid,args)=>({...controller,pid,parentPid:41,commandLine:`"${executable}" ${args}`});
+  const profileArg=`"--user-data-dir=${profile}"`;
+  const renderer=child(43,`--type=renderer ${profileArg} --app-path="C:\\Program Files\\Nora\\resources\\app.asar" --no-sandbox --renderer-client-id=4`);
+  const utility=child(44,`--type=utility --utility-sub-type=network.mojom.NetworkService --user-data-dir="${profile}"`);
+  const gpu=child(45,`--type=gpu-process ${profileArg} --gpu-preferences=UAAAAAAAAAA=`);
+  const crashpad=child(46,`--type=crashpad-handler ${profileArg} "--database=${profile}\\diagnostics\\native-crashes" --initial-client-data=0x100,0x101`);
+  const check=(children,retainedLauncherExecutable,{legacy=false,guardProcess=guard}={})=>windowsProcesses(JSON.stringify({schema:'nora-uninstall-processes/1',
+    processes:[controller,...(legacy?[]:[worker,guardProcess]),...children]}),
+    {root,pid:legacy?controller.pid:worker.pid,retainedLauncherExecutable,retainedLauncherViaGuard:!legacy});
+  const blocked=(children,selected,options)=>assert.throws(()=>check(children,selected,options),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+
+  check([renderer,utility,gpu,crashpad],executable);
+  check([renderer,utility,gpu,crashpad],executable,{legacy:true});
+  blocked([renderer]);
+  blocked([{...renderer,parentPid:99}],executable,{legacy:true});
+  blocked([renderer],executable,{guardProcess:{...guard,commandLine:guard.commandLine.replace('operation-lock-worker.js','other-worker.js')}});
+  blocked([renderer],executable,{guardProcess:{...guard,commandLine:`${guard.commandLine} "${root}\\installer"`}});
+  blocked([renderer],root+'\\launcher\\诺拉·酒馆.exe');
+  for(const unsafe of [
+    {...renderer,parentPid:99},
+    {...renderer,executable:'C:\\Other\\诺拉·酒馆.exe'},
+    {...renderer,executable:null},
+    {...renderer,commandLine:renderer.commandLine.replace(executable,'C:\\Other\\诺拉·酒馆.exe')},
+    child(43,`--type=unrecognized ${profileArg}`),
+    child(43,`--type=RENDERER ${profileArg}`),
+    child(43,`--type=renderer ${profileArg} --type=utility`),
+    child(43,`--type=renderer ${profileArg} ${profileArg}`),
+    child(43,`--type=renderer "--user-data-dir=${profile}\\other"`),
+    child(43,`--type=renderer ${profileArg} "--operation=${root}\\installer\\operations"`),
+    child(43,`--type=renderer ${profileArg} "--operation=${root}"`),
+    child(43,`--type=renderer ${profileArg} --app-path="C:\\Other\\resources\\app.asar"`),
+    child(43,`--type=renderer ${profileArg} "${root}\\tavern\\server.js"`),
+    child(43,`--type=renderer ${profileArg} "--database=${profile}\\diagnostics\\native-crashes"`),
+    child(43,`--type=crashpad-handler ${profileArg} "--database=${profile}\\other"`),
+    child(43,`--type=crashpad-handler "--database=${profile}\\diagnostics\\native-crashes"`),
+    child(43,`--type=renderer "--user-data-dir=${profile}`),
+    {pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:`node "${root}\\tavern\\server.js"`},
+    {pid:43,name:'python.exe',executable:null,commandLine:null},
+  ])blocked([unsafe],executable);
+});
+
 test('only all can clear an offline root with malformed metadata and an unknown port',async t=>{
   const f=fixture(t);f.write('hermes/nora-instance.json','{malformed');
   f.write('installer/state.json','{malformed');f.write('installer/system-update/journal.json','{malformed');
