@@ -925,6 +925,50 @@ def ensure_external_skills_dir():
             self.assertNotIn(str(executable), command)
             self.assertEqual(command[4:], ['cron', 'create', 'fixture'])
 
+    def test_retry_archives_first_install_after_its_hermes_root_was_rolled_back(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir()
+            config = hermes / 'config.yaml'; config.write_bytes(b'original from old runtime')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config]}, manifest={}); journal.checkpoint('apply', 'intent')
+                journal.apply_bytes(config, b'failed configuration')
+                self.assertEqual(first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})['status'], 'restored')
+                previous_bytes = journal.file.read_bytes()
+                device, inode = first_install._recovery.identity(hermes)
+                operation = journal.directory.parent
+                history = operation / 'runtime-history' / '22222222-2222-4222-8222-222222222222'
+                archived = history / 'tree' / 'failed'
+                archived.parent.mkdir(parents=True)
+                hermes.rename(archived)
+                hermes.mkdir(); config.write_bytes(b'new runtime default')
+                identity = {'device': str(device), 'inode': str(inode)}
+                target = {'sha256': 'a' * 64, 'manifestDigest': 'b' * 64, 'platform': sys.platform, 'arch': 'fixture'}
+                paths = {'noraHome': str(home), 'hermesHome': str(hermes), 'failed': str(operation / 'runtime/failed')}
+                prior = {'schema': 'nora-runtime-bootstrap/1', 'operationId': OPERATION_ID, 'status': 'rolled-back',
+                         'recoveryVerification': 'files-restored', 'newTreePreserved': True, 'attempt': 1, 'paths': paths,
+                         'target': target, 'identities': {'previous': None, 'next': identity}}
+                evidence = history / 'bootstrap-evidence.json'
+                current = {**prior, 'status': 'committed', 'attempt': 2, 'precedingEvidence': str(evidence),
+                           'identities': {'previous': None, 'next': dict(zip(('device', 'inode'),
+                               map(str, first_install._recovery.identity(hermes))))}}
+                (operation / 'runtime-bootstrap.json').write_text(json.dumps(current))
+                proof = {'schema': 'nora-runtime-bootstrap-evidence/1', 'journal': prior}
+                evidence.write_text(json.dumps({**proof, 'journal': {**prior, 'operationId': 'foreign'}}))
+                with self.assertRaisesRegex(RuntimeError, '历史运行时身份'):
+                    first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                self.assertEqual(journal.file.read_bytes(), previous_bytes)
+                self.assertFalse((operation / 'attempts').exists())
+                evidence.write_text(json.dumps(proof))
+                retry = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                self.assertEqual(retry.record['attempt'], 2)
+                previous = operation / retry.record['previousArchive'] / 'transaction.json'
+                self.assertEqual(previous.read_bytes(), previous_bytes)
+                self.assertEqual((archived / 'config.yaml').read_bytes(), b'original from old runtime')
+                self.assertEqual(config.read_bytes(), b'new runtime default')
+                self.assertEqual(first_install._recovery.identity(hermes), retry.record['rootIdentities']['hermes'])
+
     def test_same_operation_retry_archives_restored_attempt_without_losing_backup_or_primary(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
