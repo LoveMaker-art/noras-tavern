@@ -524,7 +524,19 @@ def recovery_entry(ctx):
         python = owned
         if platform == 'win32':
             script = job / '恢复旧启动器.cmd'
-            body = '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n"%~dp0' + relative.replace('/', '\\') + '" -I -B "%~dp0replace.py" --recover "%~dp0."\r\nif errorlevel 1 pause\r\n'
+            # cmd.exe cannot launch an extended executable path directly.
+            # Use the Windows native caller so Python's DLL loader retains it.
+            body = (
+                '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n'
+                'set "NORA_APP_RECOVERY_PYTHON=%~dp0' + relative.replace('/', '\\') + '"\r\n'
+                'set "NORA_APP_RECOVERY_JOB=%~dp0"\r\n'
+                '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive '
+                '-Command "$p=[IO.Path]::GetFullPath($env:NORA_APP_RECOVERY_PYTHON);'
+                r"if($p.StartsWith('\\')){$p='\\?\UNC\'+$p.Substring(2)}else{$p='\\?\'+$p};"
+                "& $p -I -B ($env:NORA_APP_RECOVERY_JOB+'replace.py') --recover ($env:NORA_APP_RECOVERY_JOB+'.');"
+                'if($null -eq $LASTEXITCODE){exit 1};exit $LASTEXITCODE"\r\n'
+                'if errorlevel 1 (pause & exit /b 1)\r\nexit /b 0\r\n'
+            )
         else:
             script = job / '恢复旧启动器.command'
             body = '#!/bin/sh\nset -eu\njob=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)\nexec "$job/' + relative + '" -I -B "$job/replace.py" --recover "$job"\n'

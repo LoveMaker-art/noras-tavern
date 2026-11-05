@@ -816,6 +816,10 @@ class OperationReplacementTests(unittest.TestCase):
         script = worker.io_path(f['job'] / '恢复旧启动器.cmd').read_text()
         self.assertIn(f'app-helper-runtime\\{image.name}\\python\\python.exe', script)
         self.assertIn(' -I -B ', script)
+        self.assertIn('WindowsPowerShell\\v1.0\\powershell.exe', script)
+        self.assertIn('[IO.Path]::GetFullPath($env:NORA_APP_RECOVERY_PYTHON)', script)
+        self.assertIn("($env:NORA_APP_RECOVERY_JOB+'replace.py') --recover", script)
+        self.assertNotIn(str(f['home']), script)
         worker.io_path(image / executable).write_bytes(b'replaced APP interpreter')
         with self.assertRaisesRegex(ValueError, 'APP助手文件已变化'):
             worker.recover(f['job'])
