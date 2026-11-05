@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createReleaseSource, collectRuntimeFiles, groupRuntimeModules, materializeUpdaterDependencies } from '../tooling/release/release-source.mjs';
 import { fileDigest } from '../tooling/release/system-release.mjs';
 import { buildCommand } from '../tooling/release/build-commands.mjs';
+import releaseNotes from '../tooling/release/launcher-release-notes.cjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -30,8 +31,18 @@ test('the packaged desktop includes its local JavaScript execution closure', t =
 
 for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} without npm builds`, { timeout: 120000 }, t => {
     const changed=kind==='changed',appOnly=kind==='app-only';
+    const betaSource=fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').includes('-beta.');
+    const betaRelease=betaSource&&kind==='same';
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-package-test-'));
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const packageRelease = () => execFileSync(process.execPath, ['tooling/release/package-release.mjs',
+        ...(betaRelease?[]:['--candidate']), '--launcher-baseline', temporary,
+        ...(appOnly?['--app-only','--publication-tag','v9.0.0']:[])],
+    { cwd: root, encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore','pipe','pipe'] });
+    if (appOnly && betaSource) {
+        assert.throws(packageRelease, /APP-only packaging requires a stable core version/);
+        return;
+    }
     const source = createReleaseSource(root, { candidate: true });
     t.after(() => fs.rmSync(source.stage, { recursive: true, force: true }));
     // Synthetic compiled bytes test packaging only, not a runnable Tavern installation.
@@ -57,6 +68,7 @@ for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} w
     const baseline = { ...source.identity, candidate: false, dirty: false,
         versions: { tavern: fs.readFileSync(path.join(source.stage, 'app/.tavern-release-version'), 'utf8').trim() },
         artifacts: {}, artifactModes: {}, archives: {}, modules: {} };
+    if(betaRelease)baseline.launcherVersion='2.2.1';
     for (const name of members) {
         baseline.artifacts[name] = fileDigest(path.join(source.stage, name));
         baseline.artifactModes[name] = fs.statSync(path.join(source.stage, name)).mode & 0o111 ? 0o755 : 0o644;
@@ -108,8 +120,7 @@ for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} w
     if(appOnly){for(const [name,entry]of Object.entries(system.files))entry.asset=`${process.platform}-${process.arch}-${name}`;
       fs.writeFileSync(path.join(temporary,'baseline-core-reference.json'),JSON.stringify({schema:'nora-core-reference/1',tag:'v'+baseline.versions.tavern,commit:baseline.commit,manifests:{[`${process.platform}-${process.arch}`]:system.files['release-manifest.json']}}));}
     write(`nora-system-${process.platform}-${process.arch}.json`, system);
-    const output = execFileSync(process.execPath, ['tooling/release/package-release.mjs', '--candidate', '--launcher-baseline', temporary,...(appOnly?['--app-only','--publication-tag','v9.0.0']:[])],
-        { cwd: root, encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024 });
+    const output = packageRelease();
     const release = /^release=(.+)$/m.exec(output)?.[1];
     assert.ok(release);
     t.after(() => fs.rmSync(release, { recursive: true, force: true }));
@@ -119,7 +130,7 @@ for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} w
         assert.equal(descriptor.size, fs.statSync(archive).size, `Actual sealed archive size: ${descriptor.name}`);
         assert.equal(descriptor.sha256, fileDigest(archive), `Full archive SHA-256: ${descriptor.name}`);
     }
-    assert.equal(result.candidate, true);
+    assert.equal(result.candidate, !betaRelease);
     assert.equal(result.bootstrap.minimumLauncherVersion,
         JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'))).version);
     assert.deepEqual(result.launcherBuildReuse.modules, Object.fromEntries(Object.entries(baseline.modules)
@@ -135,8 +146,23 @@ for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} w
     if(appOnly){assert.deepEqual(fs.readFileSync(path.join(payload,'release-manifest.json')),fs.readFileSync(path.join(temporary,'release-manifest.json')));assert.equal(result.coreRelease.manifests[`${process.platform}-${process.arch}`].sha256,fileDigest(path.join(payload,'release-manifest.json')));assert.notEqual(fileDigest(path.join(release,'release-manifest.json')),fileDigest(path.join(payload,'release-manifest.json')));}
     const desktop = path.join(release, 'nora-tavern-launcher/desktop');
     assert.ok(fs.existsSync(path.join(desktop, 'main.js')));
+    const metadata = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
+    if (betaRelease) {
+        assert.equal(metadata.noraReleaseChannel, 'beta');
+        assert.equal(metadata.build.appId, 'art.lovemaker.nora-tavern-launcher.beta');
+        assert.equal(JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json'))).channel, 'beta');
+        const assetNames = [
+            metadata.build.nsis.artifactName.replace('${arch}', 'x64').replace('${ext}', 'exe'),
+            ...['arm64', 'x64'].map(arch =>
+                metadata.build.artifactName.replace('${os}', 'mac').replace('${arch}', arch).replace('${ext}', 'dmg')),
+        ];
+        const notes = '# Beta\n';
+        assert.equal(releaseNotes.renderReleaseNotes({
+            repository: 'LoveMaker-art/noras-tavern', tag: `v${result.versions.tavern}`, assetNames, notes,
+        }), notes);
+    }
     const helperDescriptor=path.join(release,'nora-tavern-launcher/app-helper-runtime.json');
-    assert.equal(JSON.parse(fs.readFileSync(path.join(desktop,'package.json'))).noraAppHelperRuntimeSha256,fileDigest(helperDescriptor));
+    assert.equal(metadata.noraAppHelperRuntimeSha256,fileDigest(helperDescriptor));
     assert.equal(JSON.parse(fs.readFileSync(helperDescriptor)).psutilVersion,'7.0.0');
     assert.ok(fs.existsSync(path.join(release,'nora-tavern-launcher/app-helper-runtime/python',process.platform==='win32'?'python.exe':'bin/python3.11')));
     assert.ok(fs.existsSync(path.join(release, 'nora-tavern-launcher/launcher_services.py')));
