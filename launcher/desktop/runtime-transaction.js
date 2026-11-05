@@ -161,14 +161,15 @@ function inspect(options){
     return {...facts(journal,location),journalReference:location.journalReference};
   }catch(error){return {effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false,hasChanges:null,reason:error.code||'RUNTIME_JOURNAL_INVALID'};}
 }
-function canRebuildAfterFirstInstallRollback(options){
+function canRebuildAfterFirstInstallRollback(options,originalHermes){
   const {location,journal}=read(options);
-  if(journal?.status!=='rolled-back')return false;
-  if(journal.schema===retainedPrograms.SCHEMA)
-    return facts(journal,location).reason==='retained-programs-restored';
+  if(journal?.schema!==SCHEMA||journal.status!=='rolled-back'
+    ||!Array.isArray(originalHermes)||originalHermes.length!==2)return false;
+  const failed=identity(location.failed);
   return journal.recoveryVerification==='files-restored'&&journal.newTreePreserved===true
     &&journal.identities.previous===null&&!identity(location.hermesHome)&&!identity(location.backup)
-    &&sameIdentity(identity(location.failed),journal.identities.next);
+    &&sameIdentity(failed,journal.identities.next)
+    &&sameIdentity(failed,{device:String(originalHermes[0]),inode:String(originalHermes[1])});
 }
 function requireDelegate(delegate,operationId,ownerEpoch){
   delegate?.assertActive();

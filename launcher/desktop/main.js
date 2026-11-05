@@ -1370,13 +1370,14 @@ function hasFirstInstallToResume(context, operationDirectory) {
   try {
     const stat = fs.lstatSync(file);
     if (fs.lstatSync(directory).isSymbolicLink() || !stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return true;
-    const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const journal = JSON.parse(fs.readFileSync(file, 'utf8'), (_key, value, source) =>
+      typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value) ? source.source : value);
     if (journal.schema !== 1 || journal.owner !== 'nora-first-install' || journal.operationId !== context.operationId
         || journal.status !== 'restored' || journal.checkpoints?.restore?.state !== 'result'
         || !Array.isArray(journal.unrestored) || journal.unrestored.length) return true;
     return !require('./runtime-transaction').canRebuildAfterFirstInstallRollback({
       noraHome:noraHome(), hermesHome:hermesHome(), operationId:context.operationId,
-    });
+    }, journal.rootIdentities?.hermes);
   } catch { return true; }
 }
 
