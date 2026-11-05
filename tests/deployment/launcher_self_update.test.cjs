@@ -39,7 +39,7 @@ function fixture(t, {platform = 'win32', arch = 'x64'} = {}) {
 // only the returned handles so this fixture can prove pipe closure before rm.
 function heldIndependentUpdate(f) {
   const file=path.resolve(__dirname,'../installer/desktop/launcher-update.js'),localRequire=createRequire(file),loaded={exports:{}};
-  vm.runInNewContext(fs.readFileSync(file,'utf8'),{module:loaded,process,setTimeout,
+  vm.runInNewContext(fs.readFileSync(file,'utf8'),{module:loaded,process,setTimeout,clearTimeout,
     require:name=>name==='node:child_process'?{...localRequire(name),spawn:(...args)=>{
       const child=spawn(...args);captureChild(child);f.children.push(child);return child;
     }}:localRequire(name)}, {filename:file});
@@ -289,17 +289,12 @@ while not (job/'fixture-complete').exists():
   await completedHelper(f,job);
 });
 
-test('desktop handoff and recovery keep the desktop profile in real independent Python helpers',
+test('legacy handoff and recovery preserve the explicit desktop profile in real Python helpers',
   {timeout:30000,skip:!process.env.NORA_TEST_PYTHON}, async t => {
   const runtime=JSON.parse(execFileSync(python(),['-B','-c',
     'import sys,json;print(json.dumps({"base":sys.base_prefix,"prefix":sys.prefix}))'],{encoding:'utf8'}));
   const managedPythonRoot=fs.realpathSync.native(runtime.base),venvHome=fs.realpathSync.native(runtime.prefix);
-  const managedHome=path.dirname(managedPythonRoot);
   const normalized=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
-  if(normalized(managedPythonRoot)!==normalized(path.join(managedHome,'python'))
-    ||normalized(venvHome)!==normalized(path.join(managedHome,'hermes-agent','venv'))){
-    t.skip('This real profile test requires the complete Hermes-shaped Python runtime');return;
-  }
   const f=await handoffFixture(t),job=await update.prepareHandoff(f.handoff);
   const held=heldIndependentUpdate(f);
   const profile=path.join(f.root,'desktop-profile'),temp=path.join(f.root,'desktop-temp');
@@ -307,9 +302,6 @@ test('desktop handoff and recovery keep the desktop profile in real independent 
   const desktopEnv={...process.env,HOME:profile,USERPROFILE:profile,
     APPDATA:path.join(profile,'AppData/Roaming'),LOCALAPPDATA:path.join(profile,'AppData/Local'),
     TMPDIR:temp,TEMP:temp,TMP:temp};
-  const maintenanceEnv={...desktopEnv,HOME:path.join(f.home,'hermes'),USERPROFILE:path.join(f.home,'hermes'),
-    APPDATA:path.join(f.home,'appdata/roaming'),LOCALAPPDATA:path.join(f.home,'appdata/local'),TMPDIR:path.join(f.home,'cache/tmp')};
-  const main=fs.readFileSync(path.resolve(__dirname,'../installer/desktop/main.js'),'utf8');
   const currentHelper=path.join(f.root,'current-recovery-helper.py');
   const helperSource=`import sys,json,os,time,psutil
 from pathlib import Path
@@ -331,14 +323,8 @@ else:
   for(const method of ['launchHandoff','recover']){
     fs.rmSync(path.join(job,'status.json'),{force:true});
     fs.rmSync(path.join(job,'fixture-complete'),{force:true});
-    // Replay the actual desktop's independent process call with a real managed
-    // Python. Full packaged APP lifecycle is covered by artifact acceptance.
-    const start=main.indexOf(`await launcherUpdate.${method}(`);
-    assert.ok(start>=0);const expression=main.slice(start,main.indexOf(');',start)+2);
-    await vm.runInNewContext(`(async()=>{${expression}})()`,{path,process:{env:desktopEnv},launcherUpdate:held,
-      launcherRecoveryOptions:()=>({home:f.home,executable:f.executable,python:python(),helper:currentHelper}),
-      hermesHome:()=>managedHome,launcherEnv:()=>maintenanceEnv,pending:{job},
-      operation:{handoffRef:job,result:{parentCreationTime:1}},diagnostics:{event(){}}});
+    await held[method]({home:f.home,executable:f.executable,python:python(),helper:currentHelper,job,
+      managedPythonRoot,venvHome,env:desktopEnv,parentCreationTime:1});
     const facts=JSON.parse(fs.readFileSync(path.join(job,'desktop-environment.json')));
     assert.equal(facts.helper,method==='recover'?currentHelper:path.join(job,'replace.py'));
     assert.deepEqual(fs.readFileSync(path.join(job,'replace.py')),historicalHelper,'historical recovery bytes must remain unchanged');

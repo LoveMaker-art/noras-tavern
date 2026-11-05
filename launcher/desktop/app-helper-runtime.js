@@ -101,6 +101,8 @@ function readDescriptor(resourcesRoot,expected,{platform,arch}){
 }
 function environment(home,root,profile,source){
   const env={};for(const key of ['SystemRoot','WINDIR','COMSPEC','LANG','LC_ALL'])if(source[key])env[key]=source[key];
+  const desktopKeys=['HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TMPDIR','TEMP','TMP'];
+  env.NORA_APP_RELAUNCH_PROFILE=JSON.stringify(Object.fromEntries(desktopKeys.map(key=>[key,source[key]??null])));
   Object.assign(env,{HOME:profile,USERPROFILE:profile,APPDATA:path.join(profile,'appdata'),LOCALAPPDATA:path.join(profile,'localappdata'),
     TMPDIR:profile,TMP:profile,TEMP:profile,NORA_TAVERN_HOME:home,PYTHONNOUSERSITE:'1',PYTHONSAFEPATH:'1',PYTHONDONTWRITEBYTECODE:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'});
   env.PATH=[path.join(root,'python',process.platform==='win32'?'':'bin'),...(process.platform==='win32'

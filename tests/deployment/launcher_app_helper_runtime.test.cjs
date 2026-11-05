@@ -2,6 +2,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {EventEmitter}=require('node:events');
+const {execFileSync}=require('node:child_process');
 const runtime=require('../installer/desktop/app-helper-runtime');
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 async function fixture(t){
@@ -35,7 +36,10 @@ async function fixture(t){
   return {root,home,image,descriptor,resourcesRoot,executable,probes,options,save:()=>descriptorSha256=save(),write};
 }
 test('APP-owned closure is copied outside the APP and uses a private environment without Hermes',async t=>{
-  const f=await fixture(t),before=await runtime.inventory(f.image),execution=await runtime.resolve(f.options());
+  const f=await fixture(t),before=await runtime.inventory(f.image),options=f.options();
+  Object.assign(options.env,{HOME:path.join(f.root,'desktop-profile'),LOCALAPPDATA:path.join(f.root,'desktop-local')});
+  delete options.env.APPDATA;
+  const execution=await runtime.resolve(options);
   assert.equal(runtime.isVerified(execution),true);assert.equal(Object.isFrozen(execution),true);
   assert.equal(Object.isFrozen(execution.env),true);
   const imageDirectory=process.platform==='win32'?f.descriptor.imageSha256.slice(0,20):f.descriptor.imageSha256;
@@ -46,6 +50,11 @@ test('APP-owned closure is copied outside the APP and uses a private environment
   assert.equal(fs.existsSync(path.join(f.home,'hermes')),false);
   assert.deepEqual(await runtime.inventory(f.image),before);
   for(const name of ['SYNTHETIC_PRIVATE_KEY','PYTHONPATH','PYTHONHOME','NODE_OPTIONS','NODE_PATH','__PYVENV_LAUNCHER__'])assert.equal(execution.env[name],undefined,name);
+  assert.equal(execution.env.HOME,path.join(path.dirname(execution.root),'profile'));
+  assert.deepEqual(JSON.parse(execution.env.NORA_APP_RELAUNCH_PROFILE),{
+    HOME:options.env.HOME,USERPROFILE:options.env.USERPROFILE??null,APPDATA:null,LOCALAPPDATA:options.env.LOCALAPPDATA,
+    TMPDIR:options.env.TMPDIR??null,TEMP:options.env.TEMP??null,TMP:options.env.TMP??null,
+  });
   assert.equal(execution.env.PYTHONNOUSERSITE,'1');assert.equal(execution.env.PYTHONSAFEPATH,'1');
   assert.deepEqual(f.probes[0].args.slice(0,3),['-I','-B','-c']);
   assert.equal(runtime.isVerified({...execution}),false,'a copied object is not module-verified execution authority');
@@ -62,6 +71,25 @@ test('APP helper can verify and probe the shipped image without creating a cache
   assert.deepEqual(await runtime.inventory(f.image),before);
   assert.equal(f.probes.length,1);
   assert.deepEqual(f.probes[0].args.slice(0,3),['-I','-B','-c']);
+});
+test('private helper environment yields the desktop paths in the relaunched APP', {skip:!process.env.NORA_TEST_PYTHON},async t=>{
+  const f=await fixture(t),options=f.options();
+  const desktopHome=path.join(f.root,'desktop'),desktopLocal=path.join(desktopHome,'local-appdata');
+  Object.assign(options.env,{HOME:desktopHome,LOCALAPPDATA:desktopLocal});
+  delete options.env.APPDATA;
+  const execution=await runtime.resolve(options);
+  const helper=path.resolve(__dirname,'../installer/desktop/replace-launcher.py');
+  const python=String.raw`
+import json, runpy, sys
+from pathlib import Path
+helper = runpy.run_path(sys.argv[1])
+env = helper['launcher_environment']({'home': Path(sys.argv[2])})
+print(json.dumps([env['HOME'], env['LOCALAPPDATA'], env.get('APPDATA'),
+                  env['NORA_TAVERN_HOME'], env.get('NORA_APP_RELAUNCH_PROFILE')]))
+`;
+  const output=execFileSync(process.env.NORA_TEST_PYTHON,['-B','-c',python,helper,f.home],
+    {encoding:'utf8',env:execution.env});
+  assert.deepEqual(JSON.parse(output),[desktopHome,desktopLocal,null,f.home,null]);
 });
 test('missing APP descriptor trust and changed image fail before running an interpreter',async t=>{
   const f=await fixture(t);
