@@ -196,7 +196,8 @@ test('returned release failures retain the original local diagnosis before UI fo
   const original = result.diagnosticError;
   const context = vm.createContext({activeRun:false,modelBusy:false,trackLauncher:async(_action,_stage,fn)=>fn(),
     path,describeError,releaseCheckRequest:null,releaseMetadataState:null,noraHome:()=>'/fixture',
-    releases:{check:async()=>result,createMetadataCache:require('../installer/desktop/releases').createMetadataCache},
+    releases:{check:async()=>result,checkApp:async()=>({launcherState:'current',launcherUpdateAvailable:false}),
+      createMetadataCache:require('../installer/desktop/releases').createMetadataCache},
     updateFetch:null,localReleaseDirectory:null,installRoot:()=>'/fixture',app:{getVersion:()=> '1.0.0'},
     CHANNEL:'stable',formatUserError,diagnostics:{error:(event,error)=>reports.push({event,error})}});
   for (const name of ['releaseMetadataCache','checkRelease']) {
@@ -207,6 +208,7 @@ test('returned release failures retain the original local diagnosis before UI fo
   const returned = await check();
   assert.equal(reports.length,0,'the tracked check must not append its error to an unrelated operation');
   assert.equal(returned.state,'blocked');
+  assert.equal(returned.launcherState,'current');
   assert.match(returned.compatibilityError,/该发布暂时无法安装/);
   assert.match(returned.compatibilityError,/1\.2\.0/);
   assert.equal(original.message,'');
