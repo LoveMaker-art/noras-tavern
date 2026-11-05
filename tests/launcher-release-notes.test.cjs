@@ -28,8 +28,21 @@ test('missing, duplicated or portable-only installers stop note generation', () 
 });
 
 test('beta releases preserve only their authored testing notice', () => {
-  const result = renderReleaseNotes({ ...inputs, tag: 'v2.2.12-beta.1', notes: '# Beta\n\nTesting notice.\n' });
+  const beta = {
+    ...inputs,
+    tag: 'v2.6.5-beta.1',
+    assetNames: [
+      'Nora-Tavern-2.6.5-beta.1-win-x64-setup.exe',
+      'Nora-Tavern-2.6.5-beta.1-mac-arm64.dmg',
+      'Nora-Tavern-2.6.5-beta.1-mac-x64.dmg',
+    ],
+    notes: '# Beta\n\nTesting notice.\n',
+  };
+  const result = renderReleaseNotes(beta);
   assert.equal(result, '# Beta\n\nTesting notice.\n');
+  assert.throws(() => renderReleaseNotes({ ...beta, tag: 'v2.6.5-beta.2' }), /exactly one installer/);
+  assert.throws(() => renderReleaseNotes({ ...beta, assetNames: inputs.assetNames }), /exactly one installer/);
+  assert.throws(() => renderReleaseNotes({ ...beta, assetNames: [...beta.assetNames, beta.assetNames[0]] }), /exactly one installer/);
 });
 
 test('invalid release identities and empty summaries fail closed', () => {
