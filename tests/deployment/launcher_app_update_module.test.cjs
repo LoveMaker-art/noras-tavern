@@ -273,6 +273,24 @@ test('historical APP rollback restores old bytes without launching the old joint
   f.assertPreserved();
 });
 
+test('APP recovery adapter closes the original restored operation using its final handoff revision',async t=>{
+  const f=fixture(t,{phase:'restored'});
+  const operation={...f.operation,schema:'nora-operation/1',state:'awaiting-handoff',stageId:'recovering',
+    sequence:8,snapshotSequence:8,verification:'unconfirmed'};
+  const file=path.join(f.operationDirectory,'operation.json');
+  fs.writeFileSync(file,JSON.stringify(operation));
+  const journal=path.join(f.job,'recovery.json'),snapshot=JSON.parse(fs.readFileSync(journal));
+  fs.writeFileSync(journal,JSON.stringify({...snapshot,launchAttempted:true}));
+  const result=await update.recover({...f,operation});
+  assert.equal(result.restored,true);
+  const closed=JSON.parse(fs.readFileSync(file));
+  assert.equal(closed.sequence,9);assert.ok(closed.ownerEpoch>operation.ownerEpoch);
+  assert.equal(closed.state,'rolled-back');assert.equal(closed.verification,'confirmed');
+  assert.equal(closed.result.launcherVersion,'1.0.0');
+  assert.equal(closed.currentFailure,null);assert.equal(closed.handoffRef,f.job);
+  f.assertPreserved();
+});
+
 test('interrupted APP preparation is visible before its job reference is published',async t=>{
   const f=fixture(t,{phase:'prepared'}),operation={...f.operation,handoffRef:null,stageId:'prepared',effectState:'untouched'};
   const options={...f,job:undefined,operation};

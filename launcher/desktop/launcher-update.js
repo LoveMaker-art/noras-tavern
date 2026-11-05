@@ -452,8 +452,11 @@ const historicalRecoveryArgs=options=>options.historicalAppSegment===true
 async function recover(options) {
   const job = ownedJob(options.job, options);
   const state = await callHelper(options, options.helper, ['--assess', job], job);
+  const operation=options.operation;
+  const settlement=!options.historicalAppSegment&&operation?.state==='awaiting-handoff'&&operation.stageId==='recovering'
+    ?['--settle-app-revision',String(operation.ownerEpoch),String(operation.snapshotSequence)]:[];
   if (state === null) {
-    const result = await callHelper(options, options.helper, ['--recover',job,...historicalRecoveryArgs(options)],job);
+    const result = await callHelper(options, options.helper, ['--recover',job,...historicalRecoveryArgs(options),...settlement],job);
     if (result.restored !== true) throw new Error('此启动器任务无需恢复。');
     return { job, restarting: false, restored: true };
   }
@@ -467,7 +470,7 @@ async function recover(options) {
   // and resources. Execute that same helper so fixes also reach historical
   // jobs, without replacing their original helper, snapshots or backup proof.
   try{child=spawn(execution.launchCommand||execution.command,[...(options.appHelperRuntime?['-I','-B']:['-B']),options.helper,'--recover',job,'--parent-pid',String(process.pid),
-    '--parent-created',String(options.parentCreationTime),...historicalRecoveryArgs(options)],{cwd:helperCwd(job),env:execution.env,
+    '--parent-created',String(options.parentCreationTime),...historicalRecoveryArgs(options),...settlement],{cwd:helperCwd(job),env:execution.env,
       detached:true,windowsHide:true,stdio:['ignore',log,log]});}finally{fs.closeSync(log);}
   child.unref();
   return workerReady(child, job, state => {

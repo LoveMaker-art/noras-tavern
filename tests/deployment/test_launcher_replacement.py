@@ -708,6 +708,149 @@ else: w.recover(job,allow_legacy=True)
 
 
 class OperationReplacementTests(unittest.TestCase):
+    def bound_app_rollback(self):
+        f = self.fixture()
+        f['plan']['parentCreationTime'] -= 100
+        sequence_id, launcher_request, core_request = (str(uuid.uuid4()) for _ in range(3))
+        root = f['home'] / 'installer'
+        operation_id = f['plan']['operationId']
+        operation = root / 'operations' / operation_id / 'operation.json'
+        manifest = '{"version":"2.6.5"}'
+        sha = hashlib.sha256(manifest.encode()).hexdigest()
+        relative = f'release-plan/{sha}.json'
+        artifact = operation.parent / relative
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(manifest)
+        full_release = {**f['plan']['releasePlan'], 'releaseManifestText': manifest}
+        f['plan']['releasePlan'].update(manifestSha256=sha, manifestRef={'schema': 'nora-operation-manifest/1',
+            'operationId': operation_id, 'file': relative, 'size': len(manifest), 'sha256': sha})
+        target = {'request': {'action': 'update', 'launcherOnly': True, 'sequenceId': sequence_id,
+                              'expectedCoreVersion': '2.6.4'}, 'releasePlan': f['plan']['releasePlan']}
+        digest = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        f['plan']['planDigest'] = digest(target)
+        worker.write_json(f['job'] / 'plan.json', f['plan'])
+        record = {'schema': 'nora-operation/1', 'kind': 'update', 'operationId': f['plan']['operationId'],
+                  'ownerEpoch': 2, 'sequence': 8, 'state': 'awaiting-handoff', 'stageId': 'recovering',
+                  'requestId': launcher_request, 'target': target, 'planDigest': f['plan']['planDigest'],
+                  'handoffRef': str(f['job']), 'verification': 'unconfirmed', 'currentFailure': {'code': 'ORIGINAL'},
+                  'primaryFailure': {'code': 'ORIGINAL'}, 'result': {'job': str(f['job'])}}
+        worker.write_json(operation, record)
+        pointer = root / 'current-update-sequence.json'
+        request = root / 'update-sequences' / sequence_id / 'request.json'
+        request.parent.mkdir(parents=True)
+        reference = {'schema': 'nora-update-sequence/1', 'id': sequence_id}
+        worker.write_json(pointer, reference)
+        content = {**reference, 'order': ['launcher', 'core'],
+                   'requests': {'launcher': launcher_request, 'core': core_request},
+                   'before': {'launcher': f['plan']['previousVersion'], 'core': '2.6.4'},
+                   'plan': full_release}
+        worker.write_json(request, {**content, 'digest': digest(content)})
+        worker.prepare(f['job']); f['owner'].execute(f)
+        return f, operation, pointer, request, core_request
+
+    def test_bound_app_rollback_settles_before_old_window_and_retires_only_legacy_pointer(self):
+        f, operation, pointer, request, _ = self.bound_app_rollback()
+        original_pointer, original_request = pointer.read_bytes(), request.read_bytes()
+
+        def old_window(ctx):
+            result = worker.read_json(operation)
+            self.assertEqual((result['state'], result['effectState'], result['verification']),
+                             ('rolled-back', 'restored', 'confirmed'))
+            self.assertEqual(result['recoveryOutcome'], 'restored-and-verified')
+            self.assertEqual(result['result']['launcherVersion'], f['plan']['previousVersion'])
+            self.assertEqual(result['primaryFailure'], {'code': 'ORIGINAL'})
+            self.assertIsNone(result['currentFailure'])
+            self.assertFalse(pointer.exists())
+            self.assertEqual(request.with_name(pointer.name).read_bytes(), original_pointer)
+            self.assertEqual(request.read_bytes(), original_request)
+            self.assertEqual((f['home'] / 'world.json').read_text(), 'user-world')
+            with worker.writer_lock(ctx): pass
+
+        with patch.object(worker, 'launch_old', side_effect=old_window) as launch:
+            self.assertTrue(worker.recover(f['job'], app_revision=(2, 8))['restored'])
+            committed = operation.read_bytes()
+            self.assertTrue(worker.recover(f['job'], app_revision=(2, 8))['restored'])
+        launch.assert_called_once()
+        self.assertEqual(operation.read_bytes(), committed)
+        self.assertEqual(worker.read_json(operation)['sequence'], 9)
+
+    def test_bound_app_rollback_keeps_admitted_core_and_refuses_stale_revision(self):
+        f, operation, pointer, request, core_request = self.bound_app_rollback()
+        before = operation.read_bytes()
+        with self.assertRaisesRegex(ValueError, '原操作记录'):
+            worker.recover(f['job'], app_revision=(2, 7))
+        self.assertEqual(operation.read_bytes(), before)
+        core_job = pointer.parent / 'update-jobs' / str(uuid.uuid4()) / 'request.json'
+        core_job.parent.mkdir(parents=True)
+        worker.write_json(core_job, {'operationRequestId': core_request})
+        with patch.object(worker, 'launch_old') as launch:
+            self.assertTrue(worker.recover(f['job'], app_revision=(2, 8))['restored'])
+        launch.assert_called_once()
+        self.assertEqual(worker.read_json(operation)['state'], 'rolled-back')
+        self.assertTrue(pointer.exists())
+        self.assertFalse(request.with_name(pointer.name).exists())
+        self.assertEqual(worker.read_json(core_job), {'operationRequestId': core_request})
+
+    def test_bound_app_rollback_retries_after_terminal_record_before_generation(self):
+        f, operation, pointer, request, _ = self.bound_app_rollback()
+        generation = operation.parent.parent / '.history-generation.json'
+        write = worker.write_json
+
+        def cut(file, value):
+            if file == generation and value['writing'] is False:
+                raise OSError('injected after canonical record')
+            write(file, value)
+
+        with patch.object(worker, 'launch_old') as launch:
+            with patch.object(worker, 'write_json', side_effect=cut):
+                with self.assertRaisesRegex(OSError, 'injected after canonical record'):
+                    worker.recover(f['job'], app_revision=(2, 8))
+            launch.assert_not_called()
+            self.assertTrue(worker.read_json(generation)['writing'])
+            self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['phase'], 'restored')
+            self.assertTrue(pointer.exists())
+            original = operation.read_bytes()
+            self.assertTrue(worker.recover(f['job'], app_revision=(2, 8))['restored'])
+        launch.assert_called_once()
+        self.assertFalse(worker.read_json(generation)['writing'])
+        self.assertEqual(operation.read_bytes(), original)
+        self.assertTrue(request.with_name(pointer.name).exists())
+
+    def test_bound_app_rollback_keeps_legacy_pointer_for_unknown_other_records(self):
+        for kind in ('operation', 'submission'):
+            with self.subTest(kind=kind):
+                f, operation, pointer, request, _ = self.bound_app_rollback()
+                other_id = str(uuid.uuid4())
+                if kind == 'operation':
+                    unknown = pointer.parent / 'operations' / other_id / 'operation.json'
+                    contents = {'schema': 'nora-operation/1', 'operationId': other_id}
+                else:
+                    unknown = pointer.parent / 'update-jobs' / other_id / 'request.json'
+                    contents = {}
+                unknown.parent.mkdir(parents=True)
+                worker.write_json(unknown, contents)
+                with patch.object(worker, 'launch_old'):
+                    worker.recover(f['job'], app_revision=(2, 8))
+                self.assertTrue(pointer.exists())
+                self.assertFalse(request.with_name(pointer.name).exists())
+                self.assertEqual(worker.read_json(unknown), contents)
+
+    def test_bound_app_rollback_keeps_closed_guard_ledgers_and_refuses_unknown_executors(self):
+        f, operation, _, _, _ = self.bound_app_rollback()
+        ledger = operation.parent.parent / '.guards' / 'original.json'
+        ledger.parent.mkdir()
+        worker.write_json(ledger, {'schema': 'nora-operation-guard/1', 'jobs': [{'jobId': 'unknown'}]})
+        original = operation.read_bytes()
+        with self.assertRaisesRegex(ValueError, '原执行者尚未确认退出'):
+            worker.recover(f['job'], app_revision=(2, 8))
+        self.assertEqual(operation.read_bytes(), original)
+        worker.write_json(ledger, {'schema': 'nora-operation-guard/1', 'jobs': []})
+        saved = ledger.read_bytes()
+        with patch.object(worker, 'launch_old'):
+            worker.recover(f['job'], app_revision=(2, 8))
+        self.assertEqual(ledger.read_bytes(), saved)
+        self.assertEqual(worker.read_json(operation)['state'], 'rolled-back')
+
     def test_legacy_full_tree_cancel_retains_sealed_program_and_denied_empty_runtime_lock(self):
         f = self.fixture()
         locked = worker.io_path(f['app'] / '.sentry-native/run.lock')
@@ -1455,7 +1598,7 @@ class OperationReplacementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '已提交启动器的身份或内容已变化'):
             worker.inspect_outcome(f['job'])
 
-    def test_successor_gate_can_prepare_recovery_and_finalize_same_plan_but_not_another_operation(self):
+    def test_successor_gate_reserves_recovery_and_refuses_unrelated_finalization(self):
         f = self.fixture(); f['plan']['parentCreationTime'] -= 100
         worker.write_json(f['job'] / 'plan.json', f['plan']); worker.prepare(f['job']); f['owner'].execute(f)
         gate = SimpleNamespace(operation_id=f['plan']['operationId'], owner_epoch=2, assert_active=lambda: None)
@@ -1465,9 +1608,12 @@ class OperationReplacementTests(unittest.TestCase):
             self.assertTrue(result['prepared'])
             snapshot = worker.read_json(f['job'] / 'recovery.json')
             self.assertEqual(snapshot['recoveryParent'], {'pid': os.getpid(), 'creationTime': created})
-            worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
+            with self.assertRaisesRegex(ValueError, '已准备恢复'):
+                worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
+            self.assertTrue(worker.context(f['job'])['backup'].exists())
             gate.operation_id = str(uuid.uuid4())
-            with self.assertRaises(ValueError): worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
+            with self.assertRaisesRegex(ValueError, '启动器委托与当前操作不一致'):
+                worker.finalize(f['job'], target=f['plan']['target'], version=f['plan']['version'], verified=True)
 
 
 if __name__ == '__main__':

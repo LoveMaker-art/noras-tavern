@@ -2,6 +2,7 @@
 import hashlib
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import errno
 import json
 import ntpath
@@ -50,9 +51,9 @@ def shared_module(name, job=None):
     return module
 
 
-def read_json(path):
+def read_json(path, *, max_bytes=2 * 1024 * 1024):
     file = io_path(path)
-    if file.is_symlink() or file.stat().st_size > 2 * 1024 * 1024:
+    if file.is_symlink() or file.stat().st_size > max_bytes:
         raise ValueError('启动器恢复记录不是有效文件')
     value = json.loads(file.read_text(encoding='utf-8'))
     if not isinstance(value, dict):
@@ -388,11 +389,12 @@ def context(job):
 @contextmanager
 def native_lock(file, *, readonly=False):
     file = io_path(file)
-    if file.is_symlink(): raise ValueError('启动器所有者锁不能是链接')
+    file_identity(file)
     if readonly and not file.exists():
         yield; return
     with file.open('r+b' if readonly else 'a+b') as stream:
-        if not readonly: os.chmod(file, 0o600)
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode): raise ValueError('启动器所有者锁不是有效文件')
         try:
             if os.name == 'nt':
                 import msvcrt
@@ -406,6 +408,9 @@ def native_lock(file, *, readonly=False):
         except OSError as error:
             raise RuntimeError('启动器更新或恢复正在进行，请等待完成。') from error
         try:
+            if file_identity(file) != [opened.st_dev, opened.st_ino]:
+                raise ValueError('启动器所有者锁身份已变化')
+            if not readonly: os.chmod(file, 0o600)
             yield
         finally:
             if os.name == 'nt':
@@ -1024,12 +1029,185 @@ def verify_historical_app_segment(ctx, sequence):
         raise ValueError('历史任务的APP交接与原操作记录不符，未修改程序')
 
 
-def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_segment=False):
+def record_digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def owned_record(path, limit=256 * 1024):
+    if file_identity(path.parent) is None or file_identity(path) is None or not io_path(path).is_file() or io_path(path).stat().st_size > limit:
+        raise ValueError('无法确认启动器恢复的原操作记录')
+    return read_json(path, max_bytes=limit)
+
+
+def bound_app_rollback(ctx, revision, snapshot):
+    plan = ctx['plan']
+    epoch, sequence = revision
+    if plan['schema'] != 2 or not plan['ownerEpoch'] <= epoch < 2**53 - 1 or not 0 < sequence < 2**53 - 1:
+        raise ValueError('无法确认启动器恢复的原操作记录')
+    operations = ctx['home'] / 'installer/operations'
+    file_identity(operations)
+    file = operations / plan['operationId'] / 'operation.json'
+    record = owned_record(file)
+    target = record.get('target')
+    request = target.get('request') if isinstance(target, dict) else None
+    pending = (record.get('ownerEpoch'), record.get('sequence'), record.get('state'), record.get('stageId')) == (
+        epoch, sequence, 'awaiting-handoff', 'recovering')
+    settled = (snapshot['phase'] == 'restored' and record.get('state') == 'rolled-back'
+        and record.get('sequence') == sequence + 1 and type(record.get('ownerEpoch')) is int
+        and epoch < record['ownerEpoch'] <= 2**53 - 1 and record.get('verification') == 'confirmed'
+        and record.get('stageId') == 'verifying' and record.get('currentFailure', False) is None
+        and record.get('effectState') == 'restored' and record.get('recoveryOutcome') == 'restored-and-verified'
+        and isinstance(record.get('result'), dict) and record['result'].get('launcherVersion') == snapshot['old']['version']
+        and record['result'].get('recoveryVerification') == 'confirmed')
+    if (record.get('schema') != 'nora-operation/1' or record.get('kind') != 'update'
+            or record.get('operationId') != plan['operationId'] or record.get('archived') is True
+            or record.get('handoffRef') != str(ctx['job']) or record.get('planDigest') != plan['planDigest']
+            or not isinstance(request, dict) or request.get('action') != 'update' or request.get('launcherOnly') is not True
+            or target.get('releasePlan') != plan['releasePlan'] or record_digest(target) != plan['planDigest']
+            or not (pending or settled)):
+        raise ValueError('APP恢复与原操作记录不符，未覆盖程序')
+    ledgers = operations / '.guards'
+    sessions = []
+    if file_identity(ledgers) is not None:
+        for ledger in io_path(ledgers).iterdir():
+            if ledger.suffix != '.json':
+                continue
+            session = owned_record(ledger, 128 * 1024)
+            if session.get('schema') != 'nora-operation-guard/1' or not isinstance(session.get('jobs'), list):
+                raise ValueError('启动器执行者记录无法确认')
+            sessions.append(session)
+    jobs = shared_module('operation_control', ctx['job']).inspect_executors(sessions)['jobs'] if sessions else []
+    if any(job.get('state') != 'offline' for job in jobs):
+        raise ValueError('启动器原执行者尚未确认退出')
+    return file, record, settled
+
+
+def legacy_update_id(value):
+    return isinstance(value, str) and bool(re.fullmatch(
+        r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', value, re.I))
+
+
+def same_legacy_release(installer, plan, record):
+    sealed = record['target']['releasePlan']
+    ref = sealed.get('manifestRef')
+    if not isinstance(plan, dict) or not isinstance(ref, dict):
+        return False
+    fields = ('schema', 'mode', 'tag', 'channel', 'platform', 'arch', 'commit', 'planId', 'launcherManifest', 'systemManifest')
+    if any(plan.get(key) != sealed.get(key) for key in fields):
+        return False
+    manifest = plan.get('releaseManifestText')
+    if not isinstance(manifest, str):
+        return False
+    data = manifest.encode()
+    sha = hashlib.sha256(data).hexdigest()
+    operation_id = record['operationId']
+    relative = f'release-plan/{sha}.json'
+    if (sealed.get('manifestSha256') != sha or ref != {'schema': 'nora-operation-manifest/1',
+            'operationId': operation_id, 'file': relative, 'size': len(data), 'sha256': sha}):
+        return False
+    source = installer / 'operations' / operation_id / relative
+    return (file_identity(source.parent) is not None and file_identity(source) is not None
+            and io_path(source).is_file() and io_path(source).stat().st_size == len(data) and digest(source) == sha)
+
+
+def retire_legacy_continuation(ctx, record, old_version):
+    request = record['target']['request']
+    sequence_id = request.get('sequenceId')
+    installer = ctx['home'] / 'installer'
+    active = installer / 'current-update-sequence.json'
+    if not legacy_update_id(sequence_id) or not exists(active):
+        return
+    # The old APP uses this reference to resume a joint update on ordinary
+    # startup. Retire only its launcher-first, never-admitted continuation.
+    try:
+        reference = owned_record(active, 1024)
+        schema = 'nora-update-sequence/1'
+        if reference != {'schema': schema, 'id': sequence_id}:
+            return
+        root = installer / 'update-sequences'
+        file_identity(root)
+        folder = root / sequence_id
+        sequence = owned_record(folder / 'request.json', 8 * 1024 * 1024)
+        requests, before = sequence.get('requests'), sequence.get('before')
+        if (sequence.get('schema') != schema or sequence.get('id') != sequence_id
+                or sequence.get('order') != ['launcher', 'core']
+                or sequence.get('digest') != record_digest({key: value for key, value in sequence.items() if key != 'digest'})
+                or not same_legacy_release(installer, sequence.get('plan'), record)
+                or not isinstance(before, dict) or before.get('launcher') != old_version
+                or before.get('core') != request.get('expectedCoreVersion')
+                or not isinstance(requests, dict) or not legacy_update_id(requests.get('launcher'))
+                or not legacy_update_id(requests.get('core')) or requests['launcher'] == requests['core']
+                or requests['launcher'] != record.get('requestId')):
+            return
+        for entry in io_path(installer / 'operations').iterdir():
+            if not legacy_update_id(entry.name) or entry.name == record['operationId']:
+                continue
+            other = owned_record(entry / 'operation.json')
+            if (other.get('schema') != 'nora-operation/1' or other.get('operationId') != entry.name
+                    or type(other.get('sequence')) is not int or not 0 <= other['sequence'] <= 2**53 - 1
+                    or type(other.get('ownerEpoch')) is not int or not 0 <= other['ownerEpoch'] <= 2**53 - 1
+                    or not isinstance(other.get('createdAt'), str) or not isinstance(other.get('target'), dict)
+                    or not isinstance(other.get('requestId'), str)
+                    or other.get('requestId') in requests.values()):
+                return
+            datetime.fromisoformat(other['createdAt'].replace('Z', '+00:00'))
+        jobs = installer / 'update-jobs'
+        if file_identity(jobs) is not None:
+            for entry in io_path(jobs).iterdir():
+                if entry.name.startswith('.submit-') or entry.name == requests['core']:
+                    return
+                if legacy_update_id(entry.name):
+                    submission = owned_record(entry / 'request.json', 8 * 1024 * 1024)
+                    submitted = submission.get('request')
+                    if (submission.get('requestId') != entry.name or not isinstance(submitted, dict)
+                            or submitted.get('schema') != 'nora-cli-request/1'
+                            or submitted.get('kind') not in ('update', 'recover')
+                            or not isinstance(submitted.get('argv'), list)
+                            or 'operationRequestId' in submission and not legacy_update_id(submission['operationRequestId'])
+                            or submission.get('operationRequestId') == requests['core']):
+                        return
+    except (OSError, ValueError) as error:
+        print('未停用旧版联合更新引用：' + str(error), file=sys.stderr, flush=True)
+        return
+    archive = folder / active.name
+    if exists(archive):
+        raise ValueError('旧版联合更新引用已存在归档，原引用已保留')
+    retry_rename(active, archive)
+
+
+def settle_app_rollback(ctx, snapshot, bound):
+    file, record, settled = bound
+    generation = file.parent.parent / '.history-generation.json'
+    if file_identity(generation) is not None and not io_path(generation).is_file():
+        raise ValueError('启动器任务代次记录无效')
+    version = snapshot['old']['version']
+    if not settled:
+        result = dict(record.get('result') or {}, launcherVersion=version, recoveryVerification='confirmed')
+        if not record.get('primaryFailure'):
+            technical = snapshot.get('diagnosticError') or {'message': '启动器更新交接未完成，已恢复原程序。'}
+            code = technical.get('code') or 'LAUNCHER_START_FAILED'
+            failure = {'code': code, 'site': 'launcher.app-recovery', 'technical': technical}
+            record.update(primaryFailure=failure, failureSignature=record_digest(failure))
+        record.update(ownerEpoch=max(int(time.time() * 1000), record['ownerEpoch']) + 1,
+                      sequence=record['sequence'] + 1, updatedAt=datetime.now(timezone.utc).isoformat(),
+                      state='rolled-back', stageId='verifying', verification='confirmed', effectState='restored',
+                      recoveryOutcome='restored-and-verified', currentFailure=None, result=result)
+        if len(json.dumps(record, ensure_ascii=False).encode()) > 256 * 1024:
+            raise ValueError('启动器恢复的原操作记录容量超限')
+        write_json(generation, {'schema': 1, 'id': str(uuid.uuid4()), 'writing': True})
+        write_json(file, record)
+    if not settled or exists(generation) and owned_record(generation, 1024).get('writing') is True:
+        write_json(generation, {'schema': 1, 'id': str(uuid.uuid4()), 'writing': False})
+    retire_legacy_continuation(ctx, record, version)
+
+
+def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_segment=False,
+            bound=None):
     helper_runtime(ctx)
     snapshot = validate_snapshot(ctx, full=True)
     if snapshot.get('phase') == 'cancelled': return {'restored': False, 'untouched': True, 'restarting': False}
     if snapshot.get('phase') == 'committed': raise ValueError('此启动器更新已提交，无需恢复')
-    if snapshot.get('phase') == 'restored': return {'restored': True, 'restarting': False}
+    if snapshot.get('phase') == 'restored' and bound is None: return {'restored': True, 'restarting': False}
     if snapshot['phase'] in ('prepared', 'waiting-parent', 'moving-old') and untouched(ctx, snapshot):
         return cancel_untouched(ctx, snapshot, historical_segment=historical_segment)
     if ctx['plan']['schema'] != 2 and not allow_legacy:
@@ -1039,31 +1217,47 @@ def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False,
         sealed = snapshot.get('recoveryParent')
         if sealed != {'pid': parent_pid, 'creationTime': parent_creation_time}:
             raise ValueError('恢复父进程与准备记录不一致')
-    checkpoint(ctx, snapshot, 'recovery-prepared', **worker_identity())
-    if parent_pid: wait_parent(parent_pid, parent_creation_time)
-    require_launcher_offline(ctx)
-    validate_snapshot(ctx, full=True)
-    if file_identity(ctx['app']) != snapshot['old']['identity']:
-        if exists(ctx['app']):
-            if exists(ctx['failed']): raise ValueError('失败程序现场已存在，未覆盖证据')
-            checkpoint(ctx, snapshot, 'moving-failed'); retry_rename(ctx['app'], ctx['failed'])
-        checkpoint(ctx, snapshot, 'restoring-old'); retry_rename(ctx['backup'], ctx['app'])
-    validate_snapshot(ctx, full=True)
+    if (bound and not bound[2] and snapshot.get('workerPid') not in (None, os.getpid())
+            and parent_alive(snapshot['workerPid'], snapshot['workerCreationTime'])):
+        raise ValueError('启动器替换助手尚未退出，旧备份继续保留')
+    if snapshot['phase'] != 'restored':
+        checkpoint(ctx, snapshot, 'recovery-prepared', **worker_identity())
+        if parent_pid: wait_parent(parent_pid, parent_creation_time)
+        require_launcher_offline(ctx)
+        validate_snapshot(ctx, full=True)
+        if file_identity(ctx['app']) != snapshot['old']['identity']:
+            if exists(ctx['app']):
+                if exists(ctx['failed']): raise ValueError('失败程序现场已存在，未覆盖证据')
+                checkpoint(ctx, snapshot, 'moving-failed'); retry_rename(ctx['app'], ctx['failed'])
+            checkpoint(ctx, snapshot, 'restoring-old'); retry_rename(ctx['backup'], ctx['app'])
+        validate_snapshot(ctx, full=True)
+    elif bound and not bound[2]:
+        require_launcher_offline(ctx)
     if historical_segment:
         # The restored binary may still have a legacy joint-update entrypoint.
         # Keep the original task and installer state read-only.
         checkpoint(ctx, snapshot, 'restored', appSegmentOnly=True, diagnosticVerification='confirmed')
         return {'restored': True, 'restarting': False, 'appSegmentOnly': True}
     should_launch = not snapshot.get('launchAttempted')
-    checkpoint(ctx, snapshot, 'restored', launchAttempted=True, diagnosticVerification='confirmed')
+    if bound:
+        if snapshot['phase'] != 'restored':
+            checkpoint(ctx, snapshot, 'restored', diagnosticVerification='confirmed')
+        settle_app_rollback(ctx, snapshot, bound)
+    else:
+        checkpoint(ctx, snapshot, 'restored', launchAttempted=True, diagnosticVerification='confirmed')
     state_file = ctx['home'] / 'installer/state.json'
     try: state = read_json(state_file) if exists(state_file) else {}
     except (OSError, ValueError): state = {}
-    state.update(phase='error', resumeTarget=None, task='', error='已恢复旧启动器。请检查更新日志后再决定是否重新更新。')
-    try: write_json(state_file, state)
-    except OSError as error:
-        snapshot['stateWriteError'] = error_data(error); checkpoint(ctx, snapshot, 'restored')
-        print('旧程序已恢复，但状态写入失败', file=sys.stderr, flush=True)
+    restored_state = dict(state, phase='error', resumeTarget=None, task='', error='已恢复旧启动器。请检查更新日志后再决定是否重新更新。')
+    if state != restored_state:
+        try: write_json(state_file, restored_state)
+        except OSError as error:
+            snapshot['stateWriteError'] = error_data(error); checkpoint(ctx, snapshot, 'restored')
+            print('旧程序已恢复，但状态写入失败', file=sys.stderr, flush=True)
+    if bound:
+        if should_launch:
+            checkpoint(ctx, snapshot, 'restored', launchAttempted=True, diagnosticVerification='confirmed')
+        return {'restored': True, 'restarting': False, '_launch': should_launch}
     if should_launch:
         try: launch_old(ctx)
         except OSError as error:
@@ -1085,7 +1279,10 @@ def prepare_recovery(job, *, parent_pid, parent_creation_time, historical_sequen
         return {'prepared': True, 'job': str(ctx['job']), 'operationId': ctx['plan'].get('operationId')}
 
 
-def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_sequence=None):
+def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_sequence=None, app_revision=None):
+    if app_revision is not None and (historical_sequence is not None or getattr(sys, '_nora_operation_delegate', None) is not None
+            or any(name.startswith('NORA_OPERATION_DELEGATE') for name in os.environ)):
+        raise ValueError('APP恢复只能由原生写者结束自己的操作')
     ctx = context(job)
     with writer_lock(ctx, successor=True), job_lock(ctx['job']):
         if historical_sequence is not None: verify_historical_app_segment(ctx, historical_sequence)
@@ -1093,8 +1290,9 @@ def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False,
         # No default legacy rollback across an unrecognized operation protocol.
         if ctx['plan']['schema'] != 2 and not allow_legacy and not untouched(ctx, snapshot):
             raise ValueError('旧启动器回滚协议未知，未覆盖程序')
-        try: return restore(ctx, parent_pid=parent_pid, parent_creation_time=parent_creation_time, allow_legacy=allow_legacy,
-                            historical_segment=historical_sequence is not None)
+        bound = bound_app_rollback(ctx, app_revision, snapshot) if app_revision is not None else None
+        try: result = restore(ctx, parent_pid=parent_pid, parent_creation_time=parent_creation_time, allow_legacy=allow_legacy,
+                              historical_segment=historical_sequence is not None, bound=bound)
         except Exception as error:
             try: phase = read_json(ctx['job'] / 'recovery.json').get('phase')
             except Exception as recording:
@@ -1106,6 +1304,14 @@ def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False,
             if phase not in ('committed', 'restored', 'cancelled'): report_failure(ctx, snapshot, 'recovery-failed', error, **worker_identity())
             freeze_failure(ctx, error)
             raise
+    if result.pop('_launch', False):
+        try: launch_old(ctx)
+        except OSError as error:
+            with writer_lock(ctx, successor=True), job_lock(ctx['job']):
+                snapshot = validate_snapshot(ctx, full=False)
+                checkpoint(ctx, snapshot, 'restored', relaunchError=error_data(error))
+            raise RuntimeError('旧程序已恢复，但无法重新打开。请手动打开原启动器。') from error
+    return result
 
 
 def finalize(job, *, target, version, verified, allow_legacy=False):
@@ -1345,9 +1551,12 @@ def main():
     parser.add_argument('--verified', action='store_true')
     parser.add_argument('--no-diagnostic-details', action='store_true')
     parser.add_argument('--historical-app-segment-sequence', type=int)
+    parser.add_argument('--settle-app-revision', nargs=2, type=int, metavar=('EPOCH', 'SEQUENCE'))
     args = parser.parse_args()
     if args.historical_app_segment_sequence is not None and not (args.prepare_recovery or args.recover):
         parser.error('历史任务的APP操作只支持原地恢复')
+    if args.settle_app_revision is not None and (not args.recover or args.historical_app_segment_sequence is not None):
+        parser.error('APP任务结束只支持独立恢复')
     job = Path(args.assess or args.inspect_outcome or args.read_outcome or args.inspect_prepared or args.diagnostics or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
     if not (args.assess or args.inspect_outcome or args.read_outcome or args.inspect_prepared or args.diagnostics or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
         parser.error('缺少更新任务目录')
@@ -1373,7 +1582,7 @@ def main():
             result = inspect_diagnostics(job, details=not args.no_diagnostic_details)
         elif args.recover:
             result = recover(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created,
-                             historical_sequence=args.historical_app_segment_sequence)
+                             historical_sequence=args.historical_app_segment_sequence, app_revision=args.settle_app_revision)
         elif args.finalize:
             result = finalize(job, target=args.target or '', version=args.version or '', verified=args.verified)
         else:
@@ -1387,7 +1596,7 @@ def main():
         elif args.recover and args.historical_app_segment_sequence is None:
             try:
                 status = read_json(job / 'status.json')
-                if status.get('workerPid') != os.getpid():
+                if status.get('workerPid') != os.getpid() and status.get('status') != 'restored':
                     write_json(job / 'status.json', {'status': 'error', 'error': str(error), 'workerPid': os.getpid(), 'diagnosticError': error_data(error)})
             except (OSError, ValueError):
                 pass
