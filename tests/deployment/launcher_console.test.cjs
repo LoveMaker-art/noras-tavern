@@ -36,7 +36,8 @@ test('console follows actual records, pauses history, copies all and returns wit
   assert.ok($('main').classList.contains('logs-open'));assert.equal(focused,output);
   assert.ok(output.children.some(line=>line.textContent.includes('\n  at unpack')));
   Object.assign(context,{firstCompletionPending:false,statusUnknown:false,say(){},renderServices(){},renderConversationEntry(){},controls(){},showVersionNotice(){}});
-  vm.runInContext(source.slice(source.indexOf('  function allRunning('),source.indexOf('  function syncState(')),context);
+  vm.runInContext(source.slice(source.indexOf('  function isAppUpdate('),source.indexOf('  function actionableUpdateRecovery(')),context);
+  vm.runInContext(source.slice(source.indexOf('  function serviceRunning('),source.indexOf('  function syncState(')),context);
   vm.runInContext(source.slice(source.indexOf('  function recoveredOperation('),source.indexOf('  function route(')),context);
   vm.runInContext(source.slice(source.indexOf('  dailyHome ='),source.indexOf('  function renderConversationEntry(')),context);
   context.dailyHome();assert.ok($('main').classList.contains('logs-open'),'a result refresh must retain the open console');
