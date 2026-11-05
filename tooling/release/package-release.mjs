@@ -25,8 +25,10 @@ const explicitOption = name => {
 };
 const publicationTag=explicitOption('--publication-tag');
 const compatibilityFile=explicitOption('--update-compatibility');
+const coreVersion=fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim();
+if(appOnly&&coreVersion.includes('-beta.'))throw new Error('APP-only packaging requires a stable core version');
 const {updateCompatibility}=readPublicationCompatibility(root,{
-    versions:{tavern:fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim()},
+    versions:{tavern:coreVersion},
     launcherVersion:JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'),'utf8')).version,
 },{compatibilityFile,candidate});
 if (candidateTelemetry && (!candidate || componentsOnly)) throw new Error('Candidate telemetry requires a complete --candidate launcher build');
