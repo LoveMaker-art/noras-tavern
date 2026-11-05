@@ -5,13 +5,16 @@ const assert = require('node:assert/strict');
 function validateInstallers(repository, tag, assetNames) {
   assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
   assert.match(tag, /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/);
+  const betaVersion = tag.includes('-beta.') ? tag.slice(1) : null;
   const platforms = [
     ['Windows x64', 'win-x64-setup.exe'],
     ['Mac Apple 芯片', 'mac-arm64.dmg'],
     ['Mac Intel', 'mac-x64.dmg'],
   ];
   for (const [label, suffix] of platforms) {
-    const matches = assetNames.filter(name => /^Nora-Tavern-Launcher-[A-Za-z0-9.+-]+$/.test(name) && name.endsWith(`-${suffix}`));
+    const matches = assetNames.filter(name => betaVersion
+      ? name === `Nora-Tavern-${betaVersion}-${suffix}`
+      : /^Nora-Tavern-Launcher-[A-Za-z0-9.+-]+$/.test(name) && name.endsWith(`-${suffix}`));
     assert.equal(matches.length, 1, `Expected exactly one installer for ${label}`);
   }
 }
