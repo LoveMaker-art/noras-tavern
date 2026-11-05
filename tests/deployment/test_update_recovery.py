@@ -1048,9 +1048,13 @@ class InterruptedRecoveryTests(unittest.TestCase):
         (reference/'program.txt').write_text('reference')
 
         def acl(path):
-            return subprocess.check_output(['powershell.exe','-NoProfile','-NonInteractive','-Command',
-                "(Get-Acl -LiteralPath $env:NORA_TEST_ACL_PATH).GetSecurityDescriptorSddlForm('Access')"],
-                env={**os.environ,'NORA_TEST_ACL_PATH':str(path)},text=True,timeout=20).strip()
+            saved=self.base/'access-dacl.txt'
+            subprocess.run(['icacls.exe',str(path),'/save',str(saved),'/L'],
+                           check=True,capture_output=True,timeout=10)
+            name,descriptor=saved.read_text(encoding='utf-16-le').lstrip('\ufeff').splitlines()
+            self.assertEqual(name,path.name)
+            self.assertTrue(descriptor.startswith('D:'))
+            return descriptor
 
         private=acl(source)
         old_acl=acl(self.old)

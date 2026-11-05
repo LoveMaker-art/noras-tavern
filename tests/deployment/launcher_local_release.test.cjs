@@ -50,6 +50,37 @@ test('local acceptance maps only exact configured domestic catalogues and sealed
     await assert.rejects(fetcher(url),/unexpected URL/);
 });
 
+test('local Beta acceptance discovers a newer APP through the configured Beta catalogue', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nora-local-beta-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const asset = 'Nora-Tavern-Launcher-win32-x64-update.zip';
+  const archive = Buffer.from('Beta APP bytes');
+  const sha256 = crypto.createHash('sha256').update(archive).digest('hex');
+  fs.writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify({
+    schema: 'tavern-release/v2', commit: 'a'.repeat(40), versions: { tavern: '2.6.5-beta.1' },
+    launcherVersion: '2.2.9', launcherCapabilities: releases.LAUNCHER_CAPABILITIES
+  }));
+  fs.writeFileSync(path.join(root, 'nora-launcher-win32-x64.json'), JSON.stringify({
+    schema: 'nora-launcher/v1', version: '2.2.9', platform: 'win32', arch: 'x64',
+    asset, sha256, size: archive.length
+  }));
+  fs.writeFileSync(path.join(root, asset), archive);
+  const transport = createLocalRelease(root);
+  const requests = [];
+  const fetcher = (url, options) => {
+    requests.push(String(url));
+    return transport(url, options);
+  };
+  const result = await releases.checkApp({ fetcher, launcherVersion: '2.2.8',
+    platform: 'win32', arch: 'x64', channel: 'beta', networkPolicy: { maxAttempts: 1 } });
+  assert.match(requests[0], /\/channels\/beta\.json$/);
+  assert.equal(result.releaseTag, 'v2.6.5-beta.1');
+  assert.equal(result.launcherLatest, '2.2.9');
+  assert.equal(result.launcherInstallable, true);
+  await assert.rejects(releases.checkApp({ fetcher, launcherVersion: '2.2.8',
+    platform: 'win32', arch: 'x64', channel: 'stable', networkPolicy: { maxAttempts: 1 } }), /尚未找到适用的APP发布/);
+});
+
 test('one local acceptance directory keeps old core discovery flat and adds an APP-only child catalogue without changing bytes',async t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-local-split-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const core={versions:{tavern:'2.5.3'},commit:'a'.repeat(40)},app={...core,commit:'b'.repeat(40),publication:{schema:'nora-component-publication/1',tag:'v2.5.4'}};
