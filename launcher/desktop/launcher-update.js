@@ -63,6 +63,11 @@ function atomicJson(file,value){
   try{fs.renameSync(temporary,file);}finally{fs.rmSync(temporary,{force:true});}
   if(process.platform!=='win32'){const parent=fs.openSync(path.dirname(file),'r');try{fs.fsyncSync(parent);}finally{fs.closeSync(parent);}}
 }
+function helperRuntimeRef(runtime){
+  return {schema:'nora-app-helper-runtime-ref/1',imageSha256:runtime.imageSha256,
+    descriptorSha256:runtime.descriptorSha256,root:runtime.root,
+    executable:path.relative(runtime.root,runtime.command).split(path.sep).join('/')};
+}
 async function prepareHandoff(options){
   const {prepared,home,executable,python,helper,previousVersion,localRelease,skillId,
     operation,spawnChild,onEvent=()=>{}}=options;
@@ -107,10 +112,7 @@ async function prepareHandoff(options){
     archive:prepared.launcher.archive,localRelease:localRelease||null,skillId:skillId||null,
     rollbackCompatibility:{operationSchema:capability.operationSchema,executorProtocol:capability.executorProtocol,
       telemetrySchema:3,faultSchema:2,compatible:true}};
-  if(options.appHelperRuntime){const runtime=options.appHelperRuntime;
-    plan.helperRuntime={schema:'nora-app-helper-runtime-ref/1',imageSha256:runtime.imageSha256,
-      descriptorSha256:runtime.descriptorSha256,root:runtime.root,
-      executable:path.relative(runtime.root,runtime.command).split(path.sep).join('/')};}
+  if(options.appHelperRuntime)plan.helperRuntime=helperRuntimeRef(options.appHelperRuntime);
   for(const name of ['operation_control.py','operation_evidence.py','error_diagnostics.py','operation-budget.json']){
     const source=capability.resources[name];
     fs.copyFileSync(source.path,path.join(job,name));fs.chmodSync(path.join(job,name),0o600);
@@ -455,6 +457,8 @@ async function recover(options) {
   const operation=options.operation;
   const settlement=!options.historicalAppSegment&&operation?.state==='awaiting-handoff'&&operation.stageId==='recovering'
     ?['--settle-app-revision',String(operation.ownerEpoch),String(operation.snapshotSequence)]:[];
+  if(settlement.length&&options.appHelperRuntime?.materialized)
+    settlement.push('--app-rollback-runtime',Buffer.from(JSON.stringify(helperRuntimeRef(options.appHelperRuntime))).toString('base64'));
   if (state === null) {
     const result = await callHelper(options, options.helper, ['--recover',job,...historicalRecoveryArgs(options),...settlement],job);
     if (result.restored !== true) throw new Error('此启动器任务无需恢复。');

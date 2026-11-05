@@ -275,6 +275,10 @@ test('historical APP rollback restores old bytes without launching the old joint
 
 test('APP recovery adapter closes the original restored operation using its final handoff revision',async t=>{
   const f=fixture(t,{phase:'restored'});
+  const windows=process.platform==='win32';
+  const interpreter=path.join(f.home,'hermes','hermes-agent','venv',windows?'Scripts/python.exe':'bin/python3');
+  fs.mkdirSync(path.dirname(interpreter),{recursive:true});
+  fs.copyFileSync(python,interpreter);
   const operation={...f.operation,schema:'nora-operation/1',state:'awaiting-handoff',stageId:'recovering',
     sequence:8,snapshotSequence:8,verification:'unconfirmed'};
   const file=path.join(f.operationDirectory,'operation.json');
@@ -288,6 +292,8 @@ test('APP recovery adapter closes the original restored operation using its fina
   assert.equal(closed.state,'rolled-back');assert.equal(closed.verification,'confirmed');
   assert.equal(closed.result.launcherVersion,'1.0.0');
   assert.equal(closed.currentFailure,null);assert.equal(closed.handoffRef,f.job);
+  const entry=path.join(f.job,windows?'恢复旧启动器.cmd':'恢复旧启动器.command');
+  assert.match(fs.readFileSync(entry,'utf8'),/--settle-app-revision \d+ 8/);
   f.assertPreserved();
 });
 

@@ -708,7 +708,7 @@ else: w.recover(job,allow_legacy=True)
 
 
 class OperationReplacementTests(unittest.TestCase):
-    def bound_app_rollback(self):
+    def bound_app_rollback(self, *, old_helper=False):
         f = self.fixture()
         f['plan']['parentCreationTime'] -= 100
         sequence_id, launcher_request, core_request = (str(uuid.uuid4()) for _ in range(3))
@@ -745,6 +745,9 @@ class OperationReplacementTests(unittest.TestCase):
                    'before': {'launcher': f['plan']['previousVersion'], 'core': '2.6.4'},
                    'plan': full_release}
         worker.write_json(request, {**content, 'digest': digest(content)})
+        if old_helper:
+            with (f['job'] / 'replace.py').open('ab') as stream:
+                stream.write(b'\n# Previously sealed helper bytes\n')
         worker.prepare(f['job']); f['owner'].execute(f)
         return f, operation, pointer, request, core_request
 
@@ -815,6 +818,38 @@ class OperationReplacementTests(unittest.TestCase):
         self.assertFalse(worker.read_json(generation)['writing'])
         self.assertEqual(operation.read_bytes(), original)
         self.assertTrue(request.with_name(pointer.name).exists())
+
+    def test_rollback_entry_preserves_the_current_helper_and_revision_before_the_swap(self):
+        f, operation, _, _, _ = self.bound_app_rollback(old_helper=True)
+        job = f['job']
+        entry = job / '恢复旧启动器.cmd'
+        sealed = {name: (job / name).read_bytes() for name in ('plan.json', 'replace.py')}
+        previous_entry = entry.read_bytes()
+        with patch.object(worker, 'settle_app_rollback', side_effect=OSError('injected before canonical commit')):
+            with self.assertRaisesRegex(OSError, 'injected before canonical commit'):
+                worker.recover(job, app_revision=(2, 8))
+        self.assertEqual(worker.read_json(job / 'recovery.json')['phase'], 'restored')
+        self.assertEqual(worker.read_json(operation)['state'], 'awaiting-handoff')
+        published = entry.read_bytes()
+        self.assertNotEqual(published, previous_entry)
+        self.assertIn(b'--settle-app-revision 2 8', published)
+        helpers = list(job.glob('r-*.py'))
+        self.assertEqual(len(helpers), 1)
+        self.assertEqual(helpers[0].read_bytes(), SOURCE.read_bytes())
+        self.assertIn(helpers[0].name.encode(), published)
+        self.assertIn(worker.digest(helpers[0]).encode(), published)
+        self.assertEqual({name: (job / name).read_bytes() for name in sealed}, sealed)
+        rejected = subprocess.run([sys.executable, '-I', '-B', '-c', worker.ROLLBACK_BOOTSTRAP,
+            str(helpers[0]), '0' * 64, '--recover', str(job), '--settle-app-revision', '2', '8'],
+            capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('Recovery helper digest mismatch', rejected.stderr)
+        self.assertEqual(worker.read_json(operation)['state'], 'awaiting-handoff')
+        with patch.object(worker, 'launch_old') as launch:
+            worker.recover(job, app_revision=(2, 8))
+        launch.assert_called_once()
+        self.assertEqual(worker.read_json(operation)['state'], 'rolled-back')
+        self.assertEqual(entry.read_bytes(), published)
 
     def test_bound_app_rollback_keeps_legacy_pointer_for_unknown_other_records(self):
         for kind in ('operation', 'submission'):

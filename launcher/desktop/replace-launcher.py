@@ -1,6 +1,7 @@
 """Replace only the desktop application; run from the existing Hermes Python."""
 import hashlib
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import errno
@@ -9,6 +10,7 @@ import ntpath
 import os
 import plistlib
 import shutil
+import shlex
 import stat
 import re
 import subprocess
@@ -62,15 +64,19 @@ def read_json(path, *, max_bytes=2 * 1024 * 1024):
 
 
 def write_json(file, value):
-    file = io_path(file)
-    if file.is_symlink() or file.parent.is_symlink(): raise ValueError('启动器记录不能是链接')
     encoded = json.dumps(value, ensure_ascii=False).encode('utf-8')
     if len(encoded) > 2 * 1024 * 1024: raise ValueError('启动器记录容量超限')
+    write_bytes(file, encoded)
+
+
+def write_bytes(file, encoded, *, mode=0o600):
+    file = io_path(file)
+    if file.is_symlink() or file.parent.is_symlink(): raise ValueError('启动器记录不能是链接')
     descriptor, temporary = tempfile.mkstemp(prefix='.' + file.name + '-', dir=file.parent)
     try:
         with os.fdopen(descriptor, 'wb') as stream:
             stream.write(encoded); stream.flush(); os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
+        os.chmod(temporary, mode)
         # Windows readers can briefly prevent replacement even when their
         # handles share DELETE. Retain this exact payload and the old record
         # while waiting; permanent denial still fails within a bounded time.
@@ -449,8 +455,8 @@ def checkpoint(ctx, snapshot, phase, **extra):
         'operationId': snapshot.get('operationId'), 'planDigest': snapshot.get('planDigest'), **extra})
 
 
-def helper_runtime(ctx):
-    ref = ctx['plan'].get('helperRuntime')
+def helper_runtime(ctx, ref=None):
+    if ref is None: ref = ctx['plan'].get('helperRuntime')
     if ref is None: return None  # Preserve the original old-job contract.
     if (not isinstance(ref, dict) or ref.get('schema') != 'nora-app-helper-runtime-ref/1'
             or not re.fullmatch(r'[a-f0-9]{64}', ref.get('imageSha256', ''))
@@ -517,51 +523,96 @@ def helper_runtime(ctx):
     return python
 
 
-def recovery_entry(ctx):
+ROLLBACK_BOOTSTRAP = (
+    "import hashlib,sys; p=sys.argv.pop(1); sha=sys.argv.pop(1); s=chr(92); u=s*2+'?'+s; "
+    "f=(u+'UNC'+s+p[2:] if p.startswith(s*2) else u+p) if sys.platform=='win32' and not p.startswith(u) else p; "
+    "b=open(f,'rb').read(2097153); "
+    "sys.exit('Recovery helper digest mismatch') if hashlib.sha256(b).hexdigest()!=sha else None; "
+    "sys.argv[0]=p; exec(compile(b,p,'exec'),dict(__name__='__main__',__file__=p))"
+)
+
+
+def recovery_entry(ctx, *, runtime_ref=None, helper_name='replace.py', helper_sha=None, revision=None):
     job, home, platform = ctx['job'], ctx['home'], ctx['plan']['platform']
-    helper = job / 'replace.py'
+    helper = job / helper_name
     if not io_path(helper).is_file() or io_path(helper).is_symlink():
         raise ValueError('缺少本地启动器恢复程序，旧启动器未退出')
-    owned = helper_runtime(ctx)
+    ref = runtime_ref if runtime_ref is not None else ctx['plan'].get('helperRuntime')
+    owned = helper_runtime(ctx, ref)
+    if revision is not None:
+        args = ['--settle-app-revision', str(revision[0]), str(revision[1])]
+        if runtime_ref is not None:
+            encoded = base64.b64encode(json.dumps(runtime_ref, ensure_ascii=False).encode()).decode('ascii')
+            args.extend(('--app-rollback-runtime', encoded))
+        suffix = ' ' + ' '.join(args)
+    else:
+        suffix = ''
     if owned is not None:
-        ref = ctx['plan']['helperRuntime']
         relative = '../../app-helper-runtime/' + Path(ref['root']).name + '/' + ref['executable']
         python = owned
-        if platform == 'win32':
-            script = job / '恢复旧启动器.cmd'
-            # cmd.exe cannot launch an extended executable path directly.
-            # Use the Windows native caller so Python's DLL loader retains it.
-            body = (
-                '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n'
-                'set "NORA_APP_RECOVERY_PYTHON=%~dp0' + relative.replace('/', '\\') + '"\r\n'
-                'set "NORA_APP_RECOVERY_JOB=%~dp0"\r\n'
-                '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive '
-                '-Command "$p=[IO.Path]::GetFullPath($env:NORA_APP_RECOVERY_PYTHON);'
-                r"if($p.StartsWith('\\')){$p='\\?\UNC\'+$p.Substring(2)}else{$p='\\?\'+$p};"
-                "& $p -I -B ($env:NORA_APP_RECOVERY_JOB+'replace.py') --recover ($env:NORA_APP_RECOVERY_JOB+'.');"
-                'if($null -eq $LASTEXITCODE){exit 1};exit $LASTEXITCODE"\r\n'
-                'if errorlevel 1 (pause & exit /b 1)\r\nexit /b 0\r\n'
-            )
-        else:
-            script = job / '恢复旧启动器.command'
-            body = '#!/bin/sh\nset -eu\njob=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)\nexec "$job/' + relative + '" -I -B "$job/replace.py" --recover "$job"\n'
     elif platform == 'win32':
-        python = home / 'hermes/hermes-agent/venv/Scripts/python.exe'
-        script = job / '恢复旧启动器.cmd'
-        body = '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n"%~dp0..\\..\\..\\hermes\\hermes-agent\\venv\\Scripts\\python.exe" -B "%~dp0replace.py" --recover "%~dp0."\r\nif errorlevel 1 pause\r\n'
+        relative = '../../../hermes/hermes-agent/venv/Scripts/python.exe'
+        python = job / relative
     else:
         directory = home / 'hermes/hermes-agent/venv/bin'
         name = next((name for name in ('python3', 'python') if io_path(directory / name).is_file()), None)
         if name is None:
             raise ValueError('未找到受管 Python，旧启动器未退出')
         python = directory / name
-        script = job / '恢复旧启动器.command'
-        body = '#!/bin/sh\nset -eu\njob=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)\nexec "$job/../../../hermes/hermes-agent/venv/bin/' + name + '" -B "$job/replace.py" --recover "$job"\n'
+        relative = '../../../hermes/hermes-agent/venv/bin/' + name
     if not io_path(python).is_file():
         raise ValueError('未找到受管 Python，旧启动器未退出')
-    io_path(script).write_text(body, encoding='utf-8', newline='')
-    io_path(script).chmod(0o700)
+    if platform == 'win32':
+        script = job / '恢复旧启动器.cmd'
+        if owned is None and revision is None:
+            body = '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n"%~dp0..\\..\\..\\hermes\\hermes-agent\\venv\\Scripts\\python.exe" -B "%~dp0replace.py" --recover "%~dp0."\r\nif errorlevel 1 pause\r\n'
+        else:
+            # The private interpreter needs its extended path for native DLLs.
+            extended = r"if($p.StartsWith('\\')){$p='\\?\UNC\'+$p.Substring(2)}else{$p='\\?\'+$p};" if owned else ''
+            entry = "($env:NORA_APP_RECOVERY_JOB+'" + helper_name + "')"
+            if helper_sha is not None:
+                bootstrap = ROLLBACK_BOOTSTRAP.replace("'", "''")
+                entry = f"-c '{bootstrap}' {entry} '{helper_sha}'"
+            body = (
+                '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%SystemRoot%"\r\n'
+                'set "NORA_APP_RECOVERY_PYTHON=%~dp0' + relative.replace('/', '\\') + '"\r\n'
+                'set "NORA_APP_RECOVERY_JOB=%~dp0"\r\n'
+                '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive '
+                '-Command "$p=[IO.Path]::GetFullPath($env:NORA_APP_RECOVERY_PYTHON);' + extended +
+                f"& $p -I -B {entry} --recover ($env:NORA_APP_RECOVERY_JOB+'.'){suffix};"
+                'if($null -eq $LASTEXITCODE){exit 1};exit $LASTEXITCODE"\r\n'
+                'if errorlevel 1 (pause & exit /b 1)\r\nexit /b 0\r\n'
+            )
+    else:
+        script = job / '恢复旧启动器.command'
+        entry = f'"$job/{helper_name}"'
+        if helper_sha is not None:
+            entry = f'-c {shlex.quote(ROLLBACK_BOOTSTRAP)} {entry} {helper_sha}'
+        flags = '-I -B' if owned is not None or revision is not None else '-B'
+        body = '#!/bin/sh\nset -eu\njob=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)\n'
+        body += f'exec "$job/{relative}" {flags} {entry} --recover "$job"{suffix}\n'
+    encoded = body.encode('utf-8')
+    current = io_path(script)
+    if (file_identity(script) is None or not current.is_file() or current.stat().st_size != len(encoded)
+            or current.read_bytes() != encoded):
+        write_bytes(script, encoded, mode=0o700)
     return script
+
+
+def stage_app_rollback_entry(ctx, snapshot, revision, runtime_ref):
+    with io_path(__file__).open('rb') as stream:
+        source = stream.read(2097153)
+    if len(source) > 2097152:
+        raise ValueError('APP恢复助手容量超限，未覆盖程序')
+    sha = hashlib.sha256(source).hexdigest()
+    helper = ctx['job'] / ('replace.py' if sha == snapshot['helperDigest'] else f'r-{sha[:20]}.py')
+    if file_identity(helper) is None:
+        write_bytes(helper, source)
+    elif not io_path(helper).is_file() or digest(helper) != sha:
+        raise ValueError('APP恢复助手摘要不符，未覆盖程序')
+    # Publish the only entry after its helper is durable and before the GUI
+    # sees recovery-prepared. The old program can then run the same revision.
+    recovery_entry(ctx, runtime_ref=runtime_ref, helper_name=helper.name, helper_sha=sha, revision=revision)
 
 
 RECOVERABLE_PHASES = frozenset(('prepared', 'waiting-parent', 'moving-old', 'installing-new', 'awaiting-launcher',
@@ -1279,7 +1330,10 @@ def prepare_recovery(job, *, parent_pid, parent_creation_time, historical_sequen
         return {'prepared': True, 'job': str(ctx['job']), 'operationId': ctx['plan'].get('operationId')}
 
 
-def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_sequence=None, app_revision=None):
+def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False, historical_sequence=None,
+            app_revision=None, app_runtime=None):
+    if app_runtime is not None and app_revision is None:
+        raise ValueError('APP恢复运行资源缺少原任务修订')
     if app_revision is not None and (historical_sequence is not None or getattr(sys, '_nora_operation_delegate', None) is not None
             or any(name.startswith('NORA_OPERATION_DELEGATE') for name in os.environ)):
         raise ValueError('APP恢复只能由原生写者结束自己的操作')
@@ -1291,6 +1345,8 @@ def recover(job, *, parent_pid=0, parent_creation_time=None, allow_legacy=False,
         if ctx['plan']['schema'] != 2 and not allow_legacy and not untouched(ctx, snapshot):
             raise ValueError('旧启动器回滚协议未知，未覆盖程序')
         bound = bound_app_rollback(ctx, app_revision, snapshot) if app_revision is not None else None
+        if bound and snapshot['phase'] not in ('cancelled', 'committed'):
+            stage_app_rollback_entry(ctx, snapshot, app_revision, app_runtime)
         try: result = restore(ctx, parent_pid=parent_pid, parent_creation_time=parent_creation_time, allow_legacy=allow_legacy,
                               historical_segment=historical_sequence is not None, bound=bound)
         except Exception as error:
@@ -1552,11 +1608,14 @@ def main():
     parser.add_argument('--no-diagnostic-details', action='store_true')
     parser.add_argument('--historical-app-segment-sequence', type=int)
     parser.add_argument('--settle-app-revision', nargs=2, type=int, metavar=('EPOCH', 'SEQUENCE'))
+    parser.add_argument('--app-rollback-runtime')
     args = parser.parse_args()
     if args.historical_app_segment_sequence is not None and not (args.prepare_recovery or args.recover):
         parser.error('历史任务的APP操作只支持原地恢复')
     if args.settle_app_revision is not None and (not args.recover or args.historical_app_segment_sequence is not None):
         parser.error('APP任务结束只支持独立恢复')
+    if args.app_rollback_runtime is not None and (args.settle_app_revision is None or len(args.app_rollback_runtime) > 8192):
+        parser.error('APP恢复运行资源无效')
     job = Path(args.assess or args.inspect_outcome or args.read_outcome or args.inspect_prepared or args.diagnostics or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
     if not (args.assess or args.inspect_outcome or args.read_outcome or args.inspect_prepared or args.diagnostics or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
         parser.error('缺少更新任务目录')
@@ -1581,8 +1640,12 @@ def main():
         elif args.diagnostics:
             result = inspect_diagnostics(job, details=not args.no_diagnostic_details)
         elif args.recover:
+            runtime = json.loads(base64.b64decode(args.app_rollback_runtime, validate=True)) if args.app_rollback_runtime else None
+            if args.app_rollback_runtime is not None and not isinstance(runtime, dict):
+                raise ValueError('APP恢复运行资源无效')
             result = recover(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created,
-                             historical_sequence=args.historical_app_segment_sequence, app_revision=args.settle_app_revision)
+                             historical_sequence=args.historical_app_segment_sequence, app_revision=args.settle_app_revision,
+                             app_runtime=runtime)
         elif args.finalize:
             result = finalize(job, target=args.target or '', version=args.version or '', verified=args.verified)
         else:
