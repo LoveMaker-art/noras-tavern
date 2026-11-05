@@ -42,8 +42,15 @@ function createLocalRelease(directory, sourceOptions = {}) {
     for(const candidate of sourceCandidates(`${api}tags/${encodeURIComponent(item.release.tag_name)}`,sourceOptions))catalogues.set(candidate.url,item.release);
   }
   for(const candidate of sourceCandidates(`${api}latest`,sourceOptions))catalogues.set(candidate.url,core.release);
-  const lists=new Set([releaseListUrl(),`${api.slice(0,-1)}?per_page=100&page=1`]
-    .flatMap(url=>sourceCandidates(url,sourceOptions).map(candidate=>candidate.url)));
+  const releaseList=[app?.release||core.release];
+  const lists=new Map();
+  const channels=[[releaseListUrl(),'beta'],[`${api.slice(0,-1)}?per_page=100&page=1`,'stable']];
+  for(const [url,channel] of channels){
+    const channelReleases=releaseList.filter(release=>release.prerelease===(channel==='beta'));
+    for(const candidate of sourceCandidates(url,{...sourceOptions,channel})){
+      lists.set(candidate.url,candidate.mirror?channelReleases:releaseList);
+    }
+  }
   const response = (body, url, headers) => {
     const value = new Response(body, { headers });
     Object.defineProperty(value, 'url', { value: url });
@@ -52,7 +59,7 @@ function createLocalRelease(directory, sourceOptions = {}) {
   return async (url, options = {}) => {
     options.signal?.throwIfAborted();
     url = String(url);
-    if (lists.has(url)) return response(JSON.stringify([app?.release||core.release]),url,{'Content-Type':'application/json'});
+    if (lists.has(url)) return response(JSON.stringify(lists.get(url)),url,{'Content-Type':'application/json'});
     if (catalogues.has(url)) {
       return response(JSON.stringify(catalogues.get(url)), url, { 'Content-Type': 'application/json' });
     }
