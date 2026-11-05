@@ -283,7 +283,7 @@ test('APP recovery adapter closes the original restored operation using its fina
     sequence:8,snapshotSequence:8,verification:'unconfirmed'};
   const file=path.join(f.operationDirectory,'operation.json');
   fs.writeFileSync(file,JSON.stringify(operation));
-  const journal=path.join(f.job,'recovery.json'),snapshot=JSON.parse(fs.readFileSync(journal));
+  const journal=path.join(f.job,'recovery.json'),snapshot=mutableRecovery(fs.readFileSync(journal));
   fs.writeFileSync(journal,JSON.stringify({...snapshot,launchAttempted:true}));
   const result=await update.recover({...f,operation});
   assert.equal(result.restored,true);
