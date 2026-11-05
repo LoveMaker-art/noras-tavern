@@ -759,8 +759,12 @@ def assess(job, *, allow_legacy=False):
             try: worker_offline = not parent_alive(snapshot['workerPid'], snapshot['workerCreationTime'])
             except (psutil.Error, OSError, ValueError) as error: worker_error = error
         supported = ctx['plan']['schema'] == 2 or allow_legacy or is_untouched
+        acknowledged = False
+        if phase == 'awaiting-system' and worker_offline and not busy and snapshot.get('recoveryParent') is None:
+            try: acknowledged = ready_acknowledged(ctx)
+            except (OSError, ValueError): pass  # Retain the explicit recovery option for an invalid acknowledgement.
         return {'job': str(ctx['job']), 'status': phase, 'canRecover': not busy and supported and worker_error is None, 'busy': busy,
-                'workerOffline': worker_offline, 'untouched': is_untouched, 'effectState': effect,
+                'workerOffline': worker_offline, 'acknowledged': acknowledged, 'untouched': is_untouched, 'effectState': effect,
                 'operationId': snapshot.get('operationId'), 'planDigest': snapshot.get('planDigest'),
                 'reason': '启动器更新或恢复正在进行，请等待完成。' if busy else '工作进程身份无法确认，已保留现场' if worker_error else '' if supported else '旧启动器恢复记录不支持当前操作协议',
                 'version': snapshot['old']['version'], 'backup': str(ctx['backup']),
@@ -1115,6 +1119,8 @@ def finalize(job, *, target, version, verified, allow_legacy=False):
         if snapshot.get('phase') == 'committed': return {'status': 'committed'}
         if snapshot.get('phase') != 'awaiting-system' or file_identity(ctx['app']) != snapshot['incoming']['identity']:
             raise ValueError('启动器尚未确认成功，旧备份继续保留')
+        if snapshot.get('recoveryParent') is not None:
+            raise ValueError('启动器已准备恢复，旧备份继续保留')
         if ctx['plan']['schema'] == 2 and parent_alive(snapshot['workerPid'], snapshot['workerCreationTime']):
             raise ValueError('启动器替换助手尚未退出，旧备份继续保留')
         if ctx['plan']['schema'] == 2 and not ready_acknowledged(ctx):

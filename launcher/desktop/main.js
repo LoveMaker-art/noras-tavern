@@ -181,7 +181,7 @@ function operations() {
     captureConditions:(record,context)=>maintenancePolicy().initialConditions(record,context),
     identifyFailureCondition:(error,record)=>maintenancePolicy().identifyFailureCondition(error,record),
     verifyHandoff:async(record,proof)=>launcherUpdate.verifyHandoff({...launcherRecoveryOptions(),job:proof.job,
-      operation:record,version:app.getVersion(),planDigest:proof.planDigest}),
+      operation:record,version:app.getVersion(),planDigest:proof.planDigest,ordinaryReopen:proof.ordinaryReopen}),
     verifyRecoveryHandoff:async(record,proof)=>launcherUpdate.verifyRecovery({...launcherRecoveryOptions(),job:proof?.job,operation:record}),
     verifyRestoredHandoff:async(record,context)=>{
       const previous=activeOperationContext;activeOperationContext=context;
@@ -1079,7 +1079,7 @@ async function ensureAppHelperRuntime({refresh=false,lease}={}){
   return appHelperRuntimeRequest;
 }
 
-async function reconcileRestoredHandoff() {
+async function reconcileRestoredHandoff(webContents) {
   // The restored GUI can start just before its helper releases the writer.
   // Wait for that owner, then perform one explicit verification, never a
   // repeated full-tree check in the ordinary status polling path.
@@ -1090,29 +1090,35 @@ async function reconcileRestoredHandoff() {
     if(pending.state==='interrupted'||pending.kind==='update'&&pending.target?.request?.launcherOnly===true
       &&['awaiting-handoff','verifying','committing'].includes(pending.state)){
       await ensureAppHelperRuntime();
-      return operations().recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
+      const operation=await operations().recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
+      if(operation.target?.request?.launcherOnly===true&&['awaiting-handoff','verifying','committing','interrupted'].includes(operation.state))
+        return continueSelfUpdate(pending.handoffRef,webContents,operation);
+      return operation;
     }
     return;
   }
 }
 
-async function continueSelfUpdate(job,webContents){
+async function continueSelfUpdate(job,webContents,ordinaryOperation){
   await ensureAppHelperRuntime();
   const resumeOptions={home:noraHome(),executable:process.execPath,version:app.getVersion()};
+  const handoff={job,planDigest:ordinaryOperation?.planDigest,ordinaryReopen:Boolean(ordinaryOperation)};
+  if(ordinaryOperation&&!await launcherUpdate.verifyHandoff({...launcherRecoveryOptions(),...handoff,
+    operation:ordinaryOperation,version:resumeOptions.version}))return ordinaryOperation;
   const plan=launcherUpdate.resume(job,resumeOptions);
   if(!plan)return null;
   let operation=await operations().snapshot(plan.operationId);
   if(!ownsDesktopOperation(operation)||operation.kind!=='update'
     ||operation.handoffRef!==job||operation.planDigest!==plan.planDigest)
     throw launcherError('启动器交接与原APP任务不一致。',{code:'OPERATION_CAPABILITY_REQUIRED'});
-  launcherUpdate.resume(job,{...resumeOptions,operation});
+  if(!ordinaryOperation)launcherUpdate.resume(job,{...resumeOptions,operation});
   if(!['succeeded','rolled-back'].includes(operation.state)){
     await launcherUpdate.waitHandoff({...launcherRecoveryOptions(),job,operation});
     operation=await operations().recheck(plan.operationId,{snapshotSequence:operation.snapshotSequence});
     if(!['succeeded','rolled-back','failed','cancelled','blocked'].includes(operation.state)){
       writeInstallerState({...readInstallerState(),resumeTarget:plan.target});
       operation=await operations().resume(plan.operationId,{snapshotSequence:operation.snapshotSequence,
-        handoff:{job,planDigest:plan.planDigest},event:{sender:webContents},
+        handoff:{...handoff,planDigest:plan.planDigest},event:{sender:webContents},
         runId:operation.requestId,onFailure:rememberOperationFailure});
     }
   }
@@ -2521,7 +2527,7 @@ if (primaryInstance) {
         if (SELF_UPDATE_JOB || app.isPackaged) activeRun = true;
         createWindow();
         if(!SELF_UPDATE_JOB){
-          if(app.isPackaged)void reconcileRestoredHandoff()
+          if(app.isPackaged)void reconcileRestoredHandoff(BrowserWindow.getAllWindows()[0].webContents)
             .catch(error=>diagnostics.error('update.restored-handoff-unconfirmed',error))
             .finally(()=>{
               activeRun=false;activeOperationContext=null;

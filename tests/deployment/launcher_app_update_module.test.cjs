@@ -108,6 +108,24 @@ test('SELF plan ownership can be inspected without ACK; only an authenticated op
   assert.deepEqual(JSON.parse(fs.readFileSync(ready)),{schema:'nora-launcher-handoff/1',token:plan.token,version:'1.1.0',
     operationId:f.operation.operationId,planDigest:f.operation.planDigest});f.assertPreserved();
 });
+test('ordinary reopen only resumes an offline APP handoff with an existing matching acknowledgement',async t=>{
+  const f=fixture(t,{phase:'awaiting-system'}),ready=path.join(f.job,'ready.json');
+  const options={...f,version:'1.1.0',planDigest:f.operation.planDigest,ordinaryReopen:true};
+  assert.equal(await update.verifyHandoff(options),false);
+  assert.equal(fs.existsSync(ready),false);
+  update.resume(f.job,{...options,operation:f.operation});
+  const acknowledged=fs.readFileSync(ready);
+  assert.equal(await update.verifyHandoff(options),true);
+  assert.deepEqual(fs.readFileSync(ready),acknowledged);
+  assert.equal(await update.verifyHandoff({...options,version:'1.0.0'}),false);
+  const recoveryFile=path.join(f.job,'recovery.json'),snapshot=mutableRecovery(fs.readFileSync(recoveryFile));
+  snapshot.recoveryParent={pid:123,creationTime:1};
+  fs.writeFileSync(recoveryFile,JSON.stringify(snapshot));
+  assert.equal(await update.verifyHandoff(options),false,'An already requested rollback must retain priority');
+  assert.throws(()=>execFileSync(python,['-B',f.helper,'--finalize',f.job,'--target','v2.6.0','--version','1.1.0','--verified'],
+    {encoding:'utf8',stdio:['ignore','pipe','pipe']}),error=>error.status===1&&/已准备恢复/.test(error.stderr));
+  f.assertPreserved();
+});
 for(const phase of ['restored','cancelled'])test(`APP module projects ${phase} without core acceptance`,async t=>{
   const f=fixture(t,{phase});const result=await update.reconcileAppHandoff(f);
   assert.equal(result.status,phase);assert.equal(result.value[phase==='restored'?'recoveryVerification':'notAppliedVerification'],'confirmed');

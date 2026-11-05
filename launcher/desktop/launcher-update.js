@@ -173,7 +173,9 @@ async function verifyHandoff(options){
     if(plan.schema!==2||plan.operationId!==options.operation.operationId||plan.planDigest!==options.planDigest
       ||options.operation.planDigest!==plan.planDigest||options.operation.handoffRef!==job||plan.version!==options.version)return false;
     const observed=await assessJob({...options,job});
-    if(observed?.status==='awaiting-system'&&observed.busy===false&&observed.workerOffline===true)return true;
+    if(observed?.status==='awaiting-system'&&observed.busy===false&&observed.workerOffline===true)
+      return !options.ordinaryReopen||appOperation(options.operation)&&observed.acknowledged===true;
+    if(options.ordinaryReopen)return false;
     if(observed===null)return (await inspectOutcome(options))?.status==='committed';
     return false;
   }catch{return false;}
