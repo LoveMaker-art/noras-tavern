@@ -882,6 +882,26 @@ def launcher_environment(ctx):
     env = {key: value for key, value in os.environ.items() if not key.startswith('NORA_OPERATION_DELEGATE')}
     env.pop('ELECTRON_RUN_AS_NODE', None); env.pop('NODE_OPTIONS', None); env.pop('NODE_PATH', None)
     env.pop('__PYVENV_LAUNCHER__', None)
+    encoded_profile = env.pop('NORA_APP_RELAUNCH_PROFILE', None)
+    if encoded_profile is not None:
+        # The helper's private Python profile is not the new desktop's profile.
+        invalid = '启动器重启环境无效，请保留现有安装和日志。'
+        try:
+            if len(encoded_profile.encode('utf-8')) > 16 * 1024:
+                raise ValueError(invalid)
+            profile = json.loads(encoded_profile)
+        except (ValueError, RecursionError) as error:
+            raise ValueError(invalid) from error
+        keys = {'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TMPDIR', 'TEMP', 'TMP'}
+        if not isinstance(profile, dict) or any(
+                key not in keys or value is not None and (not isinstance(value, str) or '\0' in value)
+                for key, value in profile.items()):
+            raise ValueError(invalid)
+        for key, value in profile.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
     env['NORA_TAVERN_HOME'] = str(ctx['home'])
     return env
 

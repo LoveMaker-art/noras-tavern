@@ -275,6 +275,28 @@ const deadline=Date.now()+10000,t=setInterval(()=>{if(fs.existsSync(path.join(ro
             self.assertNotIn(name, environment)
         self.assertEqual(environment['NORA_TAVERN_HOME'], str(Path('/fixture/nora')))
 
+    def test_desktop_relaunch_restores_profile_from_private_helper(self):
+        desktop = {'HOME': '/fixture/desktop', 'USERPROFILE': '/fixture/desktop',
+                   'APPDATA': None, 'LOCALAPPDATA': '/fixture/desktop/local',
+                   'TMPDIR': '/fixture/desktop-temp', 'TEMP': None, 'TMP': '/fixture/desktop-temp'}
+        helper = {name: '/fixture/private-helper' for name in desktop}
+        with patch.dict(os.environ, {**helper, 'NORA_TAVERN_HOME': '/fixture/untrusted',
+                'NORA_APP_RELAUNCH_PROFILE': json.dumps(desktop)}, clear=True):
+            home = Path('/fixture/nora')
+            environment = worker.launcher_environment({'home': home})
+        self.assertEqual(environment, {**{key: value for key, value in desktop.items() if value is not None},
+                                      'NORA_TAVERN_HOME': str(home)})
+
+    def test_desktop_relaunch_rejects_invalid_or_unbounded_profile(self):
+        for profile in ('[]', '{', json.dumps({'PATH': '/fixture/foreign'}),
+                        json.dumps({'NORA_TAVERN_HOME': '/fixture/foreign'}),
+                        json.dumps({'HOME': 0}), json.dumps({'HOME': 'invalid\0path'}),
+                        json.dumps({'HOME': 'a' * (16 * 1024)})):
+            with self.subTest(profile_prefix=profile[:48]), \
+                    patch.dict(os.environ, {'NORA_APP_RELAUNCH_PROFILE': profile}, clear=True):
+                with self.assertRaisesRegex(ValueError, '启动器重启环境无效'):
+                    worker.launcher_environment({'home': Path('/fixture/nora')})
+
     def test_windows_unknown_parent_state_is_never_treated_as_exit(self):
         import ctypes
         from unittest.mock import Mock
