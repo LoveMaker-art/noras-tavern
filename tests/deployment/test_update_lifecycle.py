@@ -166,6 +166,10 @@ class UpdateLifecycleTests(unittest.TestCase):
             stack.enter_context(patch.object(bridge, 'python_command', return_value='isolated-python'))
             run = stack.enter_context(patch.object(bridge, 'run_stream'))
             gateway = stack.enter_context(patch.object(bridge, 'start_gateway'))
+            tavern_status = stack.enter_context(patch.object(bridge, '_native_lifecycle_status',
+                return_value={'port': self.args.port, 'health': {'ok': True}, 'process_running': True}))
+            gateway_status = stack.enter_context(patch.object(bridge, 'gateway_status',
+                return_value={'gatewayRunning': True, 'clawchatConnected': True}))
             verify = stack.enter_context(patch.object(bridge.nora_system, 'verify_runtime'))
             mark = stack.enter_context(patch.object(bridge.nora_system, 'mark_setup_complete'))
             emit = stack.enter_context(patch.object(bridge, 'emit'))
@@ -174,12 +178,16 @@ class UpdateLifecycleTests(unittest.TestCase):
                     bridge.command_update_lifecycle(self.args)
                 run.assert_not_called()
                 gateway.assert_not_called()
+                tavern_status.assert_not_called()
+                gateway_status.assert_not_called()
             else:
                 bridge.command_update_lifecycle(self.args)
                 self.assertEqual(run.call_count, int(services[0]))
+                self.assertEqual(tavern_status.call_count, int(services[0]))
                 if services[0]:
                     self.assertEqual(run.call_args.args[0][-3:], ['start', '--port', '18899'])
                 self.assertEqual(gateway.call_count, int(services[1]))
+                self.assertEqual(gateway_status.call_count, int(services[1]))
                 self.assertEqual(emit.call_args.kwargs['systemReady'], False)
                 self.assertEqual(emit.call_args.kwargs['systemProblems'], problems)
             verify.assert_not_called()
@@ -333,11 +341,14 @@ class RecoveryGatewayConnectionTests(unittest.TestCase):
             stack.enter_context(patch.object(bridge, 'missing_receipt_snapshot', return_value={'fixture': True}))
             stack.enter_context(patch.object(bridge, 'emit'))
             stack.enter_context(patch.object(bridge, 'run_stream', side_effect=lambda *_args, **_kw: trace.append('tavern.start')))
+            tavern_status = stack.enter_context(patch.object(bridge, '_native_lifecycle_status',
+                return_value={'port': args.port, 'health': {'ok': True}, 'process_running': True}))
             stack.enter_context(patch.object(services, 'owned_gateway', return_value=None))
             stack.enter_context(patch.object(services, '_check_gateway_hint'))
             stack.enter_context(patch.object(services.subprocess, 'Popen', side_effect=lambda *_args, **_kw: (trace.append('gateway.spawn') or child)))
-            stack.enter_context(patch.object(services, 'gateway_status',
-                return_value={'gatewayRunning': True, 'clawchatConnected': now_connected}))
+            gateway_facts = {'gatewayRunning': True, 'clawchatConnected': now_connected}
+            stack.enter_context(patch.object(services, 'gateway_status', return_value=gateway_facts))
+            gateway_status = stack.enter_context(patch.object(bridge, 'gateway_status', return_value=gateway_facts))
             stack.enter_context(patch.object(services, 'time', SimpleNamespace(
                 monotonic=Mock(side_effect=[0, 0, 0, 0, 61]), sleep=Mock())))
             try:
@@ -346,6 +357,8 @@ class RecoveryGatewayConnectionTests(unittest.TestCase):
                     verify=lambda *_: bridge.recovery_verify(args, fixture.before))
             finally:
                 self.assertEqual(trace, ['bridge.rollback', 'tavern.start', 'gateway.spawn'])
+                self.assertEqual(tavern_status.call_count, int(damaged))
+                self.assertEqual(gateway_status.call_count, int(damaged))
                 self.assertEqual((fixture.old / 'program.txt').read_text(), 'old program')
                 self.assertEqual((fixture.home / 'config.yaml').read_text(), 'old config')
             self.assertEqual(result['status'], 'restored')

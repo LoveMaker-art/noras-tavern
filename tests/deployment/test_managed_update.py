@@ -224,7 +224,7 @@ class ManagedUpdateTests(unittest.TestCase):
                     self.assertEqual(file.read_bytes(), value)
                 return
             if failure or late_failure:
-                recovery_text = 'incomplete' if rollback_failure else 'restored'
+                recovery_text = 'files-restored-start-failed' if rollback_failure else 'restored'
                 with self.assertRaisesRegex(RuntimeError, "injected .*failure.*recovery=" + recovery_text):
                     update.install(args)
                 for file, value in {**before, **receipts}.items():
@@ -232,15 +232,30 @@ class ManagedUpdateTests(unittest.TestCase):
                 if missing_receipt:
                     self.assertFalse((tavern / "tavern-updates/nora-system.json").exists())
                 self.assertFalse((home / "clawchat-skills").exists())
-                journal = json.loads((tavern / 'tavern-updates/transaction.json').read_text())
-                self.assertEqual(journal['status'], 'recovery-failed' if rollback_failure else 'restored')
+                transaction_file = tavern / 'tavern-updates/transaction.json'
+                restored_journal = transaction_file.read_bytes()
+                journal = json.loads(restored_journal)
+                self.assertEqual(journal['status'], 'restored')
                 self.assertTrue(Path(journal['backup']).is_dir())
                 backup_receipt = update.backup_receipt(tavern, Path(journal['backup']))
                 self.assertEqual(backup_receipt['status'], journal['status'])
                 self.assertTrue(backup_receipt['mayContainUserData'])
                 if rollback_failure:
-                    with self.assertRaisesRegex(RuntimeError, '上次更新事务未完成'):
-                        update.install(args)
+                    self.assertEqual(journal['serviceVerification'], 'failed')
+                    self.assertEqual(journal['error'], 'old gateway cannot start')
+                    backup_names = sorted((tavern / 'tavern-backups').iterdir())
+                    # A subsequent request checks actual readiness, without
+                    # overwriting the already sealed program recovery.
+                    with patch.object(update, 'managed_lifecycle',
+                            side_effect=RuntimeError('injected retry preflight failure')) as retry_preflight:
+                        with self.assertRaisesRegex(RuntimeError, 'injected retry preflight failure'):
+                            update.install(args)
+                    retry_preflight.assert_called_once_with('preflight', home, tavern, manifest['versions']['tavern'])
+                    self.assertEqual(transaction_file.read_bytes(), restored_journal)
+                    self.assertEqual(update.backup_receipt(tavern, Path(journal['backup'])), backup_receipt)
+                    self.assertEqual(sorted((tavern / 'tavern-backups').iterdir()), backup_names)
+                    for file, value in {**before, **receipts}.items():
+                        self.assertEqual(file.read_bytes(), value, str(file.relative_to(root)))
             else:
                 update.install(args)
                 installed = json.loads((tavern / "tavern-updates/installed.json").read_text())
@@ -345,7 +360,7 @@ class ManagedUpdateTests(unittest.TestCase):
     def test_final_service_failure_restores_old_files_receipts_worlds_and_services(self):
         self.transaction(bundled=False, late_failure=True)
 
-    def test_failed_old_service_recovery_keeps_backup_and_blocks_another_update(self):
+    def test_failed_old_service_recovery_keeps_sealed_program_and_backup(self):
         self.transaction(bundled=False, late_failure=True, rollback_failure=True)
 
 
