@@ -163,6 +163,7 @@ class FirstInstallJournal:
         self.directory = Path(directory)
         self.file = self.directory / 'transaction.json'
         self.record = record
+        self._archived_hermes = None
 
     @classmethod
     def create(cls, nora_home, hermes_home, install_root, *, operation_id=None, state=None):
@@ -196,7 +197,8 @@ class FirstInstallJournal:
     @classmethod
     def retire_attempt(cls, operation, operation_id, nora_home, roots):
         """Rotate only proven inactive effects, with an intent outside the moved tree."""
-        directory = operation / 'first-install'; file = directory / 'transaction.json'
+        directory = _recovery.safe_path(operation, 'first-install')
+        file = _recovery.safe_path(operation, 'first-install/transaction.json')
         rotation = operation / 'first-install-rotation.json'
         directory_io, file_io = Path(filesystem_path(directory)), Path(filesystem_path(file))
         state = _recovery.read_object(rotation) if Path(filesystem_path(rotation)).exists() else None
@@ -224,7 +226,7 @@ class FirstInstallJournal:
                         current_journal = cls(directory, current); current_journal.validate()
                         if current.get('targets') or current.get('applyIntent'):
                             raise RuntimeError('首装新尝试已有活动现场，拒绝覆盖')
-                        cls.validate_retired(archive, state, expected)
+                        cls.validate_retired(operation, archive, state, expected)
                         state['state'] = 'complete'; atomic(rotation, json.dumps(state).encode())
                         return state['toAttempt'], str(archive.relative_to(operation)), current.get('missingReasons', [])
                 return cls.finish_rotation(operation, directory, state, expected)
@@ -232,8 +234,8 @@ class FirstInstallJournal:
         if not file_io.exists():
             if directory_io.exists() and any(directory_io.iterdir()): raise RuntimeError('首装恢复目录含未知现场')
             return 1, None, []
-        journal = cls.load(file); attempt = check(journal.record)
-        effects = _inspect_first_install_journal(journal)
+        record = _recovery.read_object(file); attempt = check(record)
+        effects = _inspect_first_install_journal(cls.retry_journal(operation, directory, record))
         if effects['effectState'] not in ('untouched', 'restored') or not effects['canRecover']:
             raise RuntimeError('首装现场尚未安全恢复，拒绝开始新尝试')
         if attempt >= 100: raise RuntimeError('首装尝试次数达到上限')
@@ -244,18 +246,74 @@ class FirstInstallJournal:
         return cls.finish_rotation(operation, directory, state, expected)
 
     @classmethod
-    def validate_retired(cls, source, state, expected):
+    def retry_journal(cls, operation, directory, record):
+        journal = cls(directory, record)
+        hermes = Path(record['roots']['hermes'])
+        original = record['rootIdentities'].get('hermes')
+        live = _recovery.identity(hermes)
+        if live == original or record.get('status') != 'restored':
+            return journal
+        # Only the retry's read-only validation may follow the retired runtime
+        # tree. Never redirect the active installer or rewrite the old journal.
+        error = RuntimeError('首装历史运行时身份无法核验，已保留现场')
+        if (not live or not original or record.get('unrestored')
+                or record.get('checkpoints', {}).get('restore', {}).get('state') != 'result'):
+            raise error
+        owned = _recovery.safe_path(record['noraHome'], 'installer/operations/' + record['operationId'])
+        if operation.resolve() != owned:
+            raise error
+        operation = owned
+        current = _recovery.read_object(_recovery.safe_path(operation, 'runtime-bootstrap.json'))
+        paths = current.get('paths', {})
+        if (current.get('schema') != 'nora-runtime-bootstrap/1' or current.get('operationId') != record['operationId']
+                or current.get('status') != 'committed' or Path(paths.get('noraHome', '')) != Path(record['noraHome'])
+                or Path(paths.get('hermesHome', '')) != hermes or Path(paths.get('failed', '')) != operation / 'runtime/failed'
+                or current.get('identities', {}).get('next') != dict(zip(('device', 'inode'), map(str, live)))):
+            raise error
+        target = current.get('target')
+        if not isinstance(target, dict) or not re.fullmatch(r'[a-f0-9]{64}', target.get('sha256', '')):
+            raise error
+        expected = dict(zip(('device', 'inode'), map(str, original)))
+        for _ in range(100):
+            reference = Path(current.get('precedingEvidence') or '')
+            if not reference.is_relative_to(operation):
+                break
+            relative = reference.relative_to(operation).as_posix()
+            if not re.fullmatch(r'runtime-history/[a-f0-9-]{36}/bootstrap-evidence\.json', relative):
+                break
+            evidence = _recovery.read_object(_recovery.safe_path(operation, relative))
+            previous = evidence.get('journal', {})
+            attempt = previous.get('attempt', 1)
+            if (evidence.get('schema') != 'nora-runtime-bootstrap-evidence/1'
+                    or previous.get('schema') != 'nora-runtime-bootstrap/1'
+                    or previous.get('operationId') != record['operationId'] or previous.get('paths') != paths
+                    or previous.get('target') != target or type(attempt) is not int or attempt < 1
+                    or current.get('attempt') != attempt + 1):
+                break
+            identities = previous.get('identities', {})
+            if identities.get('next') == expected:
+                archived = _recovery.safe_path(operation, relative.removesuffix('bootstrap-evidence.json') + 'tree/failed')
+                if (previous.get('status') != 'rolled-back' or previous.get('recoveryVerification') != 'files-restored'
+                        or previous.get('newTreePreserved') is not True or identities.get('previous') is not None
+                        or _recovery.identity(archived) != original):
+                    break
+                journal._archived_hermes = archived
+                return journal
+            current = previous
+        raise error
+
+    @classmethod
+    def validate_retired(cls, operation, source, state, expected):
         if _recovery.identity(source) != state.get('sourceIdentity'):
             raise RuntimeError('首装尝试归档身份变化')
-        file = source / 'transaction.json'
+        file = _recovery.safe_path(source, 'transaction.json')
         if hashlib.sha256(Path(filesystem_path(file)).read_bytes()).hexdigest() != state.get('transactionDigest'):
             raise RuntimeError('首装尝试记录内容变化')
         record = _recovery.read_object(file)
         if record.get('schema') != 1 or record.get('owner') != 'nora-first-install' or any(
                 record.get(key) != value for key, value in expected.items()):
             raise RuntimeError('首装尝试归档目标不一致')
-        journal = cls(source, record); journal.validate()
-        effects = _inspect_first_install_journal(journal)
+        effects = _inspect_first_install_journal(cls.retry_journal(operation, source, record))
         if effects['effectState'] not in ('untouched', 'restored') or not effects['canRecover']:
             raise RuntimeError('首装尝试现场变化，拒绝重试')
 
@@ -270,14 +328,14 @@ class FirstInstallJournal:
         if directory_io.exists() and archive_io.exists() and not any(directory_io.iterdir()):
             # The new empty canonical directory was created after a completed
             # old-tree rename, but no new journal was written before power loss.
-            cls.validate_retired(archive, state, expected)
+            cls.validate_retired(operation, archive, state, expected)
             assert_operation(); directory_io.rmdir(); fsync_directory(directory.parent)
         if directory_io.exists():
             if archive_io.exists() or archive_io.is_symlink(): raise RuntimeError('首装尝试归档已有未知现场')
-            cls.validate_retired(directory, state, expected)
+            cls.validate_retired(operation, directory, state, expected)
             assert_operation(); os.replace(filesystem_path(directory), filesystem_path(archive))
             fsync_directory(directory.parent); fsync_directory(archive.parent)
-        else: cls.validate_retired(archive, state, expected)
+        else: cls.validate_retired(operation, archive, state, expected)
         state['state'] = 'archived'
         atomic(operation / 'first-install-rotation.json', json.dumps(state).encode())
         missing = []
@@ -406,8 +464,13 @@ class FirstInstallJournal:
         assert_operation(); os.replace(filesystem_path(staged), filesystem_path(target)); fsync_directory(target.parent)
         exchange['phase'] = 'new-rename-result'; self.save()
 
+    def physical_root(self, namespace):
+        if namespace == 'hermes' and self._archived_hermes is not None:
+            return self._archived_hermes
+        return self.record['roots'][namespace]
+
     def target(self, item):
-        return _recovery.safe_path(self.record['roots'][item['namespace']], item['path'])
+        return _recovery.safe_path(self.physical_root(item['namespace']), item['path'])
 
     def backup_target(self, item):
         """Select only the journal's recorded layout and exact target slot."""
@@ -429,8 +492,8 @@ class FirstInstallJournal:
         if (not isinstance(self.record.get('checkpoints'), dict)
                 or any(not isinstance(value, dict) for value in self.record['checkpoints'].values())):
             raise RuntimeError('首装检查点记录无效，已保留现场')
-        for name, root in self.record['roots'].items():
-            if name not in ('hermes', 'tavern', 'state') or _recovery.identity(root) != self.record['rootIdentities'].get(name):
+        for name in self.record['roots']:
+            if name not in ('hermes', 'tavern', 'state') or _recovery.identity(self.physical_root(name)) != self.record['rootIdentities'].get(name):
                 raise RuntimeError('首装恢复根目录身份已变化，已保留现场')
         if not isinstance(self.record['targets'], list) or len(self.record['targets']) > 128:
             raise RuntimeError('首装恢复目标清单无效')

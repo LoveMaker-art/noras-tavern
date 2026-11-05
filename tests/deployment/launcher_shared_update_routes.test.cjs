@@ -119,6 +119,39 @@ test('GUI retry rejects a changed desktop snapshot before submitting anything',a
   const f=retryFixture(t,{kind:'model'});
   await assert.rejects(f.handlers['nora:operation-resume']({sender:null},{...f.payload,snapshotSequence:3}),{code:'OPERATION_SNAPSHOT_CHANGED'});assert.deepEqual(f.calls,[]);
 });
+test('first-install retry rebuilds missing Python only for a verified rollback with its original runtime archive',t=>{
+  const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-first-install-retry-')));
+  t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const operationId=randomUUID(),hermesHome=path.join(home,'hermes');
+  const runtime=nativeRequire('./runtime-transaction'),location=runtime.paths({noraHome:home,hermesHome,operationId});
+  fs.mkdirSync(location.failed,{recursive:true});
+  const identity=fs.lstatSync(location.failed,{bigint:true});
+  fs.writeFileSync(location.journalReference,JSON.stringify({schema:'nora-runtime-bootstrap/1',operationId,
+    paths:location,status:'rolled-back',newTreePreserved:true,recoveryVerification:'files-restored',target:{sha256:'a'.repeat(64)},
+    identities:{previous:null,next:{device:String(identity.dev),inode:String(identity.ino)}}}));
+  const operationDirectory=path.dirname(location.directory),firstDirectory=path.join(operationDirectory,'first-install');
+  fs.mkdirSync(firstDirectory);
+  const file=path.join(firstDirectory,'transaction.json'),journal={schema:1,owner:'nora-first-install',operationId,
+    status:'restored',checkpoints:{restore:{state:'result'}},unrestored:[]};
+  fs.writeFileSync(file,JSON.stringify(journal));
+  const snapshot={attempt:2,effectState:'restored',recoveryOutcome:'restored-and-verified',verification:'confirmed',result:{
+    installed:false,hermesInstalled:false,systemReady:false,running:false,gatewayRunning:false,clawchatConnected:false}};
+  let python=null;
+  const context=vm.createContext({fs,path,noraHome:()=>home,hermesHome:()=>hermesHome,findPython:()=>python,require:nativeRequire});
+  vm.runInContext(definition('hasFirstInstallToResume'),context);
+  const needsProbe=vm.runInContext('hasFirstInstallToResume',context);
+  assert.equal(needsProbe({operationId,snapshot},operationDirectory),false);
+  assert.equal(needsProbe({operationId,snapshot:{...snapshot,verification:'unconfirmed'}},operationDirectory),true);
+  fs.writeFileSync(file,JSON.stringify({...journal,status:'installed'}));
+  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  fs.writeFileSync(file,JSON.stringify(journal));
+  python={command:'python'};
+  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  python=null;
+  fs.renameSync(location.failed,location.failed+'-original');
+  fs.mkdirSync(location.failed);
+  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+});
 test('core projection is read-only without rewriting historical effects or permissions',t=>{
   const f=retryFixture(t,{legacy:true}),before=JSON.stringify(f.selected);
   const projected=vm.runInContext('projectDesktopOperation',f.context)(f.selected);

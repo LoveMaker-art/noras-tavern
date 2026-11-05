@@ -1357,6 +1357,29 @@ async function requestQuit(event) {
   } finally { quitting = false; }
 }
 
+function hasFirstInstallToResume(context, operationDirectory) {
+  const directory = path.join(operationDirectory, 'first-install');
+  const file = path.join(directory, 'transaction.json');
+  if (!fs.existsSync(file)) return false;
+  const {attempt, effectState, recoveryOutcome, verification, result} = context.snapshot;
+  if (!(attempt >= 2) || effectState !== 'restored' || recoveryOutcome !== 'restored-and-verified' || verification !== 'confirmed'
+      || !['installed', 'hermesInstalled', 'systemReady', 'running', 'gatewayRunning', 'clawchatConnected'].every(key => result?.[key] === false)
+      || findPython()) return true;
+  // A verified rollback can remove this attempt's Python. Let the original
+  // fixed install plan rebuild it before checking and retiring the old journal.
+  try {
+    const stat = fs.lstatSync(file);
+    if (fs.lstatSync(directory).isSymbolicLink() || !stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return true;
+    const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (journal.schema !== 1 || journal.owner !== 'nora-first-install' || journal.operationId !== context.operationId
+        || journal.status !== 'restored' || journal.checkpoints?.restore?.state !== 'result'
+        || !Array.isArray(journal.unrestored) || journal.unrestored.length) return true;
+    return !require('./runtime-transaction').canRebuildAfterFirstInstallRollback({
+      noraHome:noraHome(), hermesHome:hermesHome(), operationId:context.operationId,
+    });
+  } catch { return true; }
+}
+
 function systemUpdateExecutor(payload,webContents){
   return require('./system-update-executor').create({compare:releases.compare,
     resolveCommit:context=>{
@@ -2120,7 +2143,7 @@ if (primaryInstance) {
 
       if(payload.action==='install'&&selectedPlan){
         let continued=await systemUpdateExecutor(payload,event.sender).resumeInstallation(context,
-          {hasTransaction:fs.existsSync(path.join(installerDirectory(),'operations',context.operationId,'first-install','transaction.json')),port:payload.port});
+          {hasTransaction:hasFirstInstallToResume(context,operationDirectory),port:payload.port});
         if(continued){continued=finishRetainedInstallation(context,continued);
           writeInstallerState({...readInstallerState(),phase:'ready',error:'',task:'',setupCompleted:continued.setupCompleted===true});
           diagnostics.finish('success');return {verification:'confirmed',value:continued};}

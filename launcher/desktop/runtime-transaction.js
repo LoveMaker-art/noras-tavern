@@ -161,6 +161,15 @@ function inspect(options){
     return {...facts(journal,location),journalReference:location.journalReference};
   }catch(error){return {effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false,hasChanges:null,reason:error.code||'RUNTIME_JOURNAL_INVALID'};}
 }
+function canRebuildAfterFirstInstallRollback(options){
+  const {location,journal}=read(options);
+  if(journal?.status!=='rolled-back')return false;
+  if(journal.schema===retainedPrograms.SCHEMA)
+    return facts(journal,location).reason==='retained-programs-restored';
+  return journal.recoveryVerification==='files-restored'&&journal.newTreePreserved===true
+    &&journal.identities.previous===null&&!identity(location.hermesHome)&&!identity(location.backup)
+    &&sameIdentity(identity(location.failed),journal.identities.next);
+}
 function requireDelegate(delegate,operationId,ownerEpoch){
   delegate?.assertActive();
   if(!delegate||delegate.context?.operationId!==operationId||delegate.context.ownerEpoch!==ownerEpoch)
@@ -475,6 +484,6 @@ function confirmPartialSystemProof(options,effects){
   const proof={journalSeal:systemSeal(location),stateDigest:programDigest(path.join(location.noraHome,'tavern/tavern-state')),effects};
   update(journal,location,options.delegate,options.ownerEpoch,{partialSystemProof:proof});
 }
-module.exports={install,inspect,recover,partialStateMatches,programDigest,confirmPartialSystemProof,archiveAttempt,paths,
+module.exports={install,inspect,canRebuildAfterFirstInstallRollback,recover,partialStateMatches,programDigest,confirmPartialSystemProof,archiveAttempt,paths,
   isPythonOnlyRepairOrigin,adoptCommittedPythonRepair,
   verifyRetainedProgramBackup:retainedPrograms.verifyBackup};
