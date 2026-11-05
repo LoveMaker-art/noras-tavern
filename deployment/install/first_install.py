@@ -61,7 +61,7 @@ def install_workspace(nora_home: Path):
     return tempfile.TemporaryDirectory(prefix="i-", dir=parent)
 
 
-def atomic(path: Path, data: bytes, mode: int = 0o600) -> None:
+def atomic(path: Path, data: bytes, mode: int = 0o600, *, publish=None) -> None:
     path = Path(filesystem_path(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
@@ -71,7 +71,7 @@ def atomic(path: Path, data: bytes, mode: int = 0o600) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        (publish or os.replace)(temporary, path)
         fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
@@ -310,7 +310,7 @@ class FirstInstallJournal:
     def save(self):
         encoded = json.dumps(self.record, ensure_ascii=False).encode('utf-8')
         if len(encoded) > 2 * 1024 * 1024: raise RuntimeError('首装恢复记录超出安全容量')
-        atomic(self.file, encoded)
+        atomic(self.file, encoded, publish=_recovery._publish_json)
 
     def checkpoint(self, stage, state):
         assert_operation()

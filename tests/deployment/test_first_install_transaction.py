@@ -19,6 +19,35 @@ def same_filesystem_path(left, right):
 
 
 class FirstInstallTransactionTests(unittest.TestCase):
+    def test_journal_retries_a_transient_windows_replace_denial(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve()
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(
+                    home, home / 'hermes', home / 'tavern', operation_id=OPERATION_ID)
+            before = journal.file.read_bytes()
+            replace = os.replace
+            attempts = []
+
+            def replace_when_released(source, target):
+                self.assertTrue(same_filesystem_path(target, journal.file))
+                self.assertEqual(journal.file.read_bytes(), before)
+                attempts.append(source)
+                if len(attempts) == 1:
+                    error = PermissionError('journal reader temporarily blocks replacement')
+                    error.winerror = 5
+                    raise error
+                replace(source, target)
+
+            with patch.object(sys, 'platform', 'win32'), \
+                    patch.object(os, 'replace', side_effect=replace_when_released):
+                journal.checkpoint('apply', 'intent')
+
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(attempts[0], attempts[1], 'retry the same sealed temporary file')
+            self.assertTrue(json.loads(journal.file.read_bytes())['applyIntent'])
+            self.assertFalse(list(journal.directory.glob('.transaction.json.*')))
+
     def test_indexed_backups_bind_each_target_to_its_exact_stable_list_index(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
