@@ -41,7 +41,7 @@ elif p['phase']=='cancelled':
 print(json.dumps({'phase':r.read_json(job/'recovery.json')['phase']}))
 `;
 function fixture(t,{phase='committed',launcherOnly=true,releasePlan,platform=process.platform,arch=process.arch}={}){
-  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-module-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const root=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-module-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const home=path.join(root,'data'),app=path.join(root,'app'),job=path.join(home,'installer/launcher-update/job-fixture');
   fs.mkdirSync(job,{recursive:true});fs.mkdirSync(app);
   const relative=process.platform==='darwin'?'Contents/MacOS/launcher':'launcher.exe',executable=path.join(app,relative);

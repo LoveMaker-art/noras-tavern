@@ -13,11 +13,11 @@ const PROGRAMS = ['hermes-agent', 'python', 'node', 'bin', '.local/bin', 'plugin
   'clawchat/liveware', 'nora-components.json', 'nora-clawchat-check.py', 'nora-installation.json',
   'nora-instance.json', 'gateway.pid', 'gateway.lock', 'gateway_state.json'];
 
-function canonical(file) {
+function canonical(file, realpath = fs.realpathSync) {
   const full = path.resolve(file);
-  if (present(full)) return fs.realpathSync(full);
+  if (present(full)) return realpath(full);
   const parent = path.dirname(full);
-  return parent === full ? full : path.join(canonical(parent), path.basename(full));
+  return parent === full ? full : path.join(canonical(parent, realpath), path.basename(full));
 }
 
 function safeRoot(home) {
@@ -186,6 +186,12 @@ function readJournal(file,limit=4*1024*1024,reviver){
 }
 const exactIdentityNumbers=(_key,value,context)=>typeof value==='number'&&Number.isInteger(value)
   &&!Number.isSafeInteger(value)?context.source:value;
+function matchesJournalDirectory(recorded, expected) {
+  if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return false;
+  // Windows Python journals can store long paths for a Node-owned short path.
+  const realpath = process.platform === 'win32' ? fs.realpathSync.native : fs.realpathSync;
+  return canonical(recorded, realpath) === canonical(expected, realpath);
+}
 function transactionCatalog(root,plan){
   const directory=contained(root,'installer/operations'),operations=[];
   for(const name of fs.readdirSync(directory)){
@@ -205,8 +211,9 @@ function transactionCatalog(root,plan){
     const runtime=present(runtimeFile)?readJournal(runtimeFile):null;
     const first=present(firstFile)?readJournal(firstFile,2*1024*1024,exactIdentityNumbers):null;
     if(first&&(first.schema!==1||first.owner!=='nora-first-install'||first.operationId!==name
-      ||canonical(first.noraHome||'')!==root||canonical(first.roots?.hermes||'')!==contained(root,plan.hermes)
-      ||canonical(first.roots?.tavern||'')!==contained(root,plan.tavern)))throw recoveryRequired();
+      ||!matchesJournalDirectory(first.noraHome,root)
+      ||!matchesJournalDirectory(first.roots?.hermes,contained(root,plan.hermes))
+      ||!matchesJournalDirectory(first.roots?.tavern,contained(root,plan.tavern))))throw recoveryRequired();
     operations.push({id:name,record,runtime,runtimeFile,first,firstFile});
   }
   const systemFile=contained(root,path.join(plan.tavern,'tavern-updates/transaction.json'));
@@ -664,7 +671,7 @@ function boundFirstInstallAssets(root,catalog,assets){
     const roots={hermes:'hermes',tavern:'tavern',...(first.roots?.state?{state:'tavern/tavern-state'}:{})};
     if(Object.entries(roots).some(([name,relative])=>{
       const expected=contained(root,relative),reported=first.roots?.[name];
-      return typeof reported!=='string'||!path.isAbsolute(reported)||path.relative(expected,reported)!==''
+      return !matchesJournalDirectory(reported,expected)
         ||!sameIdentity(expected,first.rootIdentities?.[name]);
     }))continue;
     for(const target of first.targets){
