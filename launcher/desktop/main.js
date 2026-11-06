@@ -175,6 +175,7 @@ function operations() {
       env:appHelperRuntimeValue?.env||launcherEnv()})},
     executors:operationExecutors,recoverers:operationRecoverers,recheckers:operationRecheckers,evidence:operationEvidence,
     projectResult:result=>result?.value ?? result,
+    verifyHistoricalInstallRetry,
     observeEffects:record=>maintenancePolicy().observe(record),
     observeAppEffects:record=>launcherUpdate.observeApp({...launcherRecoveryOptions(),operation:record}),
     prepareEffects:context=>maintenancePolicy().prepareEffects(context),
@@ -731,6 +732,8 @@ function bridgeArgs(command, options = {}) {
       command,
       ...(options.service ? ['--service', options.service] : []),
       ...(options.releaseDir ? ['--release-dir', options.releaseDir] : []),
+      ...(command==='install'&&options.packagedInstallManifest ? ['--use-packaged-install-runner',
+        '--manifest-sha256',options.packagedInstallManifest] : []),
       ...(options.url ? [options.url] : []),
       ...(options.tag ? ['--tag', options.tag] : []),
       ...(options.operationId ? ['--operation-id',options.operationId] : []),
@@ -1357,28 +1360,57 @@ async function requestQuit(event) {
   } finally { quitting = false; }
 }
 
-function hasFirstInstallToResume(context, operationDirectory) {
+function canRebuildFirstInstall(record, operationDirectory, originalAttempt) {
   const directory = path.join(operationDirectory, 'first-install');
   const file = path.join(directory, 'transaction.json');
-  if (!fs.existsSync(file)) return false;
-  const {attempt, effectState, recoveryOutcome, verification, result} = context.snapshot;
-  if (!(attempt >= 2) || effectState !== 'restored' || recoveryOutcome !== 'restored-and-verified' || verification !== 'confirmed'
+  const {operationId,effectState,verification,result} = record;
+  if (effectState !== 'restored' || verification !== 'confirmed'
       || !['installed', 'hermesInstalled', 'systemReady', 'running', 'gatewayRunning', 'clawchatConnected'].every(key => result?.[key] === false)
-      || findPython()) return true;
+      || findPython()) return false;
   // A verified rollback can remove this attempt's Python. Let the original
   // fixed install plan rebuild it before checking and retiring the old journal.
   try {
     const stat = fs.lstatSync(file);
-    if (fs.lstatSync(directory).isSymbolicLink() || !stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return true;
+    if (fs.lstatSync(directory).isSymbolicLink() || !stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) return false;
     const journal = JSON.parse(fs.readFileSync(file, 'utf8'), (_key, value, source) =>
       typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value) ? source.source : value);
-    if (journal.schema !== 1 || journal.owner !== 'nora-first-install' || journal.operationId !== context.operationId
+    if (journal.schema !== 1 || journal.owner !== 'nora-first-install' || journal.operationId !== operationId
         || journal.status !== 'restored' || journal.checkpoints?.restore?.state !== 'result'
-        || !Array.isArray(journal.unrestored) || journal.unrestored.length) return true;
-    return !require('./runtime-transaction').canRebuildAfterFirstInstallRollback({
-      noraHome:noraHome(), hermesHome:hermesHome(), operationId:context.operationId,
-    }, journal.rootIdentities?.hermes);
-  } catch { return true; }
+        || !Array.isArray(journal.unrestored) || journal.unrestored.length) return false;
+    if (originalAttempt !== undefined) {
+      const root = fs.lstatSync(installRoot(), {bigint:true});
+      const identity = journal.rootIdentities?.tavern;
+      if (journal.attempt !== originalAttempt || !root.isDirectory() || root.isSymbolicLink()
+          || !Array.isArray(identity) || String(root.dev) !== String(identity[0]) || String(root.ino) !== String(identity[1])) return false;
+    }
+    return require('./runtime-transaction').canRebuildAfterFirstInstallRollback({
+      noraHome:noraHome(), hermesHome:hermesHome(), operationId,
+    }, journal.rootIdentities?.hermes, originalAttempt);
+  } catch { return false; }
+}
+
+function verifyHistoricalInstallRetry(record) {
+  const plan = record.target?.releasePlan;
+  const missingPython = failure => failure?.code === 'UNKNOWN_PROGRAM_ERROR' && failure.site === 'launcher.operation'
+    && failure.guidance?.detail === '未找到 Python。请先用整合包脚本安装，或安装带 Python 的 Hermes。';
+  // The old launcher spent its one retry before starting a new installer.
+  // Both transaction journals must still prove the first attempt was restored.
+  if (process.platform !== 'win32' || !app.isPackaged || record.archived || record.handoffRef
+      || record.kind !== 'install' || record.state !== 'failed' || record.stageId !== 'recovering'
+      || record.attempt !== 2 || record.recoveryOutcome !== 'recovery-required' || record.result?.recoveryVerification !== 'confirmed'
+      || !missingPython(record.currentFailure)
+      || !record.secondaryFailures?.some(failure => failure.operation === 'recover' && missingPython(failure))
+      || !record.planSelected || plan?.schema !== 'nora-release-plan/1' || plan.platform !== 'win32') return false;
+  const operationDirectory = path.join(installerDirectory(), 'operations', record.operationId);
+  try {
+    return canRebuildFirstInstall(record, operationDirectory, 1)
+      && !fs.existsSync(path.join(installRoot(), 'tavern-updates', 'transaction.json'))
+      && !require('./operation-policy').hasManagedRecords({
+        noraHome:noraHome(), hermesHome:hermesHome(), installRoot:installRoot(), operationId:record.operationId,
+      })
+      && !require('./retained-installation').inspect(noraHome(), {allowPending:true,operationId:record.operationId})
+      && !systemUpdate.inspect(noraHome());
+  } catch { return false; }
 }
 
 function systemUpdateExecutor(payload,webContents){
@@ -2132,8 +2164,9 @@ if (primaryInstance) {
           ? MILESTONES.map((label, index) => ({ index, label, state: 'pending', task: '' }))
           : priorState.milestones,
       });
-      let selectedPayload;
+      let selectedPayload,packagedInstallManifest;
       let selectedPlan=context.target.releasePlan;
+      let rebuildFirstInstall=false;
       const fixedTarget=async(plan,currentVersion=context.target.currentVersion||null)=>{
         const request=context.target.request;
         const contract=plan.schema==='nora-release-plan/1'?releases.sealPlan(plan,{operationDirectory,
@@ -2143,8 +2176,11 @@ if (primaryInstance) {
       };
 
       if(payload.action==='install'&&selectedPlan){
+        const prior=context.snapshot;
+        rebuildFirstInstall=prior.attempt>=2&&prior.recoveryOutcome==='restored-and-verified'
+          &&canRebuildFirstInstall(prior,operationDirectory);
         let continued=await systemUpdateExecutor(payload,event.sender).resumeInstallation(context,
-          {hasTransaction:hasFirstInstallToResume(context,operationDirectory),port:payload.port});
+          {hasTransaction:!rebuildFirstInstall&&fs.existsSync(path.join(operationDirectory,'first-install','transaction.json')),port:payload.port});
         if(continued){continued=finishRetainedInstallation(context,continued);
           writeInstallerState({...readInstallerState(),phase:'ready',error:'',task:'',setupCompleted:continued.setupCompleted===true});
           diagnostics.finish('success');return {verification:'confirmed',value:continued};}
@@ -2188,6 +2224,11 @@ if (primaryInstance) {
         if(selectedPlan?.schema==='nora-bundled-plan/1'
           &&await releases.hash(path.join(selectedPayload,'release-manifest.json'))!==selectedPlan.manifestSha256)
           throw launcherError('固定的包内版本与当前安装包不一致，未修改现有安装。',{code:'RELEASE_COMPATIBILITY'});
+        if(rebuildFirstInstall&&process.platform==='win32'&&app.isPackaged&&/^[a-f0-9]{64}$/.test(selectedPlan?.manifestSha256||'')){
+          const original=JSON.parse(fs.readFileSync(path.join(selectedPayload,'release-manifest.json'),'utf8'));
+          if(original.artifacts?.['ops/installer/first_install.py']!==await releases.hash(path.join(installerRoot(),'first_install.py')))
+            packagedInstallManifest=selectedPlan.manifestSha256;
+        }
         diagnostics.write('release.selected', { payloadRoot: selectedPayload });
         if(payload.action==='install'){
           const retained=require('./retained-installation');
@@ -2208,11 +2249,12 @@ if (primaryInstance) {
       if (cancelled) throw Object.assign(new Error('安装已取消。'),{name:'AbortError',code:'ABORT_ERR'});
       await context.stage('applying');
       let result = await runBridge(payload.action === 'recover' ? 'recover-update' : payload.action, { port: payload.port, code: payload.code, tag: payload.tag, service: payload.service,
-        ...(payload.action === 'install' ? { releaseDir: selectedPayload } : {}) }, event.sender, payload.runId);
+        ...(payload.action === 'install' ? {releaseDir:selectedPayload,packagedInstallManifest} : {}) }, event.sender, payload.runId);
       const finalState = readInstallerState();
       await context.stage('verifying');
       const targetVersion=selectedPayload?JSON.parse(fs.readFileSync(path.join(selectedPayload,'release-manifest.json'),'utf8')).versions?.tavern:undefined;
-      if(!verifyWorkflowResult({action:payload.action,service:payload.service,targetVersion,result}))
+      if(!verifyWorkflowResult({action:payload.action,service:payload.service,targetVersion,result})
+        ||packagedInstallManifest&&result?.commit!==selectedPlan.commit)
         throw launcherError('后台返回的实际状态尚未满足本次操作要求，请重新检查状态。',{code:'VERIFICATION_FAILED'});
       if(payload.action==='install')result=finishRetainedInstallation(context,result);
       else if(completion?.pending)result={...result,retainedCompletionPending:true,

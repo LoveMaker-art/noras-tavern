@@ -1181,6 +1181,60 @@ test('explicit recovery closes an old failed record after actual effects were al
   assert.equal((await reader.start('start',{execute:async()=>({verification:'confirmed'})},'after-restored-closure')).state,'succeeded');
 });
 
+test('a verified historical first-install retry reopens only the original task under its writer',async t=>{
+  const target={request:{action:'install',port:18998},releasePlan:{commit:'a'.repeat(40)}};
+  let runs=0,recoveries=0,admit=false,refuseUnderWriter=false;
+  const f=fixture(t,async context=>{
+    runs++;
+    if(runs===1){
+      await context.plan(target);
+      await context.effect('changed');
+      throw Object.assign(new Error('locked journal'),{code:'EACCES'});
+    }
+    if(runs===2)throw new Error('old retry could not start Python');
+    assert.deepEqual(context.target,target);
+    assert.equal(context.snapshot.recoveryOutcome,'restored-and-verified');
+    return {verification:'confirmed'};
+  },{
+    verifyResult:result=>result?.verification==='confirmed',
+    observeEffects:async()=>({effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false}),
+    recoverers:{install:async()=>{
+      if(++recoveries===1)return {verification:'confirmed',effectState:'restored'};
+      throw new Error('old recovery could not start Python');
+    }},
+    verifyHistoricalInstallRetry:(record,{lease}={})=>{
+      if(lease)lease.assertActive?.();
+      return admit&&record.kind==='install'&&record.state==='failed'&&record.attempt===2
+        &&record.recoveryOutcome==='recovery-required'&&(!lease||!refuseUnderWriter);
+    },
+  });
+  const first=await f.controller.start('install',{target},'legacy-empty-first-install');
+  const old=await f.controller.resume(first.operationId,{snapshotSequence:first.snapshotSequence});
+  assert.equal(old.state,'failed');
+  assert.equal(old.attempt,2);
+  await f.controller.start('shutdown',{execute:async()=>({verification:'confirmed'})},'older-app-closed');
+  const file=path.join(f.directory,'operations',old.operationId,'operation.json'),bytes=fs.readFileSync(file);
+  const controller=createOperationController(f.options);
+  assert.ok(!(await controller.snapshot()).allowedActions.includes('retry'));
+  admit=true;
+  const offered=await controller.snapshot();
+  assert.equal(offered.operationId,old.operationId);
+  assert.ok(offered.allowedActions.includes('retry'));
+  assert.deepEqual(fs.readFileSync(file),bytes);
+  refuseUnderWriter=true;
+  await assert.rejects(controller.resume(old.operationId,{snapshotSequence:offered.snapshotSequence}),{code:'OPERATION_ACTION_UNAVAILABLE'});
+  assert.deepEqual(fs.readFileSync(file),bytes);
+  refuseUnderWriter=false;
+  const done=await controller.resume(old.operationId,{snapshotSequence:offered.snapshotSequence});
+  assert.equal(done.state,'succeeded');
+  assert.equal(done.verification,'confirmed');
+  assert.equal(done.attempt,3);
+  assert.equal(done.planDigest,old.planDigest);
+  assert.deepEqual(done.primaryFailure,first.primaryFailure);
+  assert.equal(done.secondaryFailures.length,old.secondaryFailures.length);
+  assert.equal(runs,3);
+});
+
 test('verified file-only recovery offers starting the restored program, rather than repeating the update',async t=>{
   const f=fixture(t,async context=>{await context.effect('changed');throw new Error('failed');},
     {recoverers:{install:async()=>({filesRestored:true,verification:'failed'})}});

@@ -466,8 +466,11 @@ def safe_member(name: str) -> PurePosixPath:
     return path
 
 
-def extract_ops_runner(release_dir: Path, destination: Path) -> Path:
-    manifest = json.loads((release_dir / "release-manifest.json").read_text(encoding="utf-8"))
+def extract_ops_runner(release_dir: Path, destination: Path, *, manifest_sha256=None) -> Path:
+    manifest_bytes = (release_dir / "release-manifest.json").read_bytes()
+    if manifest_sha256 is not None and hashlib.sha256(manifest_bytes).hexdigest() != manifest_sha256:
+        raise RuntimeError('原固定发布清单已变化，未开始重试。')
+    manifest = json.loads(manifest_bytes)
     expected = {
         name: digest
         for name, digest in manifest.get("artifacts", {}).items()
@@ -517,6 +520,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag")
     parser.add_argument("--release-dir", type=Path)
+    parser.add_argument('--use-packaged-install-runner', action='store_true')
+    parser.add_argument('--manifest-sha256')
     parser.add_argument("--hermes-home", "--data-root", dest="hermes_home")
     parser.add_argument("--nora-home")
     parser.add_argument("--install-root")
@@ -532,6 +537,13 @@ def main() -> None:
     args = parser.parse_args()
     if not (args.apply and args.confirm):
         raise RuntimeError("首次安装必须显式传入 --apply --confirm")
+    owner = args.nora_home or os.environ.get('NORA_TAVERN_HOME')
+    guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
+               or any(name.startswith('NORA_OPERATION_') for name in os.environ))
+    if args.use_packaged_install_runner or args.manifest_sha256 is not None:
+        if (not args.use_packaged_install_runner or not guarded or not owner or not args.dedicated_nora
+                or not args.release_dir or not re.fullmatch(r'[a-f0-9]{64}', args.manifest_sha256 or '')):
+            raise RuntimeError('首装重试必须由当前启动器和原固定发布计划授权。')
 
     with tempfile.TemporaryDirectory(prefix="nora-tavern-bootstrap.") as temporary:
         work = Path(temporary)
@@ -541,21 +553,34 @@ def main() -> None:
             release_dir.mkdir()
             download_release(release_dir, args.tag, desktop=args.dedicated_nora)
         manifest_sha = verify_release(release_dir, allow_candidate=args.allow_candidate)
-        installer = extract_ops_runner(release_dir, work / "runner")
-        # A downloaded standalone entry has no adjacent operation modules.
-        # Import the existing guard only from the verified temporary ops tree,
-        # then require its authorization before executing any installer writer.
+        if args.use_packaged_install_runner and manifest_sha != args.manifest_sha256:
+            raise RuntimeError('原固定发布清单已变化，未开始重试。')
+        installer = extract_ops_runner(release_dir, work / "runner", manifest_sha256=args.manifest_sha256)
+        # Standalone bootstraps use the verified release's guard. An explicit
+        # desktop retry uses the current APP's guard and installed writer.
         import importlib.util
-        cli_path = installer.with_name('operation_cli.py')
+        entry = Path(__file__).resolve() if args.use_packaged_install_runner else installer
+        cli_path = entry.with_name('operation_cli.py')
         spec = importlib.util.spec_from_file_location('nora_first_bootstrap_operation_cli', cli_path)
         cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cli)
-        owner = args.nora_home or os.environ.get('NORA_TAVERN_HOME')
-        guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
-                   or any(name.startswith('NORA_OPERATION_') for name in os.environ))
         desktop = args.dedicated_nora or bool(owner and (Path(owner) / 'installer/launcher-control.json').exists())
         if guarded or desktop:
             cli.ensure_operation('install', nora_home=owner)
+        if args.use_packaged_install_runner:
+            resources = cli.validate_receipt(owner)['resources']
+            descriptor = resources['first_install.py']
+            writer = entry.with_name('first_install.py')
+            if Path(resources['bootstrap.py']['path']).resolve() != entry or Path(descriptor['path']).resolve() != writer:
+                raise RuntimeError('无法核验已安装的新版启动器，未开始重试。')
+            content = writer.read_bytes()
+            if len(content) != descriptor['size'] or hashlib.sha256(content).hexdigest() != descriptor['sha256']:
+                raise RuntimeError('无法核验已安装的新版启动器，未开始重试。')
+            # The writer still uses the original release's verified adjacent
+            # helpers. Keep the old writer and all installed payload unchanged.
+            installer = installer.with_name('packaged_first_install.py')
+            with installer.open('xb') as file:
+                file.write(content)
         command = [
             sys.executable, "-u", "-B", str(installer),
             "--release-dir", str(Path(release_dir).resolve()),

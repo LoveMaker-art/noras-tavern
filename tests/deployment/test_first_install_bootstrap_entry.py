@@ -19,7 +19,7 @@ class FirstBootstrapEntry(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.directory = Path(self.temp.name)
+        self.directory = Path(self.temp.name).resolve()
         self.entry = self.directory / 'entry/bootstrap.py'
         self.entry.parent.mkdir()
         self.entry.write_bytes((ROOT / 'ops/installer/bootstrap.py').read_bytes())
@@ -138,8 +138,8 @@ class FirstBootstrapEntry(unittest.TestCase):
                 events.append(('managed installer', args))
                 return Process()
         original_extract = module.extract_ops_runner
-        def extract(*args):
-            installer = original_extract(*args)
+        def extract(*args, **kwargs):
+            installer = original_extract(*args, **kwargs)
             verified_installers.append(installer)
             events.append('verified extraction')
             return installer
@@ -155,6 +155,111 @@ class FirstBootstrapEntry(unittest.TestCase):
         self.assert_managed_installer_command(command, verified_installers[0])
         self.assertIn('--manifest-sha256', command)
         self.assertFalse(self.home.exists())
+
+    def test_packaged_retry_runs_current_writer_with_the_unchanged_fixed_release(self):
+        self.packaged_retry()
+
+    def test_packaged_retry_rejects_changed_current_writer(self):
+        self.packaged_retry(tamper='writer')
+
+    def test_packaged_retry_rejects_a_resealed_different_release(self):
+        self.packaged_retry(tamper='release')
+
+    def test_packaged_retry_requires_the_existing_native_delegate(self):
+        command = self.command
+        self.command = lambda: command() + [
+            '--dedicated-nora', '--use-packaged-install-runner', '--manifest-sha256',
+            hashlib.sha256((self.release / 'release-manifest.json').read_bytes()).hexdigest(),
+        ]
+        result = self.execute()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('首装重试必须由当前启动器和原固定发布计划授权', result.stderr)
+        self.assertFalse(self.home.exists())
+
+    def packaged_retry(self, *, tamper=None):
+        from ops.installer import operation_cli
+
+        if sys.platform not in ('darwin', 'win32'):
+            self.skipTest('Requires a supported desktop capability receipt platform')
+        executable = self.directory / ('Contents/MacOS/Nora' if sys.platform == 'darwin' else 'Nora.exe')
+        resources = self.directory / ('Contents/Resources' if sys.platform == 'darwin' else 'resources')
+        resources.mkdir(parents=True)
+        writer_bytes = b'# first-install writer from the current desktop APP\n'
+        (resources / 'bootstrap.py').write_bytes(self.entry.read_bytes())
+        self.entry = resources / 'bootstrap.py'
+        (resources / 'first_install.py').write_bytes(writer_bytes)
+        (resources / 'operation_cli.py').write_bytes(Path(operation_cli.__file__).read_bytes())
+        (resources / 'operation_control.py').write_bytes(self.files['ops/installer/operation_control.py'])
+
+        def descriptor(file):
+            if not file.exists():
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b'APP capability fixture')
+            data = file.read_bytes()
+            return {'path': str(file), 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+
+        resource_descriptors = {name: descriptor(resources / name) for name in operation_cli.RESOURCE_NAMES}
+        asar = descriptor(resources / 'app.asar')
+        native = descriptor(resources / f'app.asar.unpacked/node_modules/fs-native-extensions/prebuilds/{sys.platform}-x64/fs-native-extensions.node')
+        source = [asar['sha256'], native['sha256'], [[name, item['sha256']] for name, item in resource_descriptors.items()]]
+        installer_dir = self.home / 'installer'
+        installer_dir.mkdir(parents=True)
+        (installer_dir / 'launcher-control.json').write_text(json.dumps({
+            'schema': 'nora-launcher-control/1', 'capabilityVersion': 1, 'executorProtocol': 'nora-operation-executor/1',
+            'operationSchema': 'nora-operation/1', 'telemetrySchema': 3, 'faultSchema': 2,
+            'platform': sys.platform, 'arch': 'x64', 'channel': 'beta', 'port': 18998,
+            'noraHome': str(self.home), 'installerDirectory': str(installer_dir),
+            'hermesHome': str(self.home / 'hermes'), 'installRoot': str(self.home / 'tavern'),
+            'resourcesRoot': str(resources), 'entry': str(resources / 'app.asar/operation-cli.js'),
+            'executable': descriptor(executable), 'asar': asar, 'native': native, 'resources': resource_descriptors,
+            'sourceHash': hashlib.sha256(json.dumps(source, separators=(',', ':')).encode()).hexdigest(),
+        }), encoding='utf-8')
+        release_before = {file.name: file.read_bytes() for file in self.release.iterdir()}
+        old_digest = hashlib.sha256(release_before['release-manifest.json']).hexdigest()
+        if tamper == 'writer':
+            (resources / 'first_install.py').write_bytes(b'# untrusted replacement\n')
+        if tamper == 'release':
+            self.files['ops/installer/templates/SOUL.md'] += b'different publication'
+            self.seal()
+        spec = importlib.util.spec_from_file_location('packaged_retry_bootstrap', self.entry)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        commands = []
+
+        class Process:
+            returncode = 0
+
+            def communicate(self, **kwargs):
+                return None, None
+
+        class Delegate:
+            def assert_active(self):
+                pass
+
+            def popen(delegate, args, **kwargs):
+                commands.append(args)
+                writer = Path(args[3])
+                self.assertEqual(writer.read_bytes(), writer_bytes)
+                self.assertEqual(writer.parent.parts[-2:], ('ops', 'installer'))
+                self.assertNotEqual(writer.name, 'first_install.py')
+                self.assertEqual(writer.with_name('first_install.py').read_bytes(),
+                                 self.files['ops/installer/first_install.py'])
+                return Process()
+
+        args = self.command()[2:] + ['--dedicated-nora', '--use-packaged-install-runner', '--manifest-sha256', old_digest]
+        with patch.object(sys, 'argv', args), patch.object(sys, '_nora_operation_delegate', Delegate(), create=True):
+            if tamper:
+                with self.assertRaisesRegex(RuntimeError, '无法核验已安装的新版启动器' if tamper == 'writer' else '固定发布清单'):
+                    module.main()
+                self.assertEqual(commands, [])
+                return
+            with self.assertRaises(SystemExit) as result:
+                module.main()
+        self.assertEqual(result.exception.code, 0)
+        command, = commands
+        self.assertEqual(command[command.index('--manifest-sha256') + 1], old_digest)
+        self.assertEqual(Path(command[command.index('--release-dir') + 1]), self.release.resolve())
+        self.assertEqual({file.name: file.read_bytes() for file in self.release.iterdir()}, release_before)
 
 
 if __name__ == '__main__':

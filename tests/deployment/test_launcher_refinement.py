@@ -107,6 +107,36 @@ class RefinementTests(unittest.TestCase):
         ensure.assert_not_called()
         run.assert_not_called()
 
+    def test_retry_passes_fixed_release_to_current_packaged_bootstrap(self):
+        resources = self.root / 'resources'
+        resources.mkdir()
+        bootstrap = resources / 'bootstrap.py'
+        bootstrap.write_bytes(b'# current bootstrap')
+        payload = self.root / 'fixed-release'
+        payload.mkdir()
+        old_bootstrap = payload / 'nora-tavern-first-install-bootstrap.py'
+        old_bootstrap.write_bytes(b'# old bootstrap')
+        manifest = payload / 'release-manifest.json'
+        manifest.write_bytes(b'{"schema":"tavern-release/v2","commit":"previous-release"}')
+        self.args.release_dir = str(payload)
+        self.args.use_packaged_install_runner = True
+        self.args.manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        with patch.object(bridge, 'HERE', resources), \
+             patch.object(bridge.sys, '_nora_operation_delegate', object(), create=True), \
+             patch.object(bridge, 'installed', return_value=False), \
+             patch.object(bridge, 'gateway_status', return_value={'gatewayRunning': False}), \
+             patch.object(bridge, 'ensure_hermes'), \
+             patch.object(bridge, 'python_command', return_value='python'), \
+             patch.object(bridge, 'run_stream', return_value={}) as run, \
+             patch.object(bridge, 'status_payload', return_value={}), \
+             patch.object(bridge, 'emit'):
+            bridge.command_install(self.args)
+        command = run.call_args.args[0]
+        self.assertEqual(Path(command[3]), bootstrap)
+        self.assertIn('--use-packaged-install-runner', command)
+        self.assertEqual(Path(command[command.index('--release-dir') + 1]), payload.resolve())
+        self.assertEqual(command[command.index('--manifest-sha256') + 1], self.args.manifest_sha256)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

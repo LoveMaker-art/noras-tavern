@@ -77,7 +77,8 @@ function appRetryAdmission(record){
 
 function createOperationController({directory,lock,executors={},recoverers={},recheckers={},captureConditions,identifyFailureCondition,evidence,
   observeEffects,observeAppEffects=observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
-  verifyResult=result=>result?.verification==='confirmed',verifyHandoff,verifyRecoveryHandoff,verifyRestoredHandoff,retention={}}={}) {
+  verifyResult=result=>result?.verification==='confirmed',verifyHandoff,verifyRecoveryHandoff,verifyRestoredHandoff,
+  verifyHistoricalInstallRetry,retention={}}={}) {
   if(!lock?.acquire||!lock?.probe)throw new TypeError('An OS lock adapter is required');
   const root=()=>path.join(typeof directory==='function'?directory():directory,'operations');
   const budget={...RETENTION,...retention};let cachedRecords,cachedGeneration;
@@ -405,7 +406,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       for(const pending of history.slice().reverse().filter(value=>!TERMINAL.has(value.state)
         ||value.recoveryOutcome==='recovery-required')){
         const observed=await snapshot(pending.operationId);
-        if(observed.busy||['changed','unknown'].includes(observed.effectState)
+        if(observed.busy||observed.historicalInstallRetry||['changed','unknown'].includes(observed.effectState)
           ||observed.recoveryOutcome==='files-restored-start-failed')return observed;
       }
       const latest=history.at(-1),attempt=appRetryAdmission(latest)&&latestAppAttempt(latest);
@@ -416,6 +417,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     const observed=await lock.probe({directory:typeof directory==='function'?directory():directory,operationId:record.operationId});
     const fields={busy:Boolean(observed.busy)};
     if(inspectEffects&&(!TERMINAL.has(record.state)||record.recoveryOutcome==='recovery-required')&&!observed.busy){
+      if(record.kind==='install'&&verifyHistoricalInstallRetry?.(record))
+        return dto(record,{...fields,historicalInstallRetry:true,allowedActions:['retry','recheck','logs']});
       const effects=observeEffects?await observeEffects(record):{effectState:record.effectState==='untouched'?'untouched':'unknown'};
       // A previous writer may have restored files/services before its verifier
       // failed. Keep explicit same-operation recovery reachable so the next
@@ -780,6 +783,12 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
     if(admission&&read(admission.operationId).sequence!==admission.sequence)
       throw fail('OPERATION_SNAPSHOT_CHANGED','The admission record changed; inspect it again');
+    if(mode==='resume'&&before.historicalInstallRetry){
+      await requireNoBlockingEffects(record.kind,false,id);
+      if(digest(record.target)!==record.planDigest||!verifyHistoricalInstallRetry?.(record,{lease}))
+        throw fail('OPERATION_ACTION_UNAVAILABLE','The historical first-install rollback is no longer verified');
+      record.recoveryOutcome='restored-and-verified';
+    }
     if(mode==='resume'&&!handoff&&isAppUpdate(record)&&record.handoffRef&&TERMINAL.has(record.state)){
       const expected=closedAppHandoff(record),sharing=appSharingRetry(record);
       if(!expected||record.attempt>=2&&(!sharing||sharing.retryAt>Date.parse(now())))

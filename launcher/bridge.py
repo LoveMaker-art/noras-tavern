@@ -735,6 +735,12 @@ def command_status(args) -> None:
 
 
 def command_install(args) -> None:
+    packaged_runner = getattr(args, 'use_packaged_install_runner', False)
+    manifest_sha = getattr(args, 'manifest_sha256', None)
+    if packaged_runner or manifest_sha is not None:
+        if (not packaged_runner or not args.release_dir or not re.fullmatch(r'[a-f0-9]{64}', manifest_sha or '')
+                or getattr(sys, '_nora_operation_delegate', None) is None):
+            fail('首装重试必须由当前启动器和原固定发布计划授权。')
     system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
     payload = release_dir(args.release_dir)
     target = nora_system.read_json(payload / "release-manifest.json") if payload else {}
@@ -750,7 +756,7 @@ def command_install(args) -> None:
         fail("请先停止 Nora，再继续初始化。现有配置与数据已保留。")
     if installed(args.install_root) and status_payload(args.nora_home, args.hermes_home, args.install_root, args.port).get("running"):
         fail("请先停止酒馆，再继续初始化。现有配置与数据已保留。")
-    bootstrap = (payload / "nora-tavern-first-install-bootstrap.py") if payload else (HERE / "bootstrap.py")
+    bootstrap = HERE / "bootstrap.py" if packaged_runner or not payload else payload / "nora-tavern-first-install-bootstrap.py"
     if not bootstrap.is_file():
         fail("没有找到首次安装器。")
     emit("milestone", index=0, state="running", task="安装 Nora")
@@ -786,6 +792,8 @@ def command_install(args) -> None:
             manifest = {}
         if manifest.get("schema") == "tavern-release/v2" and manifest.get("candidate") is True:
             command.append("--allow-candidate")
+    if packaged_runner:
+        command += ['--use-packaged-install-runner', '--manifest-sha256', manifest_sha]
     result = run_stream(command, env=env_for(args.nora_home, args.hermes_home, args.install_root))
     state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     _merge_install_config_warning(state, (result or {}).get('retainedConfigWarning'))
@@ -1565,6 +1573,8 @@ def main() -> None:
     inspect_current.add_argument('--manifest-sha256')
     install = sub.add_parser("install")
     install.add_argument("--release-dir")
+    install.add_argument('--use-packaged-install-runner', action='store_true')
+    install.add_argument('--manifest-sha256')
     for action in ("start", "stop", "restart"):
         sub.add_parser(action).add_argument("--service", choices=("all", "nora", "tavern"), default="all")
     sub.add_parser("finish-update")

@@ -125,36 +125,54 @@ test('first-install retry rebuilds missing Python only for a verified rollback w
   const operationId=randomUUID(),hermesHome=path.join(home,'hermes');
   const runtime=nativeRequire('./runtime-transaction'),location=runtime.paths({noraHome:home,hermesHome,operationId});
   fs.mkdirSync(location.failed,{recursive:true});
-  const identity=fs.lstatSync(location.failed,{bigint:true});
+  const tavern=path.join(home,'tavern');fs.mkdirSync(tavern);
+  const identity=fs.lstatSync(location.failed,{bigint:true}),tavernIdentity=fs.lstatSync(tavern,{bigint:true});
   fs.writeFileSync(location.journalReference,JSON.stringify({schema:'nora-runtime-bootstrap/1',operationId,
-    paths:location,status:'rolled-back',newTreePreserved:true,recoveryVerification:'files-restored',target:{sha256:'a'.repeat(64)},
+    paths:location,attempt:1,status:'rolled-back',newTreePreserved:true,recoveryVerification:'files-restored',target:{sha256:'a'.repeat(64)},
     identities:{previous:null,next:{device:String(identity.dev),inode:String(identity.ino)}}}));
   const operationDirectory=path.dirname(location.directory),firstDirectory=path.join(operationDirectory,'first-install');
   fs.mkdirSync(firstDirectory);
   const file=path.join(firstDirectory,'transaction.json'),journal={schema:1,owner:'nora-first-install',operationId,
-    status:'restored',checkpoints:{restore:{state:'result'}},unrestored:[],
-    rootIdentities:{hermes:[String(identity.dev),String(identity.ino)]}};
+    attempt:1,status:'restored',checkpoints:{restore:{state:'result'}},unrestored:[],
+    rootIdentities:{hermes:[String(identity.dev),String(identity.ino)],tavern:[String(tavernIdentity.dev),String(tavernIdentity.ino)]}};
   const writeJournal=value=>fs.writeFileSync(file,JSON.stringify(value).replace(`"${identity.ino}"`,String(identity.ino)));
   writeJournal(journal);
-  const snapshot={attempt:2,effectState:'restored',recoveryOutcome:'restored-and-verified',verification:'confirmed',result:{
-    installed:false,hermesInstalled:false,systemReady:false,running:false,gatewayRunning:false,clawchatConnected:false}};
+  const snapshot={operationId,attempt:2,effectState:'restored',recoveryOutcome:'restored-and-verified',verification:'confirmed',result:{
+    installed:false,hermesInstalled:false,systemReady:false,running:false,gatewayRunning:false,clawchatConnected:false,recoveryVerification:'confirmed'}};
   let python=null;
-  const context=vm.createContext({fs,path,noraHome:()=>home,hermesHome:()=>hermesHome,findPython:()=>python,require:nativeRequire});
-  vm.runInContext(definition('hasFirstInstallToResume'),context);
-  const needsProbe=vm.runInContext('hasFirstInstallToResume',context);
-  assert.equal(needsProbe({operationId,snapshot},operationDirectory),false);
-  assert.equal(needsProbe({operationId,snapshot:{...snapshot,verification:'unconfirmed'}},operationDirectory),true);
+  const context=vm.createContext({fs,path,noraHome:()=>home,hermesHome:()=>hermesHome,installRoot:()=>tavern,
+    installerDirectory:()=>path.join(home,'installer'),app:{isPackaged:true},process:{platform:'win32'},
+    findPython:()=>python,require:nativeRequire,systemUpdate:{inspect:()=>null}});
+  for(const name of ['canRebuildFirstInstall','verifyHistoricalInstallRetry'])vm.runInContext(definition(name),context);
+  const canRebuild=vm.runInContext('canRebuildFirstInstall',context);
+  const verifyHistorical=vm.runInContext('verifyHistoricalInstallRetry',context);
+  const missingPython={code:'UNKNOWN_PROGRAM_ERROR',site:'launcher.operation',
+    guidance:{detail:'未找到 Python。请先用整合包脚本安装，或安装带 Python 的 Hermes。'}};
+  const historical={...snapshot,state:'failed',stageId:'recovering',kind:'install',recoveryOutcome:'recovery-required',
+    currentFailure:missingPython,secondaryFailures:[{...missingPython,operation:'recover'}],planSelected:true,
+    target:{releasePlan:{schema:'nora-release-plan/1',platform:'win32'}}};
+  assert.equal(canRebuild(snapshot,operationDirectory),true);
+  assert.equal(verifyHistorical(historical),true);
+  assert.equal(verifyHistorical({...historical,attempt:3}),false);
+  assert.equal(verifyHistorical({...historical,secondaryFailures:[]}),false);
+  assert.equal(verifyHistorical({...historical,currentFailure:{...missingPython,guidance:{detail:'different failure'}}}),false);
+  assert.equal(canRebuild({...snapshot,verification:'unconfirmed'},operationDirectory),false);
+  writeJournal({...journal,attempt:2});
+  assert.equal(verifyHistorical(historical),false);
   writeJournal({...journal,status:'installed'});
-  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  assert.equal(canRebuild(snapshot,operationDirectory),false);
   writeJournal({...journal,rootIdentities:{hermes:[String(identity.dev),String(identity.ino+1n)]}});
-  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  assert.equal(canRebuild(snapshot,operationDirectory),false);
   writeJournal(journal);
   python={command:'python'};
-  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  assert.equal(canRebuild(snapshot,operationDirectory),false);
+  assert.equal(verifyHistorical(historical),false);
   python=null;
+  fs.renameSync(tavern,tavern+'-original');fs.mkdirSync(tavern);
+  assert.equal(verifyHistorical(historical),false);
   fs.renameSync(location.failed,location.failed+'-original');
   fs.mkdirSync(location.failed);
-  assert.equal(needsProbe({operationId,snapshot},operationDirectory),true);
+  assert.equal(canRebuild(snapshot,operationDirectory),false);
 });
 test('core projection is read-only without rewriting historical effects or permissions',t=>{
   const f=retryFixture(t,{legacy:true}),before=JSON.stringify(f.selected);
