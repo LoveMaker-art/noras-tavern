@@ -189,7 +189,14 @@ async function packagedRecovery(fixtureRoot) {
   const install = path.join(fixtureRoot, 'tavern');
   const {port, rollbackBaseline} = read(path.join(fixtureRoot, 'harness-result.json'));
   const original = read(path.join(fixtureRoot, 'original-operation-snapshot.json'));
-  assert.equal(original.state, 'failed');
+  const record = read(path.join(fixtureRoot, 'installer', 'operations', original.operationId, 'operation.json'));
+  assert.equal(record.state, 'failed');
+  assert.equal(record.operationId, original.operationId);
+  assert.equal(record.sequence, original.snapshotSequence);
+  assert.equal(record.planDigest, original.planDigest);
+  assert.equal(original.state, 'interrupted');
+  assert.equal(original.busy, false);
+  assert.equal(original.recoveryOutcome, 'recovery-required');
   assert.equal(original.effectState, 'changed');
   assert.ok(original.primaryFailure);
   assert.equal(rollbackBaseline.service, 'running');
