@@ -17,6 +17,31 @@ SPEC.loader.exec_module(TASK)
 
 
 class UpdaterTaskEntryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'win32', 'Requires the Windows Node entrypoint loader')
+    def test_windows_submission_executes_the_namespaced_bootstrap_runner(self):
+        node = os.environ['NORA_TEST_NODE']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home, install = root / 'home', root / 'tavern'
+            # The standalone bootstrap uses extended paths for its extraction I/O.
+            runner = Path('\\\\?\\' + str(root / 'runner' / 'ops'))
+            entry = runner / 'installer/desktop/updater-task.js'
+            entry.parent.mkdir(parents=True)
+            entry.write_text("const assert = require('node:assert/strict');\n"
+                             "const fs = require('node:fs');\n"
+                             "const path = require('node:path');\n"
+                             "const request = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
+                             "assert.equal(request.opsRoot, path.resolve(__dirname, '../..'));\n",
+                             encoding='utf-8')
+            command = ['task.py', '--apply', '--confirm', '--hermes-home', str(home),
+                       '--install-root', str(install), '--port', '18799', '--runner-root', str(runner)]
+            with patch.object(sys, 'argv', command), \
+                    patch.object(TASK, 'installation', return_value=(home, install, home)), \
+                    patch.object(TASK, 'node_for', return_value=node):
+                with self.assertRaises(SystemExit) as result:
+                    TASK.main()
+            self.assertEqual(result.exception.code, 0)
+
     def test_submission_binds_actual_venv_and_base_python_paths_for_native_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

@@ -54,6 +54,16 @@ def node_for(home):
     raise RuntimeError('未找到可独立执行更新器的 Node 运行环境；未修改现有程序和数据。')
 
 
+def node_path(value):
+    # Node's module loader needs ordinary paths; Python can still use extended paths for I/O.
+    value = str(value)
+    if sys.platform != 'win32':
+        return value
+    if value[:8].upper() == '\\\\?\\UNC\\':
+        return '\\\\' + value[8:]
+    return value.removeprefix('\\\\?\\')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -102,7 +112,7 @@ def main():
     if binding:
         owner = Path(binding['noraHome'])
     payload = {'action': action, 'noraHome': str(owner), 'hermesHome': str(home), 'installRoot': str(root),
-               'port': port, 'python': sys.executable, 'node': node_for(home), 'opsRoot': str(ops),
+               'port': port, 'python': sys.executable, 'node': node_for(home), 'opsRoot': node_path(ops),
                'venvHome': sys.prefix, 'managedPythonRoot': sys.base_prefix,
                'channel': os.environ.get('NORA_RELEASE_CHANNEL', 'stable'),
                'hermesInstallDir': (binding or {}).get('hermesInstallDir') or os.environ.get('HERMES_INSTALL_DIR', str(home / 'hermes-agent'))}
@@ -125,7 +135,7 @@ def main():
         if not re.fullmatch(r'[a-f0-9]{64}', args.target_manifest_sha256):
             raise RuntimeError('目标发布清单摘要格式无效，未开始更新。')
         payload['targetManifestSha256'] = args.target_manifest_sha256
-    result = subprocess.run([payload['node'], str(entry)], input=json.dumps(payload), text=True, check=False)
+    result = subprocess.run([payload['node'], node_path(entry)], input=json.dumps(payload), text=True, check=False)
     raise SystemExit(result.returncode)
 
 
