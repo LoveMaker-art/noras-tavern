@@ -61,7 +61,9 @@ def node_path(value):
         return value
     if value[:8].upper() == '\\\\?\\UNC\\':
         return '\\\\' + value[8:]
-    return value.removeprefix('\\\\?\\')
+    if value.startswith('\\\\?\\') and value[5:7] == ':\\':
+        return value[4:]
+    return value
 
 
 def main():
