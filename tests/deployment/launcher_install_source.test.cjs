@@ -58,21 +58,29 @@ test('GUI telemetry distinguishes explicit recovery from a failed update with au
   assert.equal(records.at(-1).fields.verification,'failed');
 });
 
-test('actual first-install handler selects the latest complete release; local candidates stay offline', async () => {
+test('first-install handler selects latest, local candidate, or original retry resources', async () => {
   assert.ok(selection);
-  for (const [action, local, expected] of [['install', false, 'latest'], ['install', true, 'candidate']]) {
+  const oldWriter='c'.repeat(64),currentWriter='d'.repeat(64);
+  const fixedPlan={schema:'nora-release-plan/1',commit:'a'.repeat(40),manifestSha256:'b'.repeat(64)};
+  for (const [local, originalWriter, expected] of [
+    [false,null,'latest'],[true,null,'candidate'],[false,oldWriter,'latest'],[false,currentWriter,'latest'],
+  ]) {
     const calls = [];
     const networkPolicy = { sourceContext: createReleaseSourceContext() };
+    const manifest={versions:{tavern:'2.4.2'},commit:fixedPlan.commit,
+      artifacts:{'ops/installer/first_install.py':originalWriter}};
     const context = vm.createContext({
       networkPolicy,
       require: createRequire(path.join(__dirname, '../installer/desktop/main.js')),
-      payload: { action }, isUpdate: action === 'update', managedRepair:false,
-      managedFacts:{needsRepair:false,missing:{python:false}}, LOCAL_TEST: local, CHANNEL: 'stable', AbortController, process,
-      selectedPlan: null, fixedTarget: async plan => { context.selectedPlan = plan; },
-      context: { stage: async () => {}, effect: async () => {} }, fs: { readFileSync: () => JSON.stringify({versions:{tavern:'2.4.2'},commit:'a'.repeat(40)}) },
+      payload: { action:'install' }, isUpdate:false, managedRepair:false,
+      managedFacts:{needsRepair:false,missing:{python:false}}, LOCAL_TEST: local, CHANNEL: 'stable', AbortController,
+      process:{platform:'win32',arch:'x64'},
+      selectedPlan:originalWriter?fixedPlan:null,fixedTarget:async plan=>{context.selectedPlan=plan;},
+      rebuildFirstInstall:Boolean(originalWriter),packagedInstallManifest:undefined,
+      context: { stage: async () => {}, effect: async () => {} }, fs: { readFileSync: () => JSON.stringify(manifest) },
       releaseAbort: null, selectedPayload: null, cancelled: false,
-      app: { getVersion: () => '1.0.0' }, path,
-      noraHome: () => '/home', payloadDirectory: () => '/payload',
+      app: { getVersion: () => '1.0.0',isPackaged:!local }, path,
+      noraHome: () => '/home', payloadDirectory: () => '/payload',installerRoot:()=>'/packaged',
       operationDirectory: '/operation/fixture-install',
       event: { sender: {} }, sendBridgeEvent() {},
       releaseNetwork: { fetch() { throw new Error('network unavailable'); } },
@@ -84,7 +92,12 @@ test('actual first-install handler selects the latest complete release; local ca
           assert.equal(options.operationDirectory, context.operationDirectory);
           assert.equal(options.networkPolicy, networkPolicy);
           assert.equal(typeof options.confirmBundled, 'function');
+          assert.equal(options.selectedPlan,originalWriter?fixedPlan:undefined);
           calls.push('latest'); return '/latest';
+        },
+        hash:async file=>{
+          assert.equal(file,path.join('/packaged','first_install.py'));
+          return currentWriter;
         },
         prepareUpdate: async options => {
           assert.equal(options.networkPolicy, networkPolicy);
@@ -96,7 +109,9 @@ test('actual first-install handler selects the latest complete release; local ca
       ensureHermesFromNode: async (_sender, _run, root) => calls.push(root),
     });
     await vm.runInContext(`(async () => { ${source.slice(selection.start, selection.end)} })()`, context);
-    assert.deepEqual(calls, action === 'install' ? [expected, local ? '/payload' : '/latest'] : [expected]);
+    assert.deepEqual(calls,[expected,local?'/payload':'/latest']);
+    assert.equal(context.packagedInstallManifest,originalWriter===oldWriter?fixedPlan.manifestSha256:undefined);
+    if(originalWriter)assert.equal(context.selectedPlan,fixedPlan);
     assert.equal(context.releaseAbort, null);
   }
 });

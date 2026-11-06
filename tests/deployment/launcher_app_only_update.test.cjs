@@ -100,6 +100,7 @@ test('handoff reconciliation prepares the private APP helper under the same writ
   const active={lease:{assertActive:()=>calls.push('writer')}},result={verification:'confirmed'};
   const context=vm.createContext({operationController:null,operationLock:{},operationExecutors:{},
     operationRecoverers:{},operationRecheckers:{},operationEvidence:{},installerDirectory:()=>'/owned/installer',
+    verifyHistoricalInstallRetry:()=>assert.fail('APP handoff cannot inspect a historical first install'),
     activeOperationContext:null,createOperationController:options=>options,
     ensureAppHelperRuntime:async options=>{assert.equal(options.lease,active.lease);options.lease.assertActive();calls.push('private-helper');},
     maintenancePolicy:()=>({reconcileHandoff:async(record,execution)=>{
