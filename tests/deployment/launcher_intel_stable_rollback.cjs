@@ -50,22 +50,24 @@ function dispatchRoot(env = process.env, platform = process.platform, arch = pro
 }
 
 function extractSelected(archive, destination, names) {
-  const extract = `import pathlib,shutil,stat,sys,zipfile
+  const limits = Object.fromEntries(names.map(name => [name,
+    name === dmgName ? 8 * 1024 ** 3 : name === launcherArchive ? 2 * 1024 ** 3 : 8 * 1024 ** 2]));
+  const extract = `import json,pathlib,shutil,stat,sys,zipfile
 root=pathlib.Path(sys.argv[2]);root.mkdir(mode=0o700)
-wanted=set(sys.argv[3:]);seen=set()
+limits=json.loads(sys.argv[3]);seen=set()
 with zipfile.ZipFile(sys.argv[1]) as source:
     for item in source.infolist():
         name=pathlib.PurePosixPath(item.filename).name
-        if name not in wanted:
+        if name not in limits:
             continue
         assert name not in seen and not item.is_dir()
         assert stat.S_IFMT(item.external_attr >> 16) in (0,stat.S_IFREG)
-        assert 0 < item.file_size <= (8*1024**3 if name.endswith('.dmg') else 8*1024**2)
+        assert 0 < item.file_size <= limits[name]
         seen.add(name)
         with source.open(item) as entry,(root/name).open('xb') as output:
             shutil.copyfileobj(entry,output,1024*1024)
-    assert seen==wanted`;
-  command('python3', ['-c', extract, archive, destination, ...names], {stdio: 'inherit', timeout: 600000});
+    assert seen==set(limits)`;
+  command('python3', ['-c', extract, archive, destination, JSON.stringify(limits)], {stdio: 'inherit', timeout: 600000});
 }
 
 async function prepare(directory, sourceRun, appOnly) {
