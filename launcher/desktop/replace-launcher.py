@@ -945,6 +945,8 @@ def launcher_environment(ctx):
                 env.pop(key, None)
             else:
                 env[key] = value
+        # Older desktop bridges import sibling modules from the script directory.
+        env.pop('PYTHONSAFEPATH', None)
     env['NORA_TAVERN_HOME'] = str(ctx['home'])
     return env
 

@@ -72,24 +72,35 @@ test('APP helper can verify and probe the shipped image without creating a cache
   assert.equal(f.probes.length,1);
   assert.deepEqual(f.probes[0].args.slice(0,3),['-I','-B','-c']);
 });
-test('private helper environment yields the desktop paths in the relaunched APP', {skip:!process.env.NORA_TEST_PYTHON},async t=>{
+test('the APP relaunched by a private helper can import its own bridge modules', {skip:!process.env.NORA_TEST_PYTHON},async t=>{
   const f=await fixture(t),options=f.options();
   const desktopHome=path.join(f.root,'desktop'),desktopLocal=path.join(desktopHome,'local-appdata');
   Object.assign(options.env,{HOME:desktopHome,LOCALAPPDATA:desktopLocal});
   delete options.env.APPDATA;
   const execution=await runtime.resolve(options);
   const helper=path.resolve(__dirname,'../installer/desktop/replace-launcher.py');
+  const bridgeDirectory=path.join(f.root,'old-app','resources');
+  const bridge=path.join(bridgeDirectory,'launcher_bridge.py');
+  fs.mkdirSync(bridgeDirectory,{recursive:true});
+  fs.writeFileSync(bridge,'from nora_system import status\nprint(status)\n');
+  fs.writeFileSync(path.join(bridgeDirectory,'nora_system.py'),'status = "ready"\n');
   const python=String.raw`
-import json, runpy, sys
+import json, runpy, subprocess, sys
 from pathlib import Path
 helper = runpy.run_path(sys.argv[1])
 env = helper['launcher_environment']({'home': Path(sys.argv[2])})
-print(json.dumps([env['HOME'], env['LOCALAPPDATA'], env.get('APPDATA'),
-                  env['NORA_TAVERN_HOME'], env.get('NORA_APP_RELAUNCH_PROFILE')]))
+result = subprocess.run([sys.executable, '-u', '-B', sys.argv[3]], cwd=sys.argv[2],
+                        env=env, capture_output=True, text=True, timeout=15)
+print(json.dumps({'paths': [env['HOME'], env['LOCALAPPDATA'], env.get('APPDATA'),
+                            env['NORA_TAVERN_HOME'], env.get('NORA_APP_RELAUNCH_PROFILE')],
+                  'safePath': env.get('PYTHONSAFEPATH'), 'exit': result.returncode,
+                  'stdout': result.stdout.strip(), 'stderr': result.stderr.strip()}))
 `;
-  const output=execFileSync(process.env.NORA_TEST_PYTHON,['-B','-c',python,helper,f.home],
-    {encoding:'utf8',env:execution.env});
-  assert.deepEqual(JSON.parse(output),[desktopHome,desktopLocal,null,f.home,null]);
+  const output=execFileSync(process.env.NORA_TEST_PYTHON,['-B','-c',python,helper,f.home,bridge],
+    {encoding:'utf8',env:execution.env,timeout:20000});
+  assert.deepEqual(JSON.parse(output),{
+    paths:[desktopHome,desktopLocal,null,f.home,null],safePath:null,exit:0,stdout:'ready',stderr:'',
+  });
 });
 test('missing APP descriptor trust and changed image fail before running an interpreter',async t=>{
   const f=await fixture(t);
