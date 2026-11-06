@@ -204,7 +204,7 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
   for (const [name, file] of Object.entries(read(path.join(payload, 'nora-system.json')).files)) link(newer, file.asset, path.join(payload, name));
   for (const name of [systemName, launcherName, launcherArchive]) link(newer, name, path.join(delivery, name));
   const children = [];
-  let interrupted, recoveryReply, candidateLog;
+  let interrupted, recoveryAdmission, recoveryReply, candidateLog;
   const collectActors = () => JSON.parse(command('python3', ['-B', '-c', actorCensus, fixture]));
   async function saveRecoveryDiagnostic(error) {
     const evidence = path.join(directory, 'evidence');
@@ -251,7 +251,7 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
       } finally {fs.closeSync(fd);}
     }
     fs.writeFileSync(path.join(evidence, 'app-diagnostic.json'), JSON.stringify({outcome: error ? 'failed' : 'passed',
-      ...(error ? {error: safeError(error)} : {}), interrupted, recoveryReply, operation, bundles, actors, files, candidateLog: log}, null, 2) + '\n',
+      ...(error ? {error: safeError(error)} : {}), interrupted, recoveryAdmission, recoveryReply, operation, bundles, actors, files, candidateLog: log}, null, 2) + '\n',
     {flag: 'wx', mode: 0o600});
   }
   async function launch(release, version, bundleSha) {
@@ -272,7 +272,7 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
       return value.launcherVersion === version && value.noraHome === home && value.asar.sha256 === bundleSha
         && await evaluate(debugPort, 'Boolean(window.NoraLauncherBridge?.status)');
     });
-    return {child, check, trigger: (method, parameters) => evaluate(debugPort,
+    return {child, check, observe: expression => evaluate(debugPort, expression), trigger: (method, parameters) => evaluate(debugPort,
       `void window.NoraLauncherBridge.${method}(${JSON.stringify(parameters) || ''}).catch(e => console.error(e)); true`, 10, false)};
   }
   const running = child => child.exitCode === null && child.signalCode === null;
@@ -327,9 +327,14 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
     assert.equal(await hash(old.exe), incoming.exeSha);
     assert.equal(await hash(old.asar), incoming.asarSha);
     session = await launch(newer, incoming.version, incoming.asarSha);
-    const pending = await session.check('status');
-    assert.equal(pending.launcherRecovery.canRecover, true);
-    assert.equal(pending.launcherRecovery.operationId, interrupted.id);
+    recoveryAdmission = await waitFor('original recovery action after candidate startup work ends', 120, async () => {
+      const pending = await session.check('status');
+      if (pending.busy !== false || pending.launcherRecovery?.canRecover !== true
+          || pending.launcherRecovery.operationId !== interrupted.id) return false;
+      const enabled = await session.observe(`(()=>{const button=document.getElementById('recoverLauncher');
+        return Boolean(button&&!button.disabled&&!button.hidden&&button.getBoundingClientRect().width>0);})()`);
+      return enabled && {busy: false, originalId: interrupted.id, visibleEnabledAction: true};
+    });
     try {recoveryReply = {value: await session.check('recoverLauncher', undefined, 110)};}
     catch (error) {recoveryReply = {error: safeError(error)};}
     const recovered = await waitFor('candidate replacement helper restored the old APP and exited', 120, async () => {
