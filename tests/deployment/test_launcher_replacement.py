@@ -1249,7 +1249,70 @@ class OperationReplacementTests(unittest.TestCase):
         process = Mock(); process.pid = os.getpid(); process.exe.side_effect = psutil.AccessDenied(process.pid)
         process.username.return_value = psutil.Process().username()
         with patch.object(psutil, 'process_iter', return_value=[process]):
-            with self.assertRaises(RuntimeError): worker.require_launcher_offline(worker.context(f['job']))
+            with self.assertRaises(RuntimeError): worker.require_launcher_offline(worker.context(f['job']), {})
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'Darwin Crashpad uses a separate orphan executable')
+    def test_mac_recovery_retires_only_the_verified_old_orphan_crash_reporter(self):
+        import itertools
+        import psutil
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home, app, backup = (root / name for name in ('home', 'current.app', '.nora-previous-app'))
+            framework = backup / 'Contents/Frameworks/Electron Framework.framework'
+            executable = framework / 'Versions/A/Helpers/chrome_crashpad_handler'
+            executable.parent.mkdir(parents=True); executable.touch()
+            (framework / 'Helpers').symlink_to('Versions/A/Helpers')
+            database = home / 'launcher/diagnostics/native-crashes'
+            database.mkdir(parents=True)
+            ctx = {'home': home, 'app': app, 'backup': backup,
+                   'plan': {'platform': 'darwin', 'schema': 2, 'parentCreationTime': 100}}
+            snapshot = {'old': {'identity': worker.file_identity(backup), 'version': '2.2.8'},
+                        'workerCreationTime': 120}
+            reporter_args = [str(app / executable.relative_to(backup)),
+                             '--monitor-self-annotation=ptype=crashpad-handler',
+                             '--annotation=_productName=Nora Tavern Launcher', '--annotation=prod=Electron',
+                             '--annotation=_version=2.2.8', f'--database={database}']
+            for scenario in ('owned', 'other-profile', 'different-owner', 'active-parent',
+                             'another-app-actor', 'reused-pid', 'survivor'):
+                with self.subTest(scenario=scenario):
+                    reporter = Mock(pid=42)
+                    reporter.exe.return_value = str(executable)
+                    reporter.ppid.return_value = 2 if scenario == 'active-parent' else 1
+                    reporter.create_time.return_value = 110
+                    uid = os.getuid() + (1 if scenario == 'different-owner' else 0)
+                    reporter.uids.return_value = SimpleNamespace(real=uid, effective=uid)
+                    reporter.cmdline.return_value = [*reporter_args[:-1], (
+                        '--database=/other/profile' if scenario == 'other-profile' else reporter_args[-1])]
+                    service = Mock(pid=43)
+                    service.exe.return_value = str(home / 'hermes/node')
+                    actors = [reporter, service]
+                    if scenario == 'another-app-actor':
+                        main = Mock(pid=44)
+                        main.exe.return_value = str(app / 'Contents/MacOS/Launcher')
+                        actors.append(main)
+                    candidate = reporter
+                    if scenario == 'reused-pid':
+                        candidate = Mock(pid=42)
+                        candidate.create_time.return_value = 130
+                    if scenario == 'owned':
+                        reporter.terminate.side_effect = lambda: actors.remove(reporter)
+                    current_user = psutil.Process()
+                    with patch.object(psutil, 'process_iter', side_effect=lambda: list(actors)), \
+                            patch.object(psutil, 'Process', side_effect=lambda pid=None: current_user if pid is None else candidate), \
+                            patch.object(worker.time, 'monotonic', side_effect=itertools.count(0, 2).__next__), \
+                            patch.object(worker.time, 'sleep'):
+                        if scenario == 'owned':
+                            worker.require_launcher_offline(ctx, snapshot)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, '启动器仍在运行'):
+                                worker.require_launcher_offline(ctx, snapshot)
+                    if scenario in ('owned', 'survivor'):
+                        reporter.terminate.assert_called_once_with()
+                    else:
+                        reporter.terminate.assert_not_called()
+                        candidate.terminate.assert_not_called()
+                    service.terminate.assert_not_called()
 
     def test_recovery_waits_for_remaining_launcher_process_before_restoring_without_rewriting_history(self):
         import psutil

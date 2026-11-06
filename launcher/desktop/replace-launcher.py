@@ -850,17 +850,57 @@ def detach_inherited_crash_handler():
         raise RuntimeError('无法解除恢复进程继承的崩溃报告连接，已保留程序和备份。')
 
 
-def require_launcher_offline(ctx):
+def is_old_orphan_crash_reporter(ctx, snapshot, process, birth):
+    backup = ctx['backup']
+    reporter = (backup / 'Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler').resolve()
+    if (str(reporter) != process.exe() or not contained(reporter, backup)
+            or file_identity(backup) != snapshot['old']['identity'] or not reporter.is_file()
+            or process.ppid() != 1 or not ctx['plan']['parentCreationTime'] <= birth < snapshot['workerCreationTime']):
+        return False
+    uids = process.uids()
+    if (uids.real, uids.effective) != (os.getuid(), os.geteuid()):
+        return False
+    database = ctx['home'] / 'launcher/diagnostics/native-crashes'
+    args = process.cmdline()[1:]
+    return (database.is_dir() and database.resolve() == database
+            and [arg for arg in args if arg == '--database' or arg.startswith('--database=')] == [f'--database={database}']
+            and '--monitor-self-annotation=ptype=crashpad-handler' in args
+            and '--annotation=_productName=Nora Tavern Launcher' in args
+            and '--annotation=prod=Electron' in args
+            and f"--annotation=_version={snapshot['old']['version']}" in args)
+
+
+def retire_old_orphan_crash_reporter(ctx, snapshot, observed, signalled):
+    import psutil
+    try:
+        birth = observed.create_time()
+        identity = (observed.pid, birth)
+        if identity in signalled:
+            return
+        current = psutil.Process(observed.pid)
+        if current.create_time() == birth and is_old_orphan_crash_reporter(ctx, snapshot, current, birth):
+            current.terminate()  # psutil checks for PID reuse before signalling.
+            signalled.add(identity)
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        pass  # Recheck the entire census before trying again.
+    except psutil.AccessDenied as error:
+        raise RuntimeError('无法确认旧启动器崩溃报告进程已退出，已保留程序和备份。') from error
+
+
+def require_launcher_offline(ctx, snapshot):
     import psutil
     current_user = psutil.Process().username()
+    mac_transaction = sys.platform == ctx['plan']['platform'] == 'darwin' and ctx['plan']['schema'] == 2
+    signalled = set()
     deadline = time.monotonic() + 30
     while True:
-        running = False
+        running = []
+        if mac_transaction: psutil.process_iter.cache_clear()
         for process in psutil.process_iter():
             try:
                 executable = process.exe()
                 if executable and any(contained(Path(executable), root) for root in (ctx['app'], ctx['backup'])):
-                    running = True
+                    running.append(process)
             except (psutil.NoSuchProcess, psutil.ZombieProcess): continue
             except psutil.AccessDenied as error:
                 try: other_user = process.username() != current_user
@@ -869,12 +909,15 @@ def require_launcher_offline(ctx):
                 if not other_user:
                     raise RuntimeError('当前用户进程路径无法确认，已保留启动器现场') from error
         if not running: return
-        # Electron report helpers can outlive the exact parent briefly. Keep
-        # the writer and both trees intact until every owned executable exits;
-        # neither ignore a reporter nor terminate processes on the user's behalf.
+        # Give normally exiting children a short grace period. A running Tavern
+        # may keep an orphaned old Mac Crashpad alive through inherited Mach
+        # rights. Only that verified reporter can be stopped by APP recovery.
+        # Keep both trees intact until a fresh census confirms all have exited.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError('启动器仍在运行，请先关闭启动器后再恢复。')
+        if mac_transaction and len(running) == 1 and remaining <= 29:
+            retire_old_orphan_crash_reporter(ctx, snapshot, running[0], signalled)
         time.sleep(min(0.1, remaining))
 
 
@@ -1294,7 +1337,7 @@ def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False,
     if snapshot['phase'] != 'restored':
         checkpoint(ctx, snapshot, 'recovery-prepared', **worker_identity())
         if parent_pid: wait_parent(parent_pid, parent_creation_time)
-        require_launcher_offline(ctx)
+        require_launcher_offline(ctx, snapshot)
         validate_snapshot(ctx, full=True)
         if file_identity(ctx['app']) != snapshot['old']['identity']:
             if exists(ctx['app']):
@@ -1303,7 +1346,7 @@ def restore(ctx, *, parent_pid=0, parent_creation_time=None, allow_legacy=False,
             checkpoint(ctx, snapshot, 'restoring-old'); retry_rename(ctx['backup'], ctx['app'])
         validate_snapshot(ctx, full=True)
     elif bound and not bound[2]:
-        require_launcher_offline(ctx)
+        require_launcher_offline(ctx, snapshot)
     if historical_segment:
         # The restored binary may still have a legacy joint-update entrypoint.
         # Keep the original task and installer state read-only.
