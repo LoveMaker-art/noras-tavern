@@ -11,6 +11,7 @@ const oldVersion = '2.2.8';
 const oldCore = '2.6.4';
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const command = (file, args) => execFileSync(file, args, {encoding: 'utf8', timeout: 120000}).trim();
+const safeError = error => ({name: error.name, message: String(error.message).slice(0, 1500)});
 async function hash(file) {
   const digest = crypto.createHash('sha256');
   for await (const chunk of fs.createReadStream(file)) digest.update(chunk);
@@ -125,6 +126,27 @@ for p in psutil.process_iter():
     except (psutil.NoSuchProcess,psutil.AccessDenied): pass
 print(json.dumps(records))`;
 
+const actorCensus = `import json,os,pathlib,sys,psutil
+root=pathlib.Path(sys.argv[1]); rows=[]
+for p in psutil.process_iter():
+    try:
+        exe=pathlib.Path(p.exe())
+        if not exe.is_relative_to(root) or p.uids().effective!=os.geteuid(): continue
+        args=p.cmdline()[1:]
+        fields=['--type=','--nora-self-update=','--nora-local-release=','--database=','--remote-debugging-port=']
+        rows.append(dict(pid=p.pid,ppid=p.ppid(),birth=p.create_time(),exe=str(exe),uid=p.uids().effective,
+                         state=p.status(),args=[a for a in args if any(a.startswith(k) for k in fields)]))
+    except (psutil.NoSuchProcess,psutil.AccessDenied): pass
+print(json.dumps(rows[:40]))`;
+
+function sameLiveProcess(pid, birth) {
+  return command('python3', ['-B', '-c', `import psutil,sys
+try:
+    p=psutil.Process(int(sys.argv[1])); same=p.create_time()==float(sys.argv[2]) and p.status()!=psutil.STATUS_ZOMBIE
+except psutil.NoSuchProcess: same=False
+print('present' if same else 'gone')`, String(pid), String(birth)]) === 'present';
+}
+
 async function qualifyApp({directory, source, identity, payload, deliveryName, launcherName, launcherArchive, sharedName, targetVersion}) {
   assert.equal(`${process.platform}-${process.arch}`, 'darwin-x64');
   const fixture = path.join(directory, 'app-fixture');
@@ -182,9 +204,61 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
   for (const [name, file] of Object.entries(read(path.join(payload, 'nora-system.json')).files)) link(newer, file.asset, path.join(payload, name));
   for (const name of [systemName, launcherName, launcherArchive]) link(newer, name, path.join(delivery, name));
   const children = [];
+  let interrupted, recoveryReply, candidateLog;
+  const collectActors = () => JSON.parse(command('python3', ['-B', '-c', actorCensus, fixture]));
+  async function saveRecoveryDiagnostic(error) {
+    const evidence = path.join(directory, 'evidence');
+    const files = [];
+    let operation, bundles, actors, log;
+    if (interrupted?.job && path.dirname(interrupted.job) === path.join(installer, 'launcher-update')) {
+      const job = interrupted.job;
+      for (const name of ['recovery.json', 'status.json']) {
+        const file = path.join(job, name);
+        if (fs.existsSync(file) && fs.lstatSync(file).isFile() && fs.statSync(file).size <= 1024 ** 2) {
+          fs.copyFileSync(file, path.join(evidence, 'app-' + name), fs.constants.COPYFILE_EXCL);
+          files.push('app-' + name);
+        }
+      }
+      const plan = read(path.join(job, 'plan.json'));
+      assert.match(plan.token, /^[0-9a-f-]{36}$/);
+      assert.match(interrupted.id, /^[0-9a-f-]{36}$/);
+      const {state, sequence, ownerEpoch, planDigest, verification, recoveryOutcome, stageId} = read(path.join(installer, 'operations', interrupted.id, 'operation.json'));
+      operation = {state, sequence, ownerEpoch, planDigest, verification, recoveryOutcome, stageId};
+      bundles = {};
+      const exe = path.relative(old.app, old.exe), asar = path.relative(old.app, old.asar);
+      for (const [name, root] of Object.entries({active: old.app,
+        backup: path.join(path.dirname(old.app), '.nora-previous-' + plan.token),
+        failed: path.join(path.dirname(old.app), '.nora-failed-' + plan.token)})) {
+        if (!fs.existsSync(root)) {bundles[name] = null; continue;}
+        const stat = fs.lstatSync(root, {bigint: true});
+        if (!stat.isDirectory()) {bundles[name] = {directory: false}; continue;}
+        const hashes = {};
+        for (const relative of [exe, asar]) {
+          const file = path.join(root, relative);
+          if (fs.existsSync(file) && fs.lstatSync(file).isFile()) hashes[path.basename(file)] = await hash(file);
+        }
+        bundles[name] = {device: String(stat.dev), inode: String(stat.ino), hashes};
+      }
+    }
+    try {actors = collectActors();} catch (cause) {actors = {error: safeError(cause)};}
+    if (candidateLog && fs.existsSync(candidateLog)) {
+      const fd = fs.openSync(candidateLog, 'r');
+      try {
+        const size = fs.fstatSync(fd).size;
+        const bytes = Buffer.alloc(Math.min(size, 32 * 1024));
+        fs.readSync(fd, bytes, 0, bytes.length, size - bytes.length);
+        log = bytes.toString('utf8');
+      } finally {fs.closeSync(fd);}
+    }
+    fs.writeFileSync(path.join(evidence, 'app-diagnostic.json'), JSON.stringify({outcome: error ? 'failed' : 'passed',
+      ...(error ? {error: safeError(error)} : {}), interrupted, recoveryReply, operation, bundles, actors, files, candidateLog: log}, null, 2) + '\n',
+    {flag: 'wx', mode: 0o600});
+  }
   async function launch(release, version, bundleSha) {
     const debugPort = await unusedPort();
-    const log = fs.openSync(path.join(fixture, 'app.log'), 'a', 0o600);
+    const file = path.join(fixture, `app-${children.length}.log`);
+    if (version !== oldVersion) candidateLog = file;
+    const log = fs.openSync(file, 'a', 0o600);
     let child;
     try {child = spawn(old.exe, [`--nora-local-release=${release}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${debugPort}`],
       {env, cwd: fixture, stdio: ['ignore', log, log]});}
@@ -239,7 +313,7 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
     });
     cutDone.catch(() => {});
     await session.trigger('update', {port, tag: offer.releaseTag, includeLauncher: true});
-    const interrupted = await cutDone;
+    interrupted = await cutDone;
     const failed = await waitFor('immutable old helper rollback blocked by Crashpad', 90, () => {
       const value = read(path.join(interrupted.job, 'status.json'));
       return value.status === 'recovery-failed' && value;
@@ -256,36 +330,59 @@ async function qualifyApp({directory, source, identity, payload, deliveryName, l
     const pending = await session.check('status');
     assert.equal(pending.launcherRecovery.canRecover, true);
     assert.equal(pending.launcherRecovery.operationId, interrupted.id);
-    await session.trigger('recoverLauncher');
-    await waitFor('candidate replacement helper restored the old APP', 150, async () => {
+    try {recoveryReply = {value: await session.check('recoverLauncher', undefined, 110)};}
+    catch (error) {recoveryReply = {error: safeError(error)};}
+    const recovered = await waitFor('candidate replacement helper restored the old APP and exited', 120, async () => {
       const value = read(path.join(interrupted.job, 'recovery.json'));
-      return value.phase === 'restored' && value.appSegmentOnly === true && !running(session.child)
-        && await hash(old.exe) === old.exeSha && await hash(old.asar) === old.asarSha;
+      return value.phase === 'restored' && value.diagnosticVerification === 'confirmed' && !running(session.child)
+        && value.operationId === interrupted.id && value.planDigest === interrupted.digest
+        && !sameLiveProcess(value.workerPid, value.workerCreationTime)
+        && await hash(old.exe) === old.exeSha && await hash(old.asar) === old.asarSha && value;
     });
-    const gone = command('python3', ['-B', '-c', `import psutil,sys
-try:
-    p=psutil.Process(int(sys.argv[1])); same=p.create_time()==float(sys.argv[2]) and p.status()!=psutil.STATUS_ZOMBIE
-except psutil.NoSuchProcess: same=False
-print('present' if same else 'gone')`, String(reporter[0].pid), String(reporter[0].birth)]);
-    assert.equal(gone, 'gone');
+    assert.equal(sameLiveProcess(reporter[0].pid, reporter[0].birth), false);
     assert.equal((await http('/')).status, 200);
-    session = await launch(older, oldVersion, old.asarSha);
+    let reopen;
+    if (recovered.launchAttempted === true) {
+      reopen = await waitFor('automatically relaunched original APP process and verified registration', 60, () => {
+        const receipt = read(path.join(installer, 'launcher-control.json'));
+        if (receipt.launcherVersion !== oldVersion || receipt.noraHome !== home || receipt.executable.path !== old.exe
+            || receipt.executable.sha256 !== old.exeSha || receipt.asar.sha256 !== old.asarSha) return false;
+        const actors = collectActors().filter(actor => actor.exe === old.exe && actor.birth > recovered.workerCreationTime
+          && actor.state !== 'zombie' && !actor.args.some(arg => arg.startsWith('--type=') || arg.startsWith('--nora-self-update=')));
+        return actors.length === 1 && {method: 'automatic-ordinary-launch', pid: actors[0].pid, birth: actors[0].birth};
+      });
+    } else {
+      assert.equal(recovered.appSegmentOnly, true, 'A historical APP-only file restoration requires an ordinary reopen');
+      session = await launch(older, oldVersion, old.asarSha);
+      reopen = {method: 'manual-ordinary-launch', pid: session.child.pid};
+    }
     const operation = await waitFor('ordinary old APP reopen settles the same operation', 90, () => {
       const value = read(path.join(installer, 'operations', interrupted.id, 'operation.json'));
       return value.state === 'rolled-back' && value.verification === 'confirmed' && value;
     });
     assert.equal(operation.planDigest, interrupted.digest);
-    const restored = await session.check('status');
+    const runtime = read(path.join(baseline, 'nora-hermes-runtime.json'));
+    const hermes = path.join(home, 'hermes');
+    const restored = recovered.launchAttempted === true
+      ? JSON.parse(execFileSync(path.join(hermes, runtime.venvPython), ['-B', path.join(old.app, 'Contents/Resources/launcher_bridge.py'),
+        '--nora-home', home, '--hermes-home', hermes, '--install-root', path.join(home, 'tavern'), '--port', String(port), 'status'],
+      {encoding: 'utf8', timeout: 90000, env: {...env, PYTHONPATH: path.join(hermes, 'hermes-agent'),
+        HERMES_INSTALL_DIR: path.join(hermes, 'hermes-agent'), TAVERN_NODE_EXECUTABLE: path.join(hermes, runtime.nodeBin, 'node')}}).trim())
+      : await session.check('status');
     assert.equal(statusIsOld(restored), true); assert.equal(restored.pid, oldService.pid);
     assert.deepEqual(await Promise.all(protectedFiles.map(hash)), before);
     assert.deepEqual(await Promise.all(['plan.json', 'replace.py'].map(name => hash(path.join(interrupted.job, name)))), jobSeal);
     assert.equal(read(settings).username, 'intel-rollback-fixture');
-    await session.check('stop', {port}, 60);
+    if (recovered.launchAttempted !== true) await session.check('stop', {port}, 60);
+    await saveRecoveryDiagnostic();
     return {schema: 'nora-intel-app-rollback/1', source, identity, method: 'native packaged Electron preload IPC via private loopback CDP',
       baseline: {appArchiveSha256: oldReceipt.archiveSha256, executableSha256: old.exeSha, asarSha256: old.asarSha},
       target: {appArchiveSha256: desc.sha256, executableSha256: incoming.exeSha, asarSha256: incoming.asarSha, helperSha256: helperSha},
-      interruption: {...interrupted, reporter: reporter[0]}, operation: {state: operation.state, verification: operation.verification},
+      interruption: {...interrupted, reporter: reporter[0]}, reopen, operation: {state: operation.state, verification: operation.verification},
       protectedFiles: Object.fromEntries(protectedFiles.map((file, index) => [path.relative(home, file), before[index]])), sameTavernPid: true};
+  } catch (error) {
+    try {await saveRecoveryDiagnostic(error);} catch (cause) {console.error('Diagnostic capture failed', safeError(cause));}
+    throw error;
   } finally {
     for (const child of children) if (running(child)) child.kill('SIGTERM');
   }
