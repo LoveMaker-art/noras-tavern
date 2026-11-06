@@ -17,6 +17,9 @@ const acceptanceName = `nora-operation-acceptance-${target}`;
 const dmgName = `Nora-Tavern-Launcher-${launcherVersion}-mac-x64.dmg`;
 const systemName = `nora-system-${target}.json`;
 const reportName = 'nora-packaged-app-acceptance.json';
+const launcherName = `nora-launcher-${target}.json`;
+const launcherArchive = `Nora-Tavern-Launcher-${launcherVersion}-${target}-update.zip`;
+const sharedName = 'nora-tavern-shared';
 const root = path.resolve(__dirname, '../..');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', {flag: 'wx', mode: 0o600});
@@ -65,8 +68,8 @@ with zipfile.ZipFile(sys.argv[1]) as source:
   command('python3', ['-c', extract, archive, destination, ...names], {stdio: 'inherit', timeout: 600000});
 }
 
-async function prepare(directory, sourceRun) {
-  const {downloadArchive, verifyArchive} = require('../../tooling/release/reuse-windows-build.cjs');
+async function prepare(directory, sourceRun, appOnly) {
+  const {downloadArchive, verifyArchive, extractScript} = require('../../tooling/release/reuse-windows-build.cjs');
   const run = api(`actions/runs/${sourceRun}`);
   assert.equal(run.id, sourceRun);
   assert.equal(run.path, workflow);
@@ -91,7 +94,7 @@ async function prepare(directory, sourceRun) {
   const evidence = path.join(directory, 'evidence');
   fs.mkdirSync(evidence, {mode: 0o700});
   const sources = {};
-  for (const name of [deliveryName, acceptanceName]) {
+  for (const name of [deliveryName, acceptanceName, ...(appOnly ? [sharedName] : [])]) {
     const item = artifacts.artifacts.find(artifact => artifact.name === name);
     assert.equal(item.workflow_run.id, sourceRun);
     assert.equal(item.workflow_run.head_sha, sourceCommit);
@@ -100,13 +103,19 @@ async function prepare(directory, sourceRun) {
     const archive = path.join(directory, `${name}.zip`);
     await downloadArchive(item, repository, archive);
     await verifyArchive(archive, item);
-    extractSelected(archive, path.join(directory, name), name === deliveryName ? [dmgName, systemName] : [reportName]);
+    const destination = path.join(directory, name);
+    if (name === sharedName) command('python3', ['-c', extractScript, archive, destination], {stdio: 'inherit', timeout: 600000});
+    else if (name === acceptanceName) extractSelected(archive, destination, [reportName]);
+    else extractSelected(archive, destination, [dmgName, systemName, ...(appOnly ? [launcherName, launcherArchive] : [])]);
     fs.unlinkSync(archive);
     sources[name] = {id: item.id, size: item.size_in_bytes, digest: item.digest};
   }
   command(process.execPath, ['tooling/release/acceptance-baseline.mjs', '--tag', baselineTag,
     '--platform', target, '--repository', repository, '--output', path.join(directory, 'baseline')],
   {stdio: 'inherit', timeout: 900000});
+  if (appOnly) command(process.execPath, ['tooling/release/acceptance-baseline.mjs', '--launcher', '--tag', baselineTag,
+    '--platform', target, '--repository', repository, '--output', path.join(directory, 'baseline-app')],
+  {stdio: 'inherit', timeout: 600000});
   const baseline = read(path.join(directory, 'baseline', 'baseline-source-receipt.json'));
   assert.equal(baseline.schema, 'nora-acceptance-baseline/1');
   assert.equal(baseline.mode, 'materialized');
@@ -263,13 +272,19 @@ async function packagedRecovery(fixtureRoot) {
     protectedFiles: rollbackBaseline.files, restoredJournalSha256, services: 'old-version-healthy-then-closed', electron: process.versions.electron};
 }
 
-async function qualify(directory, sourceRun) {
+async function qualify(directory, sourceRun, appOnly) {
   const evidence = path.join(directory, 'evidence');
   const source = read(path.join(evidence, 'source.json'));
   assert.equal(source.sourceRun, sourceRun);
   assert.equal(source.sourceCommit, sourceCommit);
   const {executable, payload, identity} = await openExactPackage(directory);
   write(path.join(evidence, 'package.json'), identity);
+  if (appOnly) {
+    const {qualifyApp} = require('./launcher_intel_app_rollback.cjs');
+    const result = await qualifyApp({directory, source, identity, payload, deliveryName, launcherName, launcherArchive, sharedName, targetVersion});
+    write(path.join(evidence, 'app-qualification.json'), result);
+    return;
+  }
   const scratch = path.join(directory, 'fixture');
   const baseline = path.join(directory, 'baseline');
   command(process.execPath, ['tooling/run.mjs', 'node', 'tests/deployment/launcher_product_refactor_smoke.cjs',
@@ -309,7 +324,10 @@ async function main() {
   assert.ok(['prepare', 'qualify'].includes(mode), 'Use prepare or qualify');
   const directory = dispatchRoot();
   const sourceRun = Number(process.env.SOURCE_RUN);
-  await (mode === 'prepare' ? prepare(directory, sourceRun) : qualify(directory, sourceRun));
+  const qualification = process.env.QUALIFICATION || 'core';
+  assert.ok(['core', 'app'].includes(qualification));
+  await (mode === 'prepare' ? prepare(directory, sourceRun, qualification === 'app')
+    : qualify(directory, sourceRun, qualification === 'app'));
 }
 
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });

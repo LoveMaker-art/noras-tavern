@@ -86,6 +86,7 @@ jobs:
     env:
       SOURCE_RUN: ${{ inputs.package_source_run }}
       BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
+      QUALIFICATION: ${{ inputs.production_mode && 'app' || 'core' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,6 +97,13 @@ jobs:
       - name: Install dependencies for the isolated source fixture
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/setup-python@v5
+        if: inputs.production_mode
+        with:
+          python-version: '3.11.9'
+      - name: Install native process identity test dependency
+        if: inputs.production_mode
+        run: python3 -m pip install psutil==7.0.0
       - name: Verify original delivery and historical baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nora-intel-rollback-qualification
+          name: nora-intel-${{ env.QUALIFICATION }}-rollback-qualification
           path: ${{ runner.temp }}/nora-intel-stable-rollback/evidence/*.json
           if-no-files-found: warn
           retention-days: 90
