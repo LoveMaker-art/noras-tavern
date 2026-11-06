@@ -133,6 +133,17 @@ jobs:
       - name: Verify component release contracts before preparing runtimes
         run: node --test tests/component-release.test.mjs
 
+      - name: Make Windows OpenSSL available to the TLS fixtures
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ -x /mingw64/bin/openssl.exe ]]; then
+            /mingw64/bin/openssl.exe version
+            cygpath -aw /mingw64/bin >> "$GITHUB_PATH"
+          else
+            openssl version
+          fi
+
       - name: Check source networking in pinned native Chromium before preparing runtimes
         timeout-minutes: 5
         shell: bash
@@ -534,6 +545,17 @@ jobs:
         timeout-minutes: 5
         shell: bash
         run: npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+
+      - name: Make Windows OpenSSL available to the TLS fixtures
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ -x /mingw64/bin/openssl.exe ]]; then
+            /mingw64/bin/openssl.exe version
+            cygpath -aw /mingw64/bin >> "$GITHUB_PATH"
+          else
+            openssl version
+          fi
 
       - name: Qualify actual Electron before native recovery tests
         timeout-minutes: 5
@@ -998,6 +1020,17 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" app
+
+      - name: Make Windows OpenSSL available to the TLS fixtures
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ -x /mingw64/bin/openssl.exe ]]; then
+            /mingw64/bin/openssl.exe version
+            cygpath -aw /mingw64/bin >> "$GITHUB_PATH"
+          else
+            openssl version
+          fi
 
       - name: Verify packaged network modules in native Chromium
         timeout-minutes: 5
