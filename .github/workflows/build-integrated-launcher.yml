@@ -79,6 +79,38 @@ env:
   PYTHONIOENCODING: 'utf-8'
 
 jobs:
+  intel-rollback-qualification:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-x64' && inputs.package_source_run != ''
+    runs-on: macos-15-intel
+    timeout-minutes: 65
+    env:
+      SOURCE_RUN: ${{ inputs.package_source_run }}
+      BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+      - name: Install dependencies for the isolated source fixture
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify original delivery and historical baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tests/deployment/launcher_intel_stable_rollback.cjs prepare
+      - name: Exercise rollback through the original DMG application
+        run: node tests/deployment/launcher_intel_stable_rollback.cjs qualify
+      - name: Preserve qualification evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-intel-rollback-qualification
+          path: ${{ runner.temp }}/nora-intel-stable-rollback/evidence/*.json
+          if-no-files-found: warn
+          retention-days: 90
+
   preflight:
     if: inputs.target != 'win32-package-check' && inputs.package_source_run == ''
     runs-on: ubuntu-24.04
@@ -193,7 +225,7 @@ jobs:
           retention-days: 90
 
   package-check:
-    if: inputs.target == 'win32-package-check' || inputs.package_source_run != ''
+    if: inputs.target == 'win32-package-check' || (inputs.target != 'darwin-x64' && inputs.package_source_run != '')
     runs-on: windows-latest
     timeout-minutes: 30
     env:

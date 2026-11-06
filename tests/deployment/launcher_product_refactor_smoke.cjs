@@ -455,6 +455,14 @@ async function main() {
               assert.equal(beforeState.running,opts['start-state']!=='stopped');
               report.updateInitialService=beforeState.running?'running':'stopped';
               const before=proof.protectedFiles.map(file=>[file,sha(file)]);
+              if(opts['interrupt-update']) {
+                const identity=['installed.json','installed-manifest.json'].map(name=>path.join(tavern,'tavern-updates',name));
+                report.rollbackBaseline={
+                  files:Object.fromEntries([...before,...identity.map(file=>[file,sha(file)])]
+                    .map(([file,hash])=>[path.relative(root,file),hash])),
+                  configurationDigest,service:report.updateInitialService,
+                };
+              }
               const selected=opts['update-release'];
               const target=read(path.join(selected,'release-manifest.json'));
               const lifecycle={bridge:path.join(installer,'launcher_bridge.py'),noraHome:root,hermesHome:hermes,installRoot:tavern,port,
