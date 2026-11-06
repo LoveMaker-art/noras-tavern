@@ -6,8 +6,7 @@ const crypto = require('node:crypto');
 const {execFileSync} = require('node:child_process');
 
 const repository = 'LoveMaker-art/noras-tavern';
-const sourceRun = 42179756002;
-const sourceCommit = '5ba3f7ee9b6f7a4a11c616721294338b430b0949';
+const sourceCommit = '2c8e09a8e75818869d89a8c38ca5fe3bccb43d9c';
 const baselineTag = 'v2.6.4';
 const targetVersion = '2.6.5';
 const launcherVersion = '2.2.9';
@@ -41,7 +40,7 @@ function dispatchRoot(env = process.env, platform = process.platform, arch = pro
   assert.equal(`${platform}-${arch}`, target, 'The original x64 application must run on a native Intel runner');
   assert.equal(env.GITHUB_ACTIONS, 'true');
   assert.equal(env.GITHUB_REPOSITORY, repository);
-  assert.equal(env.SOURCE_RUN, String(sourceRun));
+  assert.match(env.SOURCE_RUN || '', /^[1-9][0-9]{8,14}$/, 'Pin one existing Actions source run');
   assert.equal(env.BASELINE_TAG, baselineTag);
   assert.ok(path.isAbsolute(env.RUNNER_TEMP || ''));
   return path.join(fs.realpathSync(env.RUNNER_TEMP), 'nora-intel-stable-rollback');
@@ -66,7 +65,7 @@ with zipfile.ZipFile(sys.argv[1]) as source:
   command('python3', ['-c', extract, archive, destination, ...names], {stdio: 'inherit', timeout: 600000});
 }
 
-async function prepare(directory) {
+async function prepare(directory, sourceRun) {
   const {downloadArchive, verifyArchive} = require('../../tooling/release/reuse-windows-build.cjs');
   const run = api(`actions/runs/${sourceRun}`);
   assert.equal(run.id, sourceRun);
@@ -264,7 +263,7 @@ async function packagedRecovery(fixtureRoot) {
     protectedFiles: rollbackBaseline.files, restoredJournalSha256, services: 'old-version-healthy-then-closed', electron: process.versions.electron};
 }
 
-async function qualify(directory) {
+async function qualify(directory, sourceRun) {
   const evidence = path.join(directory, 'evidence');
   const source = read(path.join(evidence, 'source.json'));
   assert.equal(source.sourceRun, sourceRun);
@@ -309,7 +308,8 @@ async function main() {
   }
   assert.ok(['prepare', 'qualify'].includes(mode), 'Use prepare or qualify');
   const directory = dispatchRoot();
-  await (mode === 'prepare' ? prepare(directory) : qualify(directory));
+  const sourceRun = Number(process.env.SOURCE_RUN);
+  await (mode === 'prepare' ? prepare(directory, sourceRun) : qualify(directory, sourceRun));
 }
 
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
