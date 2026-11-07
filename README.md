@@ -24,7 +24,7 @@ Nora Tavern 是一个以世界为核心、可以被 Agent 管理的开源 AI 角
 
 | 酒馆 Tavern | 诺拉 Nora | 本地启动器 |
 | :--- | :--- | :--- |
-| 你进行角色扮演的地方。角色、会话和故事状态围绕世界组织。 | 运行在 Hermes Agent 中的诺拉，既可以对话，也能协助管理酒馆。 | 负责安装、配置、启动和更新，让你不必自己拼装运行环境。 |
+| 你进行角色扮演的地方。角色、会话和故事状态围绕世界组织。 | 运行在 Hermes Agent 中的诺拉，既可以对话，也能协助管理酒馆。 | 负责首次安装、配置和启停，检查两项版本并更新启动器自身；酒馆核心更新由诺拉对话发起。 |
 
 **酒馆与诺拉解耦。** 只安装酒馆也能游玩；搭配诺拉，才能体验项目的 Agent 管理特色。
 
@@ -101,7 +101,7 @@ Nora Tavern 是一个以世界为核心、可以被 Agent 管理的开源 AI 角
 | **Mac · Apple 芯片** | **[前往下载](https://lovemaker-art.github.io/nora-landing/#download-mac-arm64)** | 打开 DMG，拖入“应用程序” |
 | **Mac · Intel** | **[前往下载](https://lovemaker-art.github.io/nora-landing/#download-mac-x64)** | 打开 DMG，拖入“应用程序” |
 
-下载入口自动查找最新可用的完整安装包，无需手动选择版本。安装后可在启动器中检查组件更新。完整安装包包含统一更新、失败恢复和完整安装诊断。旧启动器需先覆盖升级一次，**保留原目录和数据，不要彻底卸载**；新版通过同一更新入口按需更新酒馆组件或启动器，无需每次重新下载安装包。Windows 便携版不支持启动器自动替换，请使用安装版。**[已有用户更新](docs/update-nora-tavern.md#提示需要更新启动器时)** · **[完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
+下载入口自动查找最新可用的完整安装包，无需手动选择版本。安装后，启动器可分别检查自身与诺拉／酒馆核心版本：**启动器只更新自身，核心更新在诺拉对话中授权执行**。旧入口无法继续时，按更新指南采用官方核心接入或覆盖更换 APP，**保留原目录和数据，不要彻底卸载**；覆盖 APP 不会自动升级已安装的核心。Windows 便携版不支持启动器自动替换，请使用安装版。**[已有用户更新](docs/update-nora-tavern.md#desktop-edition)** · **[完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
 
 点击上方链接进入对应平台下载区，再点击安装包即可下载，无需翻找 GitHub 附件。Mac 可在“关于本机”中查看芯片类型；Windows ARM 暂不作为原生支持平台。
 

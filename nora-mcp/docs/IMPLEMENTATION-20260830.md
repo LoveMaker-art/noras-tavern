@@ -1,5 +1,7 @@
 # Nora MCP 本轮优化与验收
 
+> 固定时点：2026-08-30 的 0.2 阶段。下文工具数量、实现状态、验证结果和待办均保留当时事实，不作为当前能力或发布结论。现行接口与执行条件见[模块 README](../README.md)，产品职责见[诺拉设计](../../docs/product/nora.md#authorized-management)；文档分类整理没有新增产品验收。
+
 > 本文保留 0.2 阶段的历史记录。随后实现的 0.3 运行控制见 README 与 Tavern 的 `docs/architecture/NORA-MCP-RUNTIME-CONTROLS-20260830.md`；下面的“尚未实现前端桥”不再表示当前源码状态。
 
 日期：2026-08-30。状态：本地实现并完成下面列出的技术验证；未提交 Git、未部署远端，未修改宿主 MCP/skill 配置。

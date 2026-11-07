@@ -1,5 +1,7 @@
 # Story Profile 内置模块验收清单
 
+> 历史清单：下文是 Story Profile 初期内置迁移阶段的验收要求，原文未注明日期；不是当前版本的验收标准或已通过记录。原文中的“八类口味”和向 `MEMORY.md` 投影剧情按其历史语义保留，现行偏好、剧情按需读取与旧数据保护统一见[诺拉档案设计](../../docs/product/nora.md#story-profile)及[自动偏好规则](../../docs/product/nora.md#automatic-reflection-policy)。当前源码与生成快照的开发入口见[模块 README](../README.md)，旧字段记录不因本次分类整理被删除。
+
 ## 保留
 
 - 原版 `actor.html`、`actor.js` 与对应样式和交互。

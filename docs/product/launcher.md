@@ -523,4 +523,4 @@ Windows 菜单入口启动系统卸载程序，随后应用退出；系统卸载
 
 这些条目覆盖尚需确认／核验的具体边界，不代表新功能授权，也不将全部认定为已证实产品 Bug。用户审阅后，确认的选择在其唯一规则处更新；实现偏离则进入独立修复任务。
 
-[安装指南](../install-nora-tavern.md)、[卸载指南](../launcher-uninstall.md)、[共享逻辑](../launcher-shared-logic.md)、[错误呈现](../launcher-user-errors.md)和[模块执行记录](../launcher-reliability-plan.md)分别解释使用、机制或历史过程。[全部入口及桥接对账](../reports/20261020-launcher-design-coverage.md)保存当前参照源码、覆盖结果与限制；既有产品实测与发行证据仍从[来源索引](../reports/20261020-product-design-modularization.md#implementation-evidence)进入。
+[安装指南](../install-nora-tavern.md)、[卸载指南](../launcher-uninstall.md)、[共享逻辑](../REPOSITORY.md#shared-implementation-boundaries)、[错误呈现](../launcher-install-diagnostics.md#error-presentation)和[模块执行记录](../launcher-reliability-plan.md)分别解释使用、机制或历史过程。[全部入口及桥接对账](../reports/20261020-launcher-design-coverage.md)保存当前参照源码、覆盖结果与限制；既有产品实测与发行证据仍从[来源索引](../reports/20261020-product-design-modularization.md#implementation-evidence)进入。

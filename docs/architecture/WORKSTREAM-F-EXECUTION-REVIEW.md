@@ -78,3 +78,36 @@ Workstream F 已在源码中把五条产品流程变成可执行技术门禁，�
 2. 目标环境还需采集真正的 5 次 cold Liveware 和 10 次 warm navigation，确认 cold P95 ≤ 10s、warm P95 ≤ 5s。
 3. 生产构建仍有 780 KiB `lib-core.js` 和 889 KiB `lib.js`。当前远端不变资产缓存正常；只有目标浏览器 profile 证明它们仍在关键路径上超预算时才拆分。
 4. `/api/characters/all` 仍随卡片总数读取浅投影。本轮已消除角色卡库再次下载所有完整卡；若未来大卡库的启动指标证明该端点超预算，再引入后端读模型索引，不在无数据时新建存储子系统。
+
+<a id="local-release-baseline-20260829"></a>
+## 2026-08-29 本地发布基线补充证据
+
+本节吸收原 `RELEASE-BASELINE.md` 的基线元信息和验证摘录，只记录当时的范围与结果，不新增当前发布资格。后续的[2026-08-30审计](TAVERN-RELEASE-AUDIT-2026-08-30.md)和[硬化记录](RELEASE-HARDENING-2026-08-30.md)继续保留各自的失败、修复及未发布边界；此前通过的结果不直接用于新候选。
+
+<a id="local-release-baseline-outcome-20260829"></a>
+### 原基线范围与结果
+
+> Prepared: 2026-08-29
+> Scope: current `nora-tavern/tavern` repository only
+> Runtime implementation commit: `63b80dd` (`refactor: remove legacy UI hydration from Nora startup`)
+
+The authoritative World Core v2 baseline and the Workstream F Liveware critical-path fixes are captured in Git. Runtime data, credentials, dependencies, caches and release archives are excluded by `.gitignore`; tracked Nora build artifacts are rebuilt from committed source.
+
+The `63b80dd` runtime files are deployed on the 2026-08-29 target test remote and verified by source/build hashes, the content-addressed Brotli response, process health, World v2 status, persistent-data counts and post-start log inspection. Browser user-outcome and cold/warm P95 acceptance are still pending.
+
+<a id="local-release-baseline-verification-20260829"></a>
+### 原基线验证摘录
+
+- `npm run build:nora`: passed.
+- Story Profile runtime synchronization: `changed=0`.
+- Nora behaviour suite: 239/239 passed.
+- Repository contracts: 25/25 passed.
+- Five technical workflow gates: passed; browser strict mode remains intentionally unsatisfied without a browser report.
+- Startup asset budget: passed with a 506,663-byte Brotli inline manifest.
+- Staged diff whitespace check: passed before commit.
+- Changed and untracked source scan found no committed credential material.
+
+<a id="local-release-baseline-identity-20260829"></a>
+### 后续发布身份规则入口
+
+原基线中的后续发布身份及放行规则已由[现行发布流程](../release-process.md)统一维护，不在历史记录中平行更新；本文的原提交、构建摘要、目标环境和证据等级继续按当时范围使用。

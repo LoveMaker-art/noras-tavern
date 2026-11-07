@@ -70,7 +70,7 @@ PR-01、02、11、13 归启动器；PR-06、07、08、10 归诺拉；PR-03、04 
 
 - 产品与安装：[项目介绍](../../README.md)、[完整版安装](../install-nora-tavern.md)、[独立酒馆安装](../install-tavern.md)、[卸载选择](../launcher-uninstall.md)。
 - 领域与状态：[领域语言](../../CONTEXT.md)、[世界身份 ADR 0007](../adr/0007-make-world-manifest-authoritative.md)、[能力边界 ADR 0008](../adr/0008-separate-world-readiness-from-capabilities.md)、[派生运行状态 ADR 0014](../adr/0014-repair-derived-operational-state.md)、[世界数据隔离](../design/world-data-isolation.md)。
-- 实现与证据：[共享业务](../launcher-shared-logic.md)、[受管文件](../launcher-managed-files.md)、[聊天备份](../verification/chat-backup-retention-safety-20261008.md)、[诊断协议](../launcher-install-diagnostics.md)、[源码职责](../REPOSITORY.md)、[开发约定](../../CONTRIBUTING.md)、[启动器模块执行计划](../launcher-reliability-plan.md)。这些材料按其职责维护，不另立全产品基线。
+- 实现与证据：[共享业务](../REPOSITORY.md#shared-implementation-boundaries)、[受管文件](../launcher-managed-files.md)、[聊天备份](../verification/chat-backup-retention-safety-20261008.md)、[诊断协议](../launcher-install-diagnostics.md)、[源码职责](../REPOSITORY.md)、[开发约定](../../CONTRIBUTING.md)、[启动器模块执行计划](../launcher-reliability-plan.md)。这些材料按其职责维护，不另立全产品基线。
 
 <a id="design-history"></a>
 ## 设计变更历史

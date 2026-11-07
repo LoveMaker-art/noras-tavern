@@ -106,7 +106,7 @@ Choose focused tests before repository-wide suites. Tests establish only the wor
 
 ## Launcher Development
 
-The active launcher reliability scope, acceptance gates, and phase reports live in [one delivery plan](docs/launcher-reliability-plan.md). Keep unique regression tests and necessary evidence; delete obsolete one-off drivers, duplicate snapshots and outdated plans. Commands are indexed in [deployment test navigation](tests/deployment/README-nora-acceptance.md). Do not maintain a second mutable progress plan or start another test instance before the current one has closed.
+Launcher task status and dated evidence are indexed in the [delivery navigation](docs/launcher-reliability-plan.md); current product requirements remain in the four product designs. Completed phase records keep their original source, date and acceptance scope. Keep unique regression tests and necessary evidence, and distinguish disposable one-off drivers or generated snapshots from historical records before cleanup. Commands are indexed in [deployment test navigation](tests/deployment/README-nora-acceptance.md). Do not maintain a second mutable progress plan or start another test instance before the current one has closed.
 
 The production page is `launcher/ui/index.html`. Retired design experiments remain available in Git history. Test the current UI and clicks without repackaging:
 
@@ -164,4 +164,4 @@ Full and component publication share the release channel lock. Select destinatio
 4. Back up runtime files before authorized deployment and verify the actual target afterwards.
 5. Do not report publication or user acceptance based only on a build or health check.
 
-The [update guide](docs/update-nora-tavern.md) distinguishes complete-system updates from standalone Tavern updates. Existing upstream license and security notices remain in their component directories.
+The [update guide](docs/update-nora-tavern.md) distinguishes Nora Tavern core updates, launcher self-updates and source or standalone installation workflows. Existing upstream license and security notices remain in their component directories.

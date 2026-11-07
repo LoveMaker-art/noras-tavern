@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0007: Make The World Manifest Authoritative](0007-make-world-manifest-authoritative.md).
+
+The decision below is retained as historical context. The World manifest is the canonical World record; chat metadata is a compatibility projection, as recorded in ADR 0007 and the current [World identity and ownership rules](../product/tavern.md#world-and-library). This status note does not change stored data or authorize a migration.
 
 ## Context
 

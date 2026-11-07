@@ -21,4 +21,4 @@ IM 中诺拉的开场白与酒馆内部的新手开场是独立内容。前者�
 
 ## 查看源码
 
-[诺拉内容](../nora/README.md) · [部署职责与覆盖边界](../deployment/README.md) · [安装位置](launcher-install-location.md)
+[诺拉内容](../nora/README.md) · [部署职责与覆盖边界](../deployment/README.md) · [安装位置](install-nora-tavern.md#installation-location)

@@ -4,6 +4,17 @@ Prepared locally: 2026-08-29
 
 Plan source: `docs/architecture/NORA-TAVERN-WORLD-CORE-REFACTOR-PLAN.md`
 
+<a id="phase7-deployment-scope-20261107"></a>
+> Scope note (2026-11-07, documentation only): this historical record separates
+> local implementation checks, test-remote source deployment with isolated-copy
+> verification, and production data/flag enablement with browser acceptance.
+> The body records source deployment to the test remote; it also leaves real-data
+> migration, production flag enablement and user-visible acceptance pending.
+> The retained “Deployed: no” line does not name a deployment target, so it must
+> not be read alone as denying the recorded test deployment or as evidence of
+> production acceptance. No new deployment time, revision or acceptance result is
+> supplied here; the original body remains unchanged.
+
 ## Outcome
 
 The missing preconditions for a defensible remote grey rollout are now implemented locally. World delete and repair are durable backend commands rather than UI patches. The Store owns reference and ownership decisions, the ST adapter owns physical inspection/deletion, and browser callers carry only `worldId` plus an idempotency key.

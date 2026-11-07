@@ -3,6 +3,21 @@
 - Status: Accepted
 - Date: 2026-09-01
 
+<a id="operational-state-scope-20261107"></a>
+## Scope clarification — 2026-11-07
+
+This is a documentation clarification, not a new decision or implementation result.
+The 2026-10-27 paragraph below that says “the current updater” records that
+revision's scope; it is not a statement that every later transaction snapshots
+user state. [ADR 0013](0013-snapshot-replaceable-code-at-maintenance.md#decision)
+distinguishes newly created ordinary program transactions, which preserve the
+active state in place, from existing recovery records that retain their original
+protocol. Damaged-installation repair and actual legacy-data conversion have
+separate contracts. Read the current [validation scope](../product/README.md#validation-boundaries)
+and [L-D07](../product/launcher.md#differences) for the remaining historical-record
+boundaries. The original decision and evidence below are retained; this note does
+not claim that all historical recovery cases are implemented or accepted.
+
 ## Scope clarification — 2026-10-27
 
 [Product baseline 1.35](../product/README.md#validation-boundaries) limits the

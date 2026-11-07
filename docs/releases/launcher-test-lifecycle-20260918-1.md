@@ -1,5 +1,7 @@
 # Windows 启动器网络与生命周期测试
 
+> 历史测试批次：`launcher-test-lifecycle-20260918-1`。以下变更、测试边界和验收请求只描述该 Windows 候选，不是当前正式版的安装步骤或待办清单，也不证明后续版本已通过这些验收。原文保留；当前使用见[安装指南](../install-nora-tavern.md)，产品规则见[启动器设计](../product/launcher.md)。
+
 ## 本次改动
 
 - 版本查询和组件下载改用 Electron Chromium 网络栈，保留证书验证与文件完整性校验。

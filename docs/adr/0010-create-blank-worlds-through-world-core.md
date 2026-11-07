@@ -1,7 +1,13 @@
 # Create Blank Worlds Through World Core
 
-- Status: Accepted
+- Status: Partially superseded; the shared Runtime Card choice below is historical. Durable creation through World Core remains accepted.
 - Date: 2026-08-29
+
+## Current Applicability
+
+The current [creation rules](../product/tavern.md#story-flow) require stable World identity, a default Story Session and independent runtime resources. New blank Worlds receive World-owned Runtime Cards, as described by the [World Core implementation boundary](../../app/engine/sillytavern/src/nora-world-core/README.md#identity-libraries-and-resource-ownership) and implemented in [the backend materializer](../../app/engine/sillytavern/src/nora-world-core/st-backend-materializer.js). The original shared-card choice below does not describe new creation. Existing shared or external bindings retain their protection; this documentation update does not migrate or delete them.
+
+## Original Decision (2026-08-29)
 
 A blank World is created by the same durable, idempotent World Core command as an imported-card World. World Core supplies a shared internal Blank World Runtime while every World keeps its own identity and default Story Session; the browser never creates a placeholder character, chat, or World identity.
 

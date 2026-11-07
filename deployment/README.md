@@ -1,19 +1,22 @@
 # 安装与更新职责
 
+产品职责以[共同更新与恢复规则](../docs/product/README.md#shared-update)为准：已有安装的核心更新与 APP 自更新分别执行，首次安装完整版仍部署核心及配套环境。
+
 | 目录 | 负责 | 不负责 |
 | --- | --- | --- |
 | `install/` | 新实例初始化、安装位置、重试清理 | 世界业务和 UI |
-| `update/` | 版本检查、系统事务、独立酒馆更新与恢复 | 首次模型输入界面 |
+| `update/` | 核心版本检查、独立任务、程序更新与历史恢复 | APP 自替换、首次模型输入界面 |
 | `uninstall/` | 数据保留选择、停止服务、安全删除、NSIS 接入 | 清理其他实例 |
 | `shared/` | 模型与 Nora 配置、实例校验、进程锁、Liveware、上下文 | 第二套 World 数据模型 |
 | `runtime/` | 实例命令、服务启动、版本定时检查 | 构建平台安装包 |
 
 ## 更新对象
 
-- `update/system-update.js`：识别和安全恢复受支持的旧 JS 系统更新事务。
 - `update/releases.js`：发布渠道、版本和本平台清单校验。
-- `update/update.py` 与 `update/recovery.py`：执行当前完整系统更新，以及适用的独立 Tavern 更新、旧数据迁移与恢复。完整系统路径由 `launcher/desktop/system-update-executor.js` 经 `launcher/bridge.py` 和 `update/bootstrap.py` 调用，绑定托管实例并恢复更新前服务状态；独立更新入口拒绝覆盖托管完整系统。
-- 桌面程序升级：替换平台启动器应用，保留系统安装根目录，不由上述事务自替换。
+- 诺拉／酒馆核心：用户在诺拉对话中授权后，技能经 `update/task.py` 提交独立核心任务；`task_backend.py`、`update.py` 与 `recovery.py` 按实例绑定处理准备、程序替换、验收及恢复。桌面与无 APP 部署共用这一入口，不要求启动器安装、打开或代执行。
+- `update/bootstrap.py`：官方独立接入入口，取得并校验执行代码后交给同一核心任务；可核验带桌面安装标记的原目录。来源、实例及运行依赖仍须满足对应合同。
+- 桌面 APP：由 `launcher/desktop/launcher-update.js` 和 `replace-launcher.py` 替换启动器自身。核心与用户数据保持原状态，APP 交接不提交或续接核心更新。
+- 历史兼容：`update/system-update.js`、旧桌面编排及恢复模块继续处理其受支持的存量记录。新任务不再创建联合更新；APP 只恢复已开始的 APP 替换，核心效果由核心执行器处理，历史结果和备份保留。
 
 用户操作见 [更新说明](../docs/update-nora-tavern.md)。
 
@@ -33,4 +36,4 @@ Linux云端及桌面的产品要求统一见[部署平台与实例边界](../doc
 
 源码已按职责归类，发布布局维持已有 `ops/` 和 `apps/tavern-ops/` 协议。部署内部相对导入按交付布局解析；开发时通过 `node tooling/run.mjs ...` 执行，不能直接运行被移动的内部模块。
 
-独立酒馆更新和整套系统更新在事务范围上不同，但共享适用的实例、配置和内容管控实现。不要把一个修复分别复制进两条流程。
+包含诺拉的核心更新与单独酒馆更新按实际安装形态选择范围，共享适用的实例、配置和内容管控实现。APP 自更新与核心任务分别处理自身结果，并继续遵守同实例的维护互斥。执行机制见[安装、核心更新与启动器自更新](../docs/launcher-unified-update.md)。

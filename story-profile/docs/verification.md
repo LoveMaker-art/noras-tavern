@@ -1,5 +1,7 @@
 # Story Profile 内置模块本地验收记录
 
+> 固定验收时点：2026-08-28。下文“已验证／尚未验证”只对应当时源码和范围，原始结果不改写为当前版本的通过或阻断。现行开发与快照校验见[模块 README](../README.md)，产品要求见[诺拉档案设计](../../docs/product/nora.md#story-profile)；本次仅整理文档，没有重跑产品验收。
+
 > 历史记录：以下是 2026-08-28 当时的验收，不代表当前部署状态。
 > 2026-08-31 已改为同仓 `story-profile/` 源码；源码对齐检查为
 > `check:story-profile-source`，`check:story-profile` 只校验嵌入快照自身。

@@ -1,6 +1,6 @@
 # 统一更新流程（2026-09-10 历史设计）
 
-此文记录当时的实现与验收，不是当前维护方案。当前总体写者、APP联合提交与恢复边界见 [启动器安装、更新与恢复](../launcher-unified-update.md)。
+此文记录当时的实现与验收，不是当前维护方案。当前APP与核心的更新职责及恢复边界见[启动器安装、更新与恢复](../launcher-unified-update.md)，构建和发布操作见[现行发布流程](../release-process.md)。
 
 ## 范围
 
@@ -92,3 +92,78 @@ Electron 界面测试因本机缺少 Playwright 未能启动，本轮未改动 U
 2026-09-10 三端安装包与最终发布校验全部通过，
 [v2.3.2 正式版](https://github.com/LoveMaker-art/noras-tavern/releases/tag/v2.3.2)
 已公开。启动器及最低支持版本均为 0.3.4；旧版本用户保留数据、更换一次启动器即可。
+
+<a id="legacy-release-delivery-paths"></a>
+## 旧组件交付与启动器0.3.4接入说明
+
+本节整理原 `RELEASE-CHANNELS.md` 的历史技术边界。引文保留当时的术语与约束，不是当前发布步骤，也不新增验收结果。当前变更分类、构建、制品封存、上传和正式切换只按[现行发布流程](../release-process.md)执行。
+
+<a id="legacy-release-workflows"></a>
+### 当时的两类交付输入
+
+当时区分复用环境的酒馆、MCP、诺拉技能／人格／开场白及独立更新器变更，与需要平台构建的启动器、随包集成、依赖锁或运行环境变更。旧说明对共用实现的记录为：
+
+> Both paths use `package-release.mjs`, `writeSystemRelease`, the same release
+> verifier and `publish-release.mjs`. They do not introduce another client update
+> protocol or change users' data directories. A shared Actions concurrency group
+> prevents the two paths from publishing the same tag concurrently.
+
+组件构建通过 `--components-only` 生成公共app、MCP和更新器归档，不在这一构建阶段安装Hermes或生成Electron、DMG／EXE及启动器ZIP。它先核对三个平台基线清单中的源码指纹；启动器、集成代码、依赖清单／锁及环境打包输入改变、指纹缺失或无法匹配时，原方案要求完整构建，内嵌桌面的helper同样受此保护。旧流程中直接公开latest及删除失败草稿重跑的步骤已被现行分阶段发布与固定计划恢复取代，不作为操作指令保留。
+
+<a id="legacy-component-release-assets"></a>
+### 环境复用与同Release附件
+
+旧方案在核验大小和SHA-256后，逐字节复用基线的Hermes／Python／Node及依赖归档，不解包或重建未变环境；变化的是应用内容及目标发布身份。以下保留旧协议与本地缓存边界原文；后续跨Release资产协议的条件按现行流程核对，不从这份历史记录推定：
+
+> The existing launcher's `nora-system/v1` contract requires referenced files to
+> exist **in the same GitHub release**. Therefore unchanged environment archives
+> are copied into the new release. This still uses upload/storage bandwidth, but
+> does not rebuild a large installer. Changing this to cross-release references
+> would require a separately planned client protocol migration. Do not omit those
+> attachments while claiming old clients can update.
+>
+> The existing client reuses a bundled/cache file when its hash matches. This
+> avoids downloading an unchanged environment in that case, but is not a promise
+> that every user will never download it: missing or mismatched local files still
+> require a verified download.
+
+<a id="legacy-installer-downloads-034"></a>
+### 0.3.4接入与安装器身份
+
+下列最低版本与下载入口描述限定于旧0.3.4接入阶段，不是当前发布最低版本声明或用户操作指令。原说明同时保留Bootstrap摘要与完整安装器身份约束：
+
+> Launcher 0.3.4 switches installed systems to the common updater. The first full
+> release carrying this change requires `minimumLauncherVersion: 0.3.4`; older
+> shells must be replaced once, without uninstalling their data. Subsequent
+> component releases inherit that minimum from the verified full baseline.
+> Both full and component payloads include `tavern-updater-bootstrap.py`, pinned
+> by the target release manifest. Do not remove it from the desktop payload.
+>
+> Release notes contain only the current version's changes, fixes and relevant
+> notices. Do not append recurring download tables, installation instructions or
+> collapsed installation guides; README owns the download entry points.
+> `component-release.json` retains the actual full installer tag,
+> the runtime baseline tag and reused hashes. Chained component releases retain
+> the original installer links and check they still exist. No old installer is
+> renamed or presented as newly built.
+>
+> README's direct download links stay pinned to the actual full installer release.
+> When a full installer release is intentionally built, update those links to its
+> verified assets. New installations use the launcher's existing latest-system
+> resolution; installed users continue using the existing version/update controls.
+
+<a id="legacy-release-verification-scope"></a>
+### 原测试范围与证据限制
+
+以下保留原测试职责描述，不把合同覆盖当作新增通过或原生验收结果：
+
+> `tests/component-release.test.mjs` exercises all three manifest variants using
+> the unchanged launcher download/validation implementation, including reuse of
+> local matching archives, missing remote assets, dependency changes, corrupt
+> archives, full-build requirements and verification without installer binaries.
+> `tests/launcher-release-notes.test.cjs` checks summary preservation, absence of
+> automatically added installation guidance and installer identity validation.
+> These are packaging/contract tests, not three-platform native installation tests.
+>
+> The component workflow also runs world-preservation and rollback regression
+> tests. Full platform installation tests remain in the full-installer workflow.

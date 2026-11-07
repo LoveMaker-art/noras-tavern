@@ -21,7 +21,7 @@ Nora runs in Hermes Agent and uses Nora MCP to read and manage Tavern with the u
 - **Full edition, Nora + Tavern:** use the integrated desktop launcher to install Hermes and the Nora system. Platform builds cover macOS Apple silicon, macOS Intel, and Windows x64. [Installation guide (Chinese)](docs/install-nora-tavern.md).
 - **Light edition, Tavern only:** play locally without Nora's Agent management. [Installation guide (Chinese)](docs/install-tavern.md).
 
-For an existing installation, follow the [update guide](docs/update-nora-tavern.md). Launcher-managed installations use the launcher's complete-system updater, not the standalone Tavern update command. Desktop launcher upgrades and installed-system upgrades are separate operations.
+For an existing installation, follow the [update guide](docs/update-nora-tavern.md). The launcher checks both component versions and updates only its own desktop APP. Authorize Nora/Tavern core updates in a Nora conversation; they use the independent core updater on desktop installations too. If an older entry cannot continue, use the documented official core entry or a data-preserving APP overlay as appropriate. Replacing the APP does not update the installed core.
 
 ## Repository
 
