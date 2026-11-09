@@ -144,6 +144,16 @@ async function creationIdentity(pid=process.pid) {
   return {pid,creationTime:value,precisionSeconds};
 }
 
+function createRunDeadline({stallMs,hardTimeoutMs=0,onExpire}){
+  let stalled=false,armed=true;
+  const timer=setTimeout(expire,stallMs);timer.unref();
+  const hardTimer=hardTimeoutMs>0?setTimeout(()=>{stalled=true;expire();},hardTimeoutMs):null;
+  if(hardTimer)hardTimer.unref();
+  function expire(){if(!armed)return;armed=false;onExpire(stalled);}
+  return {refresh(){if(armed)timer.refresh();},isStalled:()=>stalled,
+    cancel(){armed=false;clearTimeout(timer);if(hardTimer)clearTimeout(hardTimer);}};
+}
+
 async function connect(options={}) {
   const env=options.env || process.env;
   const match=/^127\.0\.0\.1:(\d{1,5})$/.exec(env.NORA_OPERATION_DELEGATE_ENDPOINT || '');
@@ -231,19 +241,23 @@ async function connect(options={}) {
     return child;
   };
   result.run=async(command,args=[],options={})=>{
-    const {timeoutMs=60000,maxOutputBytes=2*1024*1024,input,...spawnOptions}=options;
+    const {timeoutMs=60000,maxOutputBytes=2*1024*1024,input,progressResetTimeoutMs=0,hardTimeoutMs=0,...spawnOptions}=options;
     const child=await result.spawn(command,args,spawnOptions);let stdout='',stderr='',spawnError,timedOut=false,truncated=false;
     const capture=stream=>value=>{const available=maxOutputBytes-Buffer.byteLength(stream==='stdout'?stdout:stderr);if(available<value.length)truncated=true;
       const text=value.subarray(0,Math.max(0,available)).toString('utf8');if(stream==='stdout')stdout+=text;else stderr+=text;};
     child.stdout.on('data',capture('stdout'));child.stderr.on('data',capture('stderr'));child.on('error',error=>spawnError=error);
     if(input!==undefined)child.stdin.end(input);else child.stdin.end();
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL').catch(reject);},timeoutMs);timer.unref();
-      child.once('guard-lost',()=>{clearTimeout(timer);reject(failed('DELEGATION_LOST','The guard stopped before confirming executor closure'));});
-      child.once('close',(status,signal)=>{clearTimeout(timer);resolve({status,signal,stdout,stderr,outputTruncated:truncated,
-        error:spawnError||(timedOut?failed('ETIMEDOUT','Maintenance command exceeded its deadline'):undefined)});});
+      const deadline=createRunDeadline({stallMs:progressResetTimeoutMs>0?progressResetTimeoutMs:timeoutMs,hardTimeoutMs,
+        onExpire:()=>{timedOut=true;child.kill('SIGKILL').catch(reject);}});
+      if(progressResetTimeoutMs>0)child.stderr.on('data',value=>{
+        if(value.includes('NORA_BUNDLE_PROGRESS='))deadline.refresh();
+      });
+      child.once('guard-lost',()=>{deadline.cancel();reject(failed('DELEGATION_LOST','The guard stopped before confirming executor closure'));});
+      child.once('close',(status,signal)=>{deadline.cancel();resolve({status,signal,stdout,stderr,outputTruncated:truncated,
+        error:spawnError||(timedOut?failed('ETIMEDOUT',deadline.isStalled()?'Maintenance command exceeded its absolute deadline':'Maintenance command exceeded its deadline without progress'):undefined)});});
     });
   };
   return result;
 }
-module.exports={connect,creationIdentity,projectDiagnostic,restoreDiagnostic,linuxCreationTime};
+module.exports={connect,creationIdentity,projectDiagnostic,restoreDiagnostic,linuxCreationTime,createRunDeadline};

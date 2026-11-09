@@ -7,8 +7,13 @@ const { launcherError } = require('./launcher-errors');
 const { redactDiagnosticText } = require('./diagnostics');
 
 const RUNTIME_MANIFEST = 'nora-hermes-runtime.json';
-// Windows verifies the full bundled Git tree while freshly extracted files may still be scanned.
-const COMPONENT_PROBE_TIMEOUT_MS = process.platform === 'win32' ? 180_000 : 60_000;
+// Legacy manifests hash every bundled Git tree file individually; stall only when progress stops.
+const COMPONENT_PROBE_STALL_MS = process.platform === 'win32' ? 180_000 : 60_000;
+// Absolute ceiling so a still-stuck probe can never outlive the whole operation budget.
+const COMPONENT_PROBE_HARD_TIMEOUT_MS = 600_000;
+function probeCachePath(home){
+  return path.join(require('node:os').tmpdir(),'nora-probe-cache-'+crypto.createHash('sha256').update(String(home)).digest('hex').slice(0,16)+'.json');
+}
 const TOKENS = {
   '@@NORA_HERMES_HOME@@': (home) => home,
   '@@NORA_PYTHON_HOME@@': (home) => path.join(home, 'python'),
@@ -215,7 +220,7 @@ function validateRuntime(home, manifest) {
     throw commandFailure(`Hermes 运行时校验失败：${result.error?.message || result.stderr || result.stdout || '未知错误'}`, result, [command, ...(manifest.probe.args || ['--version'])]);
   }
   const check = spawnSync(contained(home, manifest.venvPython), ['-B', contained(home, manifest.componentProbe)], {
-    encoding: 'utf8', timeout: COMPONENT_PROBE_TIMEOUT_MS, windowsHide: true,
+    encoding: 'utf8', timeout: COMPONENT_PROBE_STALL_MS, windowsHide: true,
     env: {
       // Do not inherit developer credentials, Python paths, or external Liveware binaries.
       SystemRoot: process.env.SystemRoot || '', WINDIR: process.env.WINDIR || '',
@@ -331,10 +336,12 @@ async function validateRuntimeAsync(home,manifest,delegate,{programRoots,profile
     {...pythonOptions(home,manifest),env:environment,timeoutMs:30000},'Hermes 运行时校验失败');
   if(programOnly)return (result.stdout||result.stderr||'').trim();
   await checkedRun(delegate,runtimePython(home,manifest),['-B',contained(home,manifest.componentProbe)],
-    {...pythonOptions(home,manifest),timeoutMs:COMPONENT_PROBE_TIMEOUT_MS,env:{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
+    {...pythonOptions(home,manifest),timeoutMs:COMPONENT_PROBE_STALL_MS,progressResetTimeoutMs:COMPONENT_PROBE_STALL_MS,hardTimeoutMs:COMPONENT_PROBE_HARD_TIMEOUT_MS,
+      env:{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
       HOME:home,USERPROFILE:home,HERMES_HOME:home,APPDATA:path.join(home,'appdata'),LOCALAPPDATA:path.join(home,'localappdata'),
       TMPDIR:home,TMP:home,TEMP:home,XDG_CACHE_HOME:path.join(home,'.cache'),PYTHONPATH:path.join(home,'hermes-agent'),
       PYTHONDONTWRITEBYTECODE:'1',PYTHONNOUSERSITE:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
+      NORA_PROBE_CACHE:probeCachePath(home),
       PATH:[path.dirname(runtimePython(home,manifest)),path.join(home,manifest.nodeBin)].join(path.delimiter)}},'ClawChat / Liveware 离线加载检查失败');
   return (result.stdout||result.stderr||'').trim();
 }
