@@ -10,7 +10,17 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-PROBE_PATH = REPO / "tooling" / "runtime" / "clawchat-bundle-check.py"
+
+
+def module_path(*candidates):
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(candidates)
+
+
+PROBE_PATH = module_path(REPO / "tooling" / "runtime" / "clawchat-bundle-check.py",
+                         REPO / "ops" / "installer" / "clawchat-bundle-check.py")
 spec = importlib.util.spec_from_file_location("clawchat_bundle_check", PROBE_PATH)
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)

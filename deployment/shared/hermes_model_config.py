@@ -178,9 +178,18 @@ def _private(directory):
         directory.chmod(0o700)
         return
     # Restrict the candidate before copying any credential, even with a shared TEMP.
-    identity = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
-                              capture_output=True, text=True, check=True, timeout=10)
-    rows = list(csv.reader(identity.stdout.splitlines()))
+    # whoami/icacls answer in the machine codepage (e.g. GBK on Chinese systems) while
+    # this helper runs in UTF-8 mode, so capture bytes and decode tolerantly; the SID
+    # field is pure ASCII either way.
+    try:
+        identity = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                                  capture_output=True, check=True, timeout=10)
+    except subprocess.CalledProcessError as error:
+        raise ValueError("无法核验候选配置目录权限，未修改原配置。") from error
+    stdout = (identity.stdout or b"").decode("utf-8", errors="replace")
+    if not stdout.strip():
+        raise ValueError("无法核验候选配置目录权限：系统未返回账户标识。")
+    rows = list(csv.reader(stdout.splitlines()))
     sid = rows[-1][-1] if rows and rows[-1] else ""
     if not re.fullmatch(r"S-1-[0-9-]+", sid):
         raise ValueError("无法核验候选配置目录权限，未修改原配置。")
