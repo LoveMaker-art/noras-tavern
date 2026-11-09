@@ -68,7 +68,7 @@ def prepare(home, destination):
         def apply(*flags):
             return subprocess.run(
                 ["git", "apply", *flags, str(patch)], cwd=destination,
-                capture_output=True, text=True, timeout=15, env=env,
+                capture_output=True, timeout=15, env=env,
             ).returncode == 0
 
         # This patch reverses only our known ordering changes. Clean upstream

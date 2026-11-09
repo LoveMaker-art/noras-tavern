@@ -13,6 +13,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 
 OWNED_CUSTOM = "custom:nora-launcher"
@@ -627,19 +629,58 @@ def _run_candidate(home, body, wizard=False, region=""):
         spawn = managed_popen
     else:
         spawn = subprocess.Popen
-    process = spawn(args, env=env, cwd=home, stdin=None if wizard else subprocess.PIPE,
-                               stdout=None if wizard else subprocess.PIPE, stderr=None if wizard else subprocess.PIPE,
-                               text=True, encoding="utf-8")
-    try:
-        _out, _err = process.communicate(None if wizard else json.dumps(body), timeout=900 if wizard else 180)
-    except BaseException:
-        process.terminate()
+    if wizard:
+        process = spawn(args, env=env, cwd=home)
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        raise
+            process.communicate(timeout=900)
+        except BaseException:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+    else:
+        process = spawn(args, env=env, cwd=home, stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        progress = threading.Event()
+        def _drain(stream):
+            try:
+                while True:
+                    if not stream.read1(4096):
+                        break
+                    progress.set()
+            except (OSError, ValueError):
+                pass
+        for stream in (process.stdout, process.stderr):
+            threading.Thread(target=_drain, args=(stream,), daemon=True).start()
+        process.stdin.write(json.dumps(body).encode("utf-8"))
+        process.stdin.close()
+        # The result file is the only output that matters; the child's unused streams
+        # still prove liveness, so enforce a stall deadline instead of a flat budget.
+        stall_seconds, hard_seconds = 180, 900
+        stall_at = time.monotonic() + stall_seconds
+        hard_at = time.monotonic() + hard_seconds
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                if now >= hard_at:
+                    raise subprocess.TimeoutExpired(args, hard_seconds)
+                if now >= stall_at:
+                    raise subprocess.TimeoutExpired(args, stall_seconds)
+                progress.wait(timeout=min(stall_at, hard_at) - now)
+                if progress.is_set():
+                    progress.clear()
+                    stall_at = time.monotonic() + stall_seconds
+        except BaseException:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
     result_file = home / ".candidate-result.json"
     _regular(home, result_file)
     if not result_file.is_file():
