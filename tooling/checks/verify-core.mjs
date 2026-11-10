@@ -3,7 +3,9 @@ const root=fileURLToPath(new URL('../../',import.meta.url));const {environment,f
 const deployment=fs.readdirSync(path.join(root,'tests/deployment')).sort();
 if(native&&!environment.NORA_TEST_HERMES)throw Error('Native acceptance requires a read-only restored Hermes checkout and its actual NORA_TEST_PYTHON');
 const javascript=native?['core_operation_lock']:deployment.filter(name=>name.endsWith('.test.cjs')&&name!=='core_operation_lock.test.cjs').map(name=>name.slice(0,-9));
-const python=native?['test_operation_control','test_nora_native_model','test_model_native_flows','test_model_native_probe']:deployment.filter(name=>/^test_.*\.py$/.test(name)).map(name=>name.slice(0,-3));
+// This profile qualifies the shared executor with the actual sealed interpreter.
+// Optional provider SDK suites have independent dependency/account prerequisites.
+const python=native?['test_operation_control']:deployment.filter(name=>/^test_.*\.py$/.test(name)).map(name=>name.slice(0,-3));
 const report={schema:'nora-core-source-result/1',commit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),dirty:Boolean(execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim()),facts,inputLockSha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'tooling/maintenance-input.lock.json'))).digest('hex'),runs:[]};
 const commands=[['node','--test','--test-concurrency=1',...javascript.map(name=>'tests/deployment/'+name+'.test.cjs')],['python','-B','-m','unittest','-v',...python.map(name=>'tests.deployment.'+name)]];
 const evidence=fs.mkdtempSync(path.join(root,'.cache/core-gate-'));
