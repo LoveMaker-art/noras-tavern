@@ -28,9 +28,10 @@ extra secret copies here.
 
 Raw diagnostics may contain private messages, paths or credentials. Keep them
 private and share only a redacted summary with the relevant source and artifact
-identities. Durable, redacted conclusions belong in the existing
-[reports](../docs/reports/README.md) or [verification records](../docs/verification/README.md);
-do not commit the raw directory to make a link portable.
+identities. Keep durable decisions in the relevant existing design or ADR. Bind one-time
+verification records to their exact source and artifacts; preserve retired records
+through the [fixed Git history](../docs/architecture/README.md#如何读取原始证据).
+Do not commit the raw directory to make a link portable.
 
 ## Retention And Cleanup
 

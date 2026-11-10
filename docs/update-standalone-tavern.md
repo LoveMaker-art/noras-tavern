@@ -184,6 +184,6 @@ Linux 原生 2.x 更新会先在临时目录准备并核对新版依赖，成功
 
 ## 自定义文件提醒
 
-`AGENTS.md` 由项目全量管理；自定义开场白等文件按各自规则处理。修改过相关配置时，更新前先查看配置文件管理说明（原始出处：`09b9895:docs/launcher-managed-files.md`）与[部署职责](../deployment/README.md)。
+`AGENTS.md` 由项目全量管理；自定义开场白等文件按各自规则处理。修改过相关配置时，更新前先查看配置文件管理说明（原始出处：`09b9895:docs/launcher-managed-files.md`）与[部署职责](REPOSITORY.md)。
 
 [返回更新方式选择](update-nora-tavern.md#先选择你的安装方式) · [提交脱敏后的问题反馈](https://github.com/LoveMaker-art/noras-tavern/issues)

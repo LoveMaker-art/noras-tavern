@@ -20,3 +20,8 @@ ADR保留作出决策时的背景、备选项和取舍。当前适用范围同�
 | [ADR 0012: Separate Runtime Ownership from Process Instance Identity](0012-separate-runtime-ownership-from-process-instance.md) | 核心进程身份与实际归属；恢复适用正文，保留原修订来源。 |
 | [ADR 0013: Snapshot Replaceable Code at Maintenance](0013-snapshot-replaceable-code-at-maintenance.md) | 核心程序替换、快照与数据保护；历史事务按其协议阅读。 |
 | [ADR 0014: Repair Derived Operational State Instead of Treating It as Authority](0014-repair-derived-operational-state.md) | 派生运行状态与权威数据分开；原时点实现缺口不冒充当前验收。 |
+
+<a id="core-scope"></a>
+## 核心适用范围与来源
+
+0012～0014于2026-11-10从原修订09b9895恢复：桌面源码迁出不取消核心进程归属、程序替换与派生状态规则。当前产品及[维护合同](../core-maintenance.md)优先；正文中的旧时点实现缺口不等于本轮新验收。三份ADR共同使用本说明，不在各文件重复维护来源段落。

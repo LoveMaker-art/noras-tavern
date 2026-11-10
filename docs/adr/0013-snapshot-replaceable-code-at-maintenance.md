@@ -1,6 +1,6 @@
 # ADR 0013: Snapshot Replaceable Code at Maintenance
 
-> Core scope restored — 2026-11-10. This decision also governs core runtime ownership and maintenance; moving desktop source did not retire it. Restored from Git revision `09b9895`. Dated implementation statements below retain their original scope and are not fresh acceptance results. Current product/data rules take precedence: [core product scope](../product/README.md#validation-boundaries) and [core maintenance](../core-maintenance.md). Desktop implementation and UI remain outside this repository.
+> Scope and provenance: [core ADR context](README.md#core-scope).
 
 - Status: Accepted
 - Date: 2026-09-01
