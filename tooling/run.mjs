@@ -91,6 +91,7 @@ try {
         : executable === 'python' ? (process.env.NORA_TEST_PYTHON || process.env.NORA_PYTHON || (fs.existsSync(path.join(root,'.cache/test-venv',process.platform==='win32'?'Scripts/python.exe':'bin/python'))?path.join(root,'.cache/test-venv',process.platform==='win32'?'Scripts/python.exe':'bin/python'):(process.platform==='win32'?'python':'python3'))) : executable;
     const invocation = buildCommand(command, mappedArgs);
     const environment = withTestNodePath({ ...process.env, NORA_TEST_NODE: process.env.NORA_TEST_NODE || process.execPath,
+        NORA_MAINTENANCE_CACHE:path.resolve(process.env.NORA_MAINTENANCE_CACHE||path.join(root,'.cache/maintenance-input')),
         PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }, process.execPath);
     child = spawn(invocation.command, invocation.args, { cwd: stage, stdio: 'inherit', env: environment });
     for (const [signal, handler] of signalHandlers) process.on(signal, handler);

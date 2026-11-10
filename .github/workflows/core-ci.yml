@@ -19,6 +19,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - name: Test the same Git bytes used by stable construction
+        run: git -c core.autocrlf=false -c core.eol=lf checkout-index --force --all
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { assertSafeReleasePath, assertSafeReleaseContent, assertNoraSystemArtifacts, NORA_SYSTEM_REQUIRED_FILES, createReleaseSource, collectRuntimeFiles, groupRuntimeModules, releaseModuleFor } from '../../../../ops/scripts/release-source.mjs';
+import { RELEASE_SOURCE_ENTRY_PATHS } from '../../../../ops/scripts/embed-release-sources.mjs';
 
 test('release guards reject runtime/private paths and credential contents without echoing them', () => {
     for (const file of ['app/.env', 'app/engine/sillytavern/data/default-user/secrets.json', 'app/audit-runtime.log', 'app/__pycache__/a.pyc', '../app/x', 'app/x\ny']) assert.throws(() => assertSafeReleasePath(file));
@@ -56,6 +57,15 @@ test('source export excludes ignored private files and stable mode rejects uncom
     fs.mkdirSync(path.join(root, 'app'));
     fs.writeFileSync(path.join(root, '.gitignore'), '.env\n*.log\ndata/\n');
     fs.writeFileSync(path.join(root, 'app/main.js'), 'export const ready = true;\n');
+    // Even the minimal Git fixture consumes the real fixed shared-input contract.
+    // The source runner supplies its verified cache; no adjacent source is used.
+    fs.mkdirSync(path.join(root,'tooling'));
+    fs.copyFileSync(new URL('../../../../tooling/maintenance-input.lock.json',import.meta.url),path.join(root,'tooling/maintenance-input.lock.json'));
+    fs.copyFileSync(new URL('../../../../tooling/source-layout.json',import.meta.url),path.join(root,'tooling/source-layout.json'));
+    for(const [authored,delivery]of RELEASE_SOURCE_ENTRY_PATHS){
+        const target=path.join(root,authored);fs.mkdirSync(path.dirname(target),{recursive:true});
+        fs.copyFileSync(new URL('../../../../'+delivery,import.meta.url),target);
+    }
     git(['add', '.']);
     git(['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'fixture']);
     fs.writeFileSync(path.join(root, 'app/.env'), 'FAKE_PRIVATE=fixture');
