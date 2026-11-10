@@ -50,10 +50,11 @@ configuration migration or runtime deployment are part of this source work.
 
 ## Release Gate
 
-Run from the repository root with Node:
+Prepare the fixed maintenance input and dependencies in
+[CONTRIBUTING](../../CONTRIBUTING.md), then run from the repository root with real Node.js 24:
 
 ```sh
-node --test tests/backup-safety-gate.test.mjs tests/repository-layout.test.mjs
+node --test tests/backup-safety-gate.test.mjs tests/core/repository.test.mjs
 node tooling/checks/verify-backup-safety.mjs
 ```
 
@@ -61,8 +62,9 @@ The second command runs the engine's focused backup/UI/ledger suites, builds
 MCP TypeScript, then runs unit and actual stdio MCP-to-HTTP integration tests.
 It also enforces the existing critical startup resource budget. Regeneration-only
 rollback is loaded on demand using the existing runtime import-map protocol.
-Both component publication and integrated launcher builds install the required
-dependencies and run the gate before packaging. Test failure, killed workers,
+The original delivery record covered component publication and integrated
+launcher builds. Current core construction runs the qualified source gate before
+packaging; see the [core release process](../release-process.md). Test failure, killed workers,
 compiler failure or timeouts stop the gate. Workflow contract tests check strict
 shell handling and ordering, not just the presence of a test-step name.
 

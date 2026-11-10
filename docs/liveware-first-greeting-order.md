@@ -59,12 +59,15 @@ Nora no longer interprets it as a delivery acknowledgement or an App gate.
 
 ## Verification
 
-Focused regression commands:
+After preparing the fixed input and test environment in
+[CONTRIBUTING](../CONTRIBUTING.md), run these commands from the repository root.
+The literal `python` argument lets `tooling/run.mjs` select `NORA_TEST_PYTHON`
+or the prepared platform-specific test venv; do not substitute a bare `python3`.
 
 ```sh
-node tooling/run.mjs python3 -B -m unittest tests.deployment.test_liveware_independent_startup
-node tooling/run.mjs python3 -B -m unittest tests.deployment.test_liveware_greeting_order
-node tooling/run.mjs python3 -B -m unittest discover -s tests/deployment -p 'test_liveware*.py'
+node tooling/run.mjs python -B -m unittest tests.deployment.test_liveware_independent_startup
+node tooling/run.mjs python -B -m unittest tests.deployment.test_liveware_greeting_order
+node tooling/run.mjs python -B -m unittest discover -s tests/deployment -p 'test_liveware*.py'
 ```
 
 Coverage includes unsent/delayed/failed greetings, registration before a
