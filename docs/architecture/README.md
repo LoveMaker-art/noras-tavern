@@ -61,7 +61,7 @@
 
 ## 故事、界面与其他历史记录
 
-- Nora Tavern 启动器优化记录（原修订 `09b9895`，专属材料已迁出）
+- [Nora Tavern 启动器优化记录](NORA-TAVERN-LAUNCHER-OPTIMIZATION-PLAN.md)
 - [Tavern / Story Profile 定向收敛记录](STORY-PROFILE-CLEANUP-20260831.md)
 - [Nora 固定文案与 ST 翻译接口：本地交付记录](TAVERN-BILINGUAL-LOCAL-IMPLEMENTATION.md)
 - [双语化 P0 执行记录](TAVERN-CLAWCHAT-BILINGUAL-P0.md)

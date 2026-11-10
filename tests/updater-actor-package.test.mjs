@@ -83,6 +83,8 @@ process.stdout.write('cold native actor ready');})().catch(error=>{console.error
     const reusedStage = path.join(temporary, 'reused');
     fs.mkdirSync(path.join(reusedStage, 'ops/installer/desktop'), { recursive: true });
     fs.copyFileSync(path.join(source.stage, 'ops/installer/desktop/package-lock.json'), path.join(reusedStage, 'ops/installer/desktop/package-lock.json'));
+    fs.mkdirSync(path.join(reusedStage, 'tooling'), { recursive: true });
+    fs.copyFileSync(path.join(source.stage, 'tooling/maintenance-input.lock.json'), path.join(reusedStage, 'tooling/maintenance-input.lock.json'));
     const reused = materializeUpdaterDependencies(reusedStage, { baseline: { directory: temporary, identity: { artifacts,
         archives: { ops: { name, sha256: manifest.modules.updater.sha256 } } } },
         install: () => assert.fail('unchanged sealed dependency closure must not reinstall') });

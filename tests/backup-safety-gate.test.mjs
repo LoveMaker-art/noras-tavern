@@ -58,47 +58,22 @@ test('the backup gate blocks failing tests, killed workers and timeouts', () => 
     assert.equal(called, 2, 'MCP build failure stops before tool acceptance tests');
 });
 
-for (const workflow of ['build-integrated-launcher.yml', 'publish-component-update.yml']) {
-    test(`${workflow} cannot build release components before the mandatory backup gate`, () => {
-        let content = parse(fs.readFileSync(path.join(root, '.github/workflows', workflow), 'utf8'));
-        if (workflow === 'build-integrated-launcher.yml') {
-            assert.equal(content.jobs.build.uses, './.github/workflows/launcher-platform-stages.yml');
-            content = parse(fs.readFileSync(path.join(root, '.github/workflows/launcher-platform-stages.yml'), 'utf8'));
-            const { source, runtime, package: packaging } = content.jobs;
-            assert.equal(source.if, undefined, 'The source backup gate cannot be conditionally skipped');
-            assert.ok(runtime.needs.includes('source') && runtime.if.includes("needs.source.result == 'success'"));
-            assert.ok(packaging.needs.includes('source') && packaging.if.includes("needs.source.result == 'success'"));
-            assert.ok(packaging.needs.includes('runtime') && packaging.if.includes("needs.runtime.result == 'success'"));
-            const restores = packaging.steps.filter(step => step.run?.includes('build-stage.cjs restore source'));
-            assert.equal(restores.length, 1, 'Packaging must restore the successful source checkpoint');
-            const restoreIndex = packaging.steps.indexOf(restores[0]);
-            assert.ok(restoreIndex < packaging.steps.findIndex(step => invokesAuthoredNodeScript(step.run, packageScript)));
-            // Preserve the gate's command assertions below across the actual DAG.
-            content.jobs = { build: { steps: [...source.steps, ...packaging.steps] } };
-        }
-        const buildJobs = Object.values(content.jobs).filter(job => (job.steps || [])
-            .some(step => invokesAuthoredNodeScript(step.run, packageScript)));
-        assert.equal(buildJobs.length, 1);
-        const steps = buildJobs[0].steps;
-        const buildIndex = steps.findIndex(step => invokesAuthoredNodeScript(step.run, packageScript));
-        const gateIndices = steps.flatMap((step, index) => invokesAuthoredNodeScript(step.run, backupScript) ? [index] : []);
-        assert.equal(gateIndices.length, 1, 'Exactly one mandatory backup gate must protect this build job');
-        const [gateIndex] = gateIndices;
-        assert.ok(buildIndex >= 0 && gateIndex >= 0 && gateIndex < buildIndex);
-        const gate = steps[gateIndex];
-        assert.equal(gate.if, undefined, 'gate is not conditionally skipped');
-        assert.notEqual(gate['continue-on-error'], true);
-        assert.equal(gate.shell, 'bash');
-        assert.equal(gate['timeout-minutes'], 10, 'The mandatory backup step retains its finite outer budget');
-        assert.match(gate.run, /set -euo pipefail/);
-        const engineIndex = steps.findIndex(step => /(?:^|\n)\s*npm ci --prefix app\/engine\/sillytavern(?:\s|$)/.test(step.run || ''));
-        assert.ok(engineIndex >= 0 && engineIndex <= gateIndex, 'The backup gate must receive its locked engine dependencies');
-        const engine = steps[engineIndex];
-        assert.equal(engine.if, undefined);
-        assert.notEqual(engine['continue-on-error'], true);
-        assert.ok(engine['timeout-minutes'] > 0 && engine['timeout-minutes'] <= 10);
-        assert.ok(!/\|\|\s*true/.test(engine.run));
-        assert.match(gate.run, /npm ci --prefix nora-mcp/);
-        assert.ok(!/\|\|\s*true/.test(gate.run));
-    });
-}
+test('core construction cannot run before unconditional qualified backup safety', () => {
+    const workflow=parse(fs.readFileSync(path.join(root,'.github/workflows/core-build.yml'),'utf8'));
+    const steps=workflow.jobs.platform.steps;
+    const gate=steps.findIndex(step=>invokesAuthoredNodeScript(step.run,'tooling/checks/core-source-gate.mjs'));
+    const build=steps.findIndex(step=>invokesAuthoredNodeScript(step.run,'tooling/release/build-core.mjs'));
+    assert.ok(gate>=0&&build>gate);
+    assert.equal(steps[gate].if,undefined);assert.notEqual(steps[gate]['continue-on-error'],true);
+    assert.ok(workflow.jobs.platform['timeout-minutes']>0);
+    const source=fs.readFileSync(path.join(root,'tooling/checks/core-source-gate.mjs'),'utf8');
+    assert.ok(source.includes("['backup-safety',['tooling/checks/verify-backup-safety.mjs']]"));
+    assert.ok(source.includes('result.status!==0||result.error||result.signal'));
+    const delivery=fs.readFileSync(path.join(root,'tooling/release/build-core.mjs'),'utf8');
+    assert.ok(delivery.indexOf("proof.passed,true")<delivery.indexOf("tooling/release/package-release.mjs"));
+    assert.ok(delivery.includes('qualification.checks.map(c=>c.name),qualificationChecks'));
+    const criteria=fs.readFileSync(path.join(root,'tooling/release/core-assets.mjs'),'utf8');
+    assert.ok(criteria.includes("['backup-safety','repository-and-delivery','core-consumers','tavern-workflows']"));
+    const publisher=parse(fs.readFileSync(path.join(root,'.github/workflows/core-publish.yml'),'utf8'));
+    assert.ok(!Object.values(publisher.jobs).flatMap(job=>job.steps||[]).some(step=>invokesAuthoredNodeScript(step.run,packageScript)));
+});

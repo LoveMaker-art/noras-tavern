@@ -22,8 +22,8 @@ function options(argv) {
   const result = {};
   for (let index=0;index<argv.length;index++) {
     const name=argv[index];
-    if (['--runtime-only','--keep','--missing-system-receipt','--interrupt-first-install','--interrupt-update','--app-only-prepare'].includes(name)) result[name.slice(2)]=true;
-    else if (['--payload','--runtime-payload','--update-release','--baseline-release','--scratch-base','--start-state','--product-manifest'].includes(name)) {
+    if (['--runtime-only','--keep','--missing-system-receipt','--interrupt-first-install','--interrupt-update'].includes(name)) result[name.slice(2)]=true;
+    else if (['--payload','--runtime-payload','--update-release','--baseline-release','--scratch-base','--start-state','--product-manifest','--report'].includes(name)) {
       const value=argv[++index];
       if(!value || value.startsWith('--')) throw new Error(`Missing ${name} value`);
       result[name.slice(2)]=name==='--start-state'?value:path.resolve(value);
@@ -34,13 +34,12 @@ function options(argv) {
   for(const key of ['payload','update-release','baseline-release'])if(result[key] && !fs.existsSync(path.join(result[key],'release-manifest.json'))
       && fs.existsSync(path.join(result[key],'payload/release-manifest.json')))result[key]=path.join(result[key],'payload');
   if(result['start-state']&&!['running','stopped'].includes(result['start-state']))throw new Error('--start-state must be running or stopped');
-  if(result['baseline-release']&&!result['update-release']&&!result['app-only-prepare'])throw new Error('A legacy baseline requires --update-release');
+  if(result['baseline-release']&&!result['update-release'])throw new Error('A legacy baseline requires --update-release');
   if(result['missing-system-receipt']&&!result['update-release'])throw new Error('--missing-system-receipt requires --update-release');
   if(result['interrupt-first-install']&&(result['runtime-only']||result['baseline-release']||result['update-release']))
     throw new Error('--interrupt-first-install requires a new full installation without a baseline/update');
   if(result['interrupt-update']&&(!result['baseline-release']||!result['update-release']))
     throw new Error('--interrupt-update requires an actual baseline and update target');
-  if(result['app-only-prepare']&&(!result['baseline-release']||result['update-release']||!result['product-manifest']||!result.keep))throw new Error('APP-only preparation requires retained actual baseline and current product manifest, without a core update');
   return result;
 }
 function read(file) {return JSON.parse(fs.readFileSync(file,'utf8'));}
@@ -314,7 +313,7 @@ async function modelConfigurationFixture(run,hermes,root) {
 }
 async function main() {
   const opts=options(process.argv.slice(2));
-  const base=opts['scratch-base']||path.join(os.tmpdir(),'nora-launcher-refactor-products');
+  const base=opts['scratch-base']||path.join(os.tmpdir(),'nora-core-products');
   fs.mkdirSync(base,{recursive:true,mode:0o700});
   const root=fs.realpathSync(fs.mkdtempSync(path.join(base,'products-smoke-'))),hermes=path.join(root,'hermes'),tavern=path.join(root,'tavern');
   const payload=opts.payload;const runtime=runtimePayload(opts['runtime-payload']||payload,root);
@@ -339,7 +338,7 @@ async function main() {
   }):undefined;
   const controller=createOperationController({directory,lock,evidence:createEvidenceStore({directory}),observeEffects,projectResult:value=>value.value});
   let operation,stopConfirmed=false,rootFailure,initialManifest,proof,configurationDigest;
-  const report={schema:'nora-launcher-products-smoke/1',root,platform:process.platform,arch:process.arch,port,
+  const report={schema:'nora-core-products-smoke/1',root,platform:process.platform,arch:process.arch,port,
     releaseManifestSha256:payload?sha(path.join(payload,'release-manifest.json')):null,runtimeSha256:manifest.sha256,
     actorSourceFiles:Object.fromEntries(['first_install.py','launcher_bridge.py','operation_control.py','operation_cli.py','model_config.py',
       'nora_system.py','nora_profile.py','error_diagnostics.py','operation_evidence.py','operation-budget.json','update_recovery.py','operation_node.mjs','mcp_probe.mjs',
@@ -383,6 +382,8 @@ async function main() {
           const component=await run('component-probe',[path.join(hermes,manifest.componentProbe)]);
           assert.equal(JSON.parse(component.stdout.trim().split('\n').pop()).ok,true);
           report.runtime='verified';
+          await run('cold-initialization',[path.join(projection,'tooling/runtime/hermes-cold-init-check.py'),hermes],{timeout:60000});
+          report.coldInitialization='verified-real-sealed-offline';
           env.TAVERN_NODE_EXECUTABLE=path.join(hermes,manifest.nodeBin,process.platform==='win32'?'node.exe':'node');
           if(!opts['runtime-only']) {
             const initial=opts['baseline-release']||payload;
@@ -538,7 +539,7 @@ async function main() {
         return {verification:'confirmed',value:{runtime:report.runtime,firstInstall:report.firstInstall||'not-requested',stop:report.stop}};
       }},crypto.randomUUID());
   try {
-    const phases=['install',...(opts['update-release']?['update']:[]),...(!opts['runtime-only']?['model']:[]),...(!opts['app-only-prepare']||opts['start-state']==='stopped'?['stop']:[])];
+    const phases=['install',...(opts['update-release']?['update']:[]),...(!opts['runtime-only']?['model']:[]),'stop'];
     if(!opts['update-release'])report.update='pending-no-target-provided';
     for(const phase of phases){
       operation=await executePhase(phase);
@@ -559,11 +560,12 @@ async function main() {
     if(operation.state!=='succeeded'&&rootFailure)throw rootFailure;
     assert.equal(operation.state,'succeeded',JSON.stringify(operation.currentFailure||operation.primaryFailure));
     assert.equal((await lock.probe({directory})).busy,false,'The fixture native owner was not released');
-    report.operation='verified';report.outcome=opts['app-only-prepare']?'prepared-for-native-app-upgrade':'passed';
+    report.operation='verified';report.outcome='passed';
   } catch(error) {report.outcome='failed';report.error={name:error.name,message:error.message,code:error.code,fixtureLog:error.fixtureLog};throw error;}
   finally {
     report.retained=Boolean(opts.keep||report.outcome!=='passed'||!stopConfirmed);
     fs.writeFileSync(path.join(root,'harness-result.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
+    if(opts.report)fs.writeFileSync(opts.report,JSON.stringify(report,null,2)+'\n',{flag:'wx',mode:0o600});
     console.log(JSON.stringify(report));
     // Keep every failed or unconfirmed-stop fixture for safe diagnosis/recovery.
     if(!report.retained)fs.rmSync(root,{recursive:true,force:true});

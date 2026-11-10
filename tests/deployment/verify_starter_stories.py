@@ -42,7 +42,7 @@ def verify_fixture(fixture_root, environ):
             or type(instance.get('port')) is not int or not 1024 <= instance['port'] <= 65535):
         raise ValueError('The Nora instance does not match the disposable root and port')
     report = json.loads(physical(root / 'harness-result.json').read_text(encoding='utf-8'))
-    if (report.get('schema') != 'nora-launcher-products-smoke/1' or report.get('outcome') != 'passed'
+    if (report.get('schema') not in ('nora-core-products-smoke/1', 'nora-launcher-products-smoke/1') or report.get('outcome') != 'passed'
             or report.get('root') != str(root) or type(report.get('port')) is not int
             or report['port'] != instance['port'] or report.get('retained') is not True):
         raise ValueError('A successful retained product smoke report must bind this instance')

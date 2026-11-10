@@ -1,0 +1,103 @@
+name: Build and accept Nora Tavern core (no publication)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nora-core-build-${{ github.sha }}
+  cancel-in-progress: false
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+jobs:
+  platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: windows-2022
+            target: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node tooling/maintenance-input.mjs fetch
+      - name: Fetch exact pinned native runtime
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node tooling/runtime/runtime-inputs.mjs fetch "$TARGET"
+      - name: Prepare core test environment
+        run: |
+          set -euo pipefail
+          python -m venv .cache/test-venv
+          if [ "$RUNNER_OS" = Windows ]; then py="$PWD/.cache/test-venv/Scripts/python.exe"; else py="$PWD/.cache/test-venv/bin/python"; fi
+          "$py" -m pip install -r requirements-core-test.txt
+          echo "NORA_TEST_PYTHON=$py" >> "$GITHUB_ENV"
+          npm --prefix app/engine/sillytavern ci --no-audit --no-fund
+          npm --prefix nora-mcp ci --ignore-scripts --no-audit --no-fund
+      - name: Qualify fixed core source and consumers
+        run: node tooling/checks/core-source-gate.mjs
+      - name: Build and accept core on the native platform
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          node tooling/release/build-core.mjs --output "$RUNNER_TEMP/core-$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ matrix.target }}
+          path: ${{ runner.temp }}/core-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-evidence-${{ matrix.target }}
+          path: |
+            .cache/core-qualification.json
+            .cache/core-source-result.json
+            ${{ runner.temp }}/core-${{ matrix.target }}/native-smoke.json
+          if-no-files-found: warn
+          retention-days: 30
+  assemble:
+    needs: platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: core-*
+          path: ${{ runner.temp }}/incoming
+      - name: Seal accepted three-platform core bytes without rebuilding
+        shell: bash
+        run: node tooling/release/assemble-core.mjs "$RUNNER_TEMP/incoming" "$RUNNER_TEMP/core-batch" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-accepted-batch
+          path: ${{ runner.temp }}/core-batch
+          if-no-files-found: error
+          retention-days: 30

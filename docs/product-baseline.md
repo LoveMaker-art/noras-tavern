@@ -2,7 +2,7 @@
 
 <a id="诺拉酒馆产品设计基线"></a>
 
-最高产品依据已按职责迁移为[项目总览与共同约定](product/README.md)、启动器（原修订 `09b9895`，专属材料已迁出）、[诺拉](product/nora.md)、[酒馆](product/tavern.md)四份文档，整体构成唯一现行设计；现行版本以总览为准，本兼容导航不另行维护版本号。
+最高产品依据已按职责迁移为[项目总览与共同约定](product/README.md)、启动器（原始出处：`09b9895:docs/product/launcher.md`）、[诺拉](product/nora.md)、[酒馆](product/tavern.md)四份文档，整体构成唯一现行设计；现行版本以总览为准，本兼容导航不另行维护版本号。
 
 本次确认的新设计从[当前基线](product/README.md#current-baseline)阅读。
 

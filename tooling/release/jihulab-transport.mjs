@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createRequire} from 'node:module';
+import {readReleasePolicy} from './release-policy.mjs';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {publicationChannelObjects,verifyPublishedCoreAnchor} from './system-release.mjs';
@@ -57,13 +57,7 @@ export function loadJihuUploadConfig(configPath) {
     catch(error) {if(error instanceof SyntaxError)throw failure('invalid publisher configuration JSON');throw error;}
     return publisherIdentity(config);
 }
-function reader() {
-    const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
-    const file=['ops/installer/desktop/release-sources.js']
-        .map(name=>path.join(root,name)).find(name=>fs.existsSync(name));
-    assert.ok(file,'Missing shared JihuLab release source validator');
-    return createRequire(import.meta.url)(file);
-}
+
 function abortable(promise,signal) {
     const pending=Promise.resolve(promise);
     if(signal.aborted){pending.catch(()=>{});return Promise.reject(signal.reason);}
@@ -125,7 +119,7 @@ function channelReleases(bytes,channel,launcher=false) {
 export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log=console.log,totalTimeout=120000,
     uploadTimeout=1800000,maxJsonBytes=4*1024*1024,maxChannelBytes=1024*1024,maxInventoryPages=50,maxInventoryItems=5000}={}) {
     const config=publisherIdentity(typeof input==='string'?loadJihuUploadConfig(input):input);
-    const shared=reader();
+    const shared=readReleasePolicy().reader;
     assert.ok(source,'A build-owned JihuLab source configuration is required');
     let selected;try {selected=shared.validateSources({schema:1,mirrors:[source]})[0];}
     catch {throw failure('invalid build-owned source configuration');}

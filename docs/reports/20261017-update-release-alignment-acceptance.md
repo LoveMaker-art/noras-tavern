@@ -1,6 +1,6 @@
 # 更新职责与两项更新：独立分支验收记录
 
-开始日期：2026-10-17，最终验收跨至 2026-10-18（北京时间）。依据：[产品基线](../product-baseline.md)、本次实施方案（原修订 `09b9895`，专属材料已迁出）。
+开始日期：2026-10-17，最终验收跨至 2026-10-18（北京时间）。依据：[产品基线](../product-baseline.md)、[本次实施方案](../design/update-release-alignment.md)。
 
 ## 范围和交付状态
 
@@ -90,4 +90,4 @@ Windows 证据：`component/windows-6b6-managed-complete/summary.json`；APP 完
 
 ## APP-only 后续证据（2026-10-18）
 
-上文 I-05“原生证明生产和 CI 分支未实现”记录的是该轮结束状态。后续已按单独授权补齐生产代码；本地 APP-only、公开旧 APP 的实际协议门槛及仍未执行的正式环境验收见[APP-only 实施与验收记录](20261018-app-only-publication-acceptance.md)。本节不追溯改写上轮测试结果，也不将新私有包结果认作正式发布。
+上文 I-05“原生证明生产和 CI 分支未实现”记录的是该轮结束状态。后续已按单独授权补齐生产代码；本地 APP-only、公开旧 APP 的实际协议门槛及仍未执行的正式环境验收见APP-only 实施与验收记录（原始出处：`09b9895:docs/reports/20261018-app-only-publication-acceptance.md`）。本节不追溯改写上轮测试结果，也不将新私有包结果认作正式发布。

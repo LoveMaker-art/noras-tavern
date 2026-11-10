@@ -37,6 +37,4 @@ jobs:
           echo "NORA_TEST_PYTHON=$py" >> "$GITHUB_ENV"
       - run: npm --prefix app/engine/sillytavern ci --no-audit --no-fund
       - run: npm --prefix nora-mcp ci --ignore-scripts --no-audit --no-fund
-      - run: npm test
-      - run: npm run test:core
-      - run: node tooling/run.mjs npm --prefix app/engine/sillytavern run test:nora
+      - run: node tooling/checks/core-source-gate.mjs

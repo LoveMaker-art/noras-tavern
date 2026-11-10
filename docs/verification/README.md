@@ -10,11 +10,11 @@
 
 ## 启动器与部署
 
-- 启动器产品收敛对账（2026-10-12）（原修订 `09b9895`，专属材料已迁出）
-- 启动器主分支整合与源码清理（2026-10-13）（原修订 `09b9895`，专属材料已迁出）
-- 启动器稳定性整顿验收（原修订 `09b9895`，专属材料已迁出）
-- 启动器测试清理（2026-10-12）（原修订 `09b9895`，专属材料已迁出）
-- 启动器卸载验证记录（原修订 `09b9895`，专属材料已迁出）
+- [启动器产品收敛对账（2026-10-12）](launcher-product-convergence.md)
+- [启动器主分支整合与源码清理（2026-10-13）](launcher-source-cleanup-20261013.md)
+- [启动器稳定性整顿验收](launcher-stability.md)
+- [启动器测试清理（2026-10-12）](launcher-test-cleanup.md)
+- [启动器卸载验证记录](launcher-uninstall.md)
 
 ## 故事档案、账本与备份
 
@@ -43,4 +43,4 @@
 - [Local Main Integration Review - 2026-10-01](local-main-integration-20261001.md)
 - [Local Nora MCP deployment and natural-language acceptance](tavern-mcp-local-acceptance-20260929.md)
 - [Tavern MCP parity implementation status](tavern-mcp-parity-20260929.md)
-- 酒馆 2.5.0 与 GitHub 版本差异报告（原修订 `09b9895`，专属材料已迁出）
+- [酒馆 2.5.0 与 GitHub 版本差异报告](v2.5.0-github-diff.md)

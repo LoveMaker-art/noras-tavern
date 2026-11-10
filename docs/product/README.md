@@ -1,14 +1,14 @@
 # 诺拉酒馆核心产品设计：总览与共同约定
 
-1.48于2026-11-02按用户确认更新[诺拉默认人格](nora.md#conversation)，用于后续新安装和缺少人格时的初始化；已有诺拉人格不因模板更新被覆盖。默认正文唯一维护于 `nora/SOUL.md`，本次不改变模型、技能、启停或更新职责；远端单实例采用与实际验证见[核心维护合同](../core-maintenance.md)。
+1.48于2026-11-02按用户确认更新[诺拉默认人格](nora.md#conversation)，用于后续新安装和缺少人格时的初始化；已有诺拉人格不因模板更新被覆盖。默认正文唯一维护于 `nora/SOUL.md`，本次不改变模型、技能、启停或更新职责；远端单实例采用与实际验证见执行记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#default-persona-20261102`）。
 
 产品设计版本：**1.53（本地拆分）**。2026-11-10用户要求本仓只维护诺拉酒馆核心，不展示桌面产品入口。核心产品职责、数据保护、模型与验收规则继续保留；桌面专属设计已迁出。
 
-1.45已按用户要求将诺拉与酒馆的Linux及云端部署列为正式产品目标，撤销[N-05](nora.md#model-configuration)仅限Mac／Windows受管本地安装的设计限制；以当前实例的身份、授权和实际能力为边界。Windows／Mac桌面交付、模型先验证后保存、已有内容与数据保护规则保留。设计要求、源码实现、目标环境验收及发布分别记录，当前Linux适配与验收缺口见[N-D04](nora.md#differences)。最初的[核心维护合同](../core-maintenance.md)之后，已实施[核心维护合同](../core-maintenance.md)及审查修正；范围、结果与未验项见[核心维护合同](../core-maintenance.md)。后续生命周期、跨语言写锁和历史准入修复按用户授权整合本地main，见[核心维护合同](../core-maintenance.md)。源码合并不表示部署或发布。
+1.45已按用户要求将诺拉与酒馆的Linux及云端部署列为正式产品目标，撤销[N-05](nora.md#model-configuration)仅限Mac／Windows受管本地安装的设计限制；以当前实例的身份、授权和实际能力为边界。Windows／Mac桌面交付、模型先验证后保存、已有内容与数据保护规则保留。设计要求、源码实现、目标环境验收及发布分别记录，当前Linux适配与验收缺口见[N-D04](nora.md#differences)。最初的文档修订（原始出处：`09b9895:docs/launcher-reliability-plan.md#linux-cloud-baseline-20261030`）之后，已实施共用核心与路径适配（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-instance-20261031`）及审查修正；范围、结果与未验项见原合并记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-main-integration-20261101`）。后续生命周期、跨语言写锁和历史准入修复按用户授权整合本地main，见增量复核（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-lifecycle-main-review-20261101`）。源码合并不表示部署或发布。
 
-1.44已整合诺拉字号、行高和段距控制、普通正文排版修正及已验收的10px内置段距，本版继续保留；详细规则唯一维护在[T-23](tavern.md#visuals)及[N-12](nora.md#models-and-visuals)。历史范围与结果见[核心维护合同](../core-maintenance.md)，该次合并不代表正式发布。
+1.44已整合诺拉字号、行高和段距控制、普通正文排版修正及已验收的10px内置段距，本版继续保留；详细规则唯一维护在[T-23](tavern.md#visuals)及[N-12](nora.md#models-and-visuals)。历史范围与结果见整合记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#reading-main-integration-20261030`），该次合并不代表正式发布。
 
-技能库既有确认另行保留：2026-10-23已确认的默认交付与按需加载规则见[诺拉技能库管理](nora.md#skill-library)。2026-10-29公开技能库已按单独授权上线，用户随后要求检查应用管理技能并合并本地主分支，暂不发布应用；保留全部既有技能库规则。范围、合并结果与未验项见[核心维护合同](../core-maintenance.md)，此前文档整合历史见[核心维护合同](../core-maintenance.md)。
+技能库既有确认另行保留：2026-10-23已确认的默认交付与按需加载规则见[诺拉技能库管理](nora.md#skill-library)。2026-10-29公开技能库已按单独授权上线，用户随后要求检查应用管理技能并合并本地主分支，暂不发布应用；保留全部既有技能库规则。范围、合并结果与未验项见执行记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#skill-library-main-integration-20261029`），此前文档整合历史见原记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#skill-library-doc-integration-20261028`）。
 
 <a id="current-baseline"></a>
 ## 当前确认的故事档案设计
@@ -218,7 +218,7 @@ Linux验收须分别证明：安装及已有部署识别、原数据读取、真
 
 程序文件恢复、服务启动、外部连接及某个世界的内容可用性分别报告；数据或模型配置造成的业务失败不自动等于程序替换未结束。真正仍在执行的程序写入、无法确认的程序写入目标及不可用的程序来源，按其直接影响限制相关动作，不把历史失败或数据不一致扩展为全局锁定。
 
-**实现差异（范围核对，2026-11-07）：**按[核心维护合同](../core-maintenance.md)和[核心维护合同](../core-maintenance.md)，新普通核心事务已登记为仅恢复受管程序和安装收据；历史整树恢复记录、真实数据迁移及损坏安装修复仍按各自协议和保护条件处理。尚存历史路径不能概括为所有新普通更新仍恢复整份用户树，局部实施也不能外推为全部历史恢复和现场根因已经解决。产品分离目标不变，实际覆盖范围按对应固定源码和验收记录核对。
+**实现差异（范围核对，2026-11-07）：**按启动器L-D07／L-D08（原始出处：`09b9895:docs/product/launcher.md#differences`）和2026-11-04实施记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#ordered-launcher-refactor-20261104`），新普通核心事务已登记为仅恢复受管程序和安装收据；历史整树恢复记录、真实数据迁移及损坏安装修复仍按各自协议和保护条件处理。尚存历史路径不能概括为所有新普通更新仍恢复整份用户树，局部实施也不能外推为全部历史恢复和现场根因已经解决。产品分离目标不变，实际覆盖范围按对应固定源码和验收记录核对。
 
 服务启停重试允许有界限速，冷却结束后显式重试应能真正执行；旧版本保存的同目标失败记录也不得永久锁定合法操作。不重置全部历史，不绕过维护互斥、进程归属或真实未恢复修改。卸载分别采用[核心维护合同](../core-maintenance.md)的前提，失败须保留实际检查对象和原因。
 
@@ -399,7 +399,7 @@ Linux验收须分别证明：安装及已有部署识别、原数据读取、真
 | 配置恢复职责 | 诺拉模型配置沿用其专用恢复合同；其他手工配置备份与程序维护事务备份分别保留，不将普通异常回滚当作断电恢复 | PB-05／PB-08；[配置职责](#data-and-models) |
 | 数据归属与程序维护边界 | 用户可自行修改数据及数据备份；普通程序维护不以内容未变为条件，程序回滚不隐含回退用户内容；完整实现仍有差异 | PB-05／06／07／08；[校验边界](#validation-boundaries) |
 
-1.15／1.16 全功能盘点发现的三处诺拉说明冲突已在1.17按既有合同收敛，见[诺拉一致性结论](nora.md#differences)。[核心维护合同](../core-maintenance.md)和[酒馆差异登记](tavern.md#differences)分别保留技术事实。
+1.15／1.16 全功能盘点发现的三处诺拉说明冲突已在1.17按既有合同收敛，见[诺拉一致性结论](nora.md#differences)。启动器差异登记（原始出处：`09b9895:docs/product/launcher.md#differences`）和[酒馆差异登记](tavern.md#differences)分别保留技术事实。
 
 <a id="tavern-policy-decisions"></a>
 ### 本轮酒馆设计：四项已确认选择
@@ -433,7 +433,7 @@ Linux验收须分别证明：安装及已有部署识别、原数据读取、真
 
 1.22按用户最新明确要求将N-Q01改为默认开启，保留已保存的关闭／开启选择；不改变MVU和账本的用途开关及此前文案撤回。实现和验收见[默认值调整记录](../reports/20261020-tavern-design-coverage.md#preference-default-on)。
 
-1.14 从 1.13 完成模块化归位，1.15 补齐启动器完整规格，1.16 补齐诺拉全能力规格，1.17消除三处说明冲突，1.18补齐酒馆完整规格并核对技术说明，1.19收口删除／导入／费用推荐稿并集中待确认事项，1.20记录用户确认并保留实现与验收缺口。旧 PB／PR 的归属、版本记录和原实现证据见[重组记录](../reports/20261020-product-design-modularization.md)，启动器覆盖与差异见[核心维护合同](../core-maintenance.md)，诺拉覆盖及后续收敛见[诺拉核对记录](../reports/20261020-nora-design-coverage.md)，酒馆全功能与差异见[酒馆核对记录](../reports/20261020-tavern-design-coverage.md)。本次未重新验收全部产品，不将文档及运行指令修正标为产品已上线。
+1.14 从 1.13 完成模块化归位，1.15 补齐启动器完整规格，1.16 补齐诺拉全能力规格，1.17消除三处说明冲突，1.18补齐酒馆完整规格并核对技术说明，1.19收口删除／导入／费用推荐稿并集中待确认事项，1.20记录用户确认并保留实现与验收缺口。旧 PB／PR 的归属、版本记录和原实现证据见[重组记录](../reports/20261020-product-design-modularization.md)，启动器覆盖与差异见启动器审计（原始出处：`09b9895:docs/reports/20261020-launcher-design-coverage.md`），诺拉覆盖及后续收敛见[诺拉核对记录](../reports/20261020-nora-design-coverage.md)，酒馆全功能与差异见[酒馆核对记录](../reports/20261020-tavern-design-coverage.md)。本次未重新验收全部产品，不将文档及运行指令修正标为产品已上线。
 
 **1.30合并前核对：**修复旧关闭格式兼容、逐次自动请求检查、MEMORY来源修订校验和提示缓存部分完成反馈；具体实现与实际验证按[复查记录](../verification/story-profile-premerge-design-review-20261021.json)及[后续修复验证](../verification/story-profile-postreview-fixes-20261021.json)区分。保留主线T-D02／T-D03与格式接入等既有验收事实；未重跑的历史结果不写成本轮新通过。
 

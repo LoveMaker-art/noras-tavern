@@ -27,12 +27,12 @@
 | --- | --- |
 | [PB-01](../product/README.md#pb-01) | 目标用户、故事连续性、普通用户体验与保护优先级 |
 | [PB-02](../product/README.md#pb-02) | 三模块、两种形态、本地／云端及配套集成边界 |
-| PB-03（原修订 `09b9895`，专属材料已迁出） | 首次安装、模型、配对、启动及逐阶段失败处理 |
-| PB-04（原修订 `09b9895`，专属材料已迁出） | 原配置沿用、启停与配置入口；统一停服要求仍取消 |
+| [PB-03](../product/launcher.md#first-use) | 首次安装、模型、配对、启动及逐阶段失败处理 |
+| [PB-04](../product/launcher.md#daily-use) | 原配置沿用、启停与配置入口；统一停服要求仍取消 |
 | [PB-05](../product/tavern.md#world-and-library) | 世界身份与隔离；跨模块内容与模型保护承接于总览数据规则 |
 | [PB-06](../product/README.md#shared-update) | 独立更新接管、权限、五阶段、恢复与终态；桌面双更新及关窗规则归启动器 |
 | [PB-07](../product/README.md#state-and-retry) | 九种状态、操作证据、查询／验收分工、重试及配对码保护 |
-| PB-08（原修订 `09b9895`，专属材料已迁出） | 三种卸载选择与保留数据重装；两类备份职责归总览 |
+| [PB-08](../product/launcher.md#uninstall) | 三种卸载选择与保留数据重装；两类备份职责归总览 |
 | [PB-09](../product/README.md#version-rules) | 组件提醒、按影响交付、复用续跑、国内渠道、隐私及证据边界；操作细节归发布流程 |
 
 PR-01、02、11、13 归启动器；PR-06、07、08、10 归诺拉；PR-03、04 归酒馆；PR-05、09、12、14 归总览。原 14 行用户要求及验收结果均保留，旧需求文件变为定位索引。共同状态、完整更新和数据规则只维护一份，各模块通过引用交接。
@@ -48,13 +48,13 @@ PR-01、02、11、13 归启动器；PR-06、07、08、10 归诺拉；PR-03、04 
 | --- | --- | --- |
 | 已记录的最近正式发行 | 核心 2.5.5／启动器 2.2.5 已在 GitHub、极狐正式发布并完成独立回读 | [v2.5.5 发行记录](../reports/20261019-v2.5.5-release-preparation.md)；包含以下两项修复，产品标签绑定实际验收提交 |
 | 日常退出的平台差异（PB-04） | 现有 Windows 关窗会先停服再退出；Mac 可只关闭窗口，退出应用另行停服 | 依据主进程 `close`／`requestQuit`／`window-all-closed`；[安装指南](../install-nora-tavern.md)已按源码分别说明，本次没有修改关闭行为或重新做原生验收 |
-| 双更新声明与重开标记修复（PB-06／PB-09） | 已随核心 2.5.5／启动器 2.2.5 正式交付 | [修复及集成记录](../reports/20261019-dual-update-contract-fix.md)、[成品及分发记录](../reports/20261019-v2.5.5-release-preparation.md)；入口、声明、原生迁移及数据保护分别举证，不外推三平台完整人工 GUI 连续双更新 |
-| 保留数据重装复制修复（PB-03／PB-05／PB-08） | 已随核心 2.5.5／启动器 2.2.5 正式交付；真实 Electron 及 Windows 缓存链接专项通过 | 修复记录（原修订 `09b9895`，专属材料已迁出）、[成品及分发记录](../reports/20261019-v2.5.5-release-preparation.md)；使用本次正式 APP 验收，不借用独立救援工具冒充本项目安装器证据 |
+| 双更新声明与重开标记修复（PB-06／PB-09） | 已随核心 2.5.5／启动器 2.2.5 正式交付 | 修复及集成记录（原始出处：`09b9895:docs/reports/20261019-dual-update-contract-fix.md`）、[成品及分发记录](../reports/20261019-v2.5.5-release-preparation.md)；入口、声明、原生迁移及数据保护分别举证，不外推三平台完整人工 GUI 连续双更新 |
+| 保留数据重装复制修复（PB-03／PB-05／PB-08） | 已随核心 2.5.5／启动器 2.2.5 正式交付；真实 Electron 及 Windows 缓存链接专项通过 | [修复记录](../reports/20261019-retained-data-copy-fix.md)、[成品及分发记录](../reports/20261019-v2.5.5-release-preparation.md)；使用本次正式 APP 验收，不借用独立救援工具冒充本项目安装器证据 |
 | 小优化发布工具（PB-09） | 策略已确认；工具仍在独立本地工作区，未合并、推送或完成新远端流程验收 | [实施与本机检查](../release-process.md#2026-10-19-流程优化实施范围)；不将模拟请求减少或工程耗时目标表述为公网已提速 |
-| 历史入口、恢复与平台边界 | 来源版本、部署方式、平台及入口分别有证据，不承诺所有旧版原命令自动可用 | 旧版入口验收（原修订 `09b9895`，专属材料已迁出）、[恢复与旧版接入](../reports/20261018-recovery-ownership-legacy-admission.md)；新源码不能改变尚未升级的旧二进制 |
+| 历史入口、恢复与平台边界 | 来源版本、部署方式、平台及入口分别有证据，不承诺所有旧版原命令自动可用 | [旧版入口验收](../reports/20261018-official-old-update-acceptance.md)、[恢复与旧版接入](../reports/20261018-recovery-ownership-legacy-admission.md)；新源码不能改变尚未升级的旧二进制 |
 | 独立救援工具 | 历史 Windows 修复包独立维护，不并入主项目，也不是普通更新的必经步骤 | 其独立交付不等于主线内置修复；主线保留数据复制改动按上列报告单独核验 |
 
-较早的独立更新器验收（原修订 `09b9895`，专属材料已迁出）、[配对重试验收](../reports/20261016-pair-standalone-update-acceptance.md)、[更新对齐验收](../reports/20261017-update-release-alignment-acceptance.md)、[本地合并审查](../reports/20261018-main-updater-merge-review.md)、[查询预算验收](../reports/20261018-update-query-budget-acceptance.md)及[v2.5.3 发行记录](../reports/20261019-v2.5.3-release-preparation.md)保留原有适用范围，不在此复制源码摘要、用例数或当时的待办状态。
+较早的[独立更新器验收](../reports/20261016-shared-independent-updater-acceptance.md)、[配对重试验收](../reports/20261016-pair-standalone-update-acceptance.md)、[更新对齐验收](../reports/20261017-update-release-alignment-acceptance.md)、[本地合并审查](../reports/20261018-main-updater-merge-review.md)、[查询预算验收](../reports/20261018-update-query-budget-acceptance.md)及[v2.5.3 发行记录](../reports/20261019-v2.5.3-release-preparation.md)保留原有适用范围，不在此复制源码摘要、用例数或当时的待办状态。
 
 文档整理的逐项发现、保留规则和检查结果见[整理记录](../reports/20261019-product-documentation-review.md)。源码合并、成品验收和正式分发分别记录，本次实际交付见上述 v2.5.5 发行证据。
 
@@ -68,9 +68,9 @@ PR-01、02、11、13 归启动器；PR-06、07、08、10 归诺拉；PR-03、04 
 | 数据与维护规则 | 世界身份与能力边界、数据隔离、受管文件、模型初始化、辅助备份及卸载范围 |
 | 设计与实施分工 | 产品规则、技术实现、实际验收及发行分别记录；具体执行授权保留于对应任务，不成为长期产品规则 |
 
-- 产品与安装：[项目介绍](../../README.md)、[完整版安装](../install-nora-tavern.md)、[独立酒馆安装](../install-tavern.md)、卸载选择（原修订 `09b9895`，专属材料已迁出）。
-- 领域与状态：[领域语言](../../CONTEXT.md)、[世界身份 ADR 0007](../adr/0007-make-world-manifest-authoritative.md)、[能力边界 ADR 0008](../adr/0008-separate-world-readiness-from-capabilities.md)、派生运行状态 ADR 0014（原修订 `09b9895`，专属材料已迁出）、[世界数据隔离](../design/world-data-isolation.md)。
-- 实现与证据：[共享业务](../REPOSITORY.md#shared-implementation-boundaries)、受管文件（原修订 `09b9895`，专属材料已迁出）、[聊天备份](../verification/chat-backup-retention-safety-20261008.md)、诊断协议（原修订 `09b9895`，专属材料已迁出）、[源码职责](../REPOSITORY.md)、[开发约定](../../CONTRIBUTING.md)、启动器模块执行计划（原修订 `09b9895`，专属材料已迁出）。这些材料按其职责维护，不另立全产品基线。
+- 产品与安装：[项目介绍](../../README.md)、[完整版安装](../install-nora-tavern.md)、[独立酒馆安装](../install-tavern.md)、[卸载选择](../launcher-uninstall.md)。
+- 领域与状态：[领域语言](../../CONTEXT.md)、[世界身份 ADR 0007](../adr/0007-make-world-manifest-authoritative.md)、[能力边界 ADR 0008](../adr/0008-separate-world-readiness-from-capabilities.md)、[派生运行状态 ADR 0014](../adr/0014-repair-derived-operational-state.md)、[世界数据隔离](../design/world-data-isolation.md)。
+- 实现与证据：[共享业务](../REPOSITORY.md#shared-implementation-boundaries)、[受管文件](../launcher-managed-files.md)、[聊天备份](../verification/chat-backup-retention-safety-20261008.md)、[诊断协议](../launcher-install-diagnostics.md)、[源码职责](../REPOSITORY.md)、[开发约定](../../CONTRIBUTING.md)、[启动器模块执行计划](../launcher-reliability-plan.md)。这些材料按其职责维护，不另立全产品基线。
 
 <a id="design-history"></a>
 ## 设计变更历史
@@ -124,7 +124,7 @@ PR-01、02、11、13 归启动器；PR-06、07、08、10 归诺拉；PR-03、04 
 
 覆盖验收：正式静态入口、动态按钮、模型／配对字段、弹层及键盘行为、状态／任务／日志、版本／技能更新、目录／安装／卸载、外链／社区／人物交互、窗口和生命周期均有唯一设计位置；真实控制器和桥接 API 逐项对账。现状核对、已确认规则、待决事项和未执行的原生／视觉验收分别记录。
 
-续项结果：设计集合更新为1.15，启动器扩展为24节并建立22类能力的验收目录。30个桥接方法、14个路由、8个管理动作及动态控件已逐项定位；原条款与验收保留。产品选择统一登记在总览，技术疑点单列；详见完整覆盖审计（原修订 `09b9895`，专属材料已迁出）。本轮只完成文档覆盖、静态核对和文档导航，不宣称完成产品原生实测；未提交合并推送或构建发布。
+续项结果：设计集合更新为1.15，启动器扩展为24节并建立22类能力的验收目录。30个桥接方法、14个路由、8个管理动作及动态控件已逐项定位；原条款与验收保留。产品选择统一登记在总览，技术疑点单列；详见[完整覆盖审计](20261020-launcher-design-coverage.md)。本轮只完成文档覆盖、静态核对和文档导航，不宣称完成产品原生实测；未提交合并推送或构建发布。
 
 ## 续项：诺拉全能力设计覆盖
 

@@ -1,0 +1,52 @@
+{
+  "schema": "nora-core-runtime-inputs/1",
+  "origin": {
+    "repository": "LoveMaker-art/noras-tavern",
+    "tag": "v2.6.5",
+    "commit": "4a0e17866131674c1ff03e29c5791f703a0e3957"
+  },
+  "platforms": {
+    "darwin-arm64": {
+      "darwin-arm64-nora-hermes-runtime.json": {
+        "size": 13952,
+        "sha256": "18a28e4b45cfd05dcd1f7aa7caa52893cad04b2d49fe3ddd52e7268218f67cb0",
+        "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/darwin-arm64-nora-hermes-runtime.json",
+        "assetId": 717976883
+      },
+      "darwin-arm64-nora-hermes-runtime-darwin-arm64.tar.gz": {
+        "size": 187473605,
+        "sha256": "f72d95fecef653f9df1626c1b6bbcf06241c852490fd362e9df14c366f849553",
+        "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/darwin-arm64-nora-hermes-runtime-darwin-arm64.tar.gz",
+        "assetId": 717976508
+      }
+    },
+    "darwin-x64": {
+      "darwin-x64-nora-hermes-runtime.json": {
+        "size": 13948,
+        "sha256": "7d19c3d2375ac8333df7060c084f94a9ca4cd40f8987aa88a54c53003c4df56d",
+        "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/darwin-x64-nora-hermes-runtime.json",
+        "assetId": 717978428
+      },
+      "darwin-x64-nora-hermes-runtime-darwin-x64.tar.gz": {
+        "size": 177854966,
+        "sha256": "cbf7722178a12146f79d6ef56815e8f7ee10025ece9eafaaef5e20faec3eb840",
+        "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/darwin-x64-nora-hermes-runtime-darwin-x64.tar.gz",
+        "assetId": 717977925
+      }
+    },
+    "win32-x64": {
+      "win32-x64-nora-hermes-runtime.json": {
+        "size": 1373542,
+        "sha256": "e3a982531ea9675fe009eb19cb0273fa33f05277eff29e3830cae60d6f433e0b",
+        "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/win32-x64-nora-hermes-runtime.json",
+        "assetId": 717988817
+      },
+      "win32-x64-nora-hermes-runtime-win32-x64.zip": {
+        "size": 362713346,
+        "sha256": "06ae342912a18c1cbcc6bebdb4558a4b26e64c9e2e1b3007fada180ad25c4c08",
+        "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/win32-x64-nora-hermes-runtime-win32-x64.zip",
+        "assetId": 717988242
+      }
+    }
+  }
+}

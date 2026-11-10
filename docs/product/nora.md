@@ -1,9 +1,9 @@
 # 诺拉产品设计
 
-产品设计版本：**1.52**。核对日期：2026-11-04。与[项目总览](README.md)共同构成现行设计。诺拉的模型配置与授权管理以当前实例为边界，覆盖[Linux云端及桌面部署](README.md#deployment-support)，保留候选先验证后保存、数据保护和原有工具权限。原生服务、认证及高级配置按N-05要求适配；当前源码已解除共用技能的系统过滤和固定父子目录前提，按已装Hermes接口能力适配。实际验证与未验范围见[N-D04](#differences)，本地合并状态见[核心维护合同](../core-maintenance.md)，不将源码变化当作已部署。
+产品设计版本：**1.52**。核对日期：2026-11-04。与[项目总览](README.md)共同构成现行设计。诺拉的模型配置与授权管理以当前实例为边界，覆盖[Linux云端及桌面部署](README.md#deployment-support)，保留候选先验证后保存、数据保护和原有工具权限。原生服务、认证及高级配置按N-05要求适配；当前源码已解除共用技能的系统过滤和固定父子目录前提，按已装Hermes接口能力适配。实际验证与未验范围见[N-D04](#differences)，本地合并状态见整合记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-main-integration-20261101`），不将源码变化当作已部署。
 
 1.47于2026-11-02按用户明确要求调整更新入口：启动器检查核心与APP两项、只执行APP更新；诺拉对话只提交核心更新。新任务不再联合更新，详细规则见[共同更新职责](README.md#shared-update)。技能及运行规则源码已切换并整合本地main，路由与关联技术回归通过；已安装技能、安装包与正式实例未切换，未推送发布；1.46恢复收尾要求继续有效。真实对话与历史接入缺口见N-D01。
-1.44保留1.43全部模型与技能规则，并补入[N-12](#models-and-visuals)阅读控制；数值、默认值及数据边界只在[T-23](tavern.md#visuals)维护，不新增模型调用或脚本执行权限。实际整合见[核心维护合同](../core-maintenance.md)。
+1.44保留1.43全部模型与技能规则，并补入[N-12](#models-and-visuals)阅读控制；数值、默认值及数据边界只在[T-23](tavern.md#visuals)维护，不新增模型调用或脚本执行权限。实际整合见本轮记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#reading-main-integration-20261030`）。
 
 一般界面文案撤回按[总览规则及本轮例外](README.md#copy-rollback)执行；本轮已批准的偏好设置与年表说明不扩展为其他页面改名／扩写授权。
 
@@ -291,7 +291,7 @@ Quick Reply 当前只保留既有数据读取，不能从读取到配置推断�
 
 保留查询、详情、校验下载、安装启用与按任务加载使用。安装并使用沿用同一次明确请求，不要求用户分开完成下载、安装和启用；实际依赖缺失、同名自定义内容或来源不可达时如实报告，不覆盖已有不同内容。保留当前实例与数据保护边界。用户已撤销上传、投稿、回执查询及审核，不恢复这些能力。
 
-默认交付与技能库公网可用性分别验收，目录或资源不可达时明确说明。2026-10-29公开资源已上线，应用管理技能按用户要求检查并整合本地主分支；具体结果见[核心维护合同](../core-maintenance.md)。本次不推送或发布应用，不替换正式实例；未来发行须包含该实现并通过首装、更新和目标环境验收，不能仅凭文件进入源码宣称用户已经获得。
+默认交付与技能库公网可用性分别验收，目录或资源不可达时明确说明。2026-10-29公开资源已上线，应用管理技能按用户要求检查并整合本地主分支；具体结果见执行记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#skill-library-main-integration-20261029`）。本次不推送或发布应用，不替换正式实例；未来发行须包含该实现并通过首装、更新和目标环境验收，不能仅凭文件进入源码宣称用户已经获得。
 
 <a id="operations"></a>
 ## 十七 诊断与授权恢复（N-17）
@@ -376,9 +376,9 @@ Quick Reply 当前只保留既有数据读取，不能从读取到配置推断�
 | N-D01 更新职责与历史接入 | 1.47要求各部署仅由诺拉对话提交核心独立更新，不唤起或升级APP；诺拉只提交和查询，不实现文件替换 | 本地main的技能与运行规则已接入独立核心检查／提交，状态优先读取核心任务，旧桌面状态仅在可信读者确认无核心任务时只读回退。真实子进程路由及关联回归通过；未向正式实例安装技能，未完成真实诺拉对话、实际断开后完整升级及旧技能首次迁移验收，不宣称历史用户已自动接入 |
 | N-D02 前端插件能力 | 仅通过已授权、指定在线页面和真实目录管理受支持前端插件；不提供任意系统文件、服务端插件或命令操作 | 已同步MCP README和运行入口，保留来源、关闭初始状态、修订、保护组件和刷新限制；不增加工具权限 |
 | N-D03 配置恢复职责 | 诺拉模型配置按专用普通异常回滚合同；其他手工配置备份与程序维护事务备份各自保留 | 既有本地收敛事实保留；Linux沿用同一要求，实际恢复仍须目标环境验证；不承诺断电恢复 |
-| N-D04 Linux云端核心与模型配置 | 共用核心与模型配置覆盖Linux，按当前实例实际映射定位，不依赖桌面APP或固定父子目录 | 当前源码统一技能交付与实例解析、分离程序／数据／解释器路径，保留写锁和候选事务，兼容已安装Hermes的新旧模型配置模块。已有Linux及Mac的Kimi验证／保存／失败保留／新进程选择和Linux四项跨卷恢复证据保留；修复分支新增Linux x64私有核心包的启停、两态更新、HTTP／MCP读取原世界、程序替换后启动失败的真实恢复，以及Node／Python写锁互斥验证。新首装、真实模型驱动诺拉→MCP、外部入口／认证、Windows原生及其他平台组合仍未完成。已知完整程序／数据分离差异见[核心维护合同](../core-maintenance.md)，不因局部准入修复关闭。见[核心维护合同](../core-maintenance.md)、[核心维护合同](../core-maintenance.md)、[核心维护合同](../core-maintenance.md)、[核心维护合同](../core-maintenance.md)及[路径说明](../install-nora-tavern.md#非默认目录怎么处理)；2026-11-01后续核心Beta.2已按授权发布并在该云实例通过公网更新、原数据／HTTP／MCP及任务结束验证，详情见[核心维护合同](../core-maintenance.md)，上述未验范围继续保留 |
+| N-D04 Linux云端核心与模型配置 | 共用核心与模型配置覆盖Linux，按当前实例实际映射定位，不依赖桌面APP或固定父子目录 | 当前源码统一技能交付与实例解析、分离程序／数据／解释器路径，保留写锁和候选事务，兼容已安装Hermes的新旧模型配置模块。已有Linux及Mac的Kimi验证／保存／失败保留／新进程选择和Linux四项跨卷恢复证据保留；修复分支新增Linux x64私有核心包的启停、两态更新、HTTP／MCP读取原世界、程序替换后启动失败的真实恢复，以及Node／Python写锁互斥验证。新首装、真实模型驱动诺拉→MCP、外部入口／认证、Windows原生及其他平台组合仍未完成。已知完整程序／数据分离差异见L-D07／L-D08（原始出处：`09b9895:docs/product/launcher.md#differences`），不因局部准入修复关闭。见原实施（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-instance-20261031`）、审查修正（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-review-convergence-20261101`）、实机修复验收（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-lifecycle-fix-20261101`）、本地整合复核（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-lifecycle-main-review-20261101`）及[路径说明](../install-nora-tavern.md#非默认目录怎么处理)；2026-11-01后续核心Beta.2已按授权发布并在该云实例通过公网更新、原数据／HTTP／MCP及任务结束验证，详情见交付记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-beta-delivery-20261101`），上述未验范围继续保留 |
 
-2026-11-01此前对main `b68aa16`的[核心维护合同](../core-maintenance.md)确认：无APP启停被桌面入口拒绝。随后在`codex/cloud-lifecycle-recovery-20261101`修复独立启停接管、Linux跨语言写锁不互斥及已结束旧事务误阻新更新，并用同一Linux机器的私有数据副本完成上述核心包流程；具体范围与未验项见[核心维护合同](../core-maintenance.md)。用户现授权核对后整合本地main，增量审查与实际引用见[核心维护合同](../core-maintenance.md)。该阶段当时未覆盖服务器2.5.7，也未推送或发布。随后用户授权本轮云端核心Beta交付，实际固定包及云实例更新见[核心维护合同](../core-maintenance.md)；不撤销Linux产品范围，也不将针对性结果扩写为全平台／全外部服务验收。
+2026-11-01此前对main `b68aa16`的Linux实机验收（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-live-acceptance-20261101`）确认：无APP启停被桌面入口拒绝。随后在`codex/cloud-lifecycle-recovery-20261101`修复独立启停接管、Linux跨语言写锁不互斥及已结束旧事务误阻新更新，并用同一Linux机器的私有数据副本完成上述核心包流程；具体范围与未验项见本轮记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-lifecycle-fix-20261101`）。用户现授权核对后整合本地main，增量审查与实际引用见整合复核（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-lifecycle-main-review-20261101`）。该阶段当时未覆盖服务器2.5.7，也未推送或发布。随后用户授权本轮云端核心Beta交付，实际固定包及云实例更新见2026-11-01交付记录（原始出处：`09b9895:docs/launcher-reliability-plan.md#cloud-core-beta-delivery-20261101`）；不撤销Linux产品范围，也不将针对性结果扩写为全平台／全外部服务验收。
 
 自动偏好复盘的默认触发、发送内容与费用说明，在1.19提出方案，1.20按用户确认成为[N-Q01规则](#automatic-reflection-policy)，状态由[总览四项决策](README.md#tavern-policy-decisions)唯一登记；未纳入此前1.17三项收敛。2026-10-21另按用户明确要求，在独立分支实施偏好复盘整条流程并完成本轮适用验收，证据及未验范围见[本轮记录](../verification/story-profile-reliability-20261021.json)；后续本地合并与发布状态见[整合记录](../reports/20261021-story-profile-main-integration.md)。页面能力、模型或平台实际可用性及历史版本支持继续由技术证据回答。
 

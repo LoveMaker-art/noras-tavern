@@ -1,0 +1,117 @@
+name: Publish the accepted Nora Tavern core bytes
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Successful core-build run containing core-accepted-batch
+        required: true
+        type: string
+      tag:
+        description: Existing remote tag resolving to that exact accepted commit
+        required: true
+        type: string
+      release_notes:
+        description: Reviewed public release notes
+        required: true
+        type: string
+      checkpoint_run:
+        description: Optional previous core-publish run to resume unchanged bytes
+        type: string
+        default: ''
+      plan_id:
+        description: Required trusted plan digest when resuming
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: nora-core-publication
+  cancel-in-progress: false
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.run.outputs.commit }}
+    steps:
+      - name: Identify successful accepted core build
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" > "$RUNNER_TEMP/source-run.json"
+          jq -e '.status == "completed" and .conclusion == "success" and .path == ".github/workflows/core-build.yml" and .event == "workflow_dispatch"' "$RUNNER_TEMP/source-run.json"
+          sha="$(jq -r .head_sha "$RUNNER_TEMP/source-run.json")"
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          echo "commit=$sha" >> "$GITHUB_OUTPUT"
+  publish:
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: core-release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NORA_JIHULAB_PRIVATE_TOKEN: ${{ secrets.JIHULAB_PRIVATE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: core-accepted-batch
+          run-id: ${{ inputs.build_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/core-batch
+      - run: node tooling/maintenance-input.mjs fetch
+      - name: Restore the previous sealed publication checkpoint when requested
+        if: inputs.checkpoint_run != ''
+        env:
+          CHECKPOINT_RUN: ${{ inputs.checkpoint_run }}
+          EXPECTED_COMMIT: ${{ needs.identity.outputs.commit }}
+          PLAN_ID: ${{ inputs.plan_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CHECKPOINT_RUN" =~ ^[1-9][0-9]*$ && "$PLAN_ID" =~ ^[a-f0-9]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN" > "$RUNNER_TEMP/checkpoint-run.json"
+          jq -e --arg sha "$EXPECTED_COMMIT" '.head_sha == $sha and .path == ".github/workflows/core-publish.yml" and .status == "completed"' "$RUNNER_TEMP/checkpoint-run.json"
+          gh run download "$CHECKPOINT_RUN" --repo "$GITHUB_REPOSITORY" --name core-publication-checkpoint --dir "$RUNNER_TEMP/core-publication"
+      - name: Prepare protected publisher credentials
+        run: node tooling/release/jihulab-credentials.mjs prepare
+      - name: Publish accepted bytes and promote only the core channel
+        env:
+          TAG: ${{ inputs.tag }}
+          BUILD_RUN: ${{ inputs.build_run }}
+          EXPECTED_COMMIT: ${{ needs.identity.outputs.commit }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          CHECKPOINT_RUN: ${{ inputs.checkpoint_run }}
+          PLAN_ID: ${{ inputs.plan_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/core-notes.md"
+          args=()
+          if [ -n "$CHECKPOINT_RUN" ]; then args+=(--resume --plan-id "$PLAN_ID"); fi
+          node tooling/release/publish-release.mjs --root "$RUNNER_TEMP/core-batch" --state "$RUNNER_TEMP/core-publication" --tag "$TAG" --commit "$EXPECTED_COMMIT" --run "$BUILD_RUN" --notes "$RUNNER_TEMP/core-notes.md" --stage all "${args[@]}"
+      - name: Remove ephemeral credentials
+        if: always()
+        run: node tooling/release/jihulab-credentials.mjs cleanup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-publication-checkpoint
+          path: ${{ runner.temp }}/core-publication
+          if-no-files-found: warn
+          retention-days: 30

@@ -135,7 +135,7 @@ export function createReleaseSource(root, { candidate = false } = {}) {
         let generatedSourceFiles;
         const rules=readLayout(stage);
         const deliveryFiles = projectDelivery(stage, Object.keys(hashes));
-        const maintenance=materializeMaintenance({directory:root,stage});
+        const maintenance=materializeMaintenance({directory:stage,cache:process.env.NORA_MAINTENANCE_CACHE||path.join(root,'.cache/maintenance-input'),stage});
         {
             const report = embedReleaseSources(stage);
             if (maintenance.identity.files[report.configurationPath] !== report.configurationSha256
@@ -144,7 +144,7 @@ export function createReleaseSource(root, { candidate = false } = {}) {
             generatedSourceFiles = {...report, configurationDeliveryPath:report.configurationPath,
                 files: report.files.map(file => ({...file,path:translatePath(file.path,rules,true),deliveryPath:file.path}))};
         }
-        return { stage, files: [...deliveryFiles,...maintenance.files], identity: { schema: 'tavern-release/v2', commit, candidate, dirty,
+        return { stage, files: [...deliveryFiles,...maintenance.files], identity: { schema: 'tavern-release/v2', commit, candidate, dirty,launcherCapabilities:LAUNCHER_CAPABILITIES,
             externalInputs:{maintenance:maintenance.identity},
             updaterCapabilities: UPDATER_CAPABILITIES,
             sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes,

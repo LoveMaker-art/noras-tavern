@@ -1,105 +1,19 @@
-# 启动器测试导航
+# 核心测试与验收导航
 
-唯一执行范围、验收和阶段状态见 [可靠性交付方案](../../docs/launcher-reliability-plan.md)。本文件只索引既有测试入口，不另维护“已通过”清单。只有确认调用已迁移、没有剩余用途的过期说明和脚本才删除；必要技术报告保留其原候选和场景身份，不能代替当前候选证据。
+源码入口为 `node tooling/checks/verify-core.mjs`，前置条件见根 CONTRIBUTING.md。共享执行输入先按锁获取；不能用相邻源码副本补缺失输入。
 
-<a id="source-test-groups"></a>
-## 选择测试
-
-修改哪个职责，先运行对应现有合同测试；出现通过范围外的问题，再扩展关联检查。不要因为整理文档就运行所有平台完整流程，也不要以测试数证明完成。
-
-产品发布的自动选择入口是源码侧`tooling/checks/launcher-test-impact.mjs`；选择器与工作流合同直接运行`node --test tests/launcher-test-impact.test.mjs tests/release-workflow.test.mjs`。按固定基线决定局部／完整回归、成品验收和证据复用的边界见[发布流程](../../docs/release-process.md#test-impact-selection)，不把未选用例计为本次通过。
-
-源码门禁按用户流程分组。每个源码用例归入一个组。默认执行全部组，每种语言串行运行一遍。使用 `--group` 单独排查时，结果只覆盖所选组。
-
-| 组名 | 源码检查范围 |
+| 范围 | 当前入口 |
 | --- | --- |
-| `setup` | 首装、设置、配对重试、受管部分修复及模型候选保存和清理 |
-| `app-update` | 启动器独立版本计划、下载、助手交接、同任务重试和恢复路由 |
-| `lifecycle` | 任务状态、诊断、启停退出、保留数据重装和卸载 |
-| `core-maintenance` | 独立核心更新、依赖准备、历史恢复、云端实例及数据保留 |
+| 固定输入与源码归属 | tests/core/*.test.mjs |
+| 核心版本与下载 | core_releases、core_network_policy |
+| 独立核心任务 | core_operation_cli、updater_task_capability、updater_process_identity |
+| 状态、授权、证据与锁 | core_operation_state、core_operation_policy、core_operation_inspection；native用core_operation_lock |
+| 首装与模型 | test_first_install、test_first_install_transaction、test_model_candidate_commit、core_model_config |
+| Nora配置与资料 | test_nora_system、test_nora_profile |
+| 无窗口的核心部署/更新 | test_standalone_update_entry、test_standalone_update_recovery、test_cloud_instance_paths、test_cloud_lifecycle_cli |
+| 子进程夹具生命周期 | core_fixture_lifecycle、test_core_fixture_lifecycle |
+| 完整隔离产品 | core_product_refactor_smoke.cjs，给定实际core-payload |
 
-同一台机器按顺序运行含原生进程检查的组。多个投影并发会让离线核验看到其它夹具的进程。涉及真实 Windows 锁、最终 APP、历史发行版升级或实际 ClawChat 连接的验收，按下表对应入口另外取得证据。
+源码合同、真实Hermes解释器、平台原生锁与权限、完整安装、真实模型及ClawChat分别举证。`--native`需要显式声明实际Hermes环境。跳过不是通过，维护子进程需实际close证明；未知关闭保留目录及原始原因。
 
-| 主题 | 入口示例 |
-| --- | --- |
-| 操作、结果与失败次数 | `core_operation_state.test.cjs`、`core_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs`、`launcher_pair_retry.test.cjs` |
-| 原生锁、委托与关闭 | `core_operation_lock.test.cjs`、`core_operation_inspection.test.cjs`、`test_operation_control.py` |
-| 首装、更新与恢复 | `launcher_runtime_transaction.test.cjs`、`launcher_update_executor.test.cjs`、`test_first_install_transaction.py`、`test_update_operation_safety.py` |
-| 保留数据重装复制 | `launcher_runtime.test.cjs` 的私人文件、归属与并发变化检查；`launcher_runtime_transaction.test.cjs` 的真实提交／恢复；`launcher_retained_copy_electron.test.cjs` 的物理 ASAR 与 Windows 缓存 junction。最终 APP 门禁自动调用最后一项，不能以 Node 结果代替 Electron 结果 |
-| 独立部署更新 | `test_standalone_update_entry.py`、`test_standalone_update_recovery.py`、`test_update_dependency_materialization.py`：单文件入口、无桌面凭据执行、Linux staging 依赖准备与拒绝边界、持久恢复、设置备份轮换与再次中断；不替代旧安装实测 |
-| 无APP实例启停与历史准入 | `test_cloud_lifecycle_cli.py`：真实CLI启停／重启、重复启动、Node与Python写锁双向互斥、错误实例与丢失委托、程序替换意图及数据边界；`test_updater_task_backend.py`覆盖已完成历史与当前任务的区分。Linux须原生执行，不能以Mac结果代替OFD锁互斥 |
-| 版本、来源与下载 | `launcher_release_plan.test.cjs`、`core_network_policy.test.cjs`、`core_network.test.cjs` |
-| 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs`；`launcher_handoff_diagnostics.test.cjs`覆盖独立替换首因／恢复失败／硬退出、重开补报和实际接收器去重，接收器输入缺失时不算该项通过 |
-| 引导、进度与界面 | `launcher_guidance_flow.test.cjs`、`launcher_task_progress.test.cjs`、`launcher_controller.test.cjs` |
-| 原生配对重试界面 | `launcher_pair_ui_electron.cjs`：生产 HTML/preload/controller 与原生锁，激活回复和服务状态受控；不连接外部 ClawChat，不证明真实账号激活或网关调用 |
-| 真实程序流程 | `core_product_refactor_smoke.cjs`：实际 native lease、受管生产者与临时安装；不是完整 GUI/真实账户验收 |
-| 打包 APP | `launcher_packaged_app.test.cjs`、`verify_launcher_package.cjs`：实际 Electron/ASAR/资源核验；缺输入或 skip 不算通过 |
-| Mac 打包 GUI 安装 | `launcher_packaged_install.test.cjs`：真实候选应用点击安装、停止及重开；当前路径与候选端口合同仅适用于 macOS |
-| 平台手工检查 | `uninstall-mac-smoke.cjs`：临时 Electron 副本自删除；`uninstall-nsis-fixture.nsi`：真实 Windows 卸载 hook 的编译检查 |
-| 可选样例真实 MCP | `verify_starter_stories.py`：在成功保留的隔离产品实例中暂存、导入、读回及验证重试幂等；准入测试不代表此流程已经执行 |
-
-辅助文件 `core_owned_test_actor.cjs` 使用真实 native lease，并检查受管执行者 ACK 和关闭；`core_operation_test_lock.cjs` 是内存中的单元锁适配器，用于操作提交合同，不证明原生锁或真实进程归属。两者均被现有测试引用，承担不同职责。普通单元测试、native actor、实际 GUI 和生产入库分别报告。
-
-## 夹具维护与清理
-
-修改下载协议、来源配置或操作协议时，同时核对完整 CI 命令、间接调用的测试辅助文件及本轮实际使用的私有验收驱动。静态搜索只能生成清单，不能代替逐项确认用途和执行结果。
-
-- 当前协议夹具必须按构建配置中的完整物理 URL 返回响应，并绑定实际响应 URL；不要只按文件名接受任意地址。
-- 历史协议、拒绝非法输入及冻结版本样本必须标明用途并保留原版本身份。旧地址不等于过期代码；历史客户端不得用修改过的源码或 ASAR 代替。
-- 原生子进程要在创建时保留句柄或 PID／出生身份。发出 kill、收到 exit／EOF、目录消失或等待固定时间，都不能代替实际 close 和受管进程离线证明。
-- 就绪等待、取消、输出管道及下载子进程都需有限期限。无法确认关闭时，报验收失败并保留目录、原错误和关闭状态；不要继续下一轮或将未知结果写成通过。
-- 不依赖完整 Hermes 的来源、发布和历史兼容合同放在昂贵的运行时准备前。夹具修复保留原校验断言，必须验证故障分支及正常分支，不能用删除测试或放宽来源／校验规则消除报错。
-
-清理结果按文件记录保留、修复、移除及验证证据。单组通过不代表整个清单清理完成；旧候选的通过报告不能直接转为当前安装包的验收结论。
-
-<a id="run-from-source"></a>
-## 从源码运行
-
-交付相对导入通过唯一映射生成，统一从仓库根运行：
-
-```sh
-node "$PWD/tooling/checks/launcher-test-environment.mjs" source
-node "$PWD/tooling/checks/verify-launcher-stability.mjs" --group lifecycle
-node "$PWD/tooling/run.mjs" node --test tests/deployment/core_operation_result.test.cjs tests/deployment/launcher_guidance_flow.test.cjs
-node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety
-```
-
-依赖和隔离 native 输入见[开发说明](../../CONTRIBUTING.md)。使用与 Node 对应的 npm 安装，核心恢复夹具使用锁定的 Tavern 引擎依赖。完整源码门禁的 TLS 夹具需要 PATH 中的实际 OpenSSL／Mac LibreSSL。门禁在缺少引擎备份写入依赖时返回 exit 2。支持 `--group javascript` 或 `--group python` 单独运行某种语言的完整源码组。
-
-发布工具用例 `launcher_publish.test.cjs`、`launcher_jihulab_publication.test.cjs` 从手写源码直接运行：`node --test tests/deployment/launcher_publish.test.cjs tests/deployment/launcher_jihulab_publication.test.cjs`。其余部署合同使用上面的投影入口；不能把整个目录通配交给同一种执行方式。Python 使用上例的 `tests.deployment.<模块名>`，保留包身份和相对导入；不要将目录当作独立脚本目录发现，也不要把源码仓库根目录作为投影文件参数。仍需先满足相应 native 前提，平台／制品缺输入不能记作通过。
-
-稳定性门禁按必需合同、文件存在、重复执行和失败阻断核对，不把历史用例总数或文件总数当作验收目标。同一环境的一组用例只执行一次；换用实际密封 Hermes、原生 Electron、物理 ASAR 或最终安装包后，原生相关检查仍保留，不能因文件名相同去掉。2026-10-22逐文件审查、冗余合并与实际执行范围见[本轮审查](../../docs/reports/20261022-launcher-regression-audit.md)。
-
-配对重试原生界面检查使用锁文件固定的 Electron 38.8.6、完整桌面依赖和新的隔离证据目录。顺序执行两阶段：第一阶段触发两次受控激活失败并关闭；第二阶段重开同一目录，等待真实倒计时结束后提交新输入并确认任务成功。Windows 需在已登录用户的交互会话执行。不要用正式用户安装目录作为证据目录。
-
-```sh
-node "$PWD/tooling/run.mjs" /absolute/path/to/electron tests/deployment/launcher_pair_ui_electron.cjs --proof-root /absolute/path/to/new-isolated-proof --phase 1
-node "$PWD/tooling/run.mjs" /absolute/path/to/electron tests/deployment/launcher_pair_ui_electron.cjs --proof-root /absolute/path/to/new-isolated-proof --phase 2
-```
-
-完整流程需已冻结且平台匹配的真实 payload：
-
-```sh
-node "$PWD/tooling/run.mjs" node tests/deployment/core_product_refactor_smoke.cjs --payload /absolute/path/to/candidate/payload --scratch-base /absolute/path/to/disposable-test-root --keep
-```
-
-入口创建隔离实例并运行真实程序，执行前登记候选身份、平台和实例。重用实例读取 receipt 端口和运行事实；测试在失败分支也必须结束自己的 APP、驱动和受管服务。清理失败先停止该轮，不启动第二个候选。
-
-Mac 打包 GUI 安装检查需要 Playwright，以及明确标识的本地候选 APP 绝对可执行路径 `NORA_PACKAGED_APP` 和其元数据中的 `NORA_TEST_BUILD_ID`；缺少输入时会 skip。此入口要求 `~/Library/NoraTavern-Tests/launcher-<buildId>` 尚不存在，并实际写入、启动该隔离实例，不用于正式安装或 Beta 共用目录。`NORA_SCREENSHOT` 可指定截图输出路径。
-
-```sh
-NORA_PACKAGED_APP=/absolute/path/to/candidate.app/Contents/MacOS/executable NORA_TEST_BUILD_ID=candidate-build-id node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_packaged_install.test.cjs
-node "$PWD/tooling/run.mjs" node tests/deployment/uninstall-mac-smoke.cjs
-```
-
-Mac 卸载检查只复制测试依赖里的 Electron 到一次性目录，等待自己的 helper 关闭后再清理该目录；核验 ALL 保留的 owner／writer lock 外壳和应用副本移除。它不证明正式候选 APP 或 Windows NSIS 卸载已验收。
-
-可选样例 MCP 检查要求完整 product smoke 使用 `--keep`，并将 `--scratch-base` 指向当前平台的保留区：Mac `~/Library/NoraTavern-Tests`，Windows `%LOCALAPPDATA%/NoraTavern-Tests`。随后明确传入其 `products-smoke-XXXXXX` 根目录：
-
-```sh
-HERMES_HOME=/absolute/path/to/NoraTavern-Tests/products-smoke-XXXXXX/hermes NORA_TAVERN_HOME=/absolute/path/to/NoraTavern-Tests/products-smoke-XXXXXX TAVERN_DATA_ROOT=/absolute/path/to/NoraTavern-Tests/products-smoke-XXXXXX/tavern node "$PWD/tooling/run.mjs" python -B tests/deployment/verify_starter_stories.py --fixture-root /absolute/path/to/NoraTavern-Tests/products-smoke-XXXXXX
-```
-
-该入口核对物理目录、同实例三个根目录、端口、成功且保留的 `harness-result.json`，以及 MCP 的本地端口、状态目录、写入绑定和本实例 Node/server 入口；拒绝链接与普通用户安装。准入失败不会暂存样例或启动 MCP。该流程会向隔离酒馆导入两则样例，执行前应确认这是保留的测试实例。
-
-真实模型/ClawChat、Windows NSIS 覆盖更换、Intel 主机和接收端原操作查询是独立验收项。正式数据、密钥和真实用户事件均不作为可删除 fixture。
+全机进程检查按主机串行运行。模板修复保留原断言与保护目标；核心不承担已经迁出的窗口、APP替换或桌面安装器测试。旧组合测试及原文保存在原修订09b9895和迁移归档中。
