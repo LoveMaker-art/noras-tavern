@@ -36,12 +36,15 @@
 
 以下是占位路径，先替换为自己的实际路径。每条成功再继续；已有实例绑定不能为了套示例而搬动。
 
+还要明确 Hermes 的 **profile 选择器**：普通或自定义根目录使用 `default`；已有 `<根>/profiles/<名称>` 目录使用该实际名称，并保持原 `HERMES_HOME`。例如 `/opt/data/profiles/story` 使用 `story`，不能用 `default`。固定版本的 CLI 可能跟随 `active_profile`，仅设置 `HERMES_HOME` 或执行 `--version` 不能证明后续命令选中了它；不要修改原默认档案来绕过选择。规则见[固定版本的 profile 解析](https://github.com/NousResearch/hermes-agent/blob/2237be355906fbe6065ce1815711eee52b2d646e/hermes_cli/profiles.py)。
+
 macOS／Linux：
 
 ```sh
 export HERMES_HOME="/absolute/path/to/nora-home"
 export TAVERN_PYTHON="/absolute/path/to/hermes-venv/bin/python"
 nora_install_root="/absolute/path/to/nora-programs"
+nora_profile="default"
 "$TAVERN_PYTHON" -B -c 'import sys, hermes_cli; print(sys.executable); print(hermes_cli.__file__)'
 "$TAVERN_PYTHON" -m hermes_cli.main --version
 node -v
@@ -53,12 +56,13 @@ Windows PowerShell：
 $env:HERMES_HOME = 'D:\Nora\home'
 $env:TAVERN_PYTHON = 'D:\Hermes\venv\Scripts\python.exe'
 $noraInstallRoot = 'D:\Nora\programs'
+$noraProfile = 'default'
 & $env:TAVERN_PYTHON -B -c 'import sys, hermes_cli; print(sys.executable); print(hermes_cli.__file__)'
 & $env:TAVERN_PYTHON -m hermes_cli.main --version
 node -v
 ```
 
-Hermes 无法导入、路径指向其他实例或环境不符时先处理前提，不新建空配置假装已有环境就绪。
+上面的 `default` 适用于示例中的普通根目录。使用已存在的命名 profile 时，先把 `nora_profile`／`$noraProfile` 改成其实际名称。Hermes 无法导入、profile 与目录不能对应或环境不符时先处理前提，不新建空配置假装已有环境就绪。`--version` 只核对版本，不承担 profile 身份验证。
 
 ## 第三步：下载、核验并安装固定核心
 
@@ -142,7 +146,7 @@ Windows PowerShell：
 ## 第五步：连接 ClawChat 与应用入口
 
 1. 按 [ClawChat 官方连接码指引](https://clawling.com/zh/chat/docs/connect-code/)登录客户端，通过 Add Agent 获取本人新连接码。不公开它，不用文档中的演示码。
-2. 使用相同解释器和 `HERMES_HOME` 运行交互式 `gateway setup`，选择 ClawChat 并按提示输入连接码。macOS／Linux：`"$TAVERN_PYTHON" -m hermes_cli.main gateway setup`；PowerShell：`& $env:TAVERN_PYTHON -m hermes_cli.main gateway setup`。此流程可能启动／重启本实例网关；已有正常连接不必重新配对。
+2. 使用相同解释器、`HERMES_HOME` 及第二步确认的显式 profile 运行交互式 `gateway setup`，选择 ClawChat 并按提示输入连接码。macOS／Linux：`"$TAVERN_PYTHON" -m hermes_cli.main -p "$nora_profile" gateway setup`；PowerShell：`& $env:TAVERN_PYTHON -m hermes_cli.main -p $noraProfile gateway setup`。此流程可能启动／重启所选实例网关；已有正常连接不必重新配对。
 3. 在 ClawChat 找到诺拉，发送“你好”并确认收到实际回复。配对、模型调用和当前会话已加载技能是不同结果。
 4. 对新实例可告诉诺拉：“我授权初始化当前实例的 Tavern 和 Story Profile 应用入口。请按现有技能核对身份并复用已有 App，不创建重复入口；结果不明先查询。”由现有 `tavern-ops` 和平台技能完成；缺工具、登录或权限时报告缺项。
 5. 分别打开 Tavern 和 Story Profile，核对酒馆、MCP 与远程入口指向同一数据实例。应用注册成功不等于客户端已刷新或公网可以访问。
@@ -159,7 +163,7 @@ Windows PowerShell：
 
 重启前结束当前生成，确认 `stop` 成功且原写者结束后再 `start`。本地地址使用实际端口，示例为 `http://127.0.0.1:8799/`。状态未知时保留记录，不另起实例。
 
-**诺拉网关**：已有 systemd／容器／其他服务管理器时，使用原管理器。手工前台实例先确认没有其他网关，再用上述相同 Hermes 命令入口执行 `gateway run`；停止时在该前台终端按 Ctrl+C 并等待退出。关闭酒馆不等于关闭诺拉；电脑关机／休眠后本机服务不能继续提供远程访问。
+**诺拉网关**：已有 systemd／容器／其他服务管理器时，使用原管理器。手工前台实例先确认没有其他网关，再运行 `"$TAVERN_PYTHON" -m hermes_cli.main -p "$nora_profile" gateway run`；PowerShell 使用 `& $env:TAVERN_PYTHON -m hermes_cli.main -p $noraProfile gateway run`。保留第二步已确认的目录与 profile，不跟随其他默认档案。停止时在该前台终端按 Ctrl+C 并等待退出。关闭酒馆不等于关闭诺拉；电脑关机／休眠后本机服务不能继续提供远程访问。
 
 ## 故障定位与日志
 
