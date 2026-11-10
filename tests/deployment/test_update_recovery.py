@@ -1265,7 +1265,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         self.assertEqual((self.root/'retained-user-state/chat.txt').read_text(),'normal edited story')
 
     def rolling_chat_backup(self, mode):
-        from ops.tests.launcher_test_environment import resolve_node
+        from ops.tests.core_test_environment import resolve_node
         program = r'''
 import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';
 const {createChatBackupStore}=await import(pathToFileURL(path.resolve('app/engine/sillytavern/src/chat-backup-store.js')));

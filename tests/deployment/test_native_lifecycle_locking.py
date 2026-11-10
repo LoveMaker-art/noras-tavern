@@ -16,11 +16,11 @@ import unittest
 from unittest import mock
 
 if __package__:
-    from .launcher_test_environment import resolve_node
-    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from .core_test_environment import resolve_node
+    from .core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure
 else:
-    from launcher_test_environment import resolve_node
-    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from core_test_environment import resolve_node
+    from core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -387,7 +387,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
                 "NORA_TEST_MANAGED_PYTHON_ROOT": sys.base_prefix,
                 "NORA_TEST_VENV_HOME": sys.prefix,
             }
-            actor = Path(__file__).with_name("launcher_owned_test_actor.cjs")
+            actor = Path(__file__).with_name("core_owned_test_actor.cjs")
             adapter = root / "qualified-start.cjs"
             adapter.write_text(
                 "const {runOwnedActor,CLOSURE_PREFIX}=require(" + json.dumps(str(actor)) + ");\n"

@@ -175,7 +175,7 @@ export function readPublicationCompatibility(root,identity,{compatibilityFile=''
 
 export function workflowPublicationOptions(root,{publicationTag='',compatibilityFile='',refType,refName}={}) {
     const coreVersion=fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim();
-    const launcherVersion=JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'),'utf8')).version;
+    const launcherVersion=JSON.parse(fs.readFileSync(path.join(root,'tooling/maintenance-input.lock.json'),'utf8')).compatibility.minimumLauncherVersion;
     const identity={versions:{tavern:coreVersion},launcherVersion};
     const tag=releasePublicationTag(configurePublication(identity,{...(publicationTag?{publicationTag}:{})}));
     if(refType==='tag'&&refName!==tag)throw new Error('Requested publication differs from the immutable Git tag');
@@ -216,27 +216,6 @@ export function fileDigest(file) {
         while ((length = fs.readSync(fd, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, length));
     } finally { fs.closeSync(fd); }
     return hash.digest('hex');
-}
-
-export function configureCandidateLauncher({ packageFile, payload, identity, telemetryEnabled = false }) {
-    if (!identity.candidate) return;
-    const systemBytes = fs.readFileSync(path.join(payload, 'nora-system.json'));
-    const system = JSON.parse(systemBytes);
-    if (system.candidate !== true || system.commit !== identity.commit || system.version !== identity.versions.tavern) {
-        throw new Error('Candidate launcher identity does not match its payload');
-    }
-    const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
-    const installationId = desktop.noraTestInstallationId || `candidate-${identity.commit.slice(0, 12)}${telemetryEnabled ? '-telemetry' : ''}`;
-    if (!/^[a-zA-Z0-9-]{1,64}$/.test(installationId)) throw new Error('Invalid candidate installation identity');
-    delete desktop.noraReleaseChannel;
-    desktop.noraLocalTest = { schema: 1, buildId: installationId,
-        systemManifestSha256: crypto.createHash('sha256').update(systemBytes).digest('hex'),
-        ...(telemetryEnabled ? { telemetryEnabled: true } : {}) };
-    desktop.build.appId = 'art.lovemaker.nora-tavern-launcher.local-test';
-    desktop.build.productName = '诺拉·酒馆测试版';
-    desktop.build.artifactName = `Nora-Tavern-${system.version}-test-\${os}-\${arch}.\${ext}`;
-    desktop.build.nsis.artifactName = `Nora-Tavern-${system.version}-test-win-\${arch}-setup.\${ext}`;
-    fs.writeFileSync(packageFile, JSON.stringify(desktop, null, 2) + '\n');
 }
 
 // Each platform publishes unique names; no shared manifest is overwritten by another build.

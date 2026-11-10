@@ -59,7 +59,7 @@ export function loadJihuUploadConfig(configPath) {
 }
 function reader() {
     const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
-    const file=['launcher/desktop/release-sources.js','ops/installer/desktop/release-sources.js']
+    const file=['ops/installer/desktop/release-sources.js']
         .map(name=>path.join(root,name)).find(name=>fs.existsSync(name));
     assert.ok(file,'Missing shared JihuLab release source validator');
     return createRequire(import.meta.url)(file);

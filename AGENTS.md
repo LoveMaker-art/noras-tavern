@@ -1,9 +1,7 @@
-# 项目工作入口
+# Nora Tavern Core Engineering
 
-开始本项目的开发、修复、重构、测试、交付或文档任务前，读取[产品设计总览](docs/product/README.md)，再读取其列出的受影响模块设计；这四份文档共同构成项目内最高产品依据。先核对已确认、已取消与待确认事项，按[执行与变更控制](docs/product/README.md#change-control)记录适用条款、用户结果、保留行为及验收。用户最新明确指令和全局执行约束继续适用。
+This repository maintains Nora, Tavern, MCP and core deployment/maintenance. Read docs/product/README.md, docs/REPOSITORY.md and CONTRIBUTING.md before changes. Runtime nora/AGENTS.md is product content, not this engineering guide.
 
-改变已确认的产品行为、数据归属、默认入口或支持承诺前，先说明前后差异并取得确认，再同步设计和实施；实现、测试或旧方案不能自行改变要求。规则不变的修复按既有授权推进。续接会话或切换分支后，复核当前设计版本、工作区及最新授权；交付前对照实际差异，明确实际验证与未验范围。
+Shared execution implementation is a verified external input in tooling/maintenance-input.lock.json. Edit core source here, shared source at its sole author, and never edit a generated view. Source helpers run through tooling/run.mjs. Tests must bind actual source, inputs, environment and target workflow. Preserve user data, existing protocols and unknown-state refusal; do not weaken fixtures or assertions to obtain passes.
 
-涉及构建、验收复用、资源上传或正式发布时，先读取[共同交付规则](docs/product/README.md#delivery)和[发布流程](docs/release-process.md)，在既有任务／发行记录留下构建前关联测试核对和执行结果。开发方式见[贡献说明](CONTRIBUTING.md)，源码归属见[仓库导航](docs/REPOSITORY.md)；技术说明、归档及报告只承担各自职责，不另立产品规则。
-
-`nora/AGENTS.md` 是交付给 Hermes 的诺拉运行规则，不是本仓库贡献者指令。遵守用户最新明确要求，保留工作区中的无关改动。
+Inspect changes before editing; isolate data, ports and processes; run host-wide process checks sequentially. Keep outside-scope findings separate. Product behavior needs explicit outcome and acceptance agreement. Push, publish, deploy and runtime replacement need explicit authorization. Do not commit secrets, installed dependencies, logs or generated releases. Documentation and historical evidence do not expand authorization.

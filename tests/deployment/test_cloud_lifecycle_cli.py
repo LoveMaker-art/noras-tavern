@@ -12,7 +12,7 @@ import unittest
 
 import yaml
 
-from .launcher_test_environment import resolve_node
+from .core_test_environment import resolve_node
 
 ROOT = Path(__file__).resolve().parents[2]
 

@@ -15,11 +15,11 @@ from ops.installer import nora_profile as profile
 from ops.installer.launcher_bridge import env_for
 
 if __package__:
-    from .launcher_test_environment import resolve_node
-    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from .core_test_environment import resolve_node
+    from .core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure
 else:
-    from launcher_test_environment import resolve_node
-    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from core_test_environment import resolve_node
+    from core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure
 
 class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -293,7 +293,7 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                 def owned_client():
                     node = resolve_node(required=True)
                     entry = Path(profile.__file__).resolve().parent / 'desktop/operation-lock.js'
-                    actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
+                    actor = Path(__file__).with_name('core_owned_test_actor.cjs')
                     owned_env = {**env, 'NORA_TEST_VENV_HOME': sys.prefix}
                     fixture.closed = False
                     result = subprocess.run([node, str(actor), str(entry), str(root), *command[:1], *command[2:]],

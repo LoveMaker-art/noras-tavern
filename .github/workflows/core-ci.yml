@@ -1,0 +1,42 @@
+name: Nora Tavern core
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node tooling/maintenance-input.mjs fetch
+      - name: Prepare Python consumer fixtures
+        run: |
+          python -m venv .cache/test-venv
+          if [ "$RUNNER_OS" = Windows ]; then py="$PWD/.cache/test-venv/Scripts/python.exe"; else py="$PWD/.cache/test-venv/bin/python"; fi
+          "$py" -m pip install -r requirements-core-test.txt
+          echo "NORA_TEST_PYTHON=$py" >> "$GITHUB_ENV"
+      - run: npm --prefix app/engine/sillytavern ci --no-audit --no-fund
+      - run: npm --prefix nora-mcp ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run test:core
+      - run: node tooling/run.mjs npm --prefix app/engine/sillytavern run test:nora

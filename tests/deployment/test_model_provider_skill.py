@@ -19,12 +19,12 @@ from ops.installer import launcher_bridge as bridge, first_install
 from ops.updater import update
 
 if __package__:
-    from .launcher_test_environment import resolve_node
-    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from .core_test_environment import resolve_node
+    from .core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure
     from .test_nora_native_model import NETWORK_GUARD, LOOPBACK_NETWORK_GUARD
 else:
-    from launcher_test_environment import resolve_node
-    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+    from core_test_environment import resolve_node
+    from core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure
     from test_nora_native_model import NETWORK_GUARD, LOOPBACK_NETWORK_GUARD
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / 'ops/skills/system/model-provider-config'
@@ -146,7 +146,7 @@ class LocalModelSkillTests(unittest.TestCase):
     def owned_run(self, script, data, *args):
         node = resolve_node(required=True)
         self.fixture.closed = False
-        result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+        result = subprocess.run([node, str(Path(__file__).with_name('core_owned_test_actor.cjs')),
             str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
             sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix,
                                                              'NORA_TEST_MANAGED_PYTHON_ROOT': sys.base_prefix,

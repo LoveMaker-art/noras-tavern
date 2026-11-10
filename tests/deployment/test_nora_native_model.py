@@ -28,9 +28,9 @@ from ops.installer.launcher_bridge import read_verified_model
 from ops.installer import launcher_bridge
 
 if __package__:
-    from .launcher_test_environment import resolve_node
+    from .core_test_environment import resolve_node
 else:
-    from launcher_test_environment import resolve_node
+    from core_test_environment import resolve_node
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -22,7 +22,7 @@ async function template(){
     const copy=(from,to)=>{
       fs.mkdirSync(to,{recursive:true,mode:0o700});
       for(const entry of fs.readdirSync(from,{withFileTypes:true})){
-        if(['node_modules','assets','tests','__pycache__'].includes(entry.name))continue;
+        if(['node_modules','actor-dependencies','assets','tests','__pycache__'].includes(entry.name))continue;
         const source=path.join(from,entry.name),target=path.join(to,entry.name);
         if(entry.isDirectory())copy(source,target);
         else if(entry.isFile())fs.copyFileSync(source,target);
@@ -34,6 +34,8 @@ async function template(){
     for(const name of ['ops/updater/task_backend.py','ops/installer/desktop/updater-policy.js']){
       assert.equal(fs.statSync(path.join(templateDirectory,name)).isFile(),true,'The real actor closure must be present: '+name);
     }
+    fs.mkdirSync(path.join(templateDirectory,'tooling'),{recursive:true});
+    fs.copyFileSync(path.join(projection,'tooling/maintenance-input.lock.json'),path.join(templateDirectory,'tooling/maintenance-input.lock.json'));
     helper.materializeUpdaterDependencies(templateDirectory,{install:directory=>{
       const npm=buildCommand('npm',['ci','--omit=dev','--ignore-scripts','--bin-links=false','--no-audit','--no-fund']);
       execFileSync(npm.command,npm.args,{cwd:directory,stdio:'pipe',timeout:60000});

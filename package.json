@@ -1,0 +1,17 @@
+{
+  "name": "nora-tavern-core-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "node --test tests/core/*.test.mjs",
+    "test:core": "node tooling/checks/verify-core.mjs"
+  },
+  "devDependencies": {
+    "acorn": "8.15.0",
+    "fs-native-extensions": "1.5.1",
+    "semver": "7.8.5"
+  }
+}

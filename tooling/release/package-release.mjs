@@ -1,51 +1,21 @@
 import fs from 'node:fs';
-import { assertMaintenanceVersions, configureCandidateLauncher, configurePublication, fileDigest, readPublicationCompatibility, writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
-import { buildCommand } from './build-commands.mjs';
-import { assertNoraSystemArtifacts, collectRuntimeFiles, createReleaseSource, digest, groupRuntimeModules,
-    materializeUpdaterDependencies, UPDATER_DEPENDENCY_ROOT } from './release-source.mjs';
-import { assertLauncherVersion, readBaseline, restoreBuiltPayload, reuseArchive } from './launcher-build-baseline.mjs';
-
-import {overlayCorePayload} from './app-only-release.mjs';
-import {packageAppHelperRuntimeFromArchive,stampAppHelperRuntime} from './package-app-helper-runtime.mjs';
-
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const appOnly=process.argv.includes('--app-only');
-const candidate = process.argv.includes('--candidate');
-const componentsOnly = process.argv.includes('--components-only');
-const candidateTelemetry = process.argv.includes('--candidate-telemetry');
-const explicitOption = name => {
-    const positions=process.argv.flatMap((value,index)=>value===name?[index]:[]);
-    if(!positions.length)return undefined;
-    const value=process.argv[positions[0]+1];
-    if(positions.length!==1||!value||value.startsWith('--'))throw new Error(`Missing or duplicate ${name}`);
-    return value;
-};
-const publicationTag=explicitOption('--publication-tag');
-const compatibilityFile=explicitOption('--update-compatibility');
-const coreVersion=fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim();
-if(appOnly&&coreVersion.includes('-beta.'))throw new Error('APP-only packaging requires a stable core version');
-const {updateCompatibility}=readPublicationCompatibility(root,{
-    versions:{tavern:coreVersion},
-    launcherVersion:JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'),'utf8')).version,
-},{compatibilityFile,candidate});
-if (candidateTelemetry && (!candidate || componentsOnly)) throw new Error('Candidate telemetry requires a complete --candidate launcher build');
-const baselineIndex = process.argv.indexOf('--launcher-baseline');
-const baselineDirectory = baselineIndex >= 0 ? process.argv[baselineIndex + 1] : null;
-if (baselineIndex >= 0 && (!baselineDirectory || baselineDirectory.startsWith('--'))) throw new Error('Missing launcher baseline directory');
-const runtimeManifestIndex = process.argv.indexOf('--hermes-runtime-manifest');
-const runtimeManifestPath = runtimeManifestIndex >= 0
-    ? path.resolve(process.argv[runtimeManifestIndex + 1] || '')
-    : null;
-if (candidateTelemetry && !runtimeManifestPath && !baselineDirectory) throw new Error('Candidate telemetry requires a verified complete runtime');
-if (componentsOnly && runtimeManifestPath) throw new Error('Component builds reuse published environments; do not supply --hermes-runtime-manifest');
-if (baselineDirectory && (componentsOnly || runtimeManifestPath)) throw new Error('Launcher baseline cannot be combined with another packaging mode');
-if(appOnly&&(!baselineDirectory||!publicationTag))throw new Error('APP-only packaging requires --launcher-baseline and an explicit --publication-tag');
-if(!componentsOnly&&!runtimeManifestPath&&!baselineDirectory)
-    throw Object.assign(new Error('APP packaging requires a verified same-platform runtime manifest or launcher baseline for its private helper'),
-        {code:'APP_HELPER_BUILD_INPUT_REQUIRED'});
+import {fileURLToPath} from 'node:url';
+import {execFileSync} from 'node:child_process';
+import {configurePublication,readPublicationCompatibility,writeSystemRelease} from './system-release.mjs';
+import {buildCommand} from './build-commands.mjs';
+import {assertNoraSystemArtifacts,collectRuntimeFiles,createReleaseSource,digest,groupRuntimeModules,materializeUpdaterDependencies,UPDATER_DEPENDENCY_ROOT} from './release-source.mjs';
+import {readMaintenancePin} from '../maintenance-input.mjs';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+const candidate=process.argv.includes('--candidate');
+const explicitOption=name=>{const positions=process.argv.flatMap((value,index)=>value===name?[index]:[]);if(!positions.length)return undefined;const value=process.argv[positions[0]+1];if(positions.length!==1||!value||value.startsWith('--'))throw Error('Missing or duplicate '+name);return value;};
+for(const removed of ['--app-only','--launcher-baseline','--candidate-telemetry'])if(process.argv.includes(removed))throw Error('Desktop construction is outside this core repository');
+const publicationTag=explicitOption('--publication-tag'),compatibilityFile=explicitOption('--update-compatibility');
+const runtimeManifestPath=explicitOption('--hermes-runtime-manifest');
+const componentsOnly=!runtimeManifestPath;
+if(runtimeManifestPath&&process.argv.includes('--components-only'))throw Error('Component builds do not accept a runtime manifest');
+const minimumLauncherVersion=readMaintenancePin(root).compatibility.minimumLauncherVersion;
+const {updateCompatibility}=readPublicationCompatibility(root,{versions:{tavern:fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim()},launcherVersion:minimumLauncherVersion},{compatibilityFile,candidate});
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
@@ -60,49 +30,25 @@ function copyPackageFile(source, target) {
     fs.chmodSync(target, stat.mode & 0o777);
 }
 
-function copyPackageTree(source, target) {
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-        const from = path.join(source, entry.name);
-        const to = path.join(target, entry.name);
-        if (entry.isDirectory()) {
-            copyPackageTree(from, to);
-        } else if (entry.isFile()) {
-            copyPackageFile(from, to);
-        }
-    }
-}
 
 try {
-    identity.launcherVersion = JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'), 'utf8')).version;
-    const minimumLauncherVersion = assertMaintenanceVersions({ launcherVersion: identity.launcherVersion,
-        minimumLauncherVersion: identity.launcherVersion, candidate });
-    const baseline = baselineDirectory ? readBaseline(path.resolve(baselineDirectory), identity,undefined,{appOnly}) : null;
+    // Retain the versioned installed-consumer compatibility field; no APP is built.
+    identity.launcherVersion=minimumLauncherVersion;
     const mcp = path.join(stage, 'nora-mcp');
-    if (baseline) {
-        if (!candidate) assertLauncherVersion(JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'))).version,
-            baseline.product.launcherVersion);
-        restoreBuiltPayload(baseline, stage);
-        identity.launcherBuildReuse = {
-            schema: 1, baselineCommit: baseline.identity.commit, baselineVersion: baseline.identity.versions.tavern,
-            runtimeSha256: baseline.runtime.sha256, dependenciesSha256: baseline.dependencies.sha256,
-            archives: {}, modules: {},
-        };
-    } else {
         run('npm', ['ci', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])]);
-        const mcpInstall = fs.existsSync(path.join(mcp, 'package-lock.json')) ? 'ci' : 'install';
+        const mcpInstall = (fs.existsSync(path.join(mcp,'package-lock.json'))||fs.existsSync(path.join(mcp,'npm-shrinkwrap.json'))) ? 'ci' : null;
+        if(!mcpInstall)throw Error('Core MCP construction requires its authored npm lock');
         run('npm', [mcpInstall, '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
         run('npm', ['run', 'build'], mcp);
         run('npm', ['run', 'build:nora']);
-    }
-    const updaterDependencies = materializeUpdaterDependencies(stage, { baseline,
+    const updaterDependencies = materializeUpdaterDependencies(stage, {
         install: directory => run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--bin-links=false', '--no-audit', '--no-fund',
             ...(process.argv.includes('--offline') ? ['--offline'] : [])], directory) });
     identity.updaterDependencies = { schema: updaterDependencies.schema, path: UPDATER_DEPENDENCY_ROOT,
         canonicalLockSha256: updaterDependencies.canonicalLockSha256, dependencies: updaterDependencies.dependencies,
         receiptSha256: digest(fs.readFileSync(path.join(stage, UPDATER_DEPENDENCY_ROOT, 'receipt.json'))) };
     const members = collectRuntimeFiles(stage, files);
-    if (runtimeManifestPath || componentsOnly || baseline) assertNoraSystemArtifacts(members);
+    assertNoraSystemArtifacts(members);
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
     const checksums = [];
@@ -111,9 +57,7 @@ try {
         const list = path.join(stage, `${part}-members.txt`);
         fs.writeFileSync(list, members.filter(file => file.startsWith(`${part}/`)).join('\n') + '\n');
         const name = `nora-tavern-${part}.tar.gz`;
-        if (baseline && reuseArchive(baseline, { ...baseline.identity.archives[part], part }, members.filter(file => file.startsWith(`${part}/`)), stage, path.join(release, name))) {
-            identity.launcherBuildReuse.archives[part] = baseline.identity.archives[part].sha256;
-        } else run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
+        run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
         const sha256 = digest(fs.readFileSync(path.join(release, name)));
         identity.archives[part] = { name, sha256, size: fs.statSync(path.join(release, name)).size };
         checksums.push(`${sha256}  ${name}`);
@@ -128,9 +72,7 @@ try {
         const list = path.join(stage, `module-${module}-members.txt`);
         fs.writeFileSync(list, moduleMembers.join('\n') + '\n');
         const name = `nora-tavern-module-${module}.tar.gz`;
-        if (baseline && reuseArchive(baseline, baseline.identity.modules[module], moduleMembers, stage, path.join(release, name))) {
-            identity.launcherBuildReuse.modules[module] = baseline.identity.modules[module].sha256;
-        } else run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
+        run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
         const sha256 = digest(fs.readFileSync(path.join(release, name)));
         identity.modules[module] = { name, sha256, size: fs.statSync(path.join(release, name)).size, artifacts: moduleMembers };
         checksums.push(`${sha256}  ${name}`);
@@ -184,15 +126,6 @@ try {
         powershellInstallerSha256: digest(firstPowerShellInstaller),
     };
     const runtimePayloadNames = [];
-    if (baseline) {
-        for (const name of ['nora-hermes-runtime.json', 'nora-tavern-dependencies.json', baseline.runtime.archive, baseline.dependencies.archive]) {
-            copyPackageFile(path.join(baseline.directory, name), path.join(release, name));
-            checksums.push(`${fileDigest(path.join(release, name))}  ${name}`);
-            runtimePayloadNames.push(name);
-        }
-        identity.hermesRuntime = baseline.identity.hermesRuntime||{platform:baseline.runtime.platform,arch:baseline.runtime.arch,version:baseline.runtime.hermesVersion,archive:baseline.runtime.archive,sha256:baseline.runtime.sha256,size:baseline.runtime.size,optionalComponents:baseline.runtime.optionalComponents};
-        identity.dependencies = baseline.identity.dependencies||{platform:baseline.dependencies.platform,arch:baseline.dependencies.arch,archive:baseline.dependencies.archive,sha256:baseline.dependencies.sha256,size:baseline.dependencies.size,nodeMajor:baseline.dependencies.nodeMajor};
-    }
     if (runtimeManifestPath) {
         const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'));
         if (runtimeManifest.schema !== 1 || !runtimeManifest.archive || !runtimeManifest.sha256) {
@@ -259,92 +192,17 @@ try {
             nodeMajor: Number(String(runtimeManifest.nodeVersion || '').match(/v?(\d+)/)?.[1] || 0),
         };
     }
-    if(appOnly){
-        if(identity.versions.tavern!==baseline.identity.versions.tavern)throw new Error('APP-only packaging must retain the actual core version');
-        assertLauncherVersion(identity.launcherVersion,baseline.product.launcherVersion);
-        if(!baseline.coreRelease)throw new Error('APP-only packaging requires authenticated platform core manifests');
-        identity.coreRelease=baseline.coreRelease;
-    }
     const payloadManifest = Buffer.from(JSON.stringify(identity, null, 2) + '\n');
     fs.writeFileSync(path.join(release, 'release-manifest.json'), payloadManifest);
     const payloadChecksums = [...checksums, `${digest(payloadManifest)}  release-manifest.json`];
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), payloadChecksums.join('\n') + '\n');
 
-    if (!componentsOnly) {
-    const starterRoot = path.join(release, 'nora-tavern-launcher');
-    const starterPayload = path.join(starterRoot, 'payload');
-    fs.mkdirSync(starterPayload, { recursive: true });
-    for (const name of [
-        'release-manifest.json',
-        'SHA256SUMS',
-        'nora-tavern-app.tar.gz',
-        'nora-tavern-ops.tar.gz',
-        'nora-tavern-nora-mcp.tar.gz',
-        'nora-tavern-first-install-bootstrap.py',
-        'tavern-updater-bootstrap.py',
-        'first-install-manifest.json',
-        ...runtimePayloadNames,
-    ]) {
-        copyPackageFile(path.join(release, name), path.join(starterPayload, name));
-    }
-    const starterFiles = [
-        'Install-Nora-Tavern.command',
-        'Install-Nora-Tavern.cmd',
-        'Install-Nora-Tavern.ps1',
-        'START-HERE.md',
-    ];
-    for (const name of starterFiles) {
-        copyPackageFile(path.join(stage, 'ops/installer/package', name), path.join(starterRoot, name));
-    }
-    for (const name of ['launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py','hermes_model_config.py','hermes_model_probe.py','hermes_model_state.py', 'bootstrap.py', 'update_recovery.py', 'error_diagnostics.py',
-        'first_install.py','operation_control.py','operation_cli.py','operation_node.mjs','operation_evidence.py','operation-budget.json','mcp_probe.mjs']) {
-        copyPackageFile(path.join(stage, 'ops/installer', name), path.join(starterRoot, name));
-    }
-    copyPackageFile(path.join(stage,'ops/updater/bootstrap.py'),path.join(starterRoot,'update_paths.py'));
-    copyPackageTree(path.join(stage, 'ops/installer/assets'), path.join(starterRoot, 'assets'));
-    copyPackageTree(path.join(stage, 'ops/installer/desktop'), path.join(starterRoot, 'desktop'));
-    // Both fresh runtime manifests and authenticated baseline reuse have been
-    // copied and verified above. The APP receives its own selected CPython /
-    // locked psutil image; no Hermes or user directory is installed at runtime.
-    const helperManifest=JSON.parse(fs.readFileSync(path.join(release,'nora-hermes-runtime.json'),'utf8'));
-    const appHelper=await packageAppHelperRuntimeFromArchive({manifest:helperManifest,
-        archive:path.resolve(release,helperManifest.archive),resourcesRoot:starterRoot});
-    stampAppHelperRuntime(path.join(starterRoot,'desktop/package.json'),appHelper);
-    // Keep the flat Node wrapper helper and the ASAR module from one source.
-    // extraResources inside desktop would exclude that module from ASAR.
-    copyPackageFile(path.join(stage, 'ops/installer/desktop/operation-delegate.js'), path.join(starterRoot, 'operation-delegate.js'));
-    if (/-beta\./.test(identity.versions.tavern)) {
-        const packageFile = path.join(starterRoot, 'desktop/package.json');
-        const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
-        desktop.noraReleaseChannel = 'beta';
-        desktop.build.appId = 'art.lovemaker.nora-tavern-launcher.beta';
-        desktop.build.productName = '诺拉·酒馆 Beta';
-        desktop.build.artifactName = `Nora-Tavern-${identity.versions.tavern}-\${os}-\${arch}.\${ext}`;
-        desktop.build.mac.identity = '-';
-        desktop.build.nsis.artifactName = `Nora-Tavern-${identity.versions.tavern}-win-\${arch}-setup.\${ext}`;
-        fs.writeFileSync(packageFile, JSON.stringify(desktop, null, 2));
-    }
-    if(appOnly)overlayCorePayload(baseline,starterPayload,identity,`${process.platform}-${process.arch}`);
-    writeSystemRelease({ release, payload: starterPayload, identity,
-        launcherVersion: identity.launcherVersion, minimumLauncherVersion: identity.bootstrap.minimumLauncherVersion });
-    if (identity.hermesRuntime) configureCandidateLauncher({
-        packageFile: path.join(starterRoot, 'desktop/package.json'), payload: starterPayload, identity,
-        telemetryEnabled: candidateTelemetry,
-    });
-    const starterName = 'nora-tavern-launcher.zip';
-    run('zip', ['-qry', starterName, 'nora-tavern-launcher'], release);
-    const starterBytes = fs.readFileSync(path.join(release, starterName));
-    checksums.push(`${digest(starterBytes)}  ${starterName}`);
-    identity.starter = {
-        name: starterName,
-        sha256: digest(starterBytes),
-        payload: 'bundled-release',
-        entrypoints: starterFiles,
-    };
-
-    fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
-    checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);
-    fs.writeFileSync(path.join(release, 'SHA256SUMS'), checksums.join('\n') + '\n');
+    if(runtimeManifestPath){
+        const payload=path.join(release,'core-payload');fs.mkdirSync(payload);
+        for(const name of ['release-manifest.json','SHA256SUMS','nora-tavern-app.tar.gz','nora-tavern-ops.tar.gz',
+            'nora-tavern-nora-mcp.tar.gz','nora-tavern-first-install-bootstrap.py','tavern-updater-bootstrap.py',
+            'first-install-manifest.json',...runtimePayloadNames])copyPackageFile(path.join(release,name),path.join(payload,name));
+        writeSystemRelease({release,payload,identity,launcherVersion:minimumLauncherVersion,minimumLauncherVersion});
     }
     const classification = candidate ? 'candidate' : 'stable';
     console.log(`release=${release}\nclassification=${classification}`);

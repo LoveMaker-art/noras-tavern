@@ -14,11 +14,11 @@ import unittest
 from ops.installer import launcher_bridge as bridge
 
 if __package__:
-    from .launcher_test_environment import resolve_node
-    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure, CLOSURE_PREFIX
+    from .core_test_environment import resolve_node
+    from .core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure, CLOSURE_PREFIX
 else:
-    from launcher_test_environment import resolve_node
-    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure, CLOSURE_PREFIX
+    from core_test_environment import resolve_node
+    from core_fixture_lifecycle import owned_fixture_directory, require_fixture_closure, CLOSURE_PREFIX
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = resolve_node()
@@ -95,7 +95,7 @@ telemetry.close();
                    'HERMES_HOME': str(root / 'hermes'), 'NORA_TAVERN_HOME': str(root),
                    'NORA_TEST_VENV_HOME': sys.prefix, 'TAVERN_NODE_EXECUTABLE': NODE}
             fixture.closed = False
-            events = self.collect([NODE, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+            events = self.collect([NODE, str(Path(__file__).with_name('core_owned_test_actor.cjs')),
                                    str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(root.resolve()),
                                    sys.executable, str(app / 'native_lifecycle.py'),
                                    'start', '--run-id', 'fixture', '--port', str(port)],

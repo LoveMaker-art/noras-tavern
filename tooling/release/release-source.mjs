@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { buildCommand } from './build-commands.mjs';
 import { embedReleaseSources } from './embed-release-sources.mjs';
 import { projectDelivery, readLayout, translatePath } from '../../tooling/layout.mjs';
+import {materializeMaintenance} from '../maintenance-input.mjs';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 export const LAUNCHER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
@@ -132,18 +133,19 @@ export function createReleaseSource(root, { candidate = false } = {}) {
         // Source fingerprints describe authored bytes. Seal generated entry
         // configuration only in the disposable export, with its own receipt.
         let generatedSourceFiles;
-        if (['launcher/desktop/release-sources.json', 'ops/installer/desktop/release-sources.json']
-            .some(relative => Object.hasOwn(hashes, relative))) {
-            const report = embedReleaseSources(stage);
-            const rules = readLayout(stage);
-            if (hashes[report.configurationPath] !== report.configurationSha256
-                || report.files.some(file => hashes[file.path] !== file.beforeSha256))
-                throw new Error('Generated release sources do not match the recorded authored inputs');
-            generatedSourceFiles = {...report, configurationDeliveryPath: translatePath(report.configurationPath, rules),
-                files: report.files.map(file => ({...file, deliveryPath: translatePath(file.path, rules)}))};
-        }
+        const rules=readLayout(stage);
         const deliveryFiles = projectDelivery(stage, Object.keys(hashes));
-        return { stage, files: deliveryFiles, identity: { schema: 'tavern-release/v2', commit, candidate, dirty,launcherCapabilities:LAUNCHER_CAPABILITIES,
+        const maintenance=materializeMaintenance({directory:root,stage});
+        {
+            const report = embedReleaseSources(stage);
+            if (maintenance.identity.files[report.configurationPath] !== report.configurationSha256
+                || report.files.some(file => hashes[translatePath(file.path,rules,true)] !== file.beforeSha256))
+                throw new Error('Generated release sources do not match the recorded authored inputs');
+            generatedSourceFiles = {...report, configurationDeliveryPath:report.configurationPath,
+                files: report.files.map(file => ({...file,path:translatePath(file.path,rules,true),deliveryPath:file.path}))};
+        }
+        return { stage, files: [...deliveryFiles,...maintenance.files], identity: { schema: 'tavern-release/v2', commit, candidate, dirty,
+            externalInputs:{maintenance:maintenance.identity},
             updaterCapabilities: UPDATER_CAPABILITIES,
             sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes,
             ...(generatedSourceFiles ? {generatedSourceFiles} : {}) } };
@@ -153,31 +155,11 @@ export function createReleaseSource(root, { candidate = false } = {}) {
     }
 }
 
-// The desktop lock remains the only authored dependency authority. Generate a
-// small production-only package in the disposable export, never install Electron
-// or execute dependency scripts, and seal every delivered byte in the manifest.
+// The external production lock is a fixed input; core never installs desktop tooling.
 function actorDependencyLock(stage) {
-    const bytes = fs.readFileSync(path.join(stage, 'ops/installer/desktop/package-lock.json'));
-    const source = JSON.parse(bytes);
-    if (source.lockfileVersion !== 3 || JSON.stringify(source.packages?.['']?.dependencies) !== JSON.stringify(ACTOR_DEPENDENCIES))
-        throw new Error('Independent updater dependencies differ from the canonical desktop lock');
-    const packageJson = { name: 'nora-updater-actor-dependencies', version: '1.0.0', private: true,
-        dependencies: ACTOR_DEPENDENCIES, engines: { node: '>=20' } };
-    const packages = { '': { name: packageJson.name, version: packageJson.version,
-        dependencies: ACTOR_DEPENDENCIES, engines: packageJson.engines } };
-    const visit = name => {
-        const key = `node_modules/${name}`;
-        if (packages[key]) return;
-        const value = source.packages[key];
-        if (!value || value.dev || value.link || !value.resolved?.startsWith('https://registry.npmjs.org/') || !value.integrity)
-            throw new Error(`Missing locked updater dependency: ${name}`);
-        packages[key] = value;
-        for (const child of Object.keys(value.dependencies || {})) visit(child);
-    };
-    for (const name of Object.keys(ACTOR_DEPENDENCIES)) visit(name);
-    const lock = { name: packageJson.name, version: packageJson.version, lockfileVersion: 3, requires: true,
-        packages: Object.fromEntries(Object.entries(packages).sort(([left], [right]) => left.localeCompare(right))) };
-    return { packageJson, lock, canonicalLockSha256: digest(bytes) };
+    const pinned=JSON.parse(fs.readFileSync(path.join(stage,'tooling/maintenance-input.lock.json'))).dependencies;
+    return pinned;
+
 }
 
 function dependencyInventory(directory) {

@@ -18,11 +18,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 if __package__:
-    from .launcher_test_environment import resolve_node
-    from .test_launcher_update_recovery import close_fixture_child, require_fixture_closure
+    from .core_test_environment import resolve_node
+    from .core_fixture_lifecycle import close_fixture_child, require_fixture_closure
 else:
-    from launcher_test_environment import resolve_node
-    from test_launcher_update_recovery import close_fixture_child, require_fixture_closure
+    from core_test_environment import resolve_node
+    from core_fixture_lifecycle import close_fixture_child, require_fixture_closure
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = resolve_node()
@@ -287,7 +287,7 @@ finally:
 const path=require('node:path'),assert=require('node:assert/strict'),{PassThrough}=require('node:stream');
 const [root,directory,python,basePython,venv,runner]=process.argv.slice(2);
 const lock=require(path.join(root,'ops/installer/desktop/operation-lock.js'));
-const {runOwnedActor,CLOSURE_PREFIX}=require(path.join(root,'ops/tests/launcher_owned_test_actor.cjs'));
+const {runOwnedActor,CLOSURE_PREFIX}=require(path.join(root,'ops/tests/core_owned_test_actor.cjs'));
 const fixtureRoot=path.dirname(directory);
 const receipt=closed=>console.error(CLOSURE_PREFIX+JSON.stringify({schema:'nora-fixture-closure/1',root:fixtureRoot,closed}));
 process.env.NORA_TEST_MANAGED_PYTHON_ROOT=basePython;process.env.NORA_TEST_VENV_HOME=venv;

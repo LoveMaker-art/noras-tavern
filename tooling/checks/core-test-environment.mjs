@@ -1,0 +1,14 @@
+import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';import {createRequire} from 'node:module';
+export function withTestNodePath(environment,executable,platform=process.platform){const env={...environment};const keys=Object.keys(env).filter(key=>platform==='win32'?/^path$/i.test(key):key==='PATH').sort();const old=keys.length?env[keys[0]]:'';for(const key of keys)delete env[key];const p=platform==='win32'?path.win32:path.posix;env.PATH=p.dirname(executable)+p.delimiter+(old||'');return env;}
+export function checkCoreTestEnvironment(root){
+ if(process.versions.bun||Number(process.versions.node.split('.')[0])!==24)throw Error('Core tests require real Node.js 24');
+ const env=withTestNodePath({...process.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',PYTHONDONTWRITEBYTECODE:'1',NORA_TEST_NODE:process.execPath},process.execPath);delete env.PYTHONPATH;delete env.PYTHONHOME;delete env.__PYVENV_LAUNCHER__;for(const key of Object.keys(env))if(key.startsWith('NORA_OPERATION_'))delete env[key];
+ const npm=spawnSync(process.platform==='win32'?'npm.cmd':'npm',['--version'],{env,encoding:'utf8',timeout:10000,shell:process.platform==='win32'});if(npm.error||npm.status!==0)throw Error('npm must be available on the test PATH before core dependency fixtures run');
+ const python=env.NORA_TEST_PYTHON||path.join(root,'.cache/test-venv',process.platform==='win32'?'Scripts/python.exe':'bin/python');
+ const probe=spawnSync(python,['-B','-c',"import json,sys,psutil,yaml,dotenv,requests;print(json.dumps({'executable':sys.executable,'version':sys.version,'psutil':psutil.__version__,'yaml':yaml.__version__,'requests':requests.__version__}))"],{env,encoding:'utf8',timeout:15000});
+ if(probe.error||probe.status!==0)throw Error('Core Python test prerequisites are unavailable: '+(probe.stderr||probe.error?.code));
+ const require=createRequire(path.join(root,'package.json')),native=require('fs-native-extensions');const scratch=fs.mkdtempSync(path.join(root,'.cache/lock-probe-'));const fd=fs.openSync(path.join(scratch,'writer'),'wx+');let locked=false;
+ try{fs.writeSync(fd,Buffer.from([0]));locked=native.tryLock(fd,0,process.platform==='win32'?1:0);if(!locked)throw Error('Native core writer lock is unavailable');}finally{if(locked)native.unlock(fd,0,process.platform==='win32'?1:0);fs.closeSync(fd);fs.rmSync(scratch,{recursive:true,force:true});}
+ env.NORA_TEST_PYTHON=JSON.parse(probe.stdout).executable;env.NORA_PYTHON=env.NORA_TEST_PYTHON;
+ return {environment:env,facts:{npm:npm.stdout.trim(),node:process.versions.node,platform:process.platform,arch:process.arch,python:JSON.parse(probe.stdout),dependencyLock:JSON.parse(fs.readFileSync(path.join(root,'package-lock.json'))).lockfileVersion}};
+}

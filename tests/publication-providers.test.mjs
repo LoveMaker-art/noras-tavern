@@ -7,7 +7,7 @@ import childProcess from 'node:child_process';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
 import {syncBuiltinESMExports} from 'node:module';
-import lifecycle from './deployment/launcher_test_lifecycle.cjs';
+import lifecycle from './deployment/core_test_lifecycle.cjs';
 import {command,githubProvider,sourceforgeProvider} from '../tooling/release/publication-providers.mjs';
 
 test('a child ignoring SIGTERM is forcibly stopped at the bounded deadline',{timeout:10000},async t=>{

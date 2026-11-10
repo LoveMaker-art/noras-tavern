@@ -16,9 +16,9 @@ import unittest
 from unittest import mock
 
 if __package__:
-    from .launcher_test_environment import resolve_node
+    from .core_test_environment import resolve_node
 else:
-    from launcher_test_environment import resolve_node
+    from core_test_environment import resolve_node
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -314,7 +314,7 @@ class StandaloneDependencyPreparationTests(unittest.TestCase):
         desktop = ROOT / 'launcher/desktop'
         if not (desktop / 'operation-lock.js').is_file():
             desktop = ROOT / 'ops/installer/desktop'
-        helper = Path(__file__).with_name('launcher_owned_test_actor.cjs')
+        helper = Path(__file__).with_name('core_owned_test_actor.cjs')
         control = UPDATER._control_path
         for fail in (False, True):
             with self.subTest(npm_failure=fail):

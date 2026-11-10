@@ -1,6 +1,6 @@
 # 产品需求与验收索引
 
-本页保留旧需求入口及 PR 编号，仅导航到[项目总览](README.md)和三个模块中的唯一原文；现行版本以总览为准，不平行维护版本号、产品规则或验证状态。
+本页保留旧需求入口及 PR 编号，仅导航到[项目总览](README.md)和两份核心设计中的唯一原文；现行版本以总览为准，不平行维护版本号、产品规则或验证状态。
 
 ## 一 产品定位与目标用户
 
@@ -8,7 +8,7 @@
 
 ## 二 产品范围与职责
 
-见[总览职责](README.md#pb-02)、[模块交接](README.md#module-handoffs)、[启动器](launcher.md)、[诺拉](nora.md)和[酒馆](tavern.md)。
+见[总览职责](README.md#pb-02)、[模块交接](README.md#module-handoffs)、[核心维护合同](../core-maintenance.md)、[诺拉](nora.md)和[酒馆](tavern.md)。
 
 ## 三 主要用户流程
 
@@ -18,8 +18,8 @@
 
 | 编号 | 原用户目标 | 唯一验收原文 |
 | --- | --- | --- |
-| PR-01 | 首次使用 | [查看要求](launcher.md#pr-01) |
-| PR-02 | 日常进入 | [查看要求](launcher.md#pr-02) |
+| PR-01 | 首次使用 | [核心维护合同](../core-maintenance.md) |
+| PR-02 | 日常进入 | [核心维护合同](../core-maintenance.md) |
 | PR-03 | 故事持久保存 | [查看要求](tavern.md#pr-03) |
 | PR-04 | 内容隔离与复用 | [查看要求](tavern.md#pr-04) |
 | PR-05 | 模型配置 | [查看要求](README.md#pr-05) |
@@ -28,14 +28,12 @@
 | PR-08 | 故事档案与辅助 | [查看要求](nora.md#pr-08) |
 | PR-09 | 状态与可用边界 | [查看要求](README.md#pr-09) |
 | PR-10 | 核心自主更新 | [查看要求](nora.md#pr-10) |
-| PR-11 | 桌面更新 | [查看要求](launcher.md#pr-11) |
 | PR-12 | 故障恢复 | [查看要求](README.md#pr-12) |
-| PR-13 | 备份与卸载 | [查看要求](launcher.md#pr-13) |
+| PR-13 | 备份与数据保护 | [核心维护合同](../core-maintenance.md) |
 | PR-14 | 下载与诊断 | [查看要求](README.md#pr-14) |
 
 上述要求描述“应证明什么”。实际是否通过、适用版本与环境，由对应报告说明；数量不等于用例数或已完成数量。
 
-启动器完整规格另由[全部页面与入口目录](launcher.md#pages)、[L-01～L-22 全功能验收](launcher.md#acceptance)和[覆盖审计](../reports/20261020-launcher-design-coverage.md)定位；既有 PR 编号并不包含全部控件细则。细则只在启动器设计维护。
 
 诺拉完整规格由[人格与对话](nora.md#conversation)、[N-01～N-19 全能力验收](nora.md#acceptance)和[覆盖核对](../reports/20261020-nora-design-coverage.md)定位，涵盖运行内容、技能、MCP、档案页、记忆、运维与更新；既有 PR 编号不是全部能力清单。
 

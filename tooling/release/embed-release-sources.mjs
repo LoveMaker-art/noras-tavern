@@ -29,8 +29,8 @@ function select(root, paths) {
 // This is a build transform only. Downloaded entries execute their sealed copy;
 // neither online metadata nor an environment variable can add trusted roots.
 export function embedReleaseSources(root, {check = false} = {}) {
-  const configurationPath = select(root, ['launcher/desktop/release-sources.json', 'ops/installer/desktop/release-sources.json']);
-  const servicePath = select(root, ['launcher/desktop/release-sources.js', 'ops/installer/desktop/release-sources.js']);
+  const configurationPath = select(root, ['ops/installer/desktop/release-sources.json']);
+  const servicePath = select(root, ['ops/installer/desktop/release-sources.js']);
   const raw = fs.readFileSync(path.join(root, configurationPath));
   if (raw.length > 64 * 1024) throw new Error('Release source configuration exceeds the build limit');
   const configuration = JSON.parse(raw);

@@ -22,23 +22,23 @@
 
 | 主题 | 入口示例 |
 | --- | --- |
-| 操作、结果与失败次数 | `launcher_operation_state.test.cjs`、`launcher_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs`、`launcher_pair_retry.test.cjs` |
-| 原生锁、委托与关闭 | `launcher_operation_lock.test.cjs`、`launcher_operation_inspection.test.cjs`、`test_operation_control.py` |
+| 操作、结果与失败次数 | `core_operation_state.test.cjs`、`core_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs`、`launcher_pair_retry.test.cjs` |
+| 原生锁、委托与关闭 | `core_operation_lock.test.cjs`、`core_operation_inspection.test.cjs`、`test_operation_control.py` |
 | 首装、更新与恢复 | `launcher_runtime_transaction.test.cjs`、`launcher_update_executor.test.cjs`、`test_first_install_transaction.py`、`test_update_operation_safety.py` |
 | 保留数据重装复制 | `launcher_runtime.test.cjs` 的私人文件、归属与并发变化检查；`launcher_runtime_transaction.test.cjs` 的真实提交／恢复；`launcher_retained_copy_electron.test.cjs` 的物理 ASAR 与 Windows 缓存 junction。最终 APP 门禁自动调用最后一项，不能以 Node 结果代替 Electron 结果 |
 | 独立部署更新 | `test_standalone_update_entry.py`、`test_standalone_update_recovery.py`、`test_update_dependency_materialization.py`：单文件入口、无桌面凭据执行、Linux staging 依赖准备与拒绝边界、持久恢复、设置备份轮换与再次中断；不替代旧安装实测 |
 | 无APP实例启停与历史准入 | `test_cloud_lifecycle_cli.py`：真实CLI启停／重启、重复启动、Node与Python写锁双向互斥、错误实例与丢失委托、程序替换意图及数据边界；`test_updater_task_backend.py`覆盖已完成历史与当前任务的区分。Linux须原生执行，不能以Mac结果代替OFD锁互斥 |
-| 版本、来源与下载 | `launcher_release_plan.test.cjs`、`launcher_network_policy.test.cjs`、`launcher_network.test.cjs` |
+| 版本、来源与下载 | `launcher_release_plan.test.cjs`、`core_network_policy.test.cjs`、`core_network.test.cjs` |
 | 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs`；`launcher_handoff_diagnostics.test.cjs`覆盖独立替换首因／恢复失败／硬退出、重开补报和实际接收器去重，接收器输入缺失时不算该项通过 |
 | 引导、进度与界面 | `launcher_guidance_flow.test.cjs`、`launcher_task_progress.test.cjs`、`launcher_controller.test.cjs` |
 | 原生配对重试界面 | `launcher_pair_ui_electron.cjs`：生产 HTML/preload/controller 与原生锁，激活回复和服务状态受控；不连接外部 ClawChat，不证明真实账号激活或网关调用 |
-| 真实程序流程 | `launcher_product_refactor_smoke.cjs`：实际 native lease、受管生产者与临时安装；不是完整 GUI/真实账户验收 |
+| 真实程序流程 | `core_product_refactor_smoke.cjs`：实际 native lease、受管生产者与临时安装；不是完整 GUI/真实账户验收 |
 | 打包 APP | `launcher_packaged_app.test.cjs`、`verify_launcher_package.cjs`：实际 Electron/ASAR/资源核验；缺输入或 skip 不算通过 |
 | Mac 打包 GUI 安装 | `launcher_packaged_install.test.cjs`：真实候选应用点击安装、停止及重开；当前路径与候选端口合同仅适用于 macOS |
 | 平台手工检查 | `uninstall-mac-smoke.cjs`：临时 Electron 副本自删除；`uninstall-nsis-fixture.nsi`：真实 Windows 卸载 hook 的编译检查 |
 | 可选样例真实 MCP | `verify_starter_stories.py`：在成功保留的隔离产品实例中暂存、导入、读回及验证重试幂等；准入测试不代表此流程已经执行 |
 
-辅助文件 `launcher_owned_test_actor.cjs` 使用真实 native lease，并检查受管执行者 ACK 和关闭；`launcher_operation_test_lock.cjs` 是内存中的单元锁适配器，用于操作提交合同，不证明原生锁或真实进程归属。两者均被现有测试引用，承担不同职责。普通单元测试、native actor、实际 GUI 和生产入库分别报告。
+辅助文件 `core_owned_test_actor.cjs` 使用真实 native lease，并检查受管执行者 ACK 和关闭；`core_operation_test_lock.cjs` 是内存中的单元锁适配器，用于操作提交合同，不证明原生锁或真实进程归属。两者均被现有测试引用，承担不同职责。普通单元测试、native actor、实际 GUI 和生产入库分别报告。
 
 ## 夹具维护与清理
 
@@ -60,7 +60,7 @@
 ```sh
 node "$PWD/tooling/checks/launcher-test-environment.mjs" source
 node "$PWD/tooling/checks/verify-launcher-stability.mjs" --group lifecycle
-node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_guidance_flow.test.cjs
+node "$PWD/tooling/run.mjs" node --test tests/deployment/core_operation_result.test.cjs tests/deployment/launcher_guidance_flow.test.cjs
 node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety
 ```
 
@@ -80,7 +80,7 @@ node "$PWD/tooling/run.mjs" /absolute/path/to/electron tests/deployment/launcher
 完整流程需已冻结且平台匹配的真实 payload：
 
 ```sh
-node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --payload /absolute/path/to/candidate/payload --scratch-base /absolute/path/to/disposable-test-root --keep
+node "$PWD/tooling/run.mjs" node tests/deployment/core_product_refactor_smoke.cjs --payload /absolute/path/to/candidate/payload --scratch-base /absolute/path/to/disposable-test-root --keep
 ```
 
 入口创建隔离实例并运行真实程序，执行前登记候选身份、平台和实例。重用实例读取 receipt 端口和运行事实；测试在失败分支也必须结束自己的 APP、驱动和受管服务。清理失败先停止该轮，不启动第二个候选。

@@ -15,9 +15,9 @@ import unittest
 from unittest.mock import patch
 
 if __package__:
-    from .launcher_test_environment import resolve_node
+    from .core_test_environment import resolve_node
 else:
-    from launcher_test_environment import resolve_node
+    from core_test_environment import resolve_node
 
 SOURCE = Path(__file__).resolve().parents[1] / 'installer/operation_control.py'
 spec = importlib.util.spec_from_file_location('operation_control', SOURCE)

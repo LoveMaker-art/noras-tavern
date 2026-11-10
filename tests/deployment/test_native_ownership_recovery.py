@@ -15,14 +15,14 @@ import unittest
 from unittest import mock
 
 if __package__:
-    from .launcher_test_environment import resolve_node
+    from .core_test_environment import resolve_node
 else:
-    from launcher_test_environment import resolve_node
+    from core_test_environment import resolve_node
 
 if __package__:
-    from .test_launcher_update_recovery import close_fixture_child
+    from .core_fixture_lifecycle import close_fixture_child
 else:
-    from test_launcher_update_recovery import close_fixture_child
+    from core_fixture_lifecycle import close_fixture_child
 
 ROOT = Path(__file__).resolve().parents[2]
 PROCESS_MODULE = ROOT / 'ops/updater/runtime_process.py'

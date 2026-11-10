@@ -9,9 +9,9 @@ from threading import Thread
 import unittest
 
 if __package__:
-    from .launcher_test_environment import resolve_node
+    from .core_test_environment import resolve_node
 else:
-    from launcher_test_environment import resolve_node
+    from core_test_environment import resolve_node
 
 PROBE = Path(__file__).resolve().parents[1] / 'installer/mcp_probe.mjs'
 NODE = resolve_node()

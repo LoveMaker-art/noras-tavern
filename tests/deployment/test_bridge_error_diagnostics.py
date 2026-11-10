@@ -16,9 +16,9 @@ from ops.installer import launcher_bridge as bridge
 from ops.installer import launcher_services as services
 
 if __package__:
-    from .launcher_test_environment import resolve_node
+    from .core_test_environment import resolve_node
 else:
-    from launcher_test_environment import resolve_node
+    from core_test_environment import resolve_node
 
 class BridgeErrorDiagnosticTests(unittest.TestCase):
     def capture_fail(self, message, code=None, user_code=None, **kwargs):

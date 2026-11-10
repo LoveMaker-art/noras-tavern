@@ -2,7 +2,7 @@
 
 <a id="诺拉酒馆产品设计基线"></a>
 
-最高产品依据已按职责迁移为[项目总览与共同约定](product/README.md)、[启动器](product/launcher.md)、[诺拉](product/nora.md)、[酒馆](product/tavern.md)四份文档，整体构成唯一现行设计；现行版本以总览为准，本兼容导航不另行维护版本号。
+最高产品依据已按职责迁移为[项目总览与共同约定](product/README.md)、启动器（原修订 `09b9895`，专属材料已迁出）、[诺拉](product/nora.md)、[酒馆](product/tavern.md)四份文档，整体构成唯一现行设计；现行版本以总览为准，本兼容导航不另行维护版本号。
 
 本次确认的新设计从[当前基线](product/README.md#current-baseline)阅读。
 
@@ -26,11 +26,11 @@
 
 ### PB-03 完整版首次设置
 
-→ [现行内容](product/launcher.md#first-use)。
+→ 现行内容（原修订 `09b9895`，专属材料已迁出）。
 
 ### PB-04 日常使用与退出
 
-→ [现行内容](product/launcher.md#daily-use)。
+→ 现行内容（原修订 `09b9895`，专属材料已迁出）。
 
 ## 三 状态判断与允许的操作
 
@@ -58,11 +58,11 @@
 
 #### 3 关窗与调用方断开
 
-→ [现行内容](product/launcher.md#close-and-disconnect)。
+→ 现行内容（原修订 `09b9895`，专属材料已迁出）。
 
 #### 4 桌面一次发起与部分完成
 
-→ [现行内容](product/launcher.md#desktop-update)。
+→ 现行内容（原修订 `09b9895`，专属材料已迁出）。
 
 ## 五 数据、备份与卸载
 
@@ -74,7 +74,7 @@
 
 ### PB-08 两类备份职责与三种卸载选择
 
-→ [现行内容](product/launcher.md#uninstall)。
+→ 现行内容（原修订 `09b9895`，专属材料已迁出）。
 
 ## 六 模块交接与交付责任
 

@@ -12,7 +12,7 @@
 | [MVU test diagnostics](mvu-test-diagnostics.md) | 可选诊断采集的操作说明及限制，不改变执行模式。 |
 | [SillyTavern 1.19.0 上游升级评估](st-core-upgrade-assessment-20260929.md) | 2026-09-29升级评估及按时间追加的实施、部署记录。 |
 | [数据存储与生命周期重构：执行及验收基准](storage-lifecycle-refactor-plan.md#record-summary) | 先看已实施、被替代和当时未验的摘要，再按阶段查原证据。 |
-| [核心与启动器更新：历史实施方案](update-release-alignment.md#record-summary) | 已归档方案；摘要区分仍适用的组件边界与已取消的联合执行。 |
+| 核心与启动器更新：历史实施方案（原修订 `09b9895`，专属材料已迁出） | 已归档方案；摘要区分仍适用的组件边界与已取消的联合执行。 |
 | [World Data Isolation](world-data-isolation.md) | 世界资源归属、独立副本及已有世界保留边界的技术说明。 |
 
 方案中的历史结论和失败证据继续保留。后续结果放入对应执行记录，并在[报告索引](../reports/README.md)或[验证记录索引](../verification/README.md)登记。

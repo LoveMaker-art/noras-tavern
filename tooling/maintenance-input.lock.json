@@ -1,0 +1,1076 @@
+{
+  "schema": "nora-maintenance-input/1",
+  "author": {
+    "repository": "nora-tavern-launcher",
+    "commit": "0725218d0b57cd7931edc20fbdef4008e33b722c"
+  },
+  "origin": {
+    "repository": "LoveMaker-art/noras-tavern",
+    "tag": "v2.6.5",
+    "commit": "4a0e17866131674c1ff03e29c5791f703a0e3957"
+  },
+  "archive": {
+    "name": "darwin-arm64-nora-tavern-ops.tar.gz",
+    "size": 3761440,
+    "sha256": "127627ccfe6a871b7ec6c89fb3a351cb4028d30b06a1baab2d6316e0cf5bfec4",
+    "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/darwin-arm64-nora-tavern-ops.tar.gz",
+    "assetId": 717977473
+  },
+  "files": {
+    "ops/installer/desktop/app-helper-runtime.js": {
+      "sha256": "90a1cab06b420a94ab497d426a3f471f6ecb4c1a80a80e81bffc6c994c40af02",
+      "size": 16039,
+      "mode": 420
+    },
+    "ops/installer/desktop/diagnostics.js": {
+      "sha256": "db5fe95ab3e28ae98515b88aa72938d0ceabfe4cebd2a39bfe44e2b1630ab970",
+      "size": 17011,
+      "mode": 420
+    },
+    "ops/installer/desktop/error-presentation.js": {
+      "sha256": "dc06458e5dceb868380f795898aac7b78fb334b76730c0fcd0d78883033052ad",
+      "size": 15806,
+      "mode": 420
+    },
+    "ops/installer/desktop/evidence-store.js": {
+      "sha256": "36b169aea84ccd906ae416d17b5f5944dfeb36b9430d5bfbf49f5e86bcf7e332",
+      "size": 26618,
+      "mode": 420
+    },
+    "ops/installer/desktop/fault-packet.js": {
+      "sha256": "8270137b9dd299b3b824cecdb62871092399f150fef6db0349b6240c2e1fbd34",
+      "size": 19532,
+      "mode": 420
+    },
+    "ops/installer/desktop/install-cleanup.js": {
+      "sha256": "2ee1f4b8fcc9f6d3c995d4cddfb8449bd3727be9acd0bd54eaf6913d0e62a05b",
+      "size": 1454,
+      "mode": 420
+    },
+    "ops/installer/desktop/install-location.js": {
+      "sha256": "db9db32a5b13c9a47bdb69f1fadf715499f998cfbeea5366ac5f63e442cc6706",
+      "size": 5480,
+      "mode": 420
+    },
+    "ops/installer/desktop/launcher-capability.js": {
+      "sha256": "a025f09be9b9a50a3966fad5f6d2df10eebd3b4070aca7ec3b4f159d77982adf",
+      "size": 13499,
+      "mode": 420
+    },
+    "ops/installer/desktop/launcher-errors.js": {
+      "sha256": "729c2bf3a2ade9d69ede809daa0737da2d13b0ca9a836f2828a0bc486cff2fca",
+      "size": 8823,
+      "mode": 420
+    },
+    "ops/installer/desktop/launcher-update.js": {
+      "sha256": "530a655fc8a91d1731ba84ed47f57e2198722cfe2d418b5212c82528e73e705a",
+      "size": 53701,
+      "mode": 420
+    },
+    "ops/installer/desktop/legacy-recovery-worker.js": {
+      "sha256": "d79109aa1d2210109431d7fbe3e9ef979e852ceb448631057d0ed9cd6bedd166",
+      "size": 1379,
+      "mode": 420
+    },
+    "ops/installer/desktop/lifecycle-diagnostics.js": {
+      "sha256": "107c281a63ad3047cbb6d4e6ff9fdd04d9ccdc1bcd79a1c281666ce1a4514e62",
+      "size": 13712,
+      "mode": 420
+    },
+    "ops/installer/desktop/local-release.js": {
+      "sha256": "d3f0e01fbe5b0d8e3c5b269c661103f8680f2e7b56b7eadccc493ab8abf1cbbb",
+      "size": 4449,
+      "mode": 420
+    },
+    "ops/installer/desktop/managed-python.js": {
+      "sha256": "c60ac22a2cacea421b8ed54f648d47fa3ed45c8f501f7ba15e1dcfc712613842",
+      "size": 3535,
+      "mode": 420
+    },
+    "ops/installer/desktop/model-config.js": {
+      "sha256": "a4e1d07b51b2715ff0ba27ab5cb6a2e87c6aa78cb5463a07a27dc91434364ea6",
+      "size": 14738,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-cli.js": {
+      "sha256": "dad6212add1cf3523b6608f3a9bce2de0a356d32a1a0e4994cdb38bbb84bec7c",
+      "size": 48246,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-delegate.js": {
+      "sha256": "1a7c78aeb2158a3d262901c46a5c07ccfc24c96bfd2ba9e44b5bfb2d8600db1c",
+      "size": 16843,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-history.js": {
+      "sha256": "3ca90fe39f6273264cb79ca75388938027b9f03e6127b93844ba2d550335af1a",
+      "size": 16711,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-inspection.js": {
+      "sha256": "dc37f645d9949b9e33b666c1d81dd3ec96c1dea61e2ea10550ddc844e0b76991",
+      "size": 3250,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-lock-worker.js": {
+      "sha256": "6b6d095b455057814ec34c0ee6baf55ae0815be6af4617afb91dda83ab6045c2",
+      "size": 28172,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-lock.js": {
+      "sha256": "03b71efd5f30dba2881e612f9d749c35f0307376cb6ea91504e9dba4f27631a2",
+      "size": 7959,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-log-delivery.js": {
+      "sha256": "1c6092244e9e180ecb0e9f82bec567c1ea7881048defade9a53aa2276ea17be2",
+      "size": 8751,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-policy.js": {
+      "sha256": "3ee5e4b67d3896ceda8270e4166dbf35838c437cdcfc6193a684cd367033ae5b",
+      "size": 60839,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-result.js": {
+      "sha256": "c10c4824d4b8b00503552ca290a5f6c6acd504070dac6a24c9b0d4b4d58a2c77",
+      "size": 4132,
+      "mode": 420
+    },
+    "ops/installer/desktop/operation-state.js": {
+      "sha256": "9d319c3d31d94fd56556f785fc115f17f9f912b3cd8c435a9cb24a3a91618e8b",
+      "size": 68667,
+      "mode": 420
+    },
+    "ops/installer/desktop/os-lock.js": {
+      "sha256": "7e32ea05c3b27e55b4275e39ca01a046ce12d0aa4e061ae8dc0ee19729fae77b",
+      "size": 1910,
+      "mode": 420
+    },
+    "ops/installer/desktop/package-lock.json": {
+      "sha256": "e7588c2a6255e96085cb5e35af72a78e4c1cf84f3e2c6a1035211b82a6ef2cd2",
+      "size": 145037,
+      "mode": 420
+    },
+    "ops/installer/desktop/process-output.js": {
+      "sha256": "84643cb665da978ab982eda05b0e4297bd2086bd9ed2118fbcdc894c00d10897",
+      "size": 1524,
+      "mode": 420
+    },
+    "ops/installer/desktop/release-network.js": {
+      "sha256": "3d4ae9af55529c5234c626cbf7ed6ca490b05458eab06e312cf28ea5b8a05c35",
+      "size": 56522,
+      "mode": 420
+    },
+    "ops/installer/desktop/release-sources.js": {
+      "sha256": "d32c7c511e5d01e5c975d2f4be5935493dcff64bb5e8fd90c06a6bf7b4073b97",
+      "size": 8219,
+      "mode": 420
+    },
+    "ops/installer/desktop/release-sources.json": {
+      "sha256": "ccfa2479a86cf3968baa128e881b8e7e9245db1982b351aec709441e48fa28f4",
+      "size": 450,
+      "mode": 420
+    },
+    "ops/installer/desktop/replace-launcher.py": {
+      "sha256": "ef32ba74ab29d71ad3375cf32dfdef864ee449fcff26e0c790d480f65eb3dfaa",
+      "size": 100656,
+      "mode": 420
+    },
+    "ops/installer/desktop/retained-installation.js": {
+      "sha256": "d4c99b6aa77ff3f1a9325b9bbb9e2a8884738a33ebf37a6a0cf34638587f5862",
+      "size": 30961,
+      "mode": 420
+    },
+    "ops/installer/desktop/runtime-retained-data.js": {
+      "sha256": "b7461be80f53c4f5edbb55983cb497358ad7b151814013533f223c5ca29e7f10",
+      "size": 5228,
+      "mode": 420
+    },
+    "ops/installer/desktop/runtime-retained-programs.js": {
+      "sha256": "afb6553a4f84bb9d2162b798fc5b690da81766e7277057c457125e51998d6799",
+      "size": 12084,
+      "mode": 420
+    },
+    "ops/installer/desktop/runtime-transaction.js": {
+      "sha256": "efa0a22c2dd095e2c16b077c48f7972dbf6c36c83c03a5eabb2511327677d27a",
+      "size": 37311,
+      "mode": 420
+    },
+    "ops/installer/desktop/runtime-worker.js": {
+      "sha256": "bbc769629b992671912ef273bd9fbc03f4bbf1c905ef7b2bc4d5c707966cf693",
+      "size": 11103,
+      "mode": 420
+    },
+    "ops/installer/desktop/runtime.js": {
+      "sha256": "099fda46c8e1ba5ba81ebacdb382969cd5b422158ad6452686ffc999835543b4",
+      "size": 20532,
+      "mode": 420
+    },
+    "ops/installer/desktop/skill-update.js": {
+      "sha256": "cf3bfa83aec09737abee6f48cb3593bc0a3599654b8bdf4ada24bc4a7b67934e",
+      "size": 15337,
+      "mode": 420
+    },
+    "ops/installer/desktop/system-update-executor.js": {
+      "sha256": "6de5fb37b2d0afa7b3964fee6dc2ded0dc2603d5d403c18bb519b756a218932a",
+      "size": 3877,
+      "mode": 420
+    },
+    "ops/installer/desktop/telemetry-contract.json": {
+      "sha256": "2ad29ab1285fc29c06ef3456c8ee7c3452b5a9967eab1473faf87de351ede595",
+      "size": 5426,
+      "mode": 420
+    },
+    "ops/installer/desktop/telemetry.js": {
+      "sha256": "0f102284c1757794ca4d959587e3d664b48ef5862972623a1515406a013576a4",
+      "size": 31769,
+      "mode": 420
+    },
+    "ops/installer/desktop/test-build.js": {
+      "sha256": "a8249f51da0821d33b519b59563280e34bdf88677d040837b93070fad2eb874d",
+      "size": 2396,
+      "mode": 420
+    },
+    "ops/installer/desktop/tree-integrity.js": {
+      "sha256": "b9e2f99922bec50adbea833edff88d267bc3a334cfdad2093d7eaa86f959dad3",
+      "size": 2233,
+      "mode": 420
+    },
+    "ops/installer/desktop/uninstall-offline-check.js": {
+      "sha256": "5d2b3c87c71ab248775eceb128dcfdce4850680a5d1dc1e4153a087764554c80",
+      "size": 28667,
+      "mode": 420
+    },
+    "ops/installer/desktop/uninstall.js": {
+      "sha256": "96802d4b34bd13ff84bcfca2abb0aa7ad6c9962e0c2858ce93344292e6bb0039",
+      "size": 104977,
+      "mode": 420
+    },
+    "ops/installer/desktop/update-sequence.js": {
+      "sha256": "586f5d4324a1c07794e4af820916ec5a9ac5b0d199fde10ad5c0e089f5f81de2",
+      "size": 11115,
+      "mode": 420
+    },
+    "ops/installer/desktop/updater-capability.js": {
+      "sha256": "67e0701bd92e39c172a5e318685ddb5eb3e2a1a230bce2e98eedd3e0af84982e",
+      "size": 14547,
+      "mode": 420
+    },
+    "ops/installer/desktop/updater-policy.js": {
+      "sha256": "19552c2cb6eff1b1229ea26cb75ef505c575ddcf6d20e23d7b18a23c2274795c",
+      "size": 4205,
+      "mode": 420
+    },
+    "ops/installer/desktop/updater-task.js": {
+      "sha256": "e22f6c27d98d5aabf5512aecfea8a513499b61a71dce6b6765ef7f229f01de76",
+      "size": 20909,
+      "mode": 420
+    },
+    "ops/installer/error_diagnostics.py": {
+      "sha256": "4fcf7d8a4e5b2fd7359d6a473cd5a90da11f81a079a25c471584ef2d8c4ddc79",
+      "size": 9569,
+      "mode": 420
+    },
+    "ops/installer/launcher_bridge.py": {
+      "sha256": "ef8cba375709565afc285333581a60ffcc3cbe3c6bd40e807603bc55a0115bc8",
+      "size": 92552,
+      "mode": 420
+    },
+    "ops/installer/operation-budget.json": {
+      "sha256": "b5893f1a0d21f9e1682526d43377bad93fc432fa4597a927f0fa5dbab410cc9d",
+      "size": 166,
+      "mode": 420
+    },
+    "ops/installer/operation_cli.py": {
+      "sha256": "d1a5b0173ad50406f24be5d6f858c105da020065a18c6137828d23c0e806cf8c",
+      "size": 11038,
+      "mode": 420
+    },
+    "ops/installer/operation_control.py": {
+      "sha256": "0d6c874b245dab7044699ee5395c7b2ab39916c9634a5f201f2098f7a9ed0903",
+      "size": 24607,
+      "mode": 420
+    },
+    "ops/installer/operation_evidence.py": {
+      "sha256": "76f56a9b167d0d9e1f021cb0b19c3f2d985c73f0a7ba99c0a6a2558847aa5926",
+      "size": 14752,
+      "mode": 420
+    },
+    "ops/installer/operation_node.mjs": {
+      "sha256": "61a2bbb25c6f778cae18b9c8ade9abf05863f7984627ef428b8a7d05bf69eaa7",
+      "size": 1242,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size": 11357,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/README.md": {
+      "sha256": "502adf51fc15cc9ca0c336efdcfd87705437a8ec31d347aab1bc6c82ee3564b7",
+      "size": 5178,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/index.d.ts": {
+      "sha256": "a500f4ae9f0d4ea69f313a19cff417a4ca26dc2b730778f82a0b37a10b4d981b",
+      "size": 2087,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/index.js": {
+      "sha256": "3b54898c5c8e01d75a7f35839aa4fe6b6d61f3f3fab835d72e53034c845a4897",
+      "size": 11186,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/lib/errors.d.ts": {
+      "sha256": "f285319e2d81c7313cfa49e9bf1f6585b5c6f3dcaccf59fa7e3b8b9d169143fb",
+      "size": 230,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/lib/errors.js": {
+      "sha256": "6a6e91edd5ba211d75e73d1900467aabfadf3f9fa9325813e67878fcd051d292",
+      "size": 642,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-addon-resolve/package.json": {
+      "sha256": "6f9e3da644319356a83a26ba1ec1178be5c09cb5779907908b6663b2e1440076",
+      "size": 1402,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size": 11357,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/README.md": {
+      "sha256": "6dc5bc1487a82065f3fb9a214678cf69d1fcc028b0c31f9da0b69f0810146306",
+      "size": 16064,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/index.d.ts": {
+      "sha256": "b4a3df90e1bc76bdd86a5a3d8a62d3f8f3c4d94cdfef76d95178d46a9409fbbd",
+      "size": 5249,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/index.js": {
+      "sha256": "cb2e27af1f66feb42d4bf94238a8ba9dd97e337d74c58f562e73cc7d30399a2c",
+      "size": 22780,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/lib/errors.d.ts": {
+      "sha256": "852d1149c86f9481f515e472d51ca74610bb0739b82250d05ab2c6a6cd52850f",
+      "size": 1070,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/lib/errors.js": {
+      "sha256": "b9283888f7bcb6f59338e0f8aefb28f05d5e8456ae18bcccfdbd2400d0bd0d7d",
+      "size": 1077,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-module-resolve/package.json": {
+      "sha256": "723aeed6d7f68d9521ee4d9c0a51aa020f7d9ce819a46404090f3c963ce48128",
+      "size": 1369,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size": 11357,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/README.md": {
+      "sha256": "5652a8cf5f56a8bdcfc509beeeefeaeb38c9924535c81167260e9bca6721691f",
+      "size": 4166,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/index.d.ts": {
+      "sha256": "be7e9ee60275e647586ad47eb17d4bd204af32053e2760b2c0a3c76ccdcf6982",
+      "size": 1191,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/index.js": {
+      "sha256": "73ebe914ad93e9757ed82e85eeae233c6b4f3fbe2f785eeb988f4d7c2c8b7d68",
+      "size": 472,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/lib/comparator.js": {
+      "sha256": "752ed279262e488b2ef5dcffe5b516e91feb36eea8b941947e72832deab2e754",
+      "size": 742,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/lib/constants.js": {
+      "sha256": "1cde6ca703fe8182791de80123ca90e2dba6fb8f19049672de9fe5504a6ebeb4",
+      "size": 67,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/lib/errors.js": {
+      "sha256": "fdd5409b07d923eaaae948397828aca804243ddac6b4040e2e0df2acae631ea2",
+      "size": 525,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/lib/range.js": {
+      "sha256": "637cfa8a30e2806a8a2b615ba7ce104817b3ca087576ec4afcedd1e069fca887",
+      "size": 7181,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/lib/version.js": {
+      "sha256": "65fe4455585dcccdd76f55c3456985ee2cbe87296f6b95dbcf8942a654cb2fe3",
+      "size": 4764,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/bare-semver/package.json": {
+      "sha256": "bf5bc14deaa6aeff17ffc9295a3590af77fb6c1342226e42f36a0046074d872f",
+      "size": 1108,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/CMakeLists.txt": {
+      "sha256": "96268b2cbd440091c8d06fde7defae939ff97e487b1556b9b0bb140ff3887a2c",
+      "size": 1943,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size": 11357,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/README.md": {
+      "sha256": "5c290dcfe2530ec8757f960b61d12f4e10e76ce52d2fbdd1678b2552bcb9039f",
+      "size": 5029,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/binding.c": {
+      "sha256": "62ed334889611c44dcff10d845f439dd33da84166e205ec18483d6ee4e7a074b",
+      "size": 40238,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/binding.js": {
+      "sha256": "f6610bfca5b4420ec3d8d061fb0a7b8093fb65daaa7c3b055ed49faa6152658b",
+      "size": 90,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/include/fs-ext.h": {
+      "sha256": "1250d96b83ee1adfc12ffadee6a08fe597034a867920c7080f2684b431df915b",
+      "size": 4053,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/index.js": {
+      "sha256": "607e535d8f99cd601b172cdb4844519468e61a6101e36910bff959adcd7f663d",
+      "size": 7239,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/package.json": {
+      "sha256": "d23dd712121d3d2faaf54b81c4e45c18d7cc273463d56dea521af4568b8e4c00",
+      "size": 1790,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-arm/fs-native-extensions.bare": {
+      "sha256": "85bc986ef4301ac05c261623a521490770e365e98b99c3cb996ff91e5a2a012f",
+      "size": 29448,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-arm/fs-native-extensions.node": {
+      "sha256": "5bc621f1528afebad0502b0ad911cebbe853f00e12dcfd360ba74b3fc0f30f59",
+      "size": 33088,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-arm64/fs-native-extensions.bare": {
+      "sha256": "aa0131a1f1ec1010529e3f0d8dcd5991ee55c82274a53c972e6dde3a588a1840",
+      "size": 37616,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-arm64/fs-native-extensions.node": {
+      "sha256": "502cbbf6fdc6dcd23f08e5d41f3c9eec5aab2d4320f6718df569bf4d8672d727",
+      "size": 41024,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-ia32/fs-native-extensions.bare": {
+      "sha256": "3f99a7aab7b4c4a30ce3c601f3c599d6c94a1b690c27d771b24d996696d4592a",
+      "size": 31468,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-ia32/fs-native-extensions.node": {
+      "sha256": "6823b0a8fa81d6a7115fc694ef948a18b4aef832587a83d67cc3a365df3193e6",
+      "size": 33964,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-x64/fs-native-extensions.bare": {
+      "sha256": "9f5110c03aaee25890e8521433808fd634877b0e4de46a7531b4773bf74c8f8e",
+      "size": 34456,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/android-x64/fs-native-extensions.node": {
+      "sha256": "9e59e652f7a52e6b0a49cf578ab18b3be646983987bb4e7d91e22965760c3d9a",
+      "size": 37800,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/darwin-arm64/fs-native-extensions.bare": {
+      "sha256": "7c57d17c3852bc1baba45c8075a389dcf6c1f5a12a92147ae24ed6d9a1931aaf",
+      "size": 73848,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/darwin-arm64/fs-native-extensions.node": {
+      "sha256": "1e93b74e556b7d1767d57fabb197d9d1df5641453967170537278f72ed46f018",
+      "size": 74072,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/darwin-x64/fs-native-extensions.bare": {
+      "sha256": "3aff08c613f9c7a5cc9c91ea30259ad01ebfd23ce8b919f9a93d0a328888e3b6",
+      "size": 36280,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/darwin-x64/fs-native-extensions.node": {
+      "sha256": "973e4b2addf30901b955c75626ac153d3a37cebcfa621375bcd490f199884c8e",
+      "size": 36504,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/ios-arm64-simulator/fs-native-extensions.bare": {
+      "sha256": "41eb1a5e5989a28ec6afff6c4be2a002ca0ab6bdf5229431398d4281a8b366cf",
+      "size": 73784,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/ios-arm64/fs-native-extensions.bare": {
+      "sha256": "dd95a3c3ad70190651743421af8d2cb5eec76356e5be5dbdbf263f36a05139ac",
+      "size": 89520,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/ios-x64-simulator/fs-native-extensions.bare": {
+      "sha256": "ec4de63707c252449d0c8280cdd219654698a10014ed0ec3bdb46614b02d9893",
+      "size": 36200,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/linux-arm64/fs-native-extensions.bare": {
+      "sha256": "d6ab9a6c2020e343cbd2da598dbcf86910dba16150e1b70047d0c3b1b96da3b5",
+      "size": 34008,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/linux-arm64/fs-native-extensions.node": {
+      "sha256": "895dd0dca09438454f28bba250bcafa3e69c937fe97ea46b1b6212dc3a81315c",
+      "size": 37312,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/linux-x64/fs-native-extensions.bare": {
+      "sha256": "3e2a3cca7ab68efda781ff7cc6ba975c3e6a6350b697fa08679dab58b9811f25",
+      "size": 33736,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/linux-x64/fs-native-extensions.node": {
+      "sha256": "13657db7ce92f823ee8066cc7244f3a475340707fc065fd4f5aceeebbfa898c3",
+      "size": 37096,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/win32-arm64/fs-native-extensions.bare": {
+      "sha256": "9a2fcd43fa4443e372e65bb76704b095ed2fce9f383461926f343cb8aa0784d8",
+      "size": 128512,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/win32-arm64/fs-native-extensions.node": {
+      "sha256": "b39cecb92c210708b6f0848de9a054bf08d4dc35994db12aedca8bad91a96302",
+      "size": 127488,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/win32-x64/fs-native-extensions.bare": {
+      "sha256": "013cda09ebbb158fa554ecf7fd2bc16f3ba45a0fd42b8eda595a529c24a70468",
+      "size": 136704,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/prebuilds/win32-x64/fs-native-extensions.node": {
+      "sha256": "dd3f8eb1d53441f151551c84a1211c79524b1eab74ff83ab93e68037f3997ba4",
+      "size": 135680,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/apple.c": {
+      "sha256": "836d091efa2784a6587316a840aa0f3583a8ba544fc90d1186d0f89532a59a5b",
+      "size": 4239,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/linux.c": {
+      "sha256": "b8069d0c5040fafbcc618e85a4818864d4294001271faa7ef59e2025bd77d1a3",
+      "size": 3220,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/platform.h": {
+      "sha256": "35e51e8e6c6346bd1431e6f3eca226f7d429141a68a3557c69bbeb5c45b60e49",
+      "size": 1175,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/posix.c": {
+      "sha256": "fc24da537026e59b591a0475a374902c661644f5615056c1998a2b3cc2c7f1d6",
+      "size": 776,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/shared.c": {
+      "sha256": "f59523867a06b4d1d81bc626213bb59f660804262b141e98f860e8222497f881",
+      "size": 8800,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/win32.c": {
+      "sha256": "a45c7cddd0b05329c92fb304e68cd4c8814e5f3cf12896245bcd74524254c083",
+      "size": 10308,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/fs-native-extensions/src/win32/nt.h": {
+      "sha256": "8c92b0e378a2a1614b3793b6dcef37435a5567d89448941b5ebf76fc37f4d2d2",
+      "size": 7723,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/require-addon/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size": 11357,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/require-addon/README.md": {
+      "sha256": "527e4e4763537a86deb45d64e1a2cb6a12338d92d7776fb5af91f3badb6ab093",
+      "size": 230,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/require-addon/lib/bare.js": {
+      "sha256": "5d16cff57836196016650252bb3ca38230a07fb04d48cf1a32b6b2254e109701",
+      "size": 45,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/require-addon/lib/default.js": {
+      "sha256": "74a617d99964b2523fa6dd1a0114c758c0e426ea464d39d69db877baf980fb87",
+      "size": 248,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/require-addon/lib/node.js": {
+      "sha256": "348d94741c56de23e1c76764cc49950106a548c823f15b22e7b45cbfe33f99c3",
+      "size": 2020,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/require-addon/package.json": {
+      "sha256": "c0538d0e146100780251fd6c086458c3b85e529a2a45157341870f5b7e361811",
+      "size": 1518,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/LICENSE": {
+      "sha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
+      "size": 765,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/README.md": {
+      "sha256": "f1a789dcec285150be24db2ea04dd3175031554fa9834ec92fab83fb5e025a57",
+      "size": 25669,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/bin/semver.js": {
+      "sha256": "bd6c871026985937dc945011fc54b74b47f5998154216d7b8d40d5ed782e4402",
+      "size": 4957,
+      "mode": 493
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/classes/comparator.js": {
+      "sha256": "054202956430d63d5ff4599fae09760ce465b489e4f0b5ef5ce7cc7ac21157ac",
+      "size": 3631,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/classes/index.js": {
+      "sha256": "3bb69280c2a788d0eb16f915bb9df4dbe812075182024c753dca2283bcea1b17",
+      "size": 143,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/classes/range.js": {
+      "sha256": "a6544485aa8575aa9854c67e2caa67726815de18a482d0ceb8a1003244de3bc1",
+      "size": 15647,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/classes/semver.js": {
+      "sha256": "813b2c185512d30c9b931c2fed8140889d9d7490ceeeedc370da30337dc8ca57",
+      "size": 9891,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/clean.js": {
+      "sha256": "4eadb0892844cf3ae295121a86163a66c73f89acd1b7f0b114ec115b4539512f",
+      "size": 205,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/cmp.js": {
+      "sha256": "a63d74e87b73788e78e9ce0a4892b5333d6b809c0de88b31e4ed76cbf17f94b3",
+      "size": 961,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/coerce.js": {
+      "sha256": "28a251c5ab210ddf9e97551b9f37a53329fcce91f0c3943dcbc02de1a1de915a",
+      "size": 2004,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/compare-build.js": {
+      "sha256": "5ab651d5b40af289bd85c645a92b6d8cfe1a986dc413c797cfcc8d623d7c844c",
+      "size": 281,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/compare-loose.js": {
+      "sha256": "07b6a3a1db0a5210ceb784c1708bd4679f3a94fc73a9c9eb349349e7070a6f78",
+      "size": 132,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/compare.js": {
+      "sha256": "d404b5aa48aaddc8a654c5da8fb7d4443404b7948589b21ac4b045d1cee4e34c",
+      "size": 170,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/diff.js": {
+      "sha256": "7a11fd39b987cdf06c65e928cb1aca49bec583feb86fb5c8fe47a6fd61d7de31",
+      "size": 1423,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/eq.js": {
+      "sha256": "b6e30a7168e52723216fc163d300e2bbabf92ec0251f9ac5438bb6ccf57c8936",
+      "size": 126,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/gt.js": {
+      "sha256": "135523704aa48cd98834dd170ee9f74f0e68043b379f32d021db11e6304c5c93",
+      "size": 124,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/gte.js": {
+      "sha256": "991c5bbe48ecb210a562646872f05862ad9fc0d42186d85aa60bdc6fa323eb9d",
+      "size": 127,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/inc.js": {
+      "sha256": "952069fc8690b7d3af0fe9d55f7c54fe2ac067b48c5e74f6a54f9ce19a334493",
+      "size": 478,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/lt.js": {
+      "sha256": "1c897a9bc849320e2e9dc0f6c09555c01ee3ddf30734515d717b88ad7740ea25",
+      "size": 124,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/lte.js": {
+      "sha256": "3a8d0b1d00423f60cc7cb810b36ab77b61330831ad237dbe73eb5cecfa412800",
+      "size": 127,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/major.js": {
+      "sha256": "5c678480d882f511200fed2c16ec3847dfedb08a1d70328dc2f031d35d825276",
+      "size": 136,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/minor.js": {
+      "sha256": "1b051794f1713adec2a236517196691687c35f82e0b596ff3316a78b3cc10ae6",
+      "size": 136,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/neq.js": {
+      "sha256": "a662883751918822c162183b46b9e20d09489132f82686c92ab78bee67f3a127",
+      "size": 128,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/parse.js": {
+      "sha256": "29a69e15b6d02fe381d573f861881a89590e9d0f0f0ca740c5f85eaf0234c4ad",
+      "size": 331,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/patch.js": {
+      "sha256": "f02d3c1b059fe3d96ce124886f7eef321d381a95638fd3c4a8d5ccd8e76ffadd",
+      "size": 136,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/prerelease.js": {
+      "sha256": "baedbf503d5610ad041bfb56071efa48feb331ca278295c399537d35d3ffb593",
+      "size": 234,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/rcompare.js": {
+      "sha256": "84fa5e88adf08d15c993cac8cdec6d1a65045b7e95a9c55184230a7f807f4dc0",
+      "size": 132,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/rsort.js": {
+      "sha256": "6ec659ce3b6c2b173c719286caab04409adba046c0917874ec3b5e36ddfbc7e3",
+      "size": 163,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/satisfies.js": {
+      "sha256": "8cf5e122b757251671ed6c9d9680904b71cd375845853f05312e608cf2cc2946",
+      "size": 247,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/sort.js": {
+      "sha256": "c2fe2d3ed0be8a4e9de8f02abdfd5d9c0d3bcc510d88e87af84185592882c4b8",
+      "size": 161,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/truncate.js": {
+      "sha256": "e145833a250311927c92f424f56498c52f1b7bb1271ce6afbf006db87773ff43",
+      "size": 1021,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/functions/valid.js": {
+      "sha256": "0de7ea736cb7807179d46dfac09c830a9338e02b6a07db12d7040cde2def6025",
+      "size": 176,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/index.js": {
+      "sha256": "4b3e57d3d40e29e0706002eba113d09f35aea593578376bbeec83b777b9912ab",
+      "size": 2691,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/internal/constants.js": {
+      "sha256": "38a112baf27ceca0260082ff26ac2fd7a9861cab1af12dd65e720277f68e6ce9",
+      "size": 873,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/internal/debug.js": {
+      "sha256": "8a9f420572260f3cf944463b5090d62a60f0730589dc23a7ec4ca25e2ee41bb3",
+      "size": 240,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/internal/identifiers.js": {
+      "sha256": "b4916b09dc7869ae0eb05e71c855c942a3a7365f7e6e89185d59a9e45a2451d7",
+      "size": 525,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/internal/lrucache.js": {
+      "sha256": "14d087c87da87b6f5c36fc4cdd7d2d14077874b14a68e20fce5b6138fa2ca34f",
+      "size": 802,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/internal/parse-options.js": {
+      "sha256": "fdf51d0de8d5442c35a997ef58cd530d239ce206f961d14c5121354451b01d01",
+      "size": 338,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/internal/re.js": {
+      "sha256": "5833262888e2b5d843a69193f83c05e374818dbe55379b497819b5bf58e48cd8",
+      "size": 8139,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/package.json": {
+      "sha256": "7c94cb7f2a53c27b20d76386ec144c062894dbcc909cfabd0f728c37874b1776",
+      "size": 1661,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/preload.js": {
+      "sha256": "edb6808911bebcb324b2df57e5c9935149e56984ff083b74c6cfe215f5b710ba",
+      "size": 83,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/range.bnf": {
+      "sha256": "15d0baf9b7b98e6d862c0cb9e822d2533d2bc23e136bb75314d802ca1fcb0392",
+      "size": 702,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/gtr.js": {
+      "sha256": "8fadad28e36d28e93d498ac7ac20badba2a407312845eabc18e82e90a0732b19",
+      "size": 231,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/intersects.js": {
+      "sha256": "fe87ac5d3020010ad3ec00636dadbf0c669ff07d0f57e0a8165a8264f79a676f",
+      "size": 224,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/ltr.js": {
+      "sha256": "e5186fcc03018acf9be6d968755d4c49727aeb0d981d179eb568ae5fbe983038",
+      "size": 227,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/max-satisfying.js": {
+      "sha256": "e1a2c0d6144cc772cd20bbc8ecb9e8a3a4074e9172a3d8e794838b591cdeb416",
+      "size": 593,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/min-satisfying.js": {
+      "sha256": "2681abf54098aa670f12826b76a6ec77a2441186ae4243afde3be8ae4908f7ca",
+      "size": 591,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/min-version.js": {
+      "sha256": "fefba0a88c2bf74d5cede504b5ae50a8dc3edfd69cf0174a491e2cf3e442614b",
+      "size": 1514,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/outside.js": {
+      "sha256": "3a2b0b23593d2f49419c06af2af75450cab103b0c25d665d48fe5bca495a21ca",
+      "size": 2204,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/simplify.js": {
+      "sha256": "7b78581c13322bc68ece2088685386b2a9b51c15b94d0a2063bdf2546bd41934",
+      "size": 1355,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/subset.js": {
+      "sha256": "ceb9eb6ed5bfc6c7ac7af7f47e5c3535444a4e66a0e2b58cdad4bd02a35d454d",
+      "size": 7478,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/to-comparators.js": {
+      "sha256": "6c5e966210cff270fa2850668aaf8460fac7759f8d99f282521ef7a78f4564e9",
+      "size": 282,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/semver/ranges/valid.js": {
+      "sha256": "5ef6f995af801868925940cf8df5735d565ebabb090b068695cae65218bcd3ac",
+      "size": 326,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/which-runtime/LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size": 11357,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/which-runtime/README.md": {
+      "sha256": "25fe95fb95bfde33a06d6312d19e64d387b934661e55d9c667f1b20f6b32aa14",
+      "size": 406,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/which-runtime/index.js": {
+      "sha256": "cbc7a5f43ad5f669611d6adad71e4b85636bf1b5bf7f14ed6555084784dbce30",
+      "size": 1469,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/node_modules/which-runtime/package.json": {
+      "sha256": "0f66f520c39af77fdc3ca898fcdc27c7c0cb90f5e9ee48c6c5a7dc4cec1cf2f3",
+      "size": 863,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/package-lock.json": {
+      "sha256": "12c364e09ac947ddb0141657b9916e4227b9de0648c01bd636fbb33e427f0d1f",
+      "size": 3367,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/package.json": {
+      "sha256": "762db52eabcdbcb9ab0c325f8f329da29bc316bcca3b7d4289255a2b72426d0f",
+      "size": 212,
+      "mode": 420
+    },
+    "ops/updater/actor-dependencies/receipt.json": {
+      "sha256": "0139dcb4dc9d218c4a00f2bef0825c098c8ec175fa3610398fe20681a0cb2789",
+      "size": 15800,
+      "mode": 420
+    },
+    "ops/updater/runtime_lock.py": {
+      "sha256": "d55ad11ddcc94c5c0976a9e6ae3773ea7974b43514156363e005dac34ddf9b7e",
+      "size": 2548,
+      "mode": 420
+    }
+  },
+  "authoredInputs": 58,
+  "dependencies": {
+    "packageJson": {
+      "name": "nora-updater-actor-dependencies",
+      "version": "1.0.0",
+      "private": true,
+      "dependencies": {
+        "fs-native-extensions": "1.5.1",
+        "semver": "7.8.5"
+      },
+      "engines": {
+        "node": ">=20"
+      }
+    },
+    "lock": {
+      "name": "nora-updater-actor-dependencies",
+      "version": "1.0.0",
+      "lockfileVersion": 3,
+      "requires": true,
+      "packages": {
+        "": {
+          "name": "nora-updater-actor-dependencies",
+          "version": "1.0.0",
+          "dependencies": {
+            "fs-native-extensions": "1.5.1",
+            "semver": "7.8.5"
+          },
+          "engines": {
+            "node": ">=20"
+          }
+        },
+        "node_modules/bare-addon-resolve": {
+          "version": "1.10.1",
+          "resolved": "https://registry.npmjs.org/bare-addon-resolve/-/bare-addon-resolve-1.10.1.tgz",
+          "integrity": "sha512-F/SD2du8keuYSb4xipnGz5j2E6yhNdHA8ZVxtHae6h2uOrpBIjjbhXvjzKZbr5XUOzqBzh/i8GVFycj2DlFQIA==",
+          "license": "Apache-2.0",
+          "dependencies": {
+            "bare-module-resolve": "^1.10.0",
+            "bare-semver": "^1.0.0"
+          },
+          "peerDependencies": {
+            "bare-url": "*"
+          },
+          "peerDependenciesMeta": {
+            "bare-url": {
+              "optional": true
+            }
+          }
+        },
+        "node_modules/bare-module-resolve": {
+          "version": "1.12.5",
+          "resolved": "https://registry.npmjs.org/bare-module-resolve/-/bare-module-resolve-1.12.5.tgz",
+          "integrity": "sha512-VOncxVvVk8SQVw9vhcBnoTJD/74aR5DgdRPCm0gQ7uB5MsWpBJnoCeJrwEHKiz09O83ndf3NTjsz3LEuFxAq5A==",
+          "license": "Apache-2.0",
+          "dependencies": {
+            "bare-semver": "^1.0.0"
+          },
+          "peerDependencies": {
+            "bare-url": "*"
+          },
+          "peerDependenciesMeta": {
+            "bare-url": {
+              "optional": true
+            }
+          }
+        },
+        "node_modules/bare-semver": {
+          "version": "1.1.0",
+          "resolved": "https://registry.npmjs.org/bare-semver/-/bare-semver-1.1.0.tgz",
+          "integrity": "sha512-1Hw5qJ7hXdVt3uPUqjeFTuxyvBUJauvz5A1I2jk8gzjZMHp04n//6nV9MDbG9CMw78JHY2lGV0w6s//LrASm2w==",
+          "license": "Apache-2.0"
+        },
+        "node_modules/fs-native-extensions": {
+          "version": "1.5.1",
+          "resolved": "https://registry.npmjs.org/fs-native-extensions/-/fs-native-extensions-1.5.1.tgz",
+          "integrity": "sha512-abjiHKkYdcH5M9ikBEJb0MKb/fEpPtZx/yfLHzTptvUAoiFayX0tIe0BTLBU4SAoRyjZLzA0dP1Rn2p0+QRyVg==",
+          "license": "Apache-2.0",
+          "dependencies": {
+            "require-addon": "^1.1.0",
+            "which-runtime": "^1.2.0"
+          }
+        },
+        "node_modules/require-addon": {
+          "version": "1.3.0",
+          "resolved": "https://registry.npmjs.org/require-addon/-/require-addon-1.3.0.tgz",
+          "integrity": "sha512-j8pifaPNZI7ShKY3ihXZwF0qaEjua8zmlqPvDil0a8SBnyRvjCbAiEQuzO0UcoXH1sqU5U/ilXSjYd1W5NYwAA==",
+          "license": "Apache-2.0",
+          "dependencies": {
+            "bare-addon-resolve": "^1.3.0"
+          },
+          "engines": {
+            "bare": ">=1.10.0"
+          }
+        },
+        "node_modules/semver": {
+          "version": "7.8.5",
+          "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+          "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+          "license": "ISC",
+          "bin": {
+            "semver": "bin/semver.js"
+          },
+          "engines": {
+            "node": ">=10"
+          }
+        },
+        "node_modules/which-runtime": {
+          "version": "1.4.0",
+          "resolved": "https://registry.npmjs.org/which-runtime/-/which-runtime-1.4.0.tgz",
+          "integrity": "sha512-0ugbP4CJW4e2D20jvEcC4973dCgIaHI4Rw1PT+26U9zEve7FyYdWAIwUnoeOYvoCfn+wXHoHTKb1KhkYlb60Pw==",
+          "license": "Apache-2.0"
+        }
+      }
+    },
+    "canonicalLockSha256": "e7588c2a6255e96085cb5e35af72a78e4c1cf84f3e2c6a1035211b82a6ef2cd2"
+  },
+  "compatibility": {
+    "minimumLauncherVersion": "2.2.9",
+    "operationSchema": "nora-operation/1",
+    "executorProtocol": "nora-operation-executor/1",
+    "canonicalDependencyLockRequired": true
+  },
+  "omittedAuthorMetadata": [
+    "desktop APP package.json"
+  ]
+}
