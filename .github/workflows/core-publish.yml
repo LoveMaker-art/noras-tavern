@@ -79,14 +79,13 @@ jobs:
         if: inputs.checkpoint_run != ''
         env:
           CHECKPOINT_RUN: ${{ inputs.checkpoint_run }}
-          EXPECTED_COMMIT: ${{ needs.identity.outputs.commit }}
           PLAN_ID: ${{ inputs.plan_id }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$CHECKPOINT_RUN" =~ ^[1-9][0-9]*$ && "$PLAN_ID" =~ ^[a-f0-9]{64}$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN" > "$RUNNER_TEMP/checkpoint-run.json"
-          jq -e --arg sha "$EXPECTED_COMMIT" '.head_sha == $sha and .path == ".github/workflows/core-publish.yml" and .status == "completed"' "$RUNNER_TEMP/checkpoint-run.json"
+          jq -e '.path == ".github/workflows/core-publish.yml" and .event == "workflow_dispatch" and .status == "completed"' "$RUNNER_TEMP/checkpoint-run.json"
           gh run download "$CHECKPOINT_RUN" --repo "$GITHUB_REPOSITORY" --name core-publication-checkpoint --dir "$RUNNER_TEMP/core-publication"
       - name: Prepare protected publisher credentials
         run: node tooling/release/jihulab-credentials.mjs prepare

@@ -10,6 +10,7 @@
 
 打包器只构建，manifest 明确记录 `packaging-only`。本次拆分保留已发布资产、存量协议和所有用户目录。桌面构建及其更新渠道不属于本仓。
 
+<a id="2-构建与验收不发布"></a>
 ## 独立核心流程
 
 `core-ci.yml` 在 Linux、Windows、Mac 执行 `core-source-gate.mjs`：固定输入/归属及发行合同、核心 JS/Python 消费者、酒馆工作流。它只提供源码证据。

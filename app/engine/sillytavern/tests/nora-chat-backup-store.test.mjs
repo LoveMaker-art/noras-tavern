@@ -15,10 +15,10 @@ import { chatSessionOperations } from '../src/chat-session-operations.js';
 // The release backup gate uses authored source; test:nora uses the projected
 // delivery tree. Both entries must share the same lifecycle fixtures.
 const authoredFixtures = new URL('../../../../tests/deployment/', import.meta.url);
-const fixtureRoot = fsSync.existsSync(new URL('launcher_test_lifecycle.cjs', authoredFixtures))
+const fixtureRoot = fsSync.existsSync(new URL('core_test_lifecycle.cjs', authoredFixtures))
     ? authoredFixtures : new URL('../../../../ops/tests/', import.meta.url);
-const { captureChild, firstJsonLine, stopChild } = await import(new URL('launcher_test_lifecycle.cjs', fixtureRoot));
-const { bounded } = await import(new URL('launcher_owned_test_actor.cjs', fixtureRoot));
+const { captureChild, firstJsonLine, stopChild } = await import(new URL('core_test_lifecycle.cjs', fixtureRoot));
+const { bounded } = await import(new URL('core_owned_test_actor.cjs', fixtureRoot));
 
 // These crash fixtures hold real raw children. Their original storage cleanup
 // must run only after actual close, including failed assertions and timeouts.

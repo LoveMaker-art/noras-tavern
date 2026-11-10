@@ -50,7 +50,8 @@ jobs:
           python -m venv .cache/test-venv
           if [ "$RUNNER_OS" = Windows ]; then py="$PWD/.cache/test-venv/Scripts/python.exe"; else py="$PWD/.cache/test-venv/bin/python"; fi
           "$py" -m pip install -r requirements-core-test.txt
-          echo "NORA_TEST_PYTHON=$py" >> "$GITHUB_ENV"
+          py="$("$py" -B -c 'import sys; print(sys.executable)')"
+          printf 'NORA_TEST_PYTHON=%s\n' "$py" >> "$GITHUB_ENV"
           npm --prefix app/engine/sillytavern ci --no-audit --no-fund
           npm --prefix nora-mcp ci --ignore-scripts --no-audit --no-fund
       - name: Qualify fixed core source and consumers
