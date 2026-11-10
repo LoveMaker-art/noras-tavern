@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
 export const targets=Object.freeze(['darwin-arm64','darwin-x64','win32-x64']);
-export const qualificationChecks=Object.freeze(['backup-safety','repository-and-delivery','core-consumers','tavern-workflows']);
+export const qualificationChecks=Object.freeze(['backup-safety','repository-and-delivery','core-consumers','mcp-unit','mcp-integration','story-profile','tavern-workflows']);
 export const nativeChecks=Object.freeze({outcome:'passed',runtime:'verified',coldInitialization:'verified-real-sealed-offline',firstInstall:'verified',http:'verified',hermesSkills:'verified',mcp:'verified',modelConfiguration:'verified-local-A-to-B-model-requests',committedFirstInstall:'verified-real-resume-without-reinstall',executorHandles:'verified-closed',stop:'verified'});
 export const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 export const json=file=>JSON.parse(fs.readFileSync(file,'utf8'));

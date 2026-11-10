@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {verifyFinalConsumers} from './final-consumer.mjs';
-import {publicationCoreAnchor,publicationChannelObjects} from './system-release.mjs';
+import {publicationChannelObjects} from './system-release.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const json = value => JSON.stringify(value, null, 2) + '\n';
@@ -57,7 +57,7 @@ function identity(plan) {
             : object.key === `releases/${plan.tag}/release.json` ? 'catalogue'
             : object.key.startsWith(`releases/${sourceTag}/`) ? 'asset' : null;
         assert.ok(phase && phase === object.phase, 'Invalid sealed phase/identity');
-        assert.match(object.key, /^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta|launcher-stable)\.json)$/);
+        assert.match(object.key, /^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta)\.json)$/);
         assert.ok(['asset', 'state'].includes(object.location));
         assert.equal(typeof object.relativePath, 'string');
         assert.ok(object.relativePath && !path.isAbsolute(object.relativePath) && !object.relativePath.split(/[\\/]/).includes('..'));
@@ -76,9 +76,10 @@ export async function sealPublication(distribution, {root, stateDir, repository,
     assert.ok(!fs.existsSync(path.join(stateDir, 'publication-plan.json')), 'Sealed plan already exists; use --resume');
     fs.mkdirSync(stateDir, {recursive: true, mode: 0o700});
     directory(root);directory(stateDir);
+    assert.ok(!Object.hasOwn(distribution.plan,'coreAnchor'),'Core publication cannot change APP channels');
     const plan = {schema: 'nora-publication-plan/1', repository, sourceRun: String(sourceRun),
         tag: distribution.plan.tag, commit: distribution.plan.commit, mode: distribution.plan.mode,
-        channel: distribution.plan.channel, ...(distribution.plan.coreAnchor?{coreAnchor:distribution.plan.coreAnchor}:{}), assetMode, destinations: [...destinations(selectedDestinations)], publishedAt: distribution.release.published_at,
+        channel: distribution.plan.channel, assetMode, destinations: [...destinations(selectedDestinations)], publishedAt: distribution.release.published_at,
         body: distribution.release.body, objects: []};
     for (const object of distribution.plan.objects) {
         const location = inside(root, object.file) ? 'asset' : 'state';
@@ -152,11 +153,10 @@ export async function loadPublication({root, stateDir, repository, tag, commit, 
         objects.push({...object, file});
     }
     const product=objects.find(object=>object.phase==='asset'&&object.key===`releases/${plan.tag}/release-manifest.json`);
-    if(plan.coreAnchor)assert.ok(product,'APP-only publication requires its authenticated product manifest');
     if(product){
         const manifest=JSON.parse(fs.readFileSync(product.file));
-        assert.deepEqual(publicationCoreAnchor(manifest),plan.coreAnchor||null,'Sealed core anchor differs from actual coreRelease');
-        if(plan.channel==='stable'&&!plan.coreAnchor)assert.equal(plan.tag,`v${manifest.versions?.tavern}`,'Ordinary core anchor must remain legacy compatible');
+        assert.ok(!manifest.coreRelease,'Core publication cannot publish APP-only metadata');
+        if(plan.channel==='stable')assert.equal(plan.tag,`v${manifest.versions?.tavern}`,'Ordinary core anchor must remain legacy compatible');
     }
     const catalogue=objects.find(item=>item.phase==='catalogue');
     const release=JSON.parse(fs.readFileSync(catalogue.file));

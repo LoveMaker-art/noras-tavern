@@ -13,7 +13,6 @@ const {createOperationController} = require('../installer/desktop/operation-stat
 const {createEvidenceStore} = require('../installer/desktop/evidence-store');
 const {createFaultPackets} = require('../installer/desktop/fault-packet');
 const {validateRuntimeLinks} = require('../installer/desktop/runtime');
-const {testCustomModel} = require('../installer/desktop/model-config');
 
 const installer = path.resolve(__dirname, '../installer');
 const projection = path.resolve(__dirname, '../..');
@@ -289,10 +288,7 @@ async function modelConfigurationFixture(run,hermes,root) {
     const body={action:'save-local',provider:'custom',model:`fixture-model-${selected}`,keyEnv:'',
       key:`fixture-only-credential-${selected}`,baseUrl:`${base}/${selected}/v1`};
     const before=requests.length;
-    // Exercise the same real HTTP credential test used by model-save-test.
-    // Persistence remains a genuine ACKed Python actor inside this operation.
-    assert.equal((await testCustomModel(body.baseUrl,body.key,body.model)).ok,true);
-    assert.equal(requests.length,before+1,'The launcher credential test did not reach the fixture');
+    // Persistence and the real Hermes request are both exercised through core entry points.
     const result=JSON.parse((await run(`model-config-${selected}`,[path.join(installer,'model_config.py')],
       {input:JSON.stringify(body)})).stdout.trim());
     assert.equal(result.ok,true);assert.equal(result.model,body.model);assert.equal(result.validation,'configuration-only');
@@ -305,11 +301,11 @@ async function modelConfigurationFixture(run,hermes,root) {
     const connected=await run(`model-connector-${selected}`,['-c',
       `import json,sys\nfrom urllib.parse import urlparse\nfrom hermes_cli.runtime_provider import resolve_runtime_provider\nfrom agent.auxiliary_client import resolve_provider_client,shutdown_cached_clients\nexpected=json.load(sys.stdin);runtime=resolve_runtime_provider()\nassert runtime['base_url']==expected['baseUrl'] and runtime['model']==expected['model'],'Saved model runtime changed'\nassert urlparse(runtime['base_url']).hostname=='127.0.0.1','Fixture must never contact an external model service'\nclient,model=resolve_provider_client(runtime['provider'],model=runtime['model'],api_mode=runtime['api_mode'],main_runtime=runtime)\nassert client is not None and model==expected['model'],'Hermes did not build its actual configured connector'\ntry:\n response=client.chat.completions.create(model=model,messages=[{'role':'user','content':'Reply with exactly: NORA_OK'}],stream=False)\n assert response.choices[0].message.content=='NORA_OK'\n print(json.dumps({'ok':True,'model':model,'connector':type(client).__name__}))\nfinally:\n client.close();shutdown_cached_clients()`],{input:JSON.stringify({baseUrl:body.baseUrl,model:body.model})});
     assert.equal(JSON.parse(connected.stdout.trim()).ok,true);
-    assert.equal(requests.length,before+2,'The actual Hermes connector did not reach the local fixture');
+    assert.equal(requests.length,before+1,'The actual Hermes connector did not reach the local fixture');
     assert.deepEqual(requests.slice(before).map(request=>[request.selected,request.url,request.model]),
-      Array.from({length:2},()=>[selected,`/${selected}/v1/chat/completions`,body.model]));
+      Array.from({length:1},()=>[selected,`/${selected}/v1/chat/completions`,body.model]));
   }} finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
-  return {requests,verification:'launcher-http-test-and-guarded-hermes-connector'};
+  return {requests,verification:'guarded-hermes-connector'};
 }
 async function main() {
   const opts=options(process.argv.slice(2));
@@ -343,7 +339,7 @@ async function main() {
     actorSourceFiles:Object.fromEntries(['first_install.py','launcher_bridge.py','operation_control.py','operation_cli.py','model_config.py',
       'nora_system.py','nora_profile.py','error_diagnostics.py','operation_evidence.py','operation-budget.json','update_recovery.py','operation_node.mjs','mcp_probe.mjs',
       ...['runtime-worker','runtime','runtime-transaction','operation-delegate','operation-lock','operation-lock-worker','operation-state',
-        'operation-policy','operation-result','evidence-store','fault-packet','diagnostics','model-config','managed-python','os-lock','launcher-errors','error-presentation']
+        'operation-policy','operation-result','evidence-store','fault-packet','diagnostics','managed-python','os-lock','launcher-errors','error-presentation']
         .map(name=>`desktop/${name}.js`)].map(name=>[name,sha(path.join(installer,name))])),
     phases:[],jobs:0,nestedJobs:0,remoteModel:'pending-not-exercised',remoteClawChat:'pending-no-account',gui:'pending-not-exercised'};
   if(payload) {

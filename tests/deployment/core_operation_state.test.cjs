@@ -30,47 +30,9 @@ for(const filesOnly of [false,true])test(`automatic rollback ends current failur
   assert.equal((await f.options.lock.probe({directory:f.directory})).busy,false);
 });
 
-test('APP admission leaves unknown core effects and records alone while using the shared writer',async t=>{
-  const inspections=[];
-  const f=fixture(t,async()=>{}, {observeEffects:async record=>{
-    inspections.push(record.operationId);
-    return {effectState:'unknown',recoveryOutcome:'recovery-required'};
-  }});
-  const core=await f.controller.start('update',{target:{request:{action:'update',launcherOnly:false}},execute:async context=>{
-    await context.effect('unknown');
-    throw new Error('fixture unavailable core program');
-  }},'core-unconfirmed');
-  const file=path.join(f.directory,'operations',core.operationId,'operation.json'),before=fs.readFileSync(file);
-  inspections.length=0;
-  const ownTarget={request:{action:'update',launcherOnly:true}};
-  const app=await f.controller.start('update',{target:ownTarget,execute:async context=>{
-    assert.equal((await f.options.lock.probe({directory:f.directory})).busy,true);
-    await context.handoff('/isolated/app-job');
-    return {handoff:true};
-  }},'app-independent');
-  assert.equal(app.state,'awaiting-handoff');
-  assert.equal((await f.controller.snapshot(undefined,{appOnly:true})).operationId,app.operationId);
-  assert.deepEqual(inspections.filter(id=>id===core.operationId),[]);
-  assert.deepEqual(fs.readFileSync(file),before);
-  await assert.rejects(f.controller.start('update',{target:ownTarget,execute:async()=>assert.fail('duplicate APP writer')},
-    'app-while-own-effects-unknown'),{code:'UPDATE_RECOVERY_REQUIRED'});
-});
 
-test('confirmed historical APP completion leaves the joint record intact and allows a new APP task',async t=>{
-  let appSegmentSettled=false;
-  const f=fixture(t,async()=>{},{
-    observeEffects:async()=>assert.fail('APP admission must not inspect joint core effects'),
-    observeAppEffects:async()=>({effectState:'changed',recoveryOutcome:'not-required',appSegmentSettled}),
-  });
-  const historical=await f.controller.start('update',{target:{request:{action:'update',includeLauncher:true}},
-    execute:async context=>{await context.handoff('/isolated/historical');return {handoff:true};}},'old-joint');
-  const file=path.join(f.directory,'operations',historical.operationId,'operation.json'),before=fs.readFileSync(file);
-  const options={target:{request:{action:'update',launcherOnly:true}},execute:async()=>({verification:'confirmed'})};
-  await assert.rejects(f.controller.start('update',options,'no-verified-proof'),{code:'UPDATE_RECOVERY_REQUIRED'});
-  appSegmentSettled=true;
-  assert.equal((await f.controller.start('update',options,'new-independent-app')).state,'succeeded');
-  assert.deepEqual(fs.readFileSync(file),before);
-});
+
+
 
 test('failed update targets remain discoverable after service operations and reopen without changing history',async t=>{
   const f=fixture(t,async()=>{}, {executors:{update:async()=>{throw new Error('fixture download failure');}}});
@@ -192,32 +154,7 @@ test('recheck closes a verified restored handoff durably and admits a subsequent
   assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'after-restore')).state,'succeeded');
 });
 
-test('recheck completes the original APP task when replacement committed before its result was saved',async t=>{
-  const prepare=async context=>{
-    await context.plan(context.target);
-    await context.handoff('/owned/app-job');
-    return {handoff:true};
-  };
-  const f=fixture(t,prepare,{executors:{update:prepare},observeEffects:async()=>({effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false}),
-    verifyRestoredHandoff:async(record,context)=>{
-      context.check();
-      return {operationId:record.operationId,planDigest:record.planDigest,job:record.handoffRef,
-        status:'committed',verification:'confirmed',effectState:'changed',
-        value:{launcherVersion:'2.3.0',appUpdateComplete:true,updateVerified:true,coreUpdateComplete:false}};
-    }});
-  const target={request:{action:'update',launcherOnly:true},releasePlan:{launcherManifest:{version:'2.3.0'}}};
-  const pending=await f.controller.start('update',{target},'app-commit-crash');
-  const file=path.join(f.directory,'operations',pending.operationId,'operation.json');
-  const record=JSON.parse(fs.readFileSync(file));
-  fs.writeFileSync(file,JSON.stringify({...record,state:'verifying',stageId:'verifying'}));
-  const restarted=createOperationController(f.options);
-  const done=await restarted.recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
-  assert.equal(done.state,'succeeded');
-  assert.equal(done.operationId,pending.operationId);
-  assert.equal(done.effectState,'changed');
-  assert.equal(done.recoveryOutcome,'not-required');
-  assert.equal(done.result.updateVerified,true);
-});
+
 
 test('recheck ends an untouched cancelled handoff as failed and preserves its original error',async t=>{
   const original=Object.assign(new Error('Directory is being used by another process'),{code:'EACCES'});

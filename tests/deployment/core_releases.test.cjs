@@ -594,16 +594,14 @@ function appOnlyFixture(t){
 
 
 
-test('APP-only publication discovers the new APP while independent core check stays current',async t=>{
+test('historical component metadata resolves the original core while its installed receipt stays unchanged',async t=>{
   const f=appOnlyFixture(t),receipt=fs.readFileSync(path.join(f.root,'tavern-updates/installed.json'));
   const options={...f.options,client:'updater',updaterCapabilities:capabilities};
   const core=await releases.check(options);
   assert.equal(core.state,'current');assert.equal(core.releaseAvailable,false);assert.equal(core.available,false);
   assert.equal(core.latest,'v2.2.8');assert.equal(core.releaseTag,'v2.2.9');
   assert.equal(f.requested.some(url=>url.includes('nora-launcher-')),false);
-  const gui=await releases.check({...options,launcherDiscovery:true});
-  assert.equal(gui.state,'available');assert.equal(gui.releaseAvailable,false);assert.equal(gui.launcherUpdateAvailable,true);
-  assert.deepEqual(releases.coreIdentity(gui.releasePlan),{version:'2.2.8',commit:'a'.repeat(40),
+  assert.deepEqual(releases.coreIdentity(core.releasePlan),{version:'2.2.8',commit:'a'.repeat(40),
     manifestSha256:crypto.createHash('sha256').update(f.original).digest('hex')});
   assert.deepEqual(fs.readFileSync(path.join(f.root,'tavern-updates/installed.json')),receipt);
   assert.equal(f.requested.some(url=>url.endsWith('-update.zip')||url.endsWith('.tar.gz')),false);
@@ -659,146 +657,51 @@ function splitDiscoveryFixture(t) {
     client:'updater',updaterCapabilities:capabilities,networkPolicy:{maxAttempts:1,totalBudgetMs:3000,attemptTimeoutMs:1000}},
     listFailure(){listStatus=503;},githubFallback(){githubOnly=true;},anchorFailure(){anchorOffline=true;}};
 }
-test('independent APP stable selection verifies only remote anchor metadata with local core absent',async t=>{
-  const f=splitDiscoveryFixture(t);f.githubFallback();
-  const receipt=path.join(f.root,'tavern-updates/installed.json');fs.unlinkSync(receipt);
-  const result=await releases.checkApp(f.options);
-  assert.equal(result.releaseTag,'v2.2.9');assert.equal(result.launcherInstallable,true);
-  assert.equal(fs.existsSync(receipt),false);
-  assert.ok(f.requests.some(url=>url.endsWith('/latest')));
-  assert.ok(f.requests.some(url=>url.includes('/v2.2.8/release-manifest.json')));
-  assert.equal(f.requests.some(url=>/darwin-arm64-release-manifest|nora-system-|\.zip$|\.tar\.gz$/.test(url)),false);
-});
-test('independent APP falls back to the stable anchor rather than selecting an APP for older core',async t=>{
-  const f=splitDiscoveryFixture(t);f.githubFallback();
-  f.product.coreRelease.tag='v2.2.7';
-  f.physical['release-manifest.json']=JSON.stringify(f.product);f.refresh();
-  const result=await releases.checkApp({...f.options,launcherVersion:'0.1.1'});
-  assert.equal(result.releaseTag,'v2.2.8');assert.equal(result.launcherUpdateAvailable,false);
-  assert.equal(f.requests.some(url=>url.includes('nora-launcher-darwin-arm64.json')),false);
-  await assert.rejects(releases.selectAppPlan({...f.options,tag:'v2.2.9'}),/稳定核心.*不一致/);
-});
-test('independent APP refuses a forged platform anchor or unavailable current remote anchor',async t=>{
-  const f=splitDiscoveryFixture(t);
-  f.product.coreRelease.manifests['darwin-arm64'].sha256='f'.repeat(64);
-  f.physical['release-manifest.json']=JSON.stringify(f.product);f.refresh();
-  await assert.rejects(releases.checkApp(f.options),/平台清单证明/);
-  f.anchorFailure();
-  await assert.rejects(releases.checkApp(f.options));
-  assert.equal(f.requests.some(url=>url.includes('nora-launcher-darwin-arm64.json')),false);
-});
-test('split stable discovery lets the desktop find APP-only while updater and Linux retain the compatible core anchor',async t=>{
-  const f=splitDiscoveryFixture(t);
-  const core=await releases.check(f.options);assert.equal(core.releaseTag,'v2.2.8');assert.equal(core.state,'current');
-  assert.equal(f.requests.some(url=>url.includes('launcher-stable')||url.includes('?per_page=')),false);
-  const gui=await releases.check({...f.options,launcherDiscovery:true});
-  assert.equal(gui.releaseTag,'v2.2.9');assert.equal(gui.latest,'v2.2.8');assert.equal(gui.launcherUpdateAvailable,true);
-  const linux=await releases.check({...f.options,platform:'linux',arch:'x64'});
-  assert.equal(linux.releaseTag,'v2.2.8');assert.equal(linux.state,'current');
-});
-test('split stable discovery has a bounded GitHub list fallback when the domestic source is unavailable',async t=>{
-  const f=splitDiscoveryFixture(t);f.githubFallback();
-  const gui=await releases.check({...f.options,launcherDiscovery:true});
-  assert.equal(gui.releaseTag,'v2.2.9');assert.equal(gui.launcherUpdateAvailable,true);
-  assert.ok(f.requests.includes('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100&page=1'));
-  assert.equal(f.requests.some(url=>url.includes('page=2')),false);
-});
-test('unreadable APP discovery does not claim current or block a verified core update',async t=>{
-  const f=splitDiscoveryFixture(t);f.listFailure();
-  let result=await releases.check({...f.options,launcherDiscovery:true});
-  assert.equal(result.state,'unavailable');assert.match(result.launcherError,/启动器/);assert.equal(result.updateSupported,true);
-  fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.2.7'}));
-  result=await releases.check({...f.options,launcherDiscovery:true});
-  assert.equal(result.state,'available');assert.equal(result.releaseAvailable,true);assert.equal(result.releaseTag,'v2.2.8');
-  assert.match(result.launcherError,/启动器/);
-});
 
-test('slow or failed optional APP discovery preserves the already verified core plan and user data',async t=>{
-  for(const kind of ['fast failure','spent budget','headers timeout','body timeout'])await t.test(kind,async t=>{
-    const f=splitDiscoveryFixture(t);let now=1000000;
-    fs.mkdirSync(path.join(f.root,'tavern-updates'),{recursive:true});
-    fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.2.7'}));
-    const protectedFiles=['chat.jsonl','character.json','world.json','config.yaml'];
-    for(const name of protectedFiles)fs.writeFileSync(path.join(f.root,name),'protected '+name);
-    const before=protectedFiles.map(name=>fs.readFileSync(path.join(f.root,name)));
-    const events=[];
-    const fetcher=async(address,options)=>{
-      const url=String(address);events.push(url);
-      if(url.includes('?per_page=')||url.endsWith('/channels/launcher-stable.json')){
-        if(kind==='spent budget')now+=101;
-        if(kind==='headers timeout')return new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
-        if(kind==='body timeout')return fixtureResponse(new ReadableStream({start(){}}),url);
-        throw Object.assign(Error('APP catalogue unavailable'),{code:'TIMEOUT'});
-      }
-      return f.fetcher(address,options);
-    };
-    const result=await releases.check({...f.options,fetcher,launcherDiscovery:true,
-      networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:100,attemptTimeoutMs:20,now:()=>now}});
-    assert.equal(result.state,'available',JSON.stringify(result));assert.equal(result.installable,true);
-    assert.equal(result.releaseAvailable,true);assert.equal(result.releasePlan.tag,'v2.2.8');
-    assert.ok(result.launcherError);assert.equal(result.launcherUpdateAvailable,false);
-    assert.ok(events.findIndex(url=>url.endsWith('/release-manifest.json'))<events.findIndex(url=>url.includes('?per_page=')),
-      'Core manifest must be verified before optional APP traffic');
-    for(const [i,name]of protectedFiles.entries())assert.deepEqual(fs.readFileSync(path.join(f.root,name)),before[i]);
-  });
-});
 
-test('split discovery reuses each verified manifest once without a persistent metadata cache',async t=>{
-  const f=splitDiscoveryFixture(t),result=await releases.check({...f.options,launcherDiscovery:true});
-  assert.equal(result.releaseTag,'v2.2.9');assert.equal(result.launcherUpdateAvailable,true);
-  for(const tag of ['v2.2.8','v2.2.9'])assert.equal(f.requests.filter(url=>url.endsWith(`/${tag}/release-manifest.json`)).length,1,tag);
-});
 
-test('reused APP discovery bytes must match their advertised digest before replacing the core plan',async t=>{
-  const f=splitDiscoveryFixture(t);
-  fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.2.7'}));
-  const result=await releases.check({...f.options,launcherDiscovery:true,fetcher:async address=>{
-    const url=String(address);
-    return url.endsWith('/v2.2.9/release-manifest.json')?fixtureResponse(f.physical['release-manifest.json']+' ',url):f.fetcher(address);
-  }});
-  assert.equal(result.state,'available');assert.equal(result.releaseTag,'v2.2.8');
-  assert.equal(result.launcherUpdateAvailable,false);assert.match(result.launcherError,/校验|清单/);
-});
 
-test('explicit cancellation and invalid core capabilities are not swallowed as optional APP failure',async t=>{
-  const f=splitDiscoveryFixture(t),controller=new AbortController();let appReads=0;
-  const fetcher=async(address,options)=>{
-    if(String(address).includes('?per_page=')||String(address).endsWith('/channels/launcher-stable.json')){
-      appReads++;controller.abort();options.signal.throwIfAborted();
-    }
-    return f.fetcher(address,options);
-  };
-  const cancelled=await releases.check({...f.options,fetcher,signal:controller.signal,launcherDiscovery:true});
-  assert.equal(cancelled.state,'unavailable');assert.equal(cancelled.available,false);assert.ok(appReads);
-  appReads=0;
-  const blocked=await releases.check({...f.options,fetcher,updaterCapabilities:{},launcherDiscovery:true});
-  assert.equal(blocked.state,'blocked');assert.equal(blocked.updateSupported,false);assert.equal(appReads,0);
-});
-test('APP-only discovery cannot shadow a newer or different core anchor, nor forge its original platform manifest proof',async t=>{
-  const f=splitDiscoveryFixture(t);
-  for(const patch of [{commit:'c'.repeat(40)},{tag:'v2.2.7'}]) {
-    Object.assign(f.product.coreRelease,patch);f.physical['release-manifest.json']=JSON.stringify(f.product);f.refresh();
-    const result=await releases.check({...f.options,launcherDiscovery:true});
-    assert.equal(result.releaseTag,'v2.2.8');assert.equal(result.launcherUpdateAvailable,false);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+test('core checks ignore obsolete desktop discovery and never request APP catalogues or payloads',async t=>{
+  const f=splitDiscoveryFixture(t),sentinel=path.join(f.root,'configuration.json');
+  fs.writeFileSync(sentinel,'preserved configuration');
+  const options={...f.options,launcherDiscovery:true,fetcher:async(address,request)=>{
+    assert.doesNotMatch(String(address),/launcher-stable|\?per_page=|nora-launcher-|update\.zip/);
+    return f.fetcher(address,request);
+  }};
+  for(const [installed,state]of [['2.2.8','current'],['2.2.7','available']]){
+    fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:installed}));
+    const before=fs.readFileSync(path.join(f.root,'tavern-updates/installed.json'));
+    const result=await releases.check(options);
+    assert.equal(result.state,state);assert.equal(result.releaseTag,'v2.2.8');assert.equal(result.launcherUpdateAvailable,undefined);
+    assert.deepEqual(fs.readFileSync(path.join(f.root,'tavern-updates/installed.json')),before);
+    assert.equal(fs.readFileSync(sentinel,'utf8'),'preserved configuration');
   }
-  Object.assign(f.product.coreRelease,{tag:'v2.2.8',commit:'a'.repeat(40)});
-  f.product.coreRelease.manifests['darwin-arm64'].sha256='f'.repeat(64);f.physical['release-manifest.json']=JSON.stringify(f.product);f.refresh();
-  const result=await releases.check({...f.options,launcherDiscovery:true});
-  assert.equal(result.releaseTag,'v2.2.8');assert.equal(result.launcherUpdateAvailable,false);assert.ok(result.launcherError);
+  for(const name of ['checkApp','selectAppPlan','validateAppPlan'])assert.equal(releases[name],undefined);
+  assert.throws(()=>releases.validatePlan({client:'app'}),/APP计划不能用于核心维护/);
 });
-
-test('a truncated GitHub APP list stays bounded and never proves that the APP is current',async t=>{
-  const f=splitDiscoveryFixture(t),pages=[];
-  const fetcher=async address=>{
-    const url=String(address);
-    if(url.includes('/channels/launcher-stable.json'))return fixtureResponse('unavailable',url,{status:503});
-    if(url.includes('?per_page=100&page=')){
-      const page=Number(new URL(url).searchParams.get('page'));pages.push(page);
-      return fixtureResponse(JSON.stringify(Array.from({length:100},(_,i)=>({draft:true,tag_name:`v99.0.${i}`}))),url);
-    }
-    return f.fetcher(address);
-  };
-  const result=await releases.check({...f.options,fetcher,launcherDiscovery:true});
-  assert.equal(result.state,'unavailable');assert.ok(result.launcherError);assert.equal(result.updateSupported,true);
-  assert.deepEqual(pages,[1,2,3,4,5]);assert.equal(result.releaseTag,'v2.2.8');
+test('core capability and cancellation failures cannot be treated as optional APP lookup failures',async t=>{
+  const f=splitDiscoveryFixture(t);
+  const blocked=await releases.check({...f.options,updaterCapabilities:{},launcherDiscovery:true});
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.updateSupported,false);
+  const controller=new AbortController();controller.abort();
+  const cancelled=await releases.check({...f.options,signal:controller.signal,fetcher:async(_url,options)=>{
+    options.signal.throwIfAborted();assert.fail('cancelled core lookup must not read metadata');
+  }});
+  assert.equal(cancelled.state,'unavailable');assert.equal(cancelled.available,false);
+  assert.equal(f.requests.some(url=>url.includes('launcher-stable')||url.includes('?per_page=')),false);
 });

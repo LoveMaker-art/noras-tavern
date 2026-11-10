@@ -1,0 +1,367 @@
+"""Restored core protection from 09b9895; legacy API names preserve installed compatibility."""
+import importlib.util
+import hashlib
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import patch, Mock
+
+from ops.installer import launcher_bridge as bridge, nora_system as system
+from ops.updater.managed_context import LEGACY_GREETING
+
+
+class RefinementTests(unittest.TestCase):
+    def test_selected_update_without_managed_receipt_stops_before_legacy_updater(self):
+        self.args.release_dir = self.root / 'selected-release'
+        self.args.release_dir.mkdir()
+        bootstrap = self.args.install_root / 'apps/tavern-ops/updater/bootstrap.py'
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text('# old updater')
+        with patch.object(bridge, 'installed', return_value=True), \
+             patch.object(bridge, 'release_dir', return_value=self.args.release_dir), \
+             patch.object(bridge, 'python_command', return_value='python'), \
+             patch.object(bridge, 'env_for', return_value={}), \
+             patch.object(bridge, 'run_stream') as run, \
+             patch.object(bridge, 'status_payload', return_value={}), \
+             patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(SystemExit):
+                bridge.command_update(self.args)
+            run.assert_not_called()
+            self.assertIn('缺少系统安装记录', str(emit.call_args_list))
+
+    def test_missing_receipt_uses_verified_new_bootstrap_and_plan_is_read_only(self):
+        self.receipt_recovery_entry(plan=True)
+
+    def test_missing_receipt_apply_keeps_original_failure_recovery_fingerprints(self):
+        self.receipt_recovery_entry(plan=False)
+
+    def receipt_recovery_entry(self, *, plan):
+        payload = self.root / 'release'
+        payload.mkdir()
+        bootstrap = payload / 'tavern-updater-bootstrap.py'
+        bootstrap.write_text('# verified new updater')
+        manifest = {'bootstrap': {'sha256': hashlib.sha256(bootstrap.read_bytes()).hexdigest(),
+                    'managedLifecycle': 1, 'managedReceiptRecovery': 1}}
+        (payload / 'release-manifest.json').write_text(json.dumps(manifest))
+        self.args.release_dir = payload
+        self.args.command = 'plan-update' if plan else 'update'
+        system.save_json(self.args.hermes_home / 'nora-instance.json', {
+            'schema':1,'noraHome':str(self.root),'hermesHome':str(self.args.hermes_home),
+            'installRoot':str(self.args.install_root),'port':self.args.port})
+        (self.args.hermes_home / 'config.yaml').write_text('test-key: must-stay-local')
+        system.save_json(self.args.install_root / 'tavern-updates/installed.json', {'version':'2.3.15'})
+        system.save_json(self.args.install_root / 'tavern-updates/installed-manifest.json', {'commit':'old'})
+        before_files = {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with patch.object(bridge,'installed',return_value=True), \
+                patch.object(bridge,'release_dir',return_value=payload), \
+                patch.object(bridge,'python_command',return_value='fixture-python'), \
+                patch.object(bridge,'env_for',return_value={}), \
+                patch.object(bridge,'status_payload',return_value={'version':'2.3.15','systemReady':False}), \
+                patch.object(bridge,'run_json',return_value={'archives':[]}) as read, \
+                patch.object(bridge,'run_stream',return_value={'updateVerified':True}) as apply, \
+                patch.object(bridge,'emit'):
+            bridge.command_update(self.args,plan=plan)
+        selected = read if plan else apply
+        command = selected.call_args.args[0]
+        self.assertEqual(command[3],str(bootstrap))
+        self.assertIn('--managed-home',command)
+        self.assertEqual(command[command.index('--managed-home')+1],str(self.root))
+        self.assertEqual(before_files,{p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        if plan:
+            apply.assert_not_called()
+            self.assertIn('--plan',command)
+        else:
+            recovery = json.loads(apply.call_args.kwargs['env']['NORA_UPDATE_LIFECYCLE'])['receiptRecovery']
+            self.assertEqual(set(recovery),{'instance','config','receipt','manifest'})
+            self.assertTrue(all(len(value)==64 for value in recovery.values()))
+            self.assertNotIn('must-stay-local',json.dumps(recovery))
+
+    def test_skill_diagnostics_distinguish_missing_and_changed_files(self):
+        relative = 'skills/creative/tavern/SKILL.md'
+        file = self.args.hermes_home / relative
+        file.parent.mkdir(parents=True)
+        file.write_text('installed skill')
+        system.save_json(self.args.install_root / 'tavern-updates/nora-system.json',
+                         {'schema': 1, 'skills': {relative: system.digest(file)}})
+        with patch.object(system, 'managed_problems', return_value=[]):
+            file.write_text('changed skill')
+            problems = system.inspect(self.args.hermes_home, self.args.install_root, self.args.port)['problems']
+            self.assertIn('技能文件内容与安装记录不一致：' + relative, problems)
+            file.unlink()
+            problems = system.inspect(self.args.hermes_home, self.args.install_root, self.args.port)['problems']
+            self.assertIn('技能文件缺失：' + relative, problems)
+
+    def test_existing_managed_install_cannot_enter_first_install_on_skill_failure(self):
+        self.args.release_dir = None
+        system.save_json(self.args.install_root / 'tavern-updates/nora-system.json',
+                         {'schema': 1, 'setupCompleted': True})
+        with patch.object(system, 'inspect', return_value={'ready': False}), \
+             patch.object(bridge, 'installed', return_value=True), \
+             patch.object(bridge, 'release_dir', return_value=None), \
+             patch.object(bridge, 'ensure_hermes') as ensure, \
+             patch.object(bridge, 'run_stream') as run, \
+             patch.object(bridge, 'emit'):
+            with self.assertRaises(SystemExit):
+                bridge.command_install(self.args)
+        ensure.assert_not_called()
+        run.assert_not_called()
+
+    def test_retry_passes_fixed_release_to_current_packaged_bootstrap(self):
+        resources = self.root / 'resources'
+        resources.mkdir()
+        bootstrap = resources / 'bootstrap.py'
+        bootstrap.write_bytes(b'# current bootstrap')
+        payload = self.root / 'fixed-release'
+        payload.mkdir()
+        old_bootstrap = payload / 'nora-tavern-first-install-bootstrap.py'
+        old_bootstrap.write_bytes(b'# old bootstrap')
+        manifest = payload / 'release-manifest.json'
+        manifest.write_bytes(b'{"schema":"tavern-release/v2","commit":"previous-release"}')
+        self.args.release_dir = str(payload)
+        self.args.use_packaged_install_runner = True
+        self.args.manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        with patch.object(bridge, 'HERE', resources), \
+             patch.object(bridge.sys, '_nora_operation_delegate', object(), create=True), \
+             patch.object(bridge, 'installed', return_value=False), \
+             patch.object(bridge, 'gateway_status', return_value={'gatewayRunning': False}), \
+             patch.object(bridge, 'ensure_hermes'), \
+             patch.object(bridge, 'python_command', return_value='python'), \
+             patch.object(bridge, 'run_stream', return_value={}) as run, \
+             patch.object(bridge, 'status_payload', return_value={}), \
+             patch.object(bridge, 'emit'):
+            bridge.command_install(self.args)
+        command = run.call_args.args[0]
+        self.assertEqual(Path(command[3]), bootstrap)
+        self.assertIn('--use-packaged-install-runner', command)
+        self.assertEqual(Path(command[command.index('--release-dir') + 1]), payload.resolve())
+        self.assertEqual(command[command.index('--manifest-sha256') + 1], self.args.manifest_sha256)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.args = SimpleNamespace(nora_home=self.root, hermes_home=self.root / 'hermes',
+                                    install_root=self.root / 'tavern', port=18997, service='nora')
+        self.args.hermes_home.mkdir()
+
+    def test_stopping_nora_keeps_tavern_and_liveware(self):
+        with patch.object(bridge, 'stop_gateway') as gateway, patch.object(bridge, 'stop_liveware') as liveware, \
+                patch.object(bridge, 'installed', return_value=False), \
+                patch.object(bridge, 'status_payload', return_value={'running': True, 'gatewayRunning': False}), \
+                patch.object(bridge, 'emit'):
+            bridge.command_stop(self.args)
+        gateway.assert_called_once()
+        liveware.assert_not_called()
+
+    def test_stopping_tavern_keeps_nora(self):
+        self.args.service = 'tavern'
+        with patch.object(bridge, 'stop_gateway') as gateway, patch.object(bridge, 'stop_liveware'), \
+                patch.object(bridge, 'installed', return_value=False), \
+                patch.object(bridge, '_recovery_require_native_offline'), \
+                patch.object(bridge, 'status_payload', return_value={'running': False, 'gatewayRunning': True}), \
+                patch.object(bridge, 'emit'):
+            bridge.command_stop(self.args)
+        gateway.assert_not_called()
+
+    def native_stop_fixture(self):
+        self.args.service = 'tavern'
+        lifecycle = self.args.install_root / 'apps/tavern-runtime/native_lifecycle.py'
+        lifecycle.parent.mkdir(parents=True)
+        lifecycle.touch()
+        (lifecycle.parent / 'native-runtime.json').write_text('{}')
+        lock = self.args.install_root / 'apps/tavern-ops/updater/runtime_lock.py'
+        lock.parent.mkdir(parents=True)
+        lock.write_text('from contextlib import nullcontext\ndef installation_lock(*args): return nullcontext()\n')
+
+    def test_tavern_stop_requires_process_exit_even_when_health_is_false(self):
+        self.native_stop_fixture()
+        with patch.object(bridge, 'run_stream'), patch.object(bridge, 'stop_liveware'), \
+                patch.object(bridge, 'python_command', return_value='fixture-python'), \
+                patch.object(bridge, 'run_json', return_value={'health': {'ok': False}, 'processes': {'native': True}}), \
+                patch.object(bridge, 'status_payload', return_value={'running': False, 'gatewayRunning': True}), \
+                patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(SystemExit):
+                bridge.command_stop(self.args)
+            self.assertNotIn('result', [call.args[0] for call in emit.call_args_list])
+
+    def test_tavern_stop_confirms_its_own_exit_when_full_status_is_unavailable(self):
+        self.args.service = 'tavern'
+        with patch.object(bridge, 'stop_liveware'), \
+                patch.object(bridge, '_recovery_require_native_offline') as offline, \
+                patch.object(bridge, 'status_payload', side_effect=RuntimeError('unrelated configuration read failed')), \
+                patch.object(bridge, 'emit') as emit:
+            bridge.command_stop(self.args)
+        offline.assert_called_once()
+        self.assertEqual(emit.call_args.args, ('result',))
+        self.assertIs(emit.call_args.kwargs['tavernProcessRunning'], False)
+        self.assertNotIn('gatewayRunning', emit.call_args.kwargs)
+
+    def test_tavern_start_confirms_its_own_readiness_when_full_status_is_unavailable(self):
+        self.native_stop_fixture()
+        with patch.object(bridge.nora_system, 'update_recovery', return_value=None), \
+                patch.object(bridge.nora_system, 'installation_state',
+                             return_value={'ready': True, 'setupCompleted': True}), \
+                patch.object(bridge, 'run_stream') as start, \
+                patch.object(bridge, 'python_command', return_value='fixture-python'), \
+                patch.object(bridge, 'run_json', return_value={
+                    'port': self.args.port, 'health': {'ok': True}, 'process_running': True}), \
+                patch.object(bridge, 'status_payload', side_effect=RuntimeError('unrelated configuration read failed')), \
+                patch.object(bridge, 'emit') as emit:
+            bridge.command_start(self.args)
+        self.assertEqual(start.call_args.args[0][-3:], ['start', '--port', str(self.args.port)])
+        self.assertEqual(emit.call_args.args, ('result',))
+        self.assertIs(emit.call_args.kwargs['running'], True)
+        self.assertIs(emit.call_args.kwargs['tavernProcessRunning'], True)
+        self.assertNotIn('gatewayRunning', emit.call_args.kwargs)
+
+    def test_new_native_stop_receives_the_bound_port_and_requires_matching_proof(self):
+        self.native_stop_fixture()
+        for bound, reported in ((18997, 18997), (18997, 8799), (8799, 8799), (8799, 18997)):
+            self.args.port = bound
+            with self.subTest(bound=bound, reported=reported), patch.object(bridge, 'run_stream') as stop, \
+                    patch.object(bridge, 'stop_liveware'), \
+                    patch.object(bridge, 'python_command', return_value='fixture-python'), \
+                    patch.object(bridge, 'run_json', return_value={
+                        'port': reported, 'health': {'ok': False}, 'process_running': False}), \
+                    patch.object(bridge, 'status_payload', return_value={}), \
+                    patch.object(bridge, 'emit') as emit:
+                if reported == self.args.port:
+                    bridge.command_stop(self.args)
+                    self.assertIs(emit.call_args.kwargs['tavernProcessRunning'], False)
+                else:
+                    with self.assertRaises(SystemExit):
+                        bridge.command_stop(self.args)
+                self.assertEqual(stop.call_args.args[0][-3:], ['stop', '--port', str(self.args.port)])
+
+    def test_legacy_native_stop_uses_compatible_cli_and_checks_actual_absence(self):
+        self.native_stop_fixture()
+        for bound in (18997, 8799):
+            self.args.port = bound
+            with self.subTest(bound=bound), patch.object(bridge, 'run_stream') as stop, patch.object(bridge, 'stop_liveware'), \
+                    patch.object(bridge, 'python_command', return_value='fixture-python'), \
+                    patch.object(bridge, 'run_json', return_value={
+                        'port': 8799, 'health': {'ok': False}, 'processes': {'native': False}}), \
+                    patch.object(bridge, '_recovery_require_native_offline') as offline, \
+                    patch.object(bridge, 'status_payload', return_value={}), \
+                    patch.object(bridge, 'emit') as emit:
+                bridge.command_stop(self.args)
+            self.assertEqual(stop.call_args.args[0][-1], 'stop')
+            self.assertEqual(offline.call_args.args[0].port, self.args.port)
+            self.assertEqual(emit.call_args.kwargs['port'], self.args.port)
+            self.assertIs(emit.call_args.kwargs['tavernProcessRunning'], False)
+
+    def test_nora_stop_rejects_a_replacement_gateway_after_initial_absence(self):
+        with patch.object(bridge, 'stop_gateway'), patch.object(bridge, 'check_gateway_control') as check, \
+                patch.object(bridge, 'gateway_status', side_effect=[
+                    {'gatewayRunning': False}, {'gatewayRunning': True}]), \
+                patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(SystemExit):
+                bridge.command_stop(self.args)
+        check.assert_called_once_with(self.args.nora_home, self.args.hermes_home)
+        self.assertNotIn('result', [call.args[0] for call in emit.call_args_list])
+
+    def test_default_greeting_upgrades_and_custom_greeting_survives(self):
+        source = Path(__file__).resolve().parents[2]
+        greeting = self.args.hermes_home / 'clawchat/greeting.md'
+        greeting.parent.mkdir()
+        greeting.write_text(LEGACY_GREETING, encoding='utf-8')
+        system.install_greeting(self.args.hermes_home, source)
+        self.assertEqual(greeting.read_bytes(),
+                         (source / 'ops/installer/templates/greeting.md').read_bytes())
+        greeting.write_text('我自己写的开场', encoding='utf-8')
+        system.install_greeting(self.args.hermes_home, source)
+        self.assertEqual(greeting.read_text(), '我自己写的开场')
+
+    def test_legacy_greeting_with_windows_newlines_upgrades(self):
+        source = Path(__file__).resolve().parents[2]
+        greeting = self.args.hermes_home / 'clawchat/greeting.md'
+        greeting.parent.mkdir()
+        greeting.write_bytes(LEGACY_GREETING.replace('\n', '\r\n').encode('utf-8'))
+        system.install_greeting(self.args.hermes_home, source)
+        self.assertEqual(greeting.read_bytes(),
+                         (source / 'ops/installer/templates/greeting.md').read_bytes())
+        self.assertEqual(system.read_json(greeting.parent / 'nora-greeting.json')['sha256'],
+                         system.digest(greeting))
+
+    def test_custom_greeting_with_windows_newlines_remains_byte_exact(self):
+        source = Path(__file__).resolve().parents[2]
+        greeting = self.args.hermes_home / 'clawchat/greeting.md'
+        greeting.parent.mkdir()
+        custom = (LEGACY_GREETING + '这是我自己补充的内容。\n').replace('\n', '\r\n').encode('utf-8')
+        greeting.write_bytes(custom)
+        system.install_greeting(self.args.hermes_home, source)
+        self.assertEqual(greeting.read_bytes(), custom)
+        self.assertFalse((greeting.parent / 'nora-greeting.json').exists())
+
+    def test_managed_greeting_installs_exact_template_and_records_its_digest(self):
+        source = Path(__file__).resolve().parents[2]
+        greeting = self.args.hermes_home / 'clawchat/greeting.md'
+        greeting.parent.mkdir()
+        greeting.write_text('Previous managed greeting with an entry lookup', encoding='utf-8')
+        system.save_json(self.args.hermes_home / 'clawchat/nora-greeting.json',
+                         {'schema': 1, 'sha256': system.digest(greeting), 'version': 2})
+        system.install_greeting(self.args.hermes_home, source)
+        # Text/locale policy belongs to GreetingTemplateTests. This test covers
+        # the actual managed installation and its persisted acceptance marker.
+        self.assertEqual(greeting.read_bytes(),
+                         (source / 'ops/installer/templates/greeting.md').read_bytes())
+        self.assertEqual(system.read_json(self.args.hermes_home / 'clawchat/nora-greeting.json')['sha256'],
+                         system.digest(greeting))
+
+    def test_story_staging_is_explicit_and_idempotent(self):
+        source = Path(__file__).resolve().parents[1] / 'skills/creative/nora-cardforge'
+        spec = importlib.util.spec_from_file_location('starter_story', source / 'scripts/starter-story.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        system.save_json(self.args.hermes_home / 'nora-instance.json', {
+            'schema': 1, 'noraHome': str(self.root), 'hermesHome': str(self.args.hermes_home),
+            'installRoot': str(self.args.install_root), 'port': self.args.port})
+        import shutil
+        scripts = self.args.hermes_home / 'scripts'
+        scripts.mkdir(exist_ok=True)
+        shutil.copy2(source.parents[2] / 'scripts/nora-instance.py', scripts / 'nora-instance.py')
+        self.assertFalse(self.args.install_root.exists())
+        for story in ('suzhou-rain', 'xiamen-breeze'):
+            result = module.stage(self.args.hermes_home, source / 'resources/starter-stories', story, 'request-1')
+            self.assertFalse(result['imported'])
+            self.assertEqual(result, module.stage(self.args.hermes_home, source / 'resources/starter-stories', story, 'request-1'))
+            self.assertTrue(json.loads(Path(result['filePath']).read_text())['data']['scenario'])
+        self.assertFalse((self.args.install_root / 'tavern-state/world-core').exists())
+
+    def test_gateway_hook_delegates_no_start_policy_to_shared_worker(self):
+        source = Path(__file__).resolve().parents[1] / 'scripts/nora-instance.py'
+        spec = importlib.util.spec_from_file_location('refinement_instance', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        config = {'schema': 1, 'installRoot': str(self.args.install_root), 'port': 18997,
+                  'stateRoot': str(self.args.install_root / 'tavern-state'),
+                  'appRoot': str(self.args.install_root / 'apps/tavern-runtime'), 'desktopManaged': True}
+        with patch.object(module, 'configuration', return_value=config), \
+             patch.object(module.sys, 'argv', ['nora-instance.py', 'recover-existing']), \
+             patch.object(module.subprocess, 'run', return_value=Mock(returncode=0, stdout='{"health":{"ok":false}}')) as run:
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('--no-start-runtime', run.call_args.args[0])
+        self.assertEqual(run.call_args.args[0][-1], 'startup')
+
+    def test_install_does_not_skip_a_newer_pinned_payload(self):
+        self.args.release_dir = str(self.root / 'payload')
+        system.save_json(Path(self.args.release_dir) / 'release-manifest.json',
+                         {'versions': {'tavern': '2.2.10-beta.3'}, 'commit': 'new'})
+        with patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge, 'installed', return_value=True), \
+             patch.object(bridge, 'read_version', return_value={'version': '2.2.10-beta.2', 'commit': 'old'}), \
+             patch.object(bridge, 'gateway_status', return_value={'gatewayRunning': False}), \
+             patch.object(bridge, 'status_payload', return_value={'running': False}), \
+             patch.object(bridge, 'command_status') as status, \
+             patch.object(bridge, 'emit'):
+            # Getting as far as the missing bootstrap proves the ready shortcut was not taken.
+            with self.assertRaises(SystemExit):
+                bridge.command_install(self.args)
+        status.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()

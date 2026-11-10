@@ -13,7 +13,7 @@
 <a id="2-构建与验收不发布"></a>
 ## 独立核心流程
 
-`core-ci.yml` 在 Linux、Windows、Mac 执行 `core-source-gate.mjs`：固定输入/归属及发行合同、核心 JS/Python 消费者、酒馆工作流。它只提供源码证据。
+`core-ci.yml` 在 Linux、Windows、Mac 执行 `core-source-gate.mjs`：备份安全、固定输入/归属及发行合同、核心 JS/Python 消费者、MCP完整单元／集成、Story Profile Python集合和酒馆工作流。它只提供源码证据。该推送／PR自动检查是在拆分时新增的策略；不构造APP或自动发布。核心版本构建和发行仍由后面的两个手动流程分别执行。
 
 `core-build.yml` 手动触发，在 Windows x64、Mac ARM64/x64 上执行相同源码门禁，再由 `build-core.mjs` 构造和验收。本轮复用的 Hermes 运行环境按 `tooling/runtime/runtime-inputs.lock.json` 固定原发行来源、大小和 SHA-256，不重建运行环境，也不读相邻仓源码。更新运行环境时必须单独审查并改锁，不能追随 latest。
 

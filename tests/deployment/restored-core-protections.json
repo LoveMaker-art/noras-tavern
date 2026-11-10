@@ -1,0 +1,205 @@
+{
+  "scope": "Core author/consumer protections restored by tested function, not launcher filename prefix.",
+  "records": [
+    {
+      "original": "tests/deployment/test_launcher_tavern_model.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "f0792cedd32134f2a6c71b4dfb2b54a0b45992dacd3a97b74c27ba2d301c1e13",
+      "activeCore": "tests/deployment/test_core_tavern_model.py",
+      "methods": [
+        "test_every_launcher_provider_selects_correct_source_and_secret",
+        "test_hermes_missing_limits_use_defaults_and_explicit_limits_are_preserved",
+        "test_existing_model_is_never_overwritten",
+        "test_later_hermes_changes_do_not_replace_tavern_default",
+        "test_failed_write_restores_settings_and_removes_only_new_secret",
+        "test_real_http_client_performs_csrf_secret_save_and_settings_readback"
+      ],
+      "excluded": [
+        "test_sync_runs_before_marking_initial_model_complete"
+      ],
+      "adaptation": "Only fixture helper imports/class names changed; assertions retained."
+    },
+    {
+      "original": "tests/deployment/test_launcher_shared_logic.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "842fd7766512a1d52d449a91e7fa911bfd89eb1ada008bd96f1003599fcf00c7",
+      "activeCore": "tests/deployment/test_core_shared_logic.py",
+      "methods": [
+        "test_current_install_query_is_readonly_and_exactly_bound_without_an_operation",
+        "test_current_install_query_rejects_wrong_identity_unhealthy_or_changed_records",
+        "test_existing_current_update_verification_still_requires_the_owned_operation",
+        "test_gateway_import_does_not_mutate_the_sealed_hook_directory",
+        "test_proof_is_written_to_tavern_without_greeting_dependency",
+        "test_stopped_tavern_never_logs_in_or_restarts_liveware",
+        "test_managed_worker_does_not_start_a_stopped_tavern",
+        "test_managed_worker_cancels_when_tavern_stops_before_registration",
+        "test_managed_registration_retry_does_not_restart_tavern",
+        "test_desktop_starts_gateway_before_scheduling_shared_hook",
+        "test_prepatched_bundle_is_verified_without_git",
+        "test_mcp_first_install_delegates_to_shared_writer",
+        "test_first_install_preserves_explicit_confirmation_and_command_policy",
+        "test_user_memory_default_increases_once_and_preserves_custom_settings",
+        "test_invalid_user_memory_settings_do_not_get_replaced",
+        "test_shared_defaults_do_not_assume_a_desktop_install",
+        "test_desktop_update_uses_verified_target_updater_not_first_installer",
+        "test_shared_hermes_instructions_use_full_project_ownership",
+        "test_shared_hook_uses_common_startup_without_desktop_runner",
+        "test_stopping_nora_does_not_kill_its_liveware_descendant"
+      ],
+      "excluded": [],
+      "adaptation": "Only fixture helper imports/class names changed; assertions retained."
+    },
+    {
+      "original": "tests/deployment/test_launcher_refinement.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "00010d733129de44735a46261c59d760a3fea0077c59e937df9eca874860a698",
+      "activeCore": "tests/deployment/test_core_refinement.py",
+      "methods": [
+        "test_selected_update_without_managed_receipt_stops_before_legacy_updater",
+        "test_missing_receipt_uses_verified_new_bootstrap_and_plan_is_read_only",
+        "test_missing_receipt_apply_keeps_original_failure_recovery_fingerprints",
+        "test_skill_diagnostics_distinguish_missing_and_changed_files",
+        "test_existing_managed_install_cannot_enter_first_install_on_skill_failure",
+        "test_retry_passes_fixed_release_to_current_packaged_bootstrap",
+        "test_stopping_nora_keeps_tavern_and_liveware",
+        "test_stopping_tavern_keeps_nora",
+        "test_tavern_stop_requires_process_exit_even_when_health_is_false",
+        "test_tavern_stop_confirms_its_own_exit_when_full_status_is_unavailable",
+        "test_tavern_start_confirms_its_own_readiness_when_full_status_is_unavailable",
+        "test_new_native_stop_receives_the_bound_port_and_requires_matching_proof",
+        "test_legacy_native_stop_uses_compatible_cli_and_checks_actual_absence",
+        "test_nora_stop_rejects_a_replacement_gateway_after_initial_absence",
+        "test_default_greeting_upgrades_and_custom_greeting_survives",
+        "test_legacy_greeting_with_windows_newlines_upgrades",
+        "test_custom_greeting_with_windows_newlines_remains_byte_exact",
+        "test_managed_greeting_installs_exact_template_and_records_its_digest",
+        "test_story_staging_is_explicit_and_idempotent",
+        "test_gateway_hook_delegates_no_start_policy_to_shared_worker",
+        "test_install_does_not_skip_a_newer_pinned_payload"
+      ],
+      "excluded": [],
+      "adaptation": "Fixture helper imports renamed to core-owned equivalents; original assertions retained, except historical greeting literal now checks exact current governed template."
+    },
+    {
+      "original": "tests/deployment/test_launcher_model_status.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "7ce286e830f310dd8a87756b564bc8182bbfd7be3e645ae671f35c74db20c7b0",
+      "activeCore": "tests/deployment/test_core_model_status.py",
+      "methods": [
+        "test_bridge_status_preserves_native_checkpoint_and_reports_the_current_selection",
+        "test_first_start_reports_typed_setup_blocker_without_starting_a_service",
+        "test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key",
+        "test_named_custom_mismatches_still_fail_without_exposing_values",
+        "test_arbitrary_custom_prefix_is_not_treated_as_custom_provider",
+        "test_named_custom_provider_is_verified_without_an_env_key",
+        "test_requires_matching_marker_key_and_config",
+        "test_accepts_matching_custom_endpoint_without_env_file"
+      ],
+      "excluded": [
+        "test_real_hermes_custom_save_passes_bridge_recheck"
+      ],
+      "adaptation": "Only fixture helper imports/class names changed; assertions retained."
+    },
+    {
+      "original": "tests/deployment/test_launcher_tracebacks.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "c84ecb35c00c285f2b9db89a68a43791f0b12d69ef58c88a46efb818b95b2f73",
+      "activeCore": "tests/deployment/test_core_tracebacks.py",
+      "methods": [
+        "test_gateway_identity_failure_has_readable_json_and_permission_code_with_local_cause",
+        "test_status_keeps_its_single_json_document_contract",
+        "test_entrypoints_report_exception_type_and_call_site"
+      ],
+      "excluded": [],
+      "adaptation": "Only fixture helper imports/class names changed; assertions retained."
+    },
+    {
+      "original": "tests/deployment/test_launcher_services.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "c5941961d6143a5aa0fc2b47e4fc7149944c36c90e54114a46809891c4593f27",
+      "activeCore": "tests/deployment/test_core_services.py",
+      "methods": [
+        "test_disconnected_restore_still_requires_owned_live_gateway",
+        "test_disconnected_restore_cannot_bypass_gateway_identity_failure",
+        "test_clawchat_connection_timeout_preserves_running_gateway_and_business_guidance",
+        "test_launcher_pins_tavern_to_its_bundled_node_on_both_platforms",
+        "test_tavern_only_does_not_require_clawchat_registration",
+        "test_subprocess_failure_retains_actual_error",
+        "test_subprocess_failure_preserves_ownership_code_across_python_bridge",
+        "test_uninstalled_gateway_status_does_not_require_psutil",
+        "test_gateway_activity_requires_a_reported_nonnegative_integer_count",
+        "test_gateway_activity_does_not_trust_unbound_or_starting_state",
+        "test_gateway_activity_uses_the_verified_windows_child_writer",
+        "test_gateway_status_does_not_report_stopped_when_identity_is_unreadable",
+        "test_gateway_status_does_not_report_offline_when_child_inspection_is_denied",
+        "test_gateway_status_does_not_report_offline_when_writer_birth_time_is_denied",
+        "test_unreadable_gateway_hint_reports_safe_error_without_signalling_or_launching",
+        "test_reused_protected_pid_in_old_state_does_not_block_a_new_owned_gateway",
+        "test_unreadable_owned_record_cannot_be_bypassed_by_an_old_runtime_snapshot",
+        "test_pre_reboot_owned_record_does_not_inspect_a_reused_protected_pid",
+        "test_gateway_hint_handles_reboot_exit_race_and_foreign_gateway_without_mutating_state",
+        "test_paired_is_not_online",
+        "test_connection_requires_current_platform_writer",
+        "test_pid_reuse_is_not_owned",
+        "test_connection_does_not_adopt_an_unrelated_writer",
+        "test_framework_python_reexec_keeps_the_same_owned_process",
+        "test_gateway_status_follows_launcher_restart_without_rewriting_records",
+        "test_new_gateway_launch_records_ownership_inherited_by_hermes_restart",
+        "test_start_reuses_launcher_restart_and_refreshes_its_record",
+        "test_stop_terminates_the_owned_launcher_restart_before_removing_record",
+        "test_stop_preserves_the_receipt_while_a_targeted_child_is_alive",
+        "test_stop_preserves_record_if_an_unknown_gateway_appears_after_termination",
+        "test_mac_and_windows_restart_identity_uses_epoch_centiseconds",
+        "test_windows_venv_gateway_restart_can_use_its_bundled_base_python",
+        "test_restart_pid_reuse_between_process_inspections_is_not_owned",
+        "test_consecutive_hermes_cli_restarts_preserve_launcher_ownership",
+        "test_restart_does_not_follow_an_external_hermes_entry_script",
+        "test_linux_restart_identity_uses_proc_start_ticks",
+        "test_restart_identity_mismatch_is_not_adopted_launched_or_stopped",
+        "test_unreadable_launcher_restart_does_not_delete_ownership_record",
+        "test_stop_with_unreadable_original_process_preserves_ownership_record",
+        "test_python_wrapper_child_can_report_connection_and_is_stopped",
+        "test_stop_never_terminates_foreign_gateway",
+        "test_pairing_requires_complete_local_configuration",
+        "test_rejects_paths_outside_isolated_root",
+        "test_pairing_syncs_nora_profile_before_completion",
+        "test_pairing_failure_keeps_cli_reason_without_claiming_expired_code_or_logging_code",
+        "test_launcher_pairing_type_is_scoped_to_activation_process",
+        "test_failed_start_never_emits_completion",
+        "test_profile_failure_prevents_gateway_start_and_completion",
+        "test_owned_process_starts_reports_online_and_stops"
+      ],
+      "excluded": [],
+      "adaptation": "Only fixture helper imports/class names changed; assertions retained."
+    },
+    {
+      "original": "tests/deployment/test_launcher_test_environment.py",
+      "sourceCommit": "09b98950530aae28027dec420187c09240d725e6",
+      "originalSha256": "7ff0e377fc2133c75f9debac48bef12527674be1457efa3a7050d8d8fb9020e7",
+      "activeCore": "tests/deployment/test_core_node_environment.py",
+      "methods": [
+        "test_explicit_real_node_runs_even_when_path_has_no_node",
+        "test_invalid_explicit_node_never_falls_back_to_available_path_node",
+        "test_no_node_is_optional_only_when_it_was_not_explicitly_configured",
+        "test_a_bun_process_cannot_certify_a_node_fixture",
+        "test_a_wrapper_cannot_certify_a_different_native_executable"
+      ],
+      "excluded": [],
+      "adaptation": "Only fixture helper imports/class names changed; assertions retained."
+    }
+  ],
+  "desktopCase": {
+    "original": "tests/deployment/test_launcher_tavern_model.py::test_sync_runs_before_marking_initial_model_complete",
+    "destination": "tests/deployment/test_launcher_tavern_model_entry.py"
+  },
+  "supersededNativeFixtures": [
+    {
+      "original": "test_launcher_hermes_config.py::test_custom_configuration_uses_real_hermes_api",
+      "reason": "Legacy save remains supported. This old optional native fixture is superseded by test_model_provider_skill.py::test_named_custom_replacement_changes_the_real_runtime_not_just_the_file (legacy save and native resolver), active test_core_model_status, and the independent real A/B native smoke. The Nora authorized loopback candidate test separately protects the new probe path; it does not exercise the old bridge verify-model CLI. Keep prerequisites and actual execution evidence separate."
+    },
+    {
+      "original": "test_launcher_model_status.py::test_real_hermes_custom_save_passes_bridge_recheck",
+      "reason": "Legacy save remains supported. This old optional native fixture is superseded by test_model_provider_skill.py::test_named_custom_replacement_changes_the_real_runtime_not_just_the_file (legacy save and native resolver), active test_core_model_status, and the independent real A/B native smoke. The Nora authorized loopback candidate test separately protects the new probe path; it does not exercise the old bridge verify-model CLI. Keep prerequisites and actual execution evidence separate."
+    }
+  ]
+}

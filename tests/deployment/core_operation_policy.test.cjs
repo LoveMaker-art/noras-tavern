@@ -21,81 +21,11 @@ function setup(t,overrides={}){
   return {home,events,record,context,options,policy:create(options),journal,setRuntime:next=>{runtime=next;}};
 }
 
-for(const untouched of [false,true])test(`handoff closure requires only owned program facts (untouched=${untouched})`,async t=>{
-  let facts={effectState:'untouched',reason:'no_journal'},app;
-  const f=setup(t,{inspectRuntime:()=>facts,inspectLauncherOutcome:async()=>app,
-    bridge:async command=>{throw new Error('Closure must not query unrelated '+command);}});
-  Object.assign(f.record,{state:'awaiting-handoff',handoffRef:'/owned/job',planDigest:'a'.repeat(64),
-    target:{currentVersion:'2.4.5',request:{port:18999}}});
-  app={status:untouched?'cancelled':'restored',verification:'confirmed',effectState:untouched?'untouched':'restored',
-    busy:false,workerOffline:true,operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef};
-  const result=await f.policy.reconcileHandoff(f.record,f.context);
-  assert.equal(result.value[untouched?'notAppliedVerification':'recoveryVerification'],'confirmed');
-  assert.equal(result.value.systemReady,undefined,'restoration does not invent service health');
-  assert.equal(result.value.version,undefined,'an APP helper version is not a core version');
-  for(const mutation of ['worker','busy','binding','plan','job','runtime','unknown','effect']){
-    const originalApp={...app};
-    if(mutation==='worker')app.workerOffline=false;
-    if(mutation==='busy')app.busy=true;
-    if(mutation==='binding')app.operationId='another-operation';
-    if(mutation==='plan')app.planDigest='b'.repeat(64);
-    if(mutation==='job')app.job='/foreign/job';
-    if(mutation==='runtime')facts={effectState:'changed',canRecover:true};
-    if(mutation==='unknown')facts={effectState:'unknown',canRecover:false};
-    if(mutation==='effect')app.effectState=untouched?'restored':'untouched';
-    assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null,mutation);
-    app=originalApp;facts={effectState:'untouched',reason:'no_journal'};
-  }
-});
 
-test('committed APP closure binds the sealed version without inspecting independent core state',async t=>{
-  let app;
-  const unrelated=()=>assert.fail('APP commit must not inspect independent core state');
-  const f=setup(t,{inspectLauncherOutcome:async()=>app,inspectRuntime:unrelated,inspectLegacy:unrelated,bridge:unrelated});
-  Object.assign(f.record,{kind:'update',state:'verifying',handoffRef:'/owned/job',planDigest:'a'.repeat(64),
-    target:{request:{launcherOnly:true},releasePlan:{launcherManifest:{version:'2.6.0'}},
-      appCoreIdentity:{version:'2.5.7',commit:'old-core'}}});
-  const proof={status:'committed',verification:'confirmed',effectState:'changed',busy:false,
-    workerOffline:true,operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef,version:'2.6.0'};
-  app=proof;
-  assert.deepEqual((await f.policy.reconcileHandoff(f.record,f.context)).value,{
-    version:'2.5.7',commit:'old-core',launcherVersion:'2.6.0',
-    appUpdateComplete:true,updateVerified:true,updateComplete:true,coreUpdateComplete:false,
-  });
-  for(const mismatch of [{busy:true},{workerOffline:false},{operationId:'foreign'},{version:'2.5.9'},{version:undefined}]){
-    app={...proof,...mismatch};
-    assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null);
-  }
-  delete f.record.target.releasePlan;
-  assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null);
-});
 
-for(const filesOnly of [false,true])test(`APP restoration closes independently of core acceptance (separate service failure=${filesOnly})`,async t=>{
-  let app;
-  const f=setup(t,{systemEffects:async()=>filesOnly?{effectState:'restored',recoveryOutcome:'files-restored-start-failed'}:{effectState:'untouched',recoveryOutcome:'not-required'},
-    inspectLegacy:()=>null,inspectLauncherOutcome:async()=>app,inspectLauncher:async()=>app,
-    bridge:async command=>{f.events.push(command);throw new Error('Unrelated service/core verification must not delay program closure');}});
-  const protectedFiles=['chats/story.jsonl','characters/card.json','worlds/world.json','config/model.json'];
-  for(const file of protectedFiles){const target=path.join(f.home,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'current user content: '+file);}
-  const bytes=protectedFiles.map(file=>fs.readFileSync(path.join(f.home,file)));
-  const options={directory:path.join(f.home,'installer'),lock:createTestOperationLock(),
-    observeEffects:record=>f.policy.observe(record),verifyRestoredHandoff:(record,context)=>f.policy.reconcileHandoff(record,context)};
-  const controller=createOperationController(options);
-  const pending=await controller.start('update',{target:{currentVersion:'2.5.7',request:{tag:'v2.6.0',launcherOnly:true,port:18999}},
-    execute:async context=>{await context.handoff('/owned/restored-job');return {handoff:true};}},'restored-app');
-  app={status:'restored',verification:'confirmed',effectState:'restored',workerOffline:true,busy:false,
-    operationId:pending.operationId,planDigest:pending.planDigest,job:pending.handoffRef,
-    failure:Object.assign(new Error('fixture incoming APP failed before completion'),{code:'LAUNCHER_START_FAILED'})};
-  const ended=await controller.recheck(pending.operationId);
-  assert.equal(ended.state,'rolled-back');assert.equal(ended.verification,filesOnly?'failed':'confirmed');assert.equal(ended.currentFailure,null);
-  assert.equal(ended.primaryFailure.code,'LAUNCHER_START_FAILED');
-  assert.deepEqual(f.events,[],'APP closure does not wait for status or whole-core acceptance');
-  assert.equal(ended.recoveryOutcome,filesOnly?'files-restored-start-failed':'restored-and-verified');
-  const reopened=createOperationController(options);
-  assert.equal((await reopened.snapshot(pending.operationId)).state,'rolled-back');
-  assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'after-restored-app')).state,'succeeded');
-  for(const [index,file] of protectedFiles.entries())assert.deepEqual(fs.readFileSync(path.join(f.home,file)),bytes[index]);
-});
+
+
+
 
 test('a failure before any journal exists stays untouched without executing recovery',async t=>{
   const f=setup(t);

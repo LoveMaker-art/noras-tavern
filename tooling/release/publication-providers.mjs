@@ -110,6 +110,7 @@ export function githubProvider({repository, execute=command, log=console.log, pa
     };
     return {
         async begin(p){
+            publicationChannelKey(p.plan);
             await checkTag(p);
             current=await release(p.plan.tag);
             if(!current){
@@ -144,14 +145,13 @@ export function githubProvider({repository, execute=command, log=console.log, pa
             await refresh(p);
             if(p.plan.channel==='stable'){
                 let latest;try{latest=await api('releases/latest');}catch(error){if(!/\(HTTP 404\)/.test(error.diagnostics||''))throw error;}
-                if(p.plan.coreAnchor){publicationChannelKey(p.plan);assert.ok(latest&&!latest.draft&&!latest.prerelease&&latest.tag_name===p.plan.coreAnchor.tag,'GitHub core anchor differs');await checkTag({plan:p.plan.coreAnchor});}
-                else if(latest){assert.ok(!latest.draft&&!latest.prerelease);noDowngrade(latest.tag_name,p.plan.tag);}
+                if(latest){assert.ok(!latest.draft&&!latest.prerelease);noDowngrade(latest.tag_name,p.plan.tag);}
             } else {
                 for(const item of (await paginated('releases?per_page=100','release')).filter(item=>!item.draft&&item.prerelease))noDowngrade(item.tag_name,p.plan.tag);
             }
         },
-        async promote(p){await execute('gh',['release','edit',p.plan.tag,'--repo',repository,'--draft=false',`--prerelease=${p.plan.channel==='beta'}`,`--latest=${p.plan.channel==='stable'&&!p.plan.coreAnchor}`],{timeout:120000,log});},
-        async verifyPromotion(p){await refresh(p);assert.equal(current.draft,false);if(p.plan.channel==='stable')assert.equal((await api('releases/latest')).tag_name,p.plan.coreAnchor?.tag||p.plan.tag,'GitHub latest core anchor differs');
+        async promote(p){await execute('gh',['release','edit',p.plan.tag,'--repo',repository,'--draft=false',`--prerelease=${p.plan.channel==='beta'}`,`--latest=${p.plan.channel==='stable'}`],{timeout:120000,log});},
+        async verifyPromotion(p){await refresh(p);assert.equal(current.draft,false);if(p.plan.channel==='stable')assert.equal((await api('releases/latest')).tag_name,p.plan.tag,'GitHub latest core anchor differs');
             for(const object of physical(p))checkAsset(await lookup(object,p),object);}
     };
 }

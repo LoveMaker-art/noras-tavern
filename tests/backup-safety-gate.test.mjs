@@ -73,7 +73,7 @@ test('core construction cannot run before unconditional qualified backup safety'
     assert.ok(delivery.indexOf("proof.passed,true")<delivery.indexOf("tooling/release/package-release.mjs"));
     assert.ok(delivery.includes('qualification.checks.map(c=>c.name),qualificationChecks'));
     const criteria=fs.readFileSync(path.join(root,'tooling/release/core-assets.mjs'),'utf8');
-    assert.ok(criteria.includes("['backup-safety','repository-and-delivery','core-consumers','tavern-workflows']"));
+    assert.ok(criteria.includes("['backup-safety','repository-and-delivery','core-consumers','mcp-unit','mcp-integration','story-profile','tavern-workflows']"));
     const publisher=parse(fs.readFileSync(path.join(root,'.github/workflows/core-publish.yml'),'utf8'));
     assert.ok(!Object.values(publisher.jobs).flatMap(job=>job.steps||[]).some(step=>invokesAuthoredNodeScript(step.run,packageScript)));
 });

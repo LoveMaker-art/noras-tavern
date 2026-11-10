@@ -12,6 +12,9 @@ const commands=[
  ['backup-safety',['tooling/checks/verify-backup-safety.mjs']],
  ['repository-and-delivery',['--test','--test-concurrency=1',...fs.readdirSync(path.join(root,'tests')).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>'tests/'+name),...fs.readdirSync(path.join(root,'tests/core')).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>'tests/core/'+name)]],
  ['core-consumers',['tooling/checks/verify-core.mjs']],
+ ['mcp-unit',['tooling/run.mjs','--report',path.join(root,'.cache','core-mcp-unit-'+Date.now()+'.json'),'npm','--prefix','nora-mcp','test']],
+ ['mcp-integration',['tooling/run.mjs','--report',path.join(root,'.cache','core-mcp-integration-'+Date.now()+'.json'),'npm','--prefix','nora-mcp','run','test:integration']],
+ ['story-profile',['tooling/run.mjs','--report',path.join(root,'.cache','core-story-profile-'+Date.now()+'.json'),'python','-B','-m','unittest','discover','-s','story-profile/tests']],
  ['tavern-workflows',['tooling/run.mjs','--report',path.join(root,'.cache','core-tavern-'+Date.now()+'.json'),'npm','--prefix','app/engine/sillytavern','run','test:nora']],
 ];
 const record={schema:'nora-core-qualification/1',commit:initial.commit,dirty:initial.dirty,sourceDigest:initial.sourceDigest,facts,checks:[]};
@@ -19,8 +22,9 @@ for(const [name,args]of commands){const result=spawnSync(process.execPath,args,{
 const final=snapshot();
 if(final.commit!==initial.commit||final.dirty!==initial.dirty||final.sourceDigest!==initial.sourceDigest){record.sourceChanged=true;process.exitCode=1;}
 if(!process.exitCode){
- const core=JSON.parse(fs.readFileSync(path.join(root,'.cache/core-source-result.json'))),tavern=JSON.parse(fs.readFileSync(commands.at(-1)[1][2]));
- const identities=[...core.runs.map(run=>run.run?.identity),tavern.identity];
+ const core=JSON.parse(fs.readFileSync(path.join(root,'.cache/core-source-result.json')));
+ const projected=commands.filter(([,args])=>args[0]==='tooling/run.mjs').map(([,args])=>JSON.parse(fs.readFileSync(args[2])));
+ const identities=[...core.runs.map(run=>run.run?.identity),...projected.map(run=>run.identity)];
  if(identities.some(identity=>identity?.sourceDigest!==initial.sourceDigest||identity?.commit!==initial.commit)){record.mixedInputs=true;process.exitCode=1;}
 }
 record.passed=!process.exitCode;fs.mkdirSync(path.join(root,'.cache'),{recursive:true});fs.writeFileSync(path.join(root,'.cache/core-qualification.json'),JSON.stringify(record,null,2)+'\n');

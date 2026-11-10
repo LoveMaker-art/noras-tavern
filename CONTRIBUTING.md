@@ -72,8 +72,8 @@ repeat every narrower suite after the full gate has passed.
 | Entry | Evidence provided | Output |
 | --- | --- | --- |
 | Root `npm test` | Core ownership, fixed-input and documentation contracts; not all product tests | Console result |
-| `node tooling/checks/verify-core.mjs` | Retained deployment JavaScript and Python consumer suites using one projected source identity | `.cache/core-source-result.json` and referenced run receipts |
-| `node tooling/checks/core-source-gate.mjs` | Backup safety, fixed-input/release contracts, deployment consumers and Tavern workflows | `.cache/core-qualification.json` plus the source result |
+| `node tooling/checks/verify-core.mjs` | Deployment `.test.cjs` and `.test.mjs` plus Python consumer suites using one projected source identity | `.cache/core-source-result.json` and referenced run receipts |
+| `node tooling/checks/core-source-gate.mjs` | Backup safety, fixed-input/release contracts, deployment consumers, full MCP unit/integration suites, Story Profile Python tests and Tavern workflows | `.cache/core-qualification.json` plus the source result |
 | `node tooling/checks/verify-core.mjs --native` | Actual Hermes interpreter's lock/executor profile; requires its Python and read-only Hermes source | `.cache/core-native-result.json` |
 | `node tooling/release/build-core.mjs --output NEW_DIRECTORY` | Committed source plus the fixed runtime and disposable native installation/model-fixture acceptance | The requested output's acceptance and native receipts |
 

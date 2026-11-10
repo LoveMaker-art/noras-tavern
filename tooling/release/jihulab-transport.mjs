@@ -6,11 +6,11 @@ import path from 'node:path';
 import {readReleasePolicy} from './release-policy.mjs';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {publicationChannelObjects,verifyPublishedCoreAnchor} from './system-release.mjs';
+import {publicationChannelObjects} from './system-release.mjs';
 
 const origin='https://jihulab.com';
 const immutableKey=/^releases\/(v\d+\.\d+\.\d+(?:-beta\.\d+)?)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/;
-const channelKey=/^channels\/(stable|beta|launcher-stable)\.json$/;
+const channelKey=/^channels\/(stable|beta)\.json$/;
 const maxAssetBytes=2*1024*1024*1024;
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const failure=(message,code='JIHULAB_TRANSPORT_FAILED')=>Object.assign(new Error(`JihuLab ${message}`),{code});
@@ -98,9 +98,9 @@ function version(tag) {
     const numbers=[Number(match[1]),Number(match[2]),Number(match[3]),match[4]===undefined?1:0,Number(match[4]||0)];
     assert.ok(numbers.every(Number.isSafeInteger),'Invalid JihuLab channel version range');return numbers;
 }
-function channelReleases(bytes,channel,launcher=false) {
+function channelReleases(bytes,channel) {
     let value;try {value=JSON.parse(bytes.toString('utf8'));}catch {throw failure('invalid channel JSON');}
-    assert.equal(Array.isArray(value),channel==='beta'||launcher,'Invalid JihuLab channel shape');
+    assert.equal(Array.isArray(value),channel==='beta','Invalid JihuLab channel shape');
     const releases=Array.isArray(value)?value:[value];assert.ok(releases.length>0,'Empty JihuLab beta channel');
     for(const item of releases) {
         assert.ok(item&&item.draft===false&&item.prerelease===(channel==='beta'),'Invalid JihuLab channel release');
@@ -437,13 +437,12 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
         return {missing:false,commit:value.last_commit_id,sha256:digest,bytes};
     }
     function validatePromotion(p,object,current,targetBytes) {
-        const launcher=object.key==='channels/launcher-stable.json';
-        const target=channelReleases(targetBytes,p.plan.channel,launcher);
+        const target=channelReleases(targetBytes,p.plan.channel);
         assert.equal(target.length,1,'JihuLab sealed channel must identify one target release');
         assert.equal(target[0].tag_name,p.plan.tag,'JihuLab sealed channel has a different target release');
         if(current.missing)return;
         const desired=version(p.plan.tag);
-        for(const release of channelReleases(current.bytes,p.plan.channel,launcher)) {
+        for(const release of channelReleases(current.bytes,p.plan.channel)) {
             const old=version(release.tag_name),different=old.findIndex((number,index)=>number!==desired[index]);
             assert.ok(different<0||old[different]<desired[different],'Refusing to downgrade JihuLab channel');
             assert.ok(release.tag_name!==p.plan.tag||current.sha256===object.sha256,
@@ -453,14 +452,9 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
     async function targetBytes(object) {
         const local=await sealedFile(object,{channel:true});try {return local.bytes;}finally {await local.descriptor.close();}
     }
-    const checkCoreAnchor=async p=>verifyPublishedCoreAnchor(p.plan,async key=>{
-        const response=await readPublic(key,fetcher,totalTimeout,{revalidate:true});
-        assert.equal(response.status,200,'Cannot verify published core anchor');
-        const budget=deadline(totalTimeout);try{return await bodyBytes(response,budget.signal,4*1024*1024);}finally{budget.close();}
-    });
     const channelPromotion={
         async check(p) {
-            const objects=pointers(p);await checkCoreAnchor(p);
+            const objects=pointers(p);
             const bytes=await Promise.all(objects.map(targetBytes));await preflight();
             await verifyPreparedIdentities(p);
             const entries=[];
@@ -471,7 +465,7 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
             snapshots.set(p,{tag:p.plan.tag,entries});
         },
         async promote(object,p) {
-            const objects=pointers(p,object);await checkCoreAnchor(p);const baseline=snapshots.get(p);
+            const objects=pointers(p,object);const baseline=snapshots.get(p);
             assert.ok(baseline&&baseline.tag===p.plan.tag&&baseline.entries.length===objects.length
                 &&objects.every((target,index)=>target.key===baseline.entries[index].key&&target.sha256===baseline.entries[index].sha256),
                 'JihuLab channel promotion requires a matching checked snapshot');
@@ -484,20 +478,7 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
                     'JihuLab channel compare-and-swap conflict: checked snapshot changed');
                 validatePromotion(p,target,current,bytes[index]);currents.push(current);
             }
-            if(objects.length===2){
-                if(objects.some((target,index)=>currents[index].missing||currents[index].sha256!==target.sha256)){
-                    // One repository commit applies both sealed file actions. Each
-                    // existing file carries its own CAS identity; concurrent create
-                    // or update rejects the complete commit, never half the pair.
-                    const actions=objects.map((target,index)=>({action:currents[index].missing?'create':'update',
-                        file_path:target.key,encoding:'base64',content:bytes[index].toString('base64'),
-                        ...(currents[index].missing?{}:{last_commit_id:currents[index].commit})}));
-                    const {value}=await api(`${projectApi}/repository/commits`,{method:'POST',allowed:[201],body:JSON.stringify({
-                        branch:config.branch,commit_message:`Publish Nora Tavern ${p.plan.channel} ${p.plan.tag}`,actions})});
-                    assert.ok(typeof value?.id==='string'&&/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value.id),
-                        'Invalid JihuLab channel commit receipt');
-                }
-            }else if(currents[0].missing||currents[0].sha256!==object.sha256) {
+            if(currents[0].missing||currents[0].sha256!==object.sha256) {
                 const current=currents[0];
                 const body={branch:config.branch,commit_message:`Publish Nora Tavern ${p.plan.channel} ${p.plan.tag}`,
                     encoding:'base64',content:bytes[0].toString('base64'),...(current.missing?{}:{last_commit_id:current.commit})};
@@ -507,7 +488,7 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
             }
             for(const target of objects)await verifyObject(target);
         },
-        async verify(object,p) {const objects=pointers(p,object);await checkCoreAnchor(p);for(const target of objects)await verifyObject(target);},
+        async verify(object,p) {const objects=pointers(p,object);for(const target of objects)await verifyObject(target);},
     };
     return {preflight,upload,readPublic,verifyObject,verifyIdentity,verifyPreparedIdentities,channelPromotion};
 }
