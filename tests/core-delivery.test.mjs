@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {targets,files,digest,json,nativeChecks,qualificationChecks} from '../tooling/release/core-assets.mjs';
+import {targets,files,digest,json,nativeChecks,qualificationChecks,verifyCoreDirectory} from '../tooling/release/core-assets.mjs';
 import {assembleCore,verifyBatch} from '../tooling/release/assemble-core.mjs';
 import {prepareDistribution,assertRemoteTag} from '../tooling/release/publish-release.mjs';
-import {deliveryAsset,pinPath,declareLegacyApp,assertLegacyAppHead} from '../tooling/release/legacy-app-delivery.mjs';
+import {deliveryAsset,pinPath,declareLegacyApp,assertLegacyAppHead,verifyLegacyDelivery} from '../tooling/release/legacy-app-delivery.mjs';
 import {prepareRuntime} from '../tooling/runtime/runtime-inputs.mjs';
 
 // Synthetic byte-closure fixtures. These do not establish native installation acceptance.
@@ -76,13 +76,31 @@ test('runtime fetch is pinned, bounded and has no latest or adjacent-source fall
  fs.appendFileSync(path.join(value.directory,'runtime.zip'),'changed');await assert.rejects(prepareRuntime({directory,target,offline:true}),/size|checksum/);
 });
 
-test('legacy bridge preserves exact original APP bytes and rejects pin drift or unapproved desktop assets',async t=>{
- for(const kind of ['version','pin','zip','commit','extra'])await t.test(kind,child=>{
-  const f=fixture(child);
-  if(kind==='extra'){f.assemble();fs.writeFileSync(path.join(f.output,'Nora-Tavern-Launcher-extra.exe'),'forbidden');assert.throws(()=>verifyBatch(f.output));return;}
-  if(kind==='zip')fs.appendFileSync(path.join(f.legacyCache,'Nora-Tavern-Launcher-0.1.1-win32-x64-update.zip'),'tampered');
-  else for(const target of targets){const file=path.join(f.incoming,'core-'+target,'assets/release-manifest.json'),product=json(file);if(kind==='version')product.launcherVersion='0.1.0';if(kind==='pin')product.sourceFiles[pinPath]='0'.repeat(64);if(kind==='commit')product.legacyAppDelivery.origin.commit='c'.repeat(40);fs.writeFileSync(file,JSON.stringify(product));const receiptFile=path.join(f.incoming,'core-'+target,'acceptance.json'),receipt=json(receiptFile);receipt.files=files(path.dirname(file));fs.writeFileSync(receiptFile,JSON.stringify(receipt));}
-  assert.throws(f.assemble);assert.equal(fs.existsSync(f.output),false);
+test('legacy delivery rejects each specific identity and compatibility mismatch',async t=>{
+ const cases=[
+  ['version',p=>{p.launcherVersion='0.0.1';},(e,pin)=>e.actual==='0.0.1'&&e.expected===pin.version],
+  ['source pin',p=>{p.sourceFiles[pinPath]='0'.repeat(64);},e=>e.message.includes('Legacy pin is outside accepted source')],
+  ['origin',p=>{p.legacyAppDelivery.origin.commit='f'.repeat(40);},(e,pin)=>e.actual?.commit==='f'.repeat(40)&&e.expected?.commit===pin.origin.commit],
+  ['compatibility',p=>{p.updateCompatibility.launcherVersions=['0.0.1'];},e=>e.message.includes('Published APP is outside reviewed core compatibility')],
+ ];
+ for(const [name,change,reason]of cases)await t.test(name,child=>{
+  const f=fixture(child);f.assemble();const product=json(path.join(f.output,'release-manifest.json'));
+  assert.deepEqual(verifyLegacyDelivery(f.output,product,{complete:true}),f.pin);
+  const changed=structuredClone(product);change(changed);
+  assert.throws(()=>verifyLegacyDelivery(f.output,changed,{complete:true}),error=>reason(error,f.pin));
+  assert.deepEqual(verifyLegacyDelivery(f.output,product,{complete:true}),f.pin,'Unchanged complete fixture remains valid');
+ });
+});
+test('assembly refuses altered original ZIP bytes and the core validator rejects unpinned desktop assets',async t=>{
+ await t.test('zip',child=>{
+  const f=fixture(child);fs.appendFileSync(path.join(f.legacyCache,'Nora-Tavern-Launcher-0.1.1-win32-x64-update.zip'),'tampered');
+  assert.throws(f.assemble,{message:'Input size differs: Nora-Tavern-Launcher-0.1.1-win32-x64-update.zip'});
+  assert.equal(fs.existsSync(f.output),false);
+ });
+ await t.test('extra',child=>{
+  const f=fixture(child);f.assemble();verifyCoreDirectory(f.output,{commit:f.commit});
+  fs.writeFileSync(path.join(f.output,'Nora-Tavern-Launcher-extra.exe'),'forbidden');
+  assert.throws(()=>verifyCoreDirectory(f.output,{commit:f.commit}),/Unpinned desktop asset in core publication/);
  });
 });
 test('APP metadata uses its own pinned version and source, independently from the maintenance minimum',t=>{
