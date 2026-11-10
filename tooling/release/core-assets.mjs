@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+import {verifyLegacyDelivery} from './legacy-app-delivery.mjs';
 export const targets=Object.freeze(['darwin-arm64','darwin-x64','win32-x64']);
 export const qualificationChecks=Object.freeze(['backup-safety','repository-and-delivery','core-consumers','mcp-unit','mcp-integration','story-profile','tavern-workflows']);
 export const nativeChecks=Object.freeze({outcome:'passed',runtime:'verified',coldInitialization:'verified-real-sealed-offline',firstInstall:'verified',http:'verified',hermesSkills:'verified',mcp:'verified',modelConfiguration:'verified-local-A-to-B-model-requests',committedFirstInstall:'verified-real-resume-without-reinstall',executorHandles:'verified-closed',stop:'verified'});
@@ -50,12 +51,16 @@ export function verifyCoreDirectory(root,{commit,target,allowCandidate=false}={}
   const system=json(path.join(systemRoot,`nora-system-${id}.json`));
   assert.equal(system.schema,'nora-system/v1');assert.equal(`${system.platform}-${system.arch}`,id);
   assert.equal(system.commit,product.commit);assert.equal(system.version,product.versions.tavern);
+  assert.equal(system.launcherVersion,product.launcherVersion,'Platform APP version differs');
   if(!allowCandidate)assert.equal(system.candidate,false);
   for(const entry of Object.values(system.files))checkedFile(path.join(systemRoot,entry.asset),entry);
   const metadata=system.files['release-manifest.json'];const platformProduct=json(path.join(systemRoot,metadata.asset));
   assert.equal(platformProduct.commit,product.commit);assert.deepEqual(platformProduct.sourceFiles,product.sourceFiles,'Platform source differs');
   assert.deepEqual(platformProduct.externalInputs,product.externalInputs,'Platform shared input differs');
+  assert.equal(platformProduct.launcherVersion,product.launcherVersion);assert.deepEqual(platformProduct.legacyAppDelivery,product.legacyAppDelivery,'Platform delivery adapter differs');
  }
- const all=files(root);assert.ok(!Object.keys(all).some(name=>/Nora-Tavern-Launcher|nora-launcher-|\.(?:exe|dmg|asar)$/.test(name)),'Desktop asset in core publication');
+ const pin=verifyLegacyDelivery(root,product,{complete:!target});
+ const allowed=new Set(target?[]:Object.keys(pin.assets).filter(name=>name!=='release-manifest.json'));
+ const all=files(root);assert.ok(!Object.keys(all).some(name=>/Nora-Tavern-Launcher|nora-launcher-|\.(?:exe|dmg|asar)$/.test(name)&&!allowed.has(name)),'Unpinned desktop asset in core publication');
  return {product,files:all};
 }

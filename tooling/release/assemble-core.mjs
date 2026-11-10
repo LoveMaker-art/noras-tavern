@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {targets,files,json,verifyCoreDirectory,nativeChecks,qualificationChecks} from './core-assets.mjs';
+import {copyLegacyDelivery,prepareLegacyInputs} from './legacy-app-delivery.mjs';
 
 function verifyAcceptance(proof,target,commit) {
  assert.equal(proof.schema,'nora-core-platform-acceptance/1');assert.equal(proof.commit,commit);assert.equal(proof.target,target);assert.equal(proof.qualified,true);
@@ -13,7 +14,7 @@ function verifyAcceptance(proof,target,commit) {
  for(const hash of [proof.sourceGate.sourceDigest,proof.inputs.maintenance,proof.inputs.runtime,proof.native.manifestSha256])assert.match(hash,/^[a-f0-9]{64}$/);
 }
 
-export function assembleCore({incoming,output,commit}) {
+export function assembleCore({incoming,output,commit,legacyCache=path.resolve('.cache/legacy-app')}) {
  assert.match(commit,/^[a-f0-9]{40}$/);assert.ok(!fs.existsSync(output),'Do not replace a sealed batch');
  const accepted={};
  for(const target of targets){const directory=path.join(incoming,'core-'+target),receipt=json(path.join(directory,'acceptance.json')),assets=path.join(directory,'assets');
@@ -31,6 +32,7 @@ export function assembleCore({incoming,output,commit}) {
    for(const name of ['nora-tavern-first-install-bootstrap.py','tavern-updater-bootstrap.py','install-nora-tavern.sh','install-nora-tavern.ps1','install-tavern-updater.sh'])assert.deepEqual(accepted[target].files[name],accepted[targets[0]].files[name],'Platform bootstrap bytes differ');
    for(const name of fs.readdirSync(path.join(assets,'system-assets')))fs.copyFileSync(path.join(assets,'system-assets',name),path.join(output,name),fs.constants.COPYFILE_EXCL);
   }
+  copyLegacyDelivery(output,json(path.join(output,'release-manifest.json')),legacyCache);
   verifyCoreDirectory(output,{commit});
   const receipt={schema:'nora-core-batch-acceptance/1',commit,targets:accepted,files:files(output)};
   fs.writeFileSync(path.join(output,'core-batch-acceptance.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
@@ -49,5 +51,5 @@ export function verifyBatch(root,{commit}={}) {
  return {receipt,...checked};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- const [incoming,output,commit]=process.argv.slice(2);assert.ok(incoming&&output&&commit);assembleCore({incoming:path.resolve(incoming),output:path.resolve(output),commit});
+ const [incoming,output,commit]=process.argv.slice(2);assert.ok(incoming&&output&&commit);const legacyCache=await prepareLegacyInputs();assembleCore({incoming:path.resolve(incoming),output:path.resolve(output),commit,legacyCache});
 }

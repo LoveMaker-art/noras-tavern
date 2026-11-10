@@ -1,0 +1,46 @@
+{
+  "schema": "nora-legacy-app-delivery/1",
+  "origin": {
+    "repository": "LoveMaker-art/noras-tavern",
+    "tag": "v2.6.5",
+    "commit": "4a0e17866131674c1ff03e29c5791f703a0e3957"
+  },
+  "version": "2.2.9",
+  "assets": {
+    "nora-launcher-darwin-arm64.json": {
+      "size": 343,
+      "sha256": "77fe2e96fa93d48f0083242e9581f755dceb118803ed63d842ce3a16b55c4214",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/nora-launcher-darwin-arm64.json"
+    },
+    "nora-launcher-darwin-x64.json": {
+      "size": 339,
+      "sha256": "358519574b8c0f1e34acf12f7f98bc014e056d0d2c0977172931955e02257c59",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/nora-launcher-darwin-x64.json"
+    },
+    "nora-launcher-win32-x64.json": {
+      "size": 337,
+      "sha256": "1b7e6e8fb3681e5b68e163f2c96c87fd313c3e05f61cce85e6eab16b2039432c",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/nora-launcher-win32-x64.json"
+    },
+    "Nora-Tavern-Launcher-2.2.9-darwin-arm64-update.zip": {
+      "size": 141221860,
+      "sha256": "5b9f4f202f99953d9c3fa477a27a817e9587bc6ffacd2b9585f8c1babac50c4c",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/Nora-Tavern-Launcher-2.2.9-darwin-arm64-update.zip"
+    },
+    "Nora-Tavern-Launcher-2.2.9-darwin-x64-update.zip": {
+      "size": 147908966,
+      "sha256": "6f93a9ac2e304b9df2a0c23a453f009a6ba208bbe80b0d386963111e01085674",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/Nora-Tavern-Launcher-2.2.9-darwin-x64-update.zip"
+    },
+    "Nora-Tavern-Launcher-2.2.9-win32-x64-update.zip": {
+      "size": 150508608,
+      "sha256": "532e2a44195457306b92fa1de78143c8842c27cbe81165ca72bebb8d7fe5b045",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/Nora-Tavern-Launcher-2.2.9-win32-x64-update.zip"
+    },
+    "release-manifest.json": {
+      "size": 653681,
+      "sha256": "ba324724b80fbbc55c43212cd30fbf8eac081a7b7ebb0702975e326dfdb3d7e5",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/release-manifest.json"
+    }
+  }
+}

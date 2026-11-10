@@ -9,6 +9,7 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {targets,digest,checkedFile,json} from './core-assets.mjs';
 import {buildCommand} from './build-commands.mjs';
+import {verifyLegacyConsumers} from './legacy-core-consumer.mjs';
 
 async function consume({plan,release}) {
  assert.ok(plan?.objects&&release,'Final consumer requires a sealed core distribution');
@@ -57,7 +58,7 @@ async function consume({plan,release}) {
     assert.ok(expected);assert.equal(digest(Buffer.from(selected.releaseManifestText)),expected.sha256,'Core selected different metadata');
     modes[mode]={planValidated:true,manifestSha256:expected.sha256};
    }report.platforms[target]=modes;
-  }return {...report,requests:calls};
+  }return {...report,requests:calls,legacyApp:await verifyLegacyConsumers({plan,release})};
  } finally {for(const name of Object.keys(require.cache))if(name.startsWith(directory+path.sep))delete require.cache[name];fs.rmSync(directory,{recursive:true,force:true});}
 }
 export async function verifyFinalConsumers(publication) {

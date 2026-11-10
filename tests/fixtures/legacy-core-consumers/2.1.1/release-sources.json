@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "primary": "github",
+  "mirrors": [
+    {
+      "id": "sourceforge",
+      "provider": "sourceforge",
+      "baseUrl": "https://downloads.sourceforge.net/project/nora-tavern/"
+    }
+  ]
+}

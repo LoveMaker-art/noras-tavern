@@ -6,6 +6,7 @@ import {configurePublication,readPublicationCompatibility,writeSystemRelease} fr
 import {buildCommand} from './build-commands.mjs';
 import {assertNoraSystemArtifacts,collectRuntimeFiles,createReleaseSource,digest,groupRuntimeModules,materializeUpdaterDependencies,UPDATER_DEPENDENCY_ROOT} from './release-source.mjs';
 import {readMaintenancePin} from '../maintenance-input.mjs';
+import {declareLegacyApp,deliveryAsset} from './legacy-app-delivery.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const candidate=process.argv.includes('--candidate');
 const explicitOption=name=>{const positions=process.argv.flatMap((value,index)=>value===name?[index]:[]);if(!positions.length)return undefined;const value=process.argv[positions[0]+1];if(positions.length!==1||!value||value.startsWith('--'))throw Error('Missing or duplicate '+name);return value;};
@@ -14,9 +15,13 @@ const publicationTag=explicitOption('--publication-tag'),compatibilityFile=expli
 const runtimeManifestPath=explicitOption('--hermes-runtime-manifest');
 const componentsOnly=!runtimeManifestPath;
 if(runtimeManifestPath&&process.argv.includes('--components-only'))throw Error('Component builds do not accept a runtime manifest');
-const minimumLauncherVersion=readMaintenancePin(root).compatibility.minimumLauncherVersion;
-const {updateCompatibility}=readPublicationCompatibility(root,{versions:{tavern:fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim()},launcherVersion:minimumLauncherVersion},{compatibilityFile,candidate});
 const { stage, files, identity } = createReleaseSource(root, { candidate });
+const minimumLauncherVersion=readMaintenancePin(stage).compatibility.minimumLauncherVersion;
+const legacy=declareLegacyApp(identity,stage);
+Object.assign(identity,legacy.identity);
+// createReleaseSource already binds the immutable Git export for stable builds.
+// Read the declaration from that export, never a second live worktree read.
+const {updateCompatibility}=readPublicationCompatibility(stage,{versions:{tavern:fs.readFileSync(path.join(stage,'app/.tavern-release-version'),'utf8').trim()},launcherVersion:legacy.pin.version},{compatibilityFile,candidate:true});
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
     const resolved = buildCommand(command, args);
@@ -32,8 +37,7 @@ function copyPackageFile(source, target) {
 
 
 try {
-    // Retain the versioned installed-consumer compatibility field; no APP is built.
-    identity.launcherVersion=minimumLauncherVersion;
+    // Advertise the actual immutable APP delivery, separately from its minimum floor.
     const mcp = path.join(stage, 'nora-mcp');
         run('npm', ['ci', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])]);
         const mcpInstall = (fs.existsSync(path.join(mcp,'package-lock.json'))||fs.existsSync(path.join(mcp,'npm-shrinkwrap.json'))) ? 'ci' : null;
@@ -51,6 +55,7 @@ try {
     assertNoraSystemArtifacts(members);
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
+    fs.writeFileSync(path.join(release,deliveryAsset),legacy.bytes,{flag:'wx'});
     const checksums = [];
     identity.archives = {};
     for (const part of ['app', 'ops', 'nora-mcp']) {
@@ -202,7 +207,7 @@ try {
         for(const name of ['release-manifest.json','SHA256SUMS','nora-tavern-app.tar.gz','nora-tavern-ops.tar.gz',
             'nora-tavern-nora-mcp.tar.gz','nora-tavern-first-install-bootstrap.py','tavern-updater-bootstrap.py',
             'first-install-manifest.json',...runtimePayloadNames])copyPackageFile(path.join(release,name),path.join(payload,name));
-        writeSystemRelease({release,payload,identity,launcherVersion:minimumLauncherVersion,minimumLauncherVersion});
+        writeSystemRelease({release,payload,identity,launcherVersion:legacy.pin.version,minimumLauncherVersion});
     }
     const classification = candidate ? 'candidate' : 'stable';
     console.log(`release=${release}\nclassification=${classification}`);

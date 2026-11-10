@@ -10,6 +10,7 @@ import {jihulabProvider} from './jihulab-provider.mjs';
 import {createJihuTransport} from './jihulab-transport.mjs';
 import {buildOwnedJihuSource} from './release-policy.mjs';
 import {releasePublicationTag} from './system-release.mjs';
+import {assertLegacyAppHead} from './legacy-app-delivery.mjs';
 
 export {buildOwnedJihuSource} from './release-policy.mjs';
 const repository='LoveMaker-art/noras-tavern';
@@ -55,8 +56,13 @@ export async function publishCore(options) {
  let providers;
  if(stage!=='seal'){
   await assertRemoteTag(tag,commit);
+  await assertLegacyAppHead(verifyBatch(root,{commit}).product);
   const transport=createJihuTransport(process.env.NORA_JIHULAB_UPLOAD_CONFIG,{source:buildOwnedJihuSource()});
   providers={github:githubProvider({repository}),jihulab:jihulabProvider({...transport})};
+  for(const provider of Object.values(providers)){
+   const promote=provider.promote;
+   provider.promote=async publication=>{await assertLegacyAppHead(verifyBatch(root,{commit}).product);return promote.call(provider,publication);};
+  }
  }
  await executePublication(publication,{stage,providers});
  return publication;

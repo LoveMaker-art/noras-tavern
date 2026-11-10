@@ -6,28 +6,37 @@ import path from 'node:path';
 import {targets,files,digest,json,nativeChecks,qualificationChecks} from '../tooling/release/core-assets.mjs';
 import {assembleCore,verifyBatch} from '../tooling/release/assemble-core.mjs';
 import {prepareDistribution,assertRemoteTag} from '../tooling/release/publish-release.mjs';
+import {deliveryAsset,pinPath,declareLegacyApp,assertLegacyAppHead} from '../tooling/release/legacy-app-delivery.mjs';
 import {prepareRuntime} from '../tooling/runtime/runtime-inputs.mjs';
 
 // Synthetic byte-closure fixtures. These do not establish native installation acceptance.
 function fixture(t) {
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'core-publication-contract-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const incoming=path.join(root,'incoming'),output=path.join(root,'batch'),commit='a'.repeat(40);fs.mkdirSync(incoming);
+ const legacyCache=path.join(root,'legacy-cache');fs.mkdirSync(legacyCache);
+ const original=Buffer.from(JSON.stringify({commit:'b'.repeat(40),launcherVersion:'0.1.1',candidate:false,dirty:false}));
+ const contents={'release-manifest.json':original};
+ for(const target of targets){const name=`Nora-Tavern-Launcher-0.1.1-${target}-update.zip`,bytes=Buffer.from('synthetic unchanged APP '+target),[platform,arch]=target.split('-');contents[name]=bytes;contents[`nora-launcher-${target}.json`]=Buffer.from(JSON.stringify({schema:'nora-launcher/v1',version:'0.1.1',commit:'b'.repeat(40),candidate:false,platform,arch,asset:name,size:bytes.length,sha256:digest(bytes)}));}
+ const pin={schema:'nora-legacy-app-delivery/1',origin:{repository:'LoveMaker-art/noras-tavern',tag:'v2.6.5',commit:'b'.repeat(40)},version:'0.1.1',assets:Object.fromEntries(Object.entries(contents).map(([name,bytes])=>[name,{size:bytes.length,sha256:digest(bytes),url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.6.5/${name}`}]))};
+ const pinBytes=Buffer.from(JSON.stringify(pin)+'\n');for(const [name,bytes]of Object.entries(contents))fs.writeFileSync(path.join(legacyCache,name),bytes);
+ fs.mkdirSync(path.join(root,'tooling/release'),{recursive:true});fs.writeFileSync(path.join(root,pinPath),pinBytes);
  for(const target of targets){const directory=path.join(incoming,'core-'+target),assets=path.join(directory,'assets'),systemAssets=path.join(assets,'system-assets');fs.mkdirSync(systemAssets,{recursive:true});
   const archives={};for(const part of ['app','ops','nora-mcp']){const name=`nora-tavern-${part}.tar.gz`,bytes=Buffer.from('synthetic '+part);fs.writeFileSync(path.join(assets,name),bytes);archives[part]={name,size:bytes.length,sha256:digest(bytes)};}
-  const product={schema:'tavern-release/v2',commit,candidate:false,dirty:false,versions:{tavern:'2.7.0'},sourceFiles:{'core.js':'f'.repeat(64)},externalInputs:{maintenance:{sha256:'b'.repeat(64)}},artifacts:{},archives,modules:{}};
+  const product={schema:'tavern-release/v2',commit,candidate:false,dirty:false,versions:{tavern:'2.7.0'},launcherVersion:pin.version,legacyAppDelivery:{asset:deliveryAsset,size:pinBytes.length,sha256:digest(pinBytes),version:pin.version,origin:pin.origin},updateCompatibility:{launcherVersions:[pin.version]},sourceFiles:{'core.js':'f'.repeat(64),[pinPath]:digest(pinBytes)},externalInputs:{maintenance:{sha256:'b'.repeat(64)}},artifacts:{},archives,modules:{}};
+  fs.writeFileSync(path.join(assets,deliveryAsset),pinBytes);
   const bytes=Buffer.from(JSON.stringify(product)+'\n');fs.writeFileSync(path.join(assets,'release-manifest.json'),bytes);
   const name=`${target}-release-manifest.json`;fs.writeFileSync(path.join(systemAssets,name),bytes);
-  const [platform,arch]=target.split('-');fs.writeFileSync(path.join(systemAssets,`nora-system-${target}.json`),JSON.stringify({schema:'nora-system/v1',platform,arch,commit,version:'2.7.0',candidate:false,files:{'release-manifest.json':{asset:name,size:bytes.length,sha256:digest(bytes)}}}));
+  const [platform,arch]=target.split('-');fs.writeFileSync(path.join(systemAssets,`nora-system-${target}.json`),JSON.stringify({schema:'nora-system/v1',platform,arch,commit,launcherVersion:pin.version,version:'2.7.0',candidate:false,files:{'release-manifest.json':{asset:name,size:bytes.length,sha256:digest(bytes)}}}));
   const receipt={schema:'nora-core-platform-acceptance/1',commit,target,qualified:true,sourceGate:{checks:qualificationChecks.map(name=>({name,status:0,signal:null,error:null})),sourceDigest:'c'.repeat(64)},inputs:{maintenance:'d'.repeat(64),runtime:'e'.repeat(64)},native:{checks:nativeChecks,actorGatePassed:true,manifestSha256:digest(bytes)},files:files(assets)};
   fs.writeFileSync(path.join(directory,'acceptance.json'),JSON.stringify(receipt));
  }
- return {root,incoming,output,commit,assemble:()=>assembleCore({incoming,output,commit})};
+ return {root,incoming,output,commit,legacyCache,pin,assemble:()=>assembleCore({incoming,output,commit,legacyCache})};
 }
 test('core batch assembles accepted bytes and advertises only its core stable channel',async t=>{
  const f=fixture(t);f.assemble();const before=files(f.output);verifyBatch(f.output,{commit:f.commit});
  const distribution=await prepareDistribution({root:f.output,output:path.join(f.root,'state/discovery'),tag:'v2.7.0',commit:f.commit});
  assert.deepEqual(distribution.plan.objects.filter(o=>o.phase==='channel').map(o=>o.key),['channels/stable.json']);
- assert.ok(distribution.release.assets.every(a=>!a.name.includes('Launcher')));assert.deepEqual(files(f.output),before,'Sealing must not rewrite accepted assets');
+ assert.equal(distribution.release.assets.filter(a=>a.name.includes('Launcher')).length,3);assert.equal(distribution.release.assets.some(a=>/\.(exe|dmg|asar)$/.test(a.name)),false);assert.deepEqual(files(f.output),before,'Sealing must not rewrite accepted assets');
 });
 test('missing platform, failed native outcome, missing backup gate or changed fixed input cannot assemble',async t=>{
  for(const kind of ['missing','native','backup','input','bytes','source'])await t.test(kind,child=>{
@@ -65,4 +74,30 @@ test('runtime fetch is pinned, bounded and has no latest or adjacent-source fall
  const calls=[];const value=await prepareRuntime({directory,target,fetcher:async url=>{calls.push(url);return new Response(url.endsWith('.json')?manifest:archive);}});
  assert.equal(calls.length,2);assert.ok(calls.every(url=>url.includes('/v1.0.0/')));assert.equal(value.origin.commit,origin.commit);
  fs.appendFileSync(path.join(value.directory,'runtime.zip'),'changed');await assert.rejects(prepareRuntime({directory,target,offline:true}),/size|checksum/);
+});
+
+test('legacy bridge preserves exact original APP bytes and rejects pin drift or unapproved desktop assets',async t=>{
+ for(const kind of ['version','pin','zip','commit','extra'])await t.test(kind,child=>{
+  const f=fixture(child);
+  if(kind==='extra'){f.assemble();fs.writeFileSync(path.join(f.output,'Nora-Tavern-Launcher-extra.exe'),'forbidden');assert.throws(()=>verifyBatch(f.output));return;}
+  if(kind==='zip')fs.appendFileSync(path.join(f.legacyCache,'Nora-Tavern-Launcher-0.1.1-win32-x64-update.zip'),'tampered');
+  else for(const target of targets){const file=path.join(f.incoming,'core-'+target,'assets/release-manifest.json'),product=json(file);if(kind==='version')product.launcherVersion='0.1.0';if(kind==='pin')product.sourceFiles[pinPath]='0'.repeat(64);if(kind==='commit')product.legacyAppDelivery.origin.commit='c'.repeat(40);fs.writeFileSync(file,JSON.stringify(product));const receiptFile=path.join(f.incoming,'core-'+target,'acceptance.json'),receipt=json(receiptFile);receipt.files=files(path.dirname(file));fs.writeFileSync(receiptFile,JSON.stringify(receipt));}
+  assert.throws(f.assemble);assert.equal(fs.existsSync(f.output),false);
+ });
+});
+test('APP metadata uses its own pinned version and source, independently from the maintenance minimum',t=>{
+ const f=fixture(t),sourceFiles={[pinPath]:digest(fs.readFileSync(path.join(f.root,pinPath)))};
+ const value=declareLegacyApp({commit:f.commit,sourceFiles,bootstrap:{minimumLauncherVersion:'0.1.0'}},f.root);
+ assert.equal(value.identity.launcherVersion,'0.1.1');assert.equal(value.identity.legacyAppDelivery.origin.commit,'b'.repeat(40));assert.equal(value.identity.commit,f.commit);
+ assert.throws(()=>declareLegacyApp({sourceFiles:{[pinPath]:'0'.repeat(64)}},f.root),/captured source/);
+});
+test('publication refuses a stale APP pin from either catalogue without performing writes',async t=>{
+ for(const newer of ['none','primary','github','unavailable'])await t.test(newer,async child=>{
+  const f=fixture(child);f.assemble();const product=json(path.join(f.output,'release-manifest.json')),api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases',primary='https://example.invalid/channels/launcher-stable.json',calls=[];
+  const manifests={old:JSON.stringify({schema:'tavern-release/v2',candidate:false,dirty:false,launcherVersion:'0.1.1'}),new:JSON.stringify({schema:'tavern-release/v2',candidate:false,dirty:false,launcherVersion:'0.1.2'})};
+  const release=(kind)=>({tag_name:kind==='old'?'v2.6.5':'v2.6.6',draft:false,prerelease:false,assets:[{name:'nora-launcher-win32-x64.json'},{name:'release-manifest.json',size:Buffer.byteLength(manifests[kind]),digest:'sha256:'+digest(manifests[kind]),browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/${kind==='old'?'v2.6.5':'v2.6.6'}/release-manifest.json`}]});
+  const options={policy:{reader:{sourceCandidates:()=>[{id:'jihulab',url:primary}]}},fetcher:async(url,init)=>{calls.push(url);assert.equal(init.method,undefined);if(newer==='unavailable')return new Response('',{status:503});if(url===primary)return Response.json([release(newer==='primary'?'new':'old')]);if(url.startsWith(api))return Response.json([release(newer==='github'?'new':'old')]);return new Response(url.includes('/v2.6.6/')?manifests.new:manifests.old);}};
+  if(newer==='none')assert.equal((await assertLegacyAppHead(product,options)).verified,true);else await assert.rejects(assertLegacyAppHead(product,options),/stale|Cannot verify/);
+  assert.ok(calls.length>0);
+ });
 });

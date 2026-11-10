@@ -1,0 +1,14 @@
+{
+  "repository": "LoveMaker-art/noras-tavern",
+  "commit": "2b2e34c10348527fc8b30d2e73bd496106a7415c",
+  "version": "2.1.1",
+  "files": {
+    "deployment/update/releases.js": "676e4c99ad76555355f324b2ccbc304baa52d00ebf922e28e3890c912b38f0c7",
+    "launcher/desktop/launcher-update.js": "4ae84eeb1208fbc8f5d5bca774bc2dece39e0a3c25d085250ffad092fcb89bf7",
+    "launcher/desktop/release-network.js": "968521e3db344369924d6c8c4a6111f3cdbe8e0b08377f1471bcf0b261346704",
+    "launcher/desktop/release-sources.js": "fd833ff2a8edcb8d97bb787d5ee1a497f5bd3393999b0f9e7357bf8eded684b1",
+    "launcher/desktop/release-sources.json": "8dbfbada8a0649cc201d402c962ee1b3680298ae594891b46fd15aca47a1bcee",
+    "launcher/desktop/launcher-errors.js": "13329132b9561032eb607648e43f61a97aa95749b053cf038c07a439d550709d",
+    "launcher/desktop/telemetry-contract.json": "2ad29ab1285fc29c06ef3456c8ee7c3452b5a9967eab1473faf87de351ede595"
+  }
+}
