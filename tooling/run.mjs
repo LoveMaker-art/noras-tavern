@@ -92,6 +92,7 @@ try {
     const invocation = buildCommand(command, mappedArgs);
     const environment = withTestNodePath({ ...process.env, NORA_TEST_NODE: process.env.NORA_TEST_NODE || process.execPath,
         NORA_MAINTENANCE_CACHE:path.resolve(process.env.NORA_MAINTENANCE_CACHE||path.join(root,'.cache/maintenance-input')),
+        NORA_TAVERN_SOURCE:path.join(stage,'app/engine/sillytavern'),
         PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }, process.execPath);
     child = spawn(invocation.command, invocation.args, { cwd: stage, stdio: 'inherit', env: environment });
     for (const [signal, handler] of signalHandlers) process.on(signal, handler);
