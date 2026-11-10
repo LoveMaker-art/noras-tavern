@@ -1,6 +1,6 @@
 # 更新职责与两项更新：独立分支验收记录
 
-开始日期：2026-10-17，最终验收跨至 2026-10-18（北京时间）。依据：[产品基线](../product-baseline.md)、[本次实施方案](../design/update-release-alignment.md)。
+开始日期：2026-10-17，最终验收跨至 2026-10-18（北京时间）。依据：[产品基线](../product-baseline.md)、本次实施方案（原修订 `09b9895:docs/design/update-release-alignment.md`）。
 
 ## 范围和交付状态
 

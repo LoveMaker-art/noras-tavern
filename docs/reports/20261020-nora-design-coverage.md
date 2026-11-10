@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | N-01 人格、语言与普通对话 | [设计](../product/nora.md#conversation) | [nora/SOUL.md](../../nora/SOUL.md) | [test_nora_system.py](../../tests/deployment/test_nora_system.py) |
 | N-02 首次问候与账号资料 | [设计](../product/nora.md#first-greeting) | [nora/greeting.md](../../nora/greeting.md) | [test_greeting_template.py](../../tests/deployment/test_greeting_template.py) |
-| N-03 模型、配对与在线 | [设计](../product/nora.md#connection) | [nora/AGENTS.md](../../nora/AGENTS.md) | [launcher_pair_retry.test.cjs](../../tests/deployment/launcher_pair_retry.test.cjs) |
+| N-03 模型、配对与在线 | [设计](../product/nora.md#connection) | [nora/AGENTS.md](../../nora/AGENTS.md) | launcher_pair_retry.test.cjs（原修订 `09b9895:tests/deployment/launcher_pair_retry.test.cjs`） |
 | N-04 Liveware 与入口通知 | [设计](../product/nora.md#liveware) | [deployment/shared/liveware_notice.py](../../deployment/shared/liveware_notice.py) | [test_liveware_independent_startup.py](../../tests/deployment/test_liveware_independent_startup.py) |
 | N-05 对话修改诺拉模型 | [设计](../product/nora.md#model-configuration) | [nora/skills/system/model-provider-config/scripts/configure_provider.py](../../nora/skills/system/model-provider-config/scripts/configure_provider.py) | [test_model_provider_skill.py](../../tests/deployment/test_model_provider_skill.py) |
 | N-06 目标、授权与回执 | [设计](../product/nora.md#authorized-management) | [nora-mcp/src/tool-policy.ts](../../nora-mcp/src/tool-policy.ts) | [discovery.test.mjs](../../nora-mcp/tests/discovery.test.mjs) |

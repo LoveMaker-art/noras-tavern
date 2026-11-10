@@ -17,6 +17,6 @@ ADR保留作出决策时的背景、备选项和取舍。当前适用范围同�
 | [Use Atomic JSON Manifests With An In-Memory Index](0009-use-json-manifests-with-an-in-memory-index.md) | 按正文的决策及适用范围使用。 |
 | [Create Blank Worlds Through World Core](0010-create-blank-worlds-through-world-core.md) | 共享空白运行卡的选择已部分修订；新世界使用独立副本，详见正文及酒馆设计。 |
 | [Preserve Python story identities in a World-owned cast](0011-world-owned-cast-for-python-data.md) | 按正文的决策及适用范围使用。 |
-| ADR 0012: Separate Runtime Ownership from Process Instance Identity（原修订 `09b9895`，专属材料已迁出） | 按正文的决策及适用范围使用。 |
-| ADR 0013: Snapshot Replaceable Code at Maintenance（原修订 `09b9895`，专属材料已迁出） | 按正文的决策及适用范围使用。 |
-| ADR 0014: Repair Derived Operational State Instead of Treating It as Authority（原修订 `09b9895`，专属材料已迁出） | 按正文的决策及适用范围使用。 |
+| [ADR 0012: Separate Runtime Ownership from Process Instance Identity](0012-separate-runtime-ownership-from-process-instance.md) | 核心进程身份与实际归属；恢复适用正文，保留原修订来源。 |
+| [ADR 0013: Snapshot Replaceable Code at Maintenance](0013-snapshot-replaceable-code-at-maintenance.md) | 核心程序替换、快照与数据保护；历史事务按其协议阅读。 |
+| [ADR 0014: Repair Derived Operational State Instead of Treating It as Authority](0014-repair-derived-operational-state.md) | 派生运行状态与权威数据分开；原时点实现缺口不冒充当前验收。 |

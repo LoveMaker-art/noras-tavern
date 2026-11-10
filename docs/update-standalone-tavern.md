@@ -97,7 +97,7 @@ if ($LASTEXITCODE -ne 0) { throw '原任务未成功或结果尚无法核验；�
 <details>
 <summary>Mac 桌面正式安装：使用原 Library/NoraTavern 目录及 Hermes Python</summary>
 
-**1. 定位原目录。** 自选安装位置时读取默认目录留下的记录；不使用独立 Hermes 的 `~/.hermes` 猜测桌面位置。核对打印结果与启动器“更多 → 安装信息”一致。
+**1. 定位原目录。** 自选安装位置时读取默认目录留下的记录；不使用独立 Hermes 的 `~/.hermes` 猜测桌面位置。核对打印结果与该实例的安装记录、实际 Hermes 目录及酒馆目录一致；结果冲突时先停止，不猜测目录。
 
 ```sh
 nora_root="$HOME/Library/NoraTavern"

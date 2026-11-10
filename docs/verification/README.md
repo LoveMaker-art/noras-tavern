@@ -8,14 +8,6 @@
 
 - [Rolling Chat Backup Safety](chat-backup-retention-safety-20261008.md) — 仍由[酒馆产品设计](../product/tavern.md)引用，包含备份保留和清理边界；同时保留该次验证范围。后续变更先核对现行产品规则。
 
-## 启动器与部署
-
-- [启动器产品收敛对账（2026-10-12）](launcher-product-convergence.md)
-- [启动器主分支整合与源码清理（2026-10-13）](launcher-source-cleanup-20261013.md)
-- [启动器稳定性整顿验收](launcher-stability.md)
-- [启动器测试清理（2026-10-12）](launcher-test-cleanup.md)
-- [启动器卸载验证记录](launcher-uninstall.md)
-
 ## 故事档案、账本与备份
 
 - [Chat Backup UI And MCP Integration - 2026-10-02](chat-backup-mcp-integration-20261002.md)
@@ -43,4 +35,6 @@
 - [Local Main Integration Review - 2026-10-01](local-main-integration-20261001.md)
 - [Local Nora MCP deployment and natural-language acceptance](tavern-mcp-local-acceptance-20260929.md)
 - [Tavern MCP parity implementation status](tavern-mcp-parity-20260929.md)
-- [酒馆 2.5.0 与 GitHub 版本差异报告](v2.5.0-github-diff.md)
+- 酒馆 2.5.0 与 GitHub 版本差异报告（原修订 `09b9895:docs/verification/v2.5.0-github-diff.md`）
+
+已迁出的桌面专属文档不再作为本仓操作入口；保留的混合历史记录使用固定原修订引用追溯，不代表当前产品规则或当前验收通过。完整分类与迁出对照见[文件与文档结构汇总](../reports/20261110-core-documentation-structure.md)。

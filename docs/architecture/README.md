@@ -61,7 +61,6 @@
 
 ## 故事、界面与其他历史记录
 
-- [Nora Tavern 启动器优化记录](NORA-TAVERN-LAUNCHER-OPTIMIZATION-PLAN.md)
 - [Tavern / Story Profile 定向收敛记录](STORY-PROFILE-CLEANUP-20260831.md)
 - [Nora 固定文案与 ST 翻译接口：本地交付记录](TAVERN-BILINGUAL-LOCAL-IMPLEMENTATION.md)
 - [双语化 P0 执行记录](TAVERN-CLAWCHAT-BILINGUAL-P0.md)
@@ -71,3 +70,5 @@
 - [剧情账本 → Story Profile → Hermes 记忆投影](TAVERN-STORY-PROFILE-LEDGER-PROJECTION.md)
 - [World Card character settings](WORLD-CARD-CHARACTER-SETTINGS.md)
 - [World Visuals adaptation (2026-08-31)](WORLD-VISUALS-ADAPTATION-20260831.md)
+
+已迁出的桌面专属文档不再作为本仓操作入口；保留的混合历史记录使用固定原修订引用追溯，不代表当前产品规则或当前验收通过。完整分类与迁出对照见[文件与文档结构汇总](../reports/20261110-core-documentation-structure.md)。

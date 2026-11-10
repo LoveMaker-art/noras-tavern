@@ -50,12 +50,12 @@
 | 删除的源文件 | 唯一维护位置 | 保留内容 |
 | --- | --- | --- |
 | `docs/launcher-install-location.md` | [安装指南：目录选择与重新识别](../install-nora-tavern.md#installation-location) | 目录边界、通道隔离、位置记录、离线保护、卸载重装与原验证范围 |
-| `docs/launcher-shared-logic.md` | [仓库导航：共用职责](../REPOSITORY.md#shared-implementation-boundaries)、[维护机制](../launcher-unified-update.md#maintenance-locks) | 原有职责表中归并实现归属、上下文与启动顺序；锁、恢复闭包及构建约束并入维护机制，四条历史验收原文保留 |
-| `docs/launcher-user-errors.md` | [诊断说明：错误呈现](../launcher-install-diagnostics.md#error-presentation) | 18类技术情况、11类业务码、进度等待、原始原因链、状态未知及2026-10-01历史结果 |
+| `docs/launcher-shared-logic.md` | [仓库导航：共用职责](../REPOSITORY.md#shared-implementation-boundaries)、维护机制（原修订 `09b9895:docs/launcher-unified-update.md#maintenance-locks`） | 原有职责表中归并实现归属、上下文与启动顺序；锁、恢复闭包及构建约束并入维护机制，四条历史验收原文保留 |
+| `docs/launcher-user-errors.md` | 诊断说明：错误呈现（原修订 `09b9895:docs/launcher-install-diagnostics.md#error-presentation`） | 18类技术情况、11类业务码、进度等待、原始原因链、状态未知及2026-10-01历史结果 |
 
 共迁移9处仓库内链接，覆盖总入口、受管文件说明、两份产品文档及两份历史报告。产品文档与两份历史报告仅改链接目的地，不改规则、结论或验收标准。删除文件的完整前文、SHA-256和逐项信息去向保存在本地证据中；Git基线也保留原文件。外部书签不会自动跳转，旧版本仍可按原提交阅读。
 
-[旧更新职责合同](../updater-ownership-contract.md#current-boundary)、[更新历史方案](../design/update-release-alignment.md#record-summary)和[存储生命周期方案](../design/storage-lifecycle-refactor-plan.md#record-summary)各补一段结论，区分仍适用、已替代、已记载实施和当时未验范围；原合同及历史正文保留，相关索引指向摘要。本阶段没有新增公开文档。
+旧更新职责合同（原修订 `09b9895:docs/updater-ownership-contract.md#current-boundary`）、更新历史方案（原修订 `09b9895:docs/design/update-release-alignment.md#record-summary`）和[存储生命周期方案](../design/storage-lifecycle-refactor-plan.md#record-summary)各补一段结论，区分仍适用、已替代、已记载实施和当时未验范围；原合同及历史正文保留，相关索引指向摘要。本阶段没有新增公开文档。
 
 ### 第二阶段验证
 
@@ -90,7 +90,7 @@
 当前步骤与历史材料的处理：
 
 - 发布流程前八节保留执行合同，旧草案和联合更新隔离验收归入同页[历史附录](../release-process.md#historical-release-execution)。仍在现行步骤旁的2026-10-23验证状态明确限定原时点。
-- 可靠性页面保留原章节地址及导航，2026-11-01至11-04实施正文归入[历史续存](20261101-reliability-history.md#retained-tasks-20261101-20261104)。原截至11月1日的部分不改范围或结果，续存另标日期。
+- 可靠性页面保留原章节地址及导航，2026-11-01至11-04实施正文归入历史续存（原修订 `09b9895:docs/reports/20261101-reliability-history.md#retained-tasks-20261101-20261104`）。原截至11月1日的部分不改范围或结果，续存另标日期。
 - 四份早期候选／模块记录在原路径补历史说明，原文保留；Story Profile旧MEMORY剧情投影、八类字段不再冒充当前验收标准。
 - 包内首读和桌面技术说明同步当前下载、APP单项更新与故障退出边界。产品总览只限定新旧事务的实现状态；原产品规则及历史恢复限制保留。
 - ADR0014和Phase7仅补新旧事务／部署对象范围，不修改原决定或历史验收。发行索引区分v2.6.1至v2.6.3未正式发布候选，原发行说明正文保持。

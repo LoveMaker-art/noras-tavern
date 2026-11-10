@@ -107,10 +107,10 @@
 
 | 范围 | 需要证明什么 | 详细标准或证据入口 |
 | --- | --- | --- |
-| 版本与提醒 | 核心／APP 单独变化、同时变化、无变化均选择准确 | [历史方案 A-01](../../design/update-release-alignment.md#5-验收场景与通过条件) |
-| 诺拉入口 | 无 APP 可更新，接管后断开继续，用户内容保留 | 历史方案 A-02／A-07／A-09；[独立更新器验收](../../reports/20261016-shared-independent-updater-acceptance.md) |
+| 版本与提醒 | 核心／APP 单独变化、同时变化、无变化均选择准确 | 历史方案 A-01（原修订 `09b9895:docs/design/update-release-alignment.md#5-验收场景与通过条件`） |
+| 诺拉入口 | 无 APP 可更新，接管后断开继续，用户内容保留 | 历史方案 A-02／A-07／A-09；独立更新器验收（原修订 `09b9895:docs/reports/20261016-shared-independent-updater-acceptance.md`） |
 | 桌面与失败 | 一次完成、兼容部分保留、失败恢复、结束后可重试 | 历史方案 A-03 至 A-09；[恢复补验](../../reports/20261018-recovery-ownership-legacy-admission.md) |
-| 下载与历史来源 | 国内完整下载、适用续传、旧协议和来源版本分别验证 | 历史方案 A-10／A-11；[旧版入口验收](../../reports/20261018-official-old-update-acceptance.md) |
+| 下载与历史来源 | 国内完整下载、适用续传、旧协议和来源版本分别验证 | 历史方案 A-10／A-11；旧版入口验收（原修订 `09b9895:docs/reports/20261018-official-old-update-acceptance.md`） |
 | 最终制品与分发 | 源码、平台、实际组件、摘要与验收一致，用户入口回读 | 历史方案 A-12；[v2.5.4 发行记录](../../reports/20261019-v2.5.4-release-preparation.md) |
 | 发布提速工具 | 判定、分组、证据复用、上传查询与失败续跑真实有效 | [本地流程优化记录](../../release-process.md#2026-10-19-流程优化实施范围)；远端运行与实际提速尚未验证 |
 

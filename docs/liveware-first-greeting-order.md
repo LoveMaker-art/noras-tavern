@@ -64,7 +64,6 @@ Focused regression commands:
 ```sh
 node tooling/run.mjs python3 -B -m unittest tests.deployment.test_liveware_independent_startup
 node tooling/run.mjs python3 -B -m unittest tests.deployment.test_liveware_greeting_order
-node tooling/run.mjs python3 -B -m unittest tests.deployment.test_launcher_shared_logic
 node tooling/run.mjs python3 -B -m unittest discover -s tests/deployment -p 'test_liveware*.py'
 ```
 
