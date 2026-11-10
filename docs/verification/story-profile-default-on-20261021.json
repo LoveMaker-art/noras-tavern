@@ -1,0 +1,44 @@
+{
+  "schema": "nora-story-profile-default-on/1",
+  "date": "2026-10-21",
+  "branch": "codex/story-profile-reliability-20261021",
+  "product_design": "1.22",
+  "authorization": "User explicitly requested default enabled; no first-use opt-in prompt",
+  "changes": [
+    "Default on only when no settings record exists",
+    "Preserve saved true/false across notice versions",
+    "Corrupt settings fail without being replaced or treated as a new user",
+    "Existing switch, story-progress trigger, bounded context and recovery unchanged"
+  ],
+  "verification": {
+    "targeted_tests": {
+      "pass": 53,
+      "fail": 0,
+      "skipped": 0
+    },
+    "generated_source_and_runtime_parity": "PASS",
+    "git_diff_check": "PASS",
+    "preview_api": {
+      "auto_enabled": true,
+      "choice_recorded": false
+    },
+    "preview_browser_checkbox": {
+      "checked": true,
+      "disabled": false
+    },
+    "settings_record_created_by_reads": false,
+    "protected_files_checked": 258,
+    "protected_files_changed": [],
+    "production_health_http": 200
+  },
+  "source_sha256": "e78908b08f94c9b905887eef4788d3388fd02d9951f6460debe58ce626904035",
+  "evidence_directory": "local-state/story-profile-preview-20261021/default-on",
+  "delivery": {
+    "isolated_preview_updated": true,
+    "production_updated": false,
+    "installer_built": false,
+    "committed_or_pushed": false,
+    "published": false
+  },
+  "limits": "New default verified with the real Mac preview and controlled dispatch tests. No new Windows installer acceptance or new paid model request was performed for this default-only change. Earlier model, storage and failure-recovery evidence retains its original hashes."
+}

@@ -1,0 +1,193 @@
+{
+  "schema": "nora-preference-plot-memory-acceptance/1",
+  "date": "2026-10-21",
+  "design_version": "1.25",
+  "branch": "codex/story-profile-reliability-20261021",
+  "base_commit": "cfec1b97457508f83a9cd6af2773b76c48ed26fb",
+  "source_sha256": {
+    "story-profile/core/story_profile.py": "9cf117a0259e09aed08aa97c5d3bce9ebb5887d50e684d62c0f966c8993614bb",
+    "story-profile/core/reflection.py": "f329f6a9bc3bede8adf1936178beb501ffb4cac9634e0441f514402f4c9bea88",
+    "story-profile/adapters/nora/cli.py": "fb982b04efeeaf2d6e996160696ff536b5a9ee0bdb0058d63738184abc2178c1",
+    "story-profile/adapters/nora/model-config.js": "d438173310e23f53692bbd3cff40f4a1727541dce6aa0d0028776dd2036ee73e",
+    "story-profile/public/actor.js": "f253c66604a69a141ab21c9d4d88033a9a75d8ae2692c5735bc9e0c7a5117a22",
+    "app/engine/sillytavern/src/nora-story-ledger/model.js": "b18d2ea721f0000ea9915451f0a7f1e91c3ae1666d7c13d654fa077563c9ea19",
+    "app/engine/sillytavern/src/nora-story-ledger/schema.js": "1de647472c1b270d403e6de670a392089700acfad2a2933322585f848f54e736",
+    "app/engine/sillytavern/src/nora-story-ledger/profile-projection.js": "4a5ce0b41c3e159bb92b827c633f19982cf9955b7da61d6afeb7db753441eed2",
+    "app/engine/sillytavern/src/nora-story-profile.js": "76b8cd4979322a3c28d686bcd9e85303181d180618294ef6df73d15a29338746",
+    "app/engine/sillytavern/src/endpoints/nora-story-profile.js": "1eb3e41005fded14675ac919be37b36378aaa8bd66028edeabb9039606618387",
+    "app/engine/sillytavern/src/nora-world-core/store.js": "19d989f455d888294b6f921d4418bff0c89d8fd474a72721ae0f41bbf7ec0457",
+    "nora-mcp/src/nora-control-plane.ts": "4728f0d272185d971fe12902e397fc02c9e960a09c2ceb56375c1adcf5d3ed84",
+    "nora-mcp/src/server.ts": "a2a3d17ee586e606215c92d517d64f46b8114882d429d309e2782c813a5452e5",
+    "deployment/update/update.py": "427214343bfdabfedd7c74cf7f89c1ad60942f813024e4fd2acf450fbfd9dba6",
+    "app/story_profile_runtime/manifest.json": "3475db200d912a180726be5d2f49d2ac58fb73ee03ccb0e27d96b9d2db75f27c",
+    "app/engine/sillytavern/public/dist/nora/entry.js": "98331db43e53c74afbb28e11e3c47cec4192c842421a21c137807c329ba8ea4c"
+  },
+  "authorization": "独立分支实施 USER.md 偏好精简及剧情账本、故事年表、MEMORY.md 一致流程；保留现有数据，不打包发布",
+  "behavior": {
+    "user_compact_categories": {
+      "story_tastes": 4,
+      "narrative_habits": 3,
+      "co_creation": 3,
+      "boundaries": 4
+    },
+    "preference_value_chars": 100,
+    "preference_body_chars": 1400,
+    "user_default_total_chars": 2000,
+    "user_reserved_chars": 103,
+    "hermes_unmigrated_user_fallback": 1375,
+    "memory_whole_managed_block_chars": 1300,
+    "memory_default_whole_file_chars": 2200,
+    "recent_story_sessions": 3,
+    "preserved": [
+      "legacy eight-field summary",
+      "canonical preferences and learning history",
+      "chats, worlds, characters, model settings",
+      "Hermes unmanaged memory",
+      "explicit automatic switches",
+      "archive controls and intimacy statistics"
+    ],
+    "separate_states": [
+      "canonical save",
+      "USER sync",
+      "MEMORY sync",
+      "saved prepared summary",
+      "activated summary"
+    ]
+  },
+  "verification": {
+    "python_mac": {
+      "passed": 65,
+      "scope": "offline storage/reflection/projection/real child CLI with actual Hermes venv"
+    },
+    "python_windows": {
+      "passed": 65,
+      "failed": 0,
+      "skipped": 0,
+      "source_hashes_match": true,
+      "scope": "actual Windows venv, Unicode files, cross-process locks, projection and recovery; no native browser/UI"
+    },
+    "ledger_http_and_projection": {
+      "passed": 94,
+      "scope": "isolated real HTTP, generated Python CLI, fault and compatibility tests; zero real provider calls in this suite"
+    },
+    "archive_progress_resources": {
+      "passed": 60,
+      "scope": "UI contract, readonly route, resources, source/generated parity and statistics",
+      "delivery_layout_profile_contract_passed": 13,
+      "source_and_delivery_paths_supported": true
+    },
+    "mcp": {
+      "passed": 16,
+      "typecheck": true,
+      "actual_stdio_preview": true,
+      "sessions_read": 8,
+      "raw_text_window": "default30/max100 messages, <=24000 chars of complete messages; omitted history explicit; malformed windows rejected"
+    },
+    "user_limit_config_migration": {
+      "passed": 2,
+      "execution": "documented tooling/run.mjs source-to-delivery export"
+    },
+    "real_provider": {
+      "provider": "Kimi for Coding default authorized test credential",
+      "synthetic_story_user_rounds": 45,
+      "incremental_batches": 3,
+      "ledger_first_pass": true,
+      "final_prompt_followup": true,
+      "final_schema_saved_response_validation": true,
+      "preference_extraction_and_summary": true,
+      "profile_checks": {
+        "extraction_saved": true,
+        "summary_saved": true,
+        "four_categories": true,
+        "explicit_preference_captured": true,
+        "user_unmanaged_preserved": true,
+        "prepared_progress_written": true,
+        "memory_unmanaged_preserved": true,
+        "whole_memory_within_limit": true,
+        "whole_user_within_limit_and_reserve": true,
+        "secret_not_injected_as_player_knowledge": true,
+        "memory_capacity_explicit": true,
+        "user_independent_success": true,
+        "full_memory_not_overwritten": true,
+        "local_recovery_complete": true,
+        "recovery_zero_model_calls": true,
+        "preferences_unchanged_by_recovery": true,
+        "same_job_no_repeat_model": true
+      },
+      "hermes_actual_memory_loader_and_model_read": true,
+      "hermes_checks": {
+        "actual_hermes_loader_used": true,
+        "compact_profile_in_prompt": true,
+        "plot_in_prompt": true,
+        "unmanaged_user_in_prompt": true,
+        "unmanaged_memory_in_prompt": true,
+        "model_uses_preference": true,
+        "model_uses_unfinished_goal": true,
+        "coverage_not_overstated": true,
+        "secret_not_invented": true
+      },
+      "actual_successful_model_requests": 7,
+      "production_user_stories_sent": false,
+      "notes": [
+        "Initial ledger request rejected configured temperature0.1; code now respects saved temperature1 and real requests succeed.",
+        "Final object-ID allowance restored from80 to historical160; saved real responses revalidated against final schema without extra paid reruns.",
+        "Unmanaged memory was prepended by an existing managed block; the first acceptance assertion incorrectly required original text to stay at byte0. Corrected to exact preserved content once; repeat saved job made zero model requests."
+      ]
+    },
+    "browser_mac": {
+      "actual_iab_archive_loaded": true,
+      "plot_yearbook_sessions": 8,
+      "separate_preferences_retained": true,
+      "back_navigation_visible": true,
+      "horizontal_overflow": false,
+      "maintenance_panel_added": false,
+      "screenshot": "local-state/story-profile-preview-20261021/flow-contract-20261021/archive-header.png"
+    },
+    "data_protection": {
+      "preview_protected_existing_files_checked": 1363,
+      "changed": [],
+      "missing": [],
+      "rebuildable_old_asset_cache_replaced": 512,
+      "production_critical_files_checked": 8,
+      "production_changed": []
+    },
+    "source_frontend_build": {
+      "passed": true,
+      "runtime_assets_generated": true,
+      "warnings": "existing webpack entry/lib size advisories; no build errors"
+    },
+    "generated_runtime_parity": true
+  },
+  "faults_exercised": [
+    "empty or reasoning-only model response",
+    "output truncation and invalid JSON/schema",
+    "missing source evidence",
+    "provider refusal and unsupported proxy",
+    "reconnect and unknown request outcome cannot silently repeat generation",
+    "311-round backlog bounded to recent15 instead of full history",
+    "partial extraction/summary and free projection recovery",
+    "concurrent newer preference/source revision protection",
+    "USER/MEM capacity and I/O/config failure independent",
+    "projection receipt write failure cannot reuse stale success",
+    "cross-process writer and interrupted commit recovery",
+    "stale/restore/corrupt ledger readonly fallback without activating or repairing",
+    "overlong negation-tail/id/collection and conflicting ID rejected without clipping",
+    "prepared before activation and metadata-only total changes",
+    "three recent sessions fairly allocated within whole memory block"
+  ],
+  "limits_and_not_tested": [
+    "Formal production and installed runtime untouched; changes active only in independent source/isolated preview.",
+    "No installer build, merge, push or release.",
+    "No full paired ClawChat long-running-session refresh end-to-end this round; prompt cache invalidation covered by isolated storage tests and actual Hermes loader/model read separately.",
+    "Kimi model tests do not establish every provider/model behavior or unlimited historical story recall.",
+    "Compression remains conditional on existing switch and eligibility; read fallback explicitly reports omitted history.",
+    "Existing12-active-preference retirement policy preserved, not redesigned."
+  ],
+  "phase_status": {
+    "implemented": true,
+    "technically_verified": true,
+    "isolated_user_outcome_demonstrated": true,
+    "production_deployed": false,
+    "requested_phase_known_blockers": []
+  }
+}

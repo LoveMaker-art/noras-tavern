@@ -1,0 +1,262 @@
+{
+  "schema": 1,
+  "branch": "codex/fix-pairing-standalone-update",
+  "baseCommit": "db17f67290f4e2b4b6a21d36b7451f37158e2fd7",
+  "candidate": "candidate-db17f67290f4-1792147630631",
+  "candidateSourceDigest": "025840cef1e13bdf0b0ce6e56360c0768cd98d1124d50e951467a831d6678b92",
+  "runtimeFiles": {
+    "deployment/shared/runtime_lock.py": "98eb41cfd568c3def2d62dd1b0020e96e26cffd3edf3c6faa1f5eb4a7615d01f",
+    "deployment/update/bootstrap.py": "69f9ed945b0307834b332d17b75f1a6f1c5b2f351f08fcf7b167300d74ee4047",
+    "deployment/update/recovery.py": "a2de909c84f45df281ed656cbf78651fa0152fdeaf5cfce002848bcc58c29255",
+    "deployment/update/update.py": "6a1170e74760e6578e30e55f649d4906f4115c4aed58000086832dfc078b8beb",
+    "launcher/bridge.py": "6240f1568a8c48cf72aad842d0cb44c4e89b809e86af1f36354200a5e54c51f3",
+    "launcher/desktop/error-presentation.js": "3b377da4a2db5676de7a9f29ccdbd1c152e0d9d94d614b8b242d8b02d715b534",
+    "launcher/desktop/operation-state.js": "67ca5a1107d450fe7cb4adeb948c13f79ed317a8fea2d7be08aeee4c3acbb194",
+    "launcher/desktop/preload.js": "dc7e8a86f0f8c704c323f7303bf555698299a1b1a2e69f6072be8dc533dcaf64",
+    "launcher/ui/launcher-controller.js": "301e1ee1e2e265d46ad0144c87f2888f2df92c64fe5d054ce36369baf790242d"
+  },
+  "runtimeMatchesCandidate": true,
+  "allSourceFrozen": false,
+  "formalPublication": false,
+  "stableReleaseSourceAudit": {
+    "count": 122,
+    "native2xCount": 54,
+    "groups": {
+      "desktop-gate-before-bootstrap": [
+        "v2.5.2",
+        "v2.4.5",
+        "v2.4.4",
+        "v2.4.3"
+      ],
+      "standalone-bootstrap": [
+        "v2.4.2",
+        "v2.4.1",
+        "v2.4.0",
+        "v2.3.17",
+        "v2.3.16",
+        "v2.3.15",
+        "v2.3.14",
+        "v2.3.13"
+      ],
+      "raw-updater": [
+        "v2.3.7",
+        "v2.3.6",
+        "v2.3.5",
+        "v2.3.4",
+        "v2.3.3",
+        "v2.3.2",
+        "v2.3.1",
+        "v2.3.0",
+        "v2.2.11",
+        "v2.2.10",
+        "v2.2.9",
+        "v2.2.8",
+        "v2.2.7",
+        "v2.2.6",
+        "v2.2.5",
+        "v2.2.4",
+        "v2.2.3",
+        "v2.2.2",
+        "v2.2.1",
+        "v2.2.0",
+        "v2.1.7",
+        "v2.1.6",
+        "v2.1.5",
+        "v2.1.4",
+        "v2.1.3",
+        "v2.1.2",
+        "v2.1.1",
+        "v2.1.0",
+        "v2.0.13",
+        "v2.0.12",
+        "v2.0.11",
+        "v2.0.10",
+        "v2.0.9",
+        "v2.0.8",
+        "v2.0.7",
+        "v2.0.6",
+        "v2.0.5",
+        "v2.0.4",
+        "v2.0.3",
+        "v2.0.2",
+        "v2.0.1",
+        "v2.0.0"
+      ]
+    },
+    "evidenceLevel": "source-entry-classification-only"
+  },
+  "scenarios": {
+    "v2.0.0": {
+      "passed": true,
+      "beforeVersion": "2.0.0",
+      "afterVersion": "2.5.2",
+      "entry": "downloaded-standalone-bootstrap",
+      "launcherInstalled": false,
+      "exitCode": 0,
+      "transaction": "committed",
+      "userFilesChecked": 152,
+      "userFilesChanged": 0,
+      "worldAndSessionPreserved": true,
+      "healthy": true,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "dependencies": {
+        "tavern": "prepared-standalone",
+        "mcp": "prepared-standalone"
+      },
+      "completedOperationReceiptMigrations": 1,
+      "originalReleaseArtifacts": {
+        "SHA256SUMS": "dc60633aa1378947b11f1cc8ed1013c16c16664dc645b8aa6db24e497f06c549",
+        "nora-tavern-app.tar.gz": "ac62d75e514f41fcd94754785641f4c7bcf42c2e988289d63ab906b8cd3333d7",
+        "nora-tavern-nora-mcp.tar.gz": "e9f772d285af45e7e407654f2b139e341d972133817dcf762052f965bb55f86a",
+        "nora-tavern-ops.tar.gz": "e1c9bc2f8d9702ea7421fd3c90712a23238f041278b33c1e651c5f4257af1d6f",
+        "release-manifest.json": "8052a0740730e343b5250c29afbcefa66631d456edfc33ddbd6650a101b8f4d2"
+      }
+    },
+    "v2.2.0": {
+      "passed": true,
+      "beforeVersion": "2.2.0",
+      "afterVersion": "2.5.2",
+      "entry": "downloaded-standalone-bootstrap",
+      "launcherInstalled": false,
+      "exitCode": 0,
+      "transaction": "committed",
+      "userFilesChecked": 152,
+      "userFilesChanged": 0,
+      "worldAndSessionPreserved": true,
+      "healthy": true,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "dependencies": {
+        "tavern": "prepared-standalone",
+        "mcp": "reused"
+      },
+      "completedOperationReceiptMigrations": 0,
+      "originalReleaseArtifacts": {
+        "SHA256SUMS": "3ac8d4f83f99d101e193d786ae88569f8bebba5876d1c577d94efcae09be4dbe",
+        "nora-tavern-app.tar.gz": "00c92664d11a85c07939cb0fb657bd51f7de802cfffd1405224375d59d07981d",
+        "nora-tavern-nora-mcp.tar.gz": "6d9b73cb19eace53617ac4bd1f432593a268a03ed72e6e5a7d18c85c1567af2d",
+        "nora-tavern-ops.tar.gz": "b251258c91f23904ec9815a51c138d1769e81e8e99d389932a82ec7b1e01a7f2",
+        "release-manifest.json": "aee97aa61b1c09e511fb13e9e3014231d9af7caf0f1fc9f2cb7f821aa0509c88"
+      }
+    },
+    "v2.3.0": {
+      "passed": true,
+      "beforeVersion": "2.3.0",
+      "afterVersion": "2.5.2",
+      "entry": "downloaded-standalone-bootstrap",
+      "launcherInstalled": false,
+      "exitCode": 0,
+      "transaction": "committed",
+      "userFilesChecked": 152,
+      "userFilesChanged": 0,
+      "worldAndSessionPreserved": true,
+      "healthy": true,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "dependencies": {
+        "tavern": "prepared-standalone",
+        "mcp": "reused"
+      },
+      "completedOperationReceiptMigrations": 0,
+      "originalReleaseArtifacts": {
+        "SHA256SUMS": "cea14a209d1c10ddb747abc0769dcbbf9aeef82026b4a8f1f3d67d2a0bbaa1ad",
+        "nora-tavern-app.tar.gz": "5bc724cfb2f38d5d4acba5b74a916f6d4c353b569790c7e43f2f4663f86747ab",
+        "nora-tavern-nora-mcp.tar.gz": "3ef2e41bfc84f38143a01c01b824f19bf1979c6ee30419213a1be365f9ddeb0c",
+        "nora-tavern-ops.tar.gz": "e861f4005588681a81b9cd14267d91d53f7015715c56a3bac7e73e3d7e1fb0c3",
+        "release-manifest.json": "86d555eb1e6125b7ff1ead01013a349aa1f4a415d91213d8cae9d1056878bc42"
+      }
+    },
+    "v2.4.3": {
+      "passed": true,
+      "beforeVersion": "2.4.3",
+      "afterVersion": "2.5.2",
+      "entry": "downloaded-standalone-bootstrap",
+      "launcherInstalled": false,
+      "exitCode": 0,
+      "transaction": "committed",
+      "userFilesChecked": 153,
+      "userFilesChanged": 0,
+      "worldAndSessionPreserved": true,
+      "healthy": true,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "dependencies": {
+        "tavern": "reused",
+        "mcp": "reused"
+      },
+      "completedOperationReceiptMigrations": 0,
+      "originalReleaseArtifacts": {
+        "SHA256SUMS": "2cd1c03b9301806fdee0853d3b126a09f8b0a501ff9202700ea8a77778f6b888",
+        "nora-tavern-app.tar.gz": "5f437f38ab37413cd6e5cb8d2d512c39e280eb7c179d34489b8d256d8fa423f1",
+        "nora-tavern-nora-mcp.tar.gz": "4ce5e3fbb177dde3c77a3f8afd54ab491e3ec4284c776c7a3f8276aa2e13b135",
+        "nora-tavern-ops.tar.gz": "1914076aabc7ca1ed32041ebf2d577edc18e19129a044f8958fea5fd5541fcb9",
+        "release-manifest.json": "ff8d521d8eae1c4b92e7c8e1b4d47cd27ac189f84bae537e6e568efd83793cd8"
+      }
+    }
+  },
+  "originalEntry": {
+    "version": "2.4.3",
+    "originalSkillUnchanged": true,
+    "exitCode": 1,
+    "rejectedForMissingDesktop": true,
+    "transactionCreated": false,
+    "installedVersion": "2.4.3"
+  },
+  "noraEntry": {
+    "passed": true,
+    "entry": "installed-Nora-skill",
+    "managed": false,
+    "exitCode": 0,
+    "result": "up-to-date",
+    "resourceSelectionOnlyRedirected": true,
+    "executorReplaced": false
+  },
+  "failedUpdateRecovery": {
+    "occupiedPort": {
+      "exitCode": 1,
+      "fault": {
+        "occupied": true,
+        "releasedForRecovery": true
+      },
+      "version": "2.3.0",
+      "transaction": "restored",
+      "userFilesPreserved": 152,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "health": true
+    }
+  },
+  "cleanup": {
+    "removedOwnedInstances": [
+      "/tmp/nora-history-independent-sX5O0J/v2.0.0",
+      "/tmp/nora-history-independent-sX5O0J/v2.2.0",
+      "/tmp/nora-history-independent-sX5O0J/v2.3.0",
+      "/tmp/nora-history-independent-sX5O0J/v2.4.3"
+    ],
+    "ownedProcessesRemaining": 0,
+    "originalVersion": "2.4.2",
+    "originalHealth": true,
+    "originalManaged": false
+  },
+  "technicalRegression": {
+    "python": {
+      "passed": 40,
+      "skipped": 0
+    },
+    "gateContract": {
+      "passed": 5,
+      "skipped": 0
+    }
+  },
+  "privateEvidence": {
+    "resultsSha256": "f5770863a0acd66f4cbae49674a7a017b2019a5d39bd331702aaccd4cbaed7cf",
+    "archiveSha256": "c8c98154537d846fdc2f4c176fb237d87ca0ec15d62001a97e1964de1ad716bd"
+  },
+  "unverified": [
+    "Python-era 1.x data/service layouts",
+    "original cloud Supervisor and real Liveware",
+    "public latest serving these unpublished fixes",
+    "every historical version executed individually"
+  ]
+}
