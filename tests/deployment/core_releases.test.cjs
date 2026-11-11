@@ -706,16 +706,17 @@ test('core capability and cancellation failures cannot be treated as optional AP
   assert.equal(f.requests.some(url=>url.includes('launcher-stable')||url.includes('?per_page=')),false);
 });
 
-for(const githubOnly of [false,true])test(`core producer preserves an existing independent APP across a newer core anchor (${githubOnly})`,async t=>{
+for(const githubOnly of [false,true])test(`core producer protects an existing independent APP across a newer core anchor (primary offline=${githubOnly})`,async t=>{
  const f=splitDiscoveryFixture(t);if(githubOnly)f.githubFallback();
- const baseline=await releases.checkApp(f.options);assert.equal(baseline.launcherLatest,'0.1.1');
+ const existing=JSON.parse(f.physical['release-manifest.json']);existing.candidate=false;existing.dirty=false;
+ f.physical['release-manifest.json']=JSON.stringify(existing);f.refresh();
  const sha=body=>crypto.createHash('sha256').update(body).digest('hex');
  const producer=await import(require('node:url').pathToFileURL(path.resolve(__dirname,'../../tooling/release/legacy-app-delivery.mjs')));
  const directory=path.join(f.root,'producer');fs.mkdirSync(path.join(directory,'tooling/release'),{recursive:true});
  const origin={repository:'LoveMaker-art/noras-tavern',tag:'v2.2.9',commit:'b'.repeat(40)},names=['release-manifest.json',...['darwin-arm64','darwin-x64','win32-x64'].flatMap(target=>[`nora-launcher-${target}.json`,`Nora-Tavern-Launcher-0.1.1-${target}-update.zip`])];
  const pin={schema:'nora-legacy-app-delivery/1',version:'0.1.1',origin,assets:Object.fromEntries(names.map(name=>[name,{size:1,sha256:'a'.repeat(64),url:`https://github.com/${origin.repository}/releases/download/${origin.tag}/${name}`}]))},pinBytes=Buffer.from(JSON.stringify(pin));
  fs.writeFileSync(path.join(directory,producer.pinPath),pinBytes);
- const identity={...JSON.parse(f.anchorFiles['release-manifest.json']),commit:'c'.repeat(40),versions:{tavern:'2.2.10'},sourceFiles:{[producer.pinPath]:sha(pinBytes)}};
+ const identity={...JSON.parse(f.anchorFiles['release-manifest.json']),commit:'c'.repeat(40),candidate:false,dirty:false,versions:{tavern:'2.2.10'},sourceFiles:{[producer.pinPath]:sha(pinBytes)}};
  const product=producer.declareLegacyApp(identity,directory).identity;
  assert.equal(product.launcherVersion,'0.1.1');assert.equal(product.legacyAppDelivery.origin.commit,origin.commit);
  const physical={'release-manifest.json':JSON.stringify(product)};
@@ -730,5 +731,10 @@ for(const githubOnly of [false,true])test(`core producer preserves an existing i
   else return f.fetcher(address);
   return fixtureResponse(body,url);
  };
- const after=await releases.checkApp({...f.options,fetcher});assert.equal(after.launcherLatest,baseline.launcherLatest);assert.equal(after.launcherUpdateAvailable,true);assert.equal(after.launcherInstallable,true);assert.equal(after.releasePlan.launcherManifest.commit,origin.commit);assert.equal(after.releasePlan.commit,'c'.repeat(40));
+ const options={fetcher,policy:{reader:{sourceCandidates:()=>[{id:'jihulab',url:'https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/channels/launcher-stable.json'}]}}};
+ if(githubOnly)await assert.rejects(producer.assertLegacyAppHead(product,options),/Cannot verify/);
+ else{
+  const after=await producer.assertLegacyAppHead(product,options);assert.equal(after.verified,true);
+  assert.ok(after.requests.some(url=>url.includes('launcher-stable')));assert.ok(after.requests.some(url=>url.includes('api.github.com')));
+ }
 });
