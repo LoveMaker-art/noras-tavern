@@ -207,8 +207,8 @@ try {
         schema: 1, clawchat: { revision: lock.revision, version: lock.version, review: lock.review,
             greetingPatchSha256: sha256(path.resolve(installer, '../updater/clawchat-greeting-order.patch')) },
         liveware: { path: livewarePath, sha256: files[livewarePath] },
-        ...(terminal?{terminal:{...terminal,files:undefined}}:{}),
-        files:{...files,...terminal?.files},
+        ...(terminal?{terminal}:{}),
+        files,
     };
     fs.writeFileSync(path.join(runtime, 'nora-components.json'), JSON.stringify(components, null, 2));
     fs.copyFileSync(path.join(installer, 'clawchat-bundle-check.py'), path.join(runtime, 'nora-clawchat-check.py'));

@@ -37,12 +37,20 @@ export function installWindowsGit(archive,runtime,{platform=process.platform,exe
     assert.equal(result.status,0,'Cannot extract the verified official Portable Git');
     for(const name of ['bin/bash.exe','usr/bin/bash.exe','usr/bin/msys-2.0.dll','cmd/git.exe','LICENSE.txt'])
         assert.ok(fs.statSync(path.join(destination,name)).isFile(),'Portable Git lacks '+name);
-    const files={};
+    // The archive SHA-256 above already guarantees content integrity; this seal
+    // only needs to detect post-extraction changes, so stat suffices and avoids
+    // re-reading ~10k files during packaging.
+    const entries=[];
     function inventory(directory){for(const entry of fs.readdirSync(directory,{withFileTypes:true})){
         const file=path.join(directory,entry.name);assert.ok(!entry.isSymbolicLink(),'Portable Git has an unexpected symbolic link');
-        if(entry.isDirectory())inventory(file);else if(entry.isFile())files[path.relative(runtime,file).split(path.sep).join('/')]=hash(file);
+        if(entry.isDirectory())inventory(file);else if(entry.isFile())entries.push([path.relative(runtime,file).split(path.sep).join('/'),fs.statSync(file).size]);
+        else assert.fail('Portable Git has an unexpected entry: '+file);
     }}
     inventory(destination);
+    const aggregate=createHash('sha256');
+    for(const [name,size] of entries.sort((a,b)=>a[0].localeCompare(b[0]))){
+        aggregate.update(name);aggregate.update('\0');aggregate.update(String(size));aggregate.update('\0');}
+    const tree={schema:1,files:entries.length,bytes:entries.reduce((total,[,size])=>total+size,0),sha256:aggregate.digest('hex')};
     return {schema:1,kind:'git-bash',command:relative+'/bin/bash.exe',version:windowsGit.version,
-        source:{url:windowsGit.url,sha256:windowsGit.sha256,size:windowsGit.size},files};
+        source:{url:windowsGit.url,sha256:windowsGit.sha256,size:windowsGit.size},tree};
 }
