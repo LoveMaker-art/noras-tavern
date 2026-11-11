@@ -1,4 +1,5 @@
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';import {execFileSync} from 'node:child_process';import {fileURLToPath} from 'node:url';
+import {buildCommand} from './release/build-commands.mjs';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const safe=name=>typeof name==='string'&&name&&!/[\\:\0\r\n]/.test(name)&&!path.posix.isAbsolute(name)&&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
@@ -23,15 +24,16 @@ export async function prepareMaintenance({directory=root,cache,offline=false,fet
  }finally{if(open)fs.closeSync(fd);fs.rmSync(tmp,{force:true});}
  return {cache,pin};
 }
+function runTar(args,options){const command=buildCommand('tar',args);return execFileSync(command.command,command.args,options);}
 export function materializeMaintenance({directory=root,cache,stage}={}){
  const {pin,pinSha256}=readPinRecord(directory);cache=selectedCache(directory,cache);const bytes=checked(path.join(cache,pin.archive.name),pin.archive);
  const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'nora-maintenance-input-')),archive=path.join(scratch,'verified-input.tar.gz');
  try{
  fs.writeFileSync(archive,bytes,{flag:'wx',mode:0o600});
- const options={encoding:'utf8',maxBuffer:16*1024*1024,windowsHide:true};const names=execFileSync('tar',['-tzf',archive],options).trimEnd().split(/\r?\n/);const types=execFileSync('tar',['-tvzf',archive],options).trimEnd().split(/\r?\n/);
+ const options={encoding:'utf8',maxBuffer:16*1024*1024,windowsHide:true};const names=runTar(['-tzf',archive],options).trimEnd().split(/\r?\n/);const types=runTar(['-tvzf',archive],options).trimEnd().split(/\r?\n/);
  if(types.length!==names.length||types.some(line=>!line.startsWith('-'))||names.some(name=>!safe(name))||new Set(names).size!==names.length)throw Error('Maintenance archive has unsafe members');
  for(const name of Object.keys(pin.files))if(!names.includes(name))throw Error('Maintenance archive is missing: '+name);
-  const list=path.join(scratch,'members.txt');fs.writeFileSync(list,Object.keys(pin.files).join('\n')+'\n');execFileSync('tar',['-xzf',archive,'-C',scratch,'-T',list],{stdio:'pipe',windowsHide:true});
+  const list=path.join(scratch,'members.txt');fs.writeFileSync(list,Object.keys(pin.files).join('\n')+'\n');runTar(['-xzf',archive,'-C',scratch,'-T',list],{stdio:'pipe',windowsHide:true});
   for(const [name,entry]of Object.entries(pin.files))checked(path.join(scratch,name),entry);
   // Verify the complete input before creating or changing the caller's view.
   for(const name of Object.keys(pin.files))if(fs.existsSync(path.join(stage,name)))throw Error('Core source overlaps external maintenance ownership: '+name);
