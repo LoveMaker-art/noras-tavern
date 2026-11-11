@@ -5,6 +5,8 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+const PYTHON = process.env.NORA_TEST_PYTHON || 'python3';
+
 import { projectTextModelChoices, projectTextModelDisplay } from '../../../native-extensions/nora-ui/model-display.js';
 import { createModelProfiles } from '../public/scripts/nora-adapters/model-profiles.js';
 
@@ -105,7 +107,7 @@ result = module.update_settings({"extension_settings": {"nora_ui": {"activeModel
 })
 print(json.dumps(result["extension_settings"]["nora_ui"], sort_keys=True))
 `;
-    const result = spawnSync('python3', ['-c', script, modulePath], { encoding: 'utf8' });
+    const result = spawnSync(PYTHON, ['-c', script, modulePath], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {
         activeModel: '',
@@ -139,7 +141,7 @@ result = module.update_settings(settings, {
 }, secret_id="hermes-secret", activate=False, active_secret_id="user-secret")
 print(json.dumps(result, sort_keys=True))
 `;
-    const result = spawnSync('python3', ['-c', script, modulePath], { encoding: 'utf8' });
+    const result = spawnSync(PYTHON, ['-c', script, modulePath], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const settings = JSON.parse(result.stdout);
     assert.equal(settings.extension_settings.nora_ui.activeModel, 'custom');
