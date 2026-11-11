@@ -1,5 +1,6 @@
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';import {execFileSync} from 'node:child_process';import {fileURLToPath} from 'node:url';
-import {buildCommand} from './release/build-commands.mjs';
+const buildCommandModule=fs.existsSync(new URL('./release/build-commands.mjs',import.meta.url))?'./release/build-commands.mjs':'./scripts/build-commands.mjs';
+const {buildCommand}=await import(buildCommandModule);
 const root=fileURLToPath(new URL('../',import.meta.url));
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const safe=name=>typeof name==='string'&&name&&!/[\\:\0\r\n]/.test(name)&&!path.posix.isAbsolute(name)&&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
