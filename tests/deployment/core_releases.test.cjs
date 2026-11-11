@@ -607,6 +607,13 @@ test('historical component metadata resolves the original core while its install
   assert.equal(f.requested.some(url=>url.endsWith('-update.zip')||url.endsWith('.tar.gz')),false);
 });
 
+test('Linux cloud component updates consume the shared root manifest',async t=>{
+  const f=fixture(t),options={...f.options,platform:'linux',arch:'x64',client:'updater',updaterCapabilities:capabilities,mode:'update'};
+  const plan=await releases.selectPlan(options);
+  assert.equal(plan.commit,'a'.repeat(40));assert.equal(plan.platform,'linux');assert.equal(plan.arch,'x64');
+  assert.equal(f.requested.some(url=>url.includes('nora-system-')),false);
+});
+
 test('APP-only publication resolves original core bytes for installation and older core updates',async t=>{
   const f=appOnlyFixture(t),options={...f.options,client:'updater',updaterCapabilities:capabilities};
   const update=await releases.selectPlan(options);

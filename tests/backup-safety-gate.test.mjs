@@ -60,15 +60,16 @@ test('the backup gate blocks failing tests, killed workers and timeouts', () => 
 
 test('core construction cannot run before unconditional qualified backup safety', () => {
     const workflow=parse(fs.readFileSync(path.join(root,'.github/workflows/core-build.yml'),'utf8'));
-    assert.equal(workflow.on.workflow_dispatch.inputs.delivery.default,'components');
-    for(const [job,script] of [['components','tooling/release/build-core-components.mjs'],['platform','tooling/release/build-core.mjs']]) {
-        const steps=workflow.jobs[job].steps;
-        const gate=steps.findIndex(step=>invokesAuthoredNodeScript(step.run,'tooling/checks/core-source-gate.mjs'));
-        const build=steps.findIndex(step=>invokesAuthoredNodeScript(step.run,script));
-        assert.ok(gate>=0&&build>gate);
-        assert.equal(steps[gate].if,undefined);assert.notEqual(steps[gate]['continue-on-error'],true);
-        assert.ok(workflow.jobs[job]['timeout-minutes']>0);
-    }
+    assert.deepEqual(Object.keys(workflow.jobs),['components']);
+    assert.equal(workflow.jobs.components['runs-on'],'ubuntu-24.04');
+    const steps=workflow.jobs.components.steps;
+    const gate=steps.findIndex(step=>invokesAuthoredNodeScript(step.run,'tooling/checks/core-source-gate.mjs'));
+    const build=steps.findIndex(step=>invokesAuthoredNodeScript(step.run,'tooling/release/build-core-components.mjs'));
+    assert.ok(gate>=0&&build>gate);
+    assert.equal(steps[gate].if,undefined);assert.notEqual(steps[gate]['continue-on-error'],true);
+    assert.ok(workflow.jobs.components['timeout-minutes']>0);
+    const ci=parse(fs.readFileSync(path.join(root,'.github/workflows/core-ci.yml'),'utf8'));
+    assert.equal(ci.jobs.core['runs-on'],'ubuntu-24.04');assert.equal(ci.jobs.core.strategy,undefined);
     const source=fs.readFileSync(path.join(root,'tooling/checks/core-source-gate.mjs'),'utf8');
     assert.ok(source.includes("['backup-safety',['tooling/checks/verify-backup-safety.mjs']]"));
     assert.ok(source.includes('result.status!==0||result.error||result.signal'));

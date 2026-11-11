@@ -49,8 +49,8 @@ async function consume({plan,release}) {
    calls.push({url,sha256:digest(bytes)});const response=new Response(bytes);Object.defineProperty(response,'url',{value:url});return response;
   };
   const componentOnly=plan.mode==='components';
-  const report={schema:'nora-core-final-consumer/1',commit:plan.commit,tag:plan.tag,scope:componentOnly?'actual-shipped-core-update-selector-sealed-metadata':'actual-shipped-core-selector-sealed-metadata',platforms:{}};
-  for(const target of targets){const [platform,arch]=target.split('-'),modes={};
+  const report={schema:'nora-core-final-consumer/1',commit:plan.commit,tag:plan.tag,scope:componentOnly?'actual-shipped-linux-core-update-selector-sealed-metadata':'actual-shipped-core-selector-sealed-metadata',platforms:{}};
+  for(const target of componentOnly?['linux-x64']:targets){const [platform,arch]=target.split('-'),modes={};
    for(const mode of componentOnly?['update']:['install','update']){
     const options={mode,tag:plan.tag,platform,arch,channel:plan.channel,client:'updater',updaterCapabilities:consumer.UPDATER_CAPABILITIES};
     const selected=await consumer.selectPlan({...options,fetcher,networkPolicy:{attempts:1,maxAttempts:1,totalBudgetMs:5000,attemptTimeoutMs:2000}});

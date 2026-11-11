@@ -8,11 +8,7 @@ permissions:
   contents: read
 jobs:
   core:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2022, macos-14]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     defaults:
       run:
@@ -34,7 +30,7 @@ jobs:
       - name: Prepare Python consumer fixtures
         run: |
           python -m venv .cache/test-venv
-          if [ "$RUNNER_OS" = Windows ]; then py="$PWD/.cache/test-venv/Scripts/python.exe"; else py="$PWD/.cache/test-venv/bin/python"; fi
+          py="$PWD/.cache/test-venv/bin/python"
           "$py" -m pip install -r requirements-core-test.txt
           py="$("$py" -B -c 'import sys; print(sys.executable)')"
           printf 'NORA_TEST_PYTHON=%s\n' "$py" >> "$GITHUB_ENV"

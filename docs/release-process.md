@@ -1,48 +1,56 @@
-# 核心构建与交付
+# Linux 核心构建与交付
 
-本仓只构建核心档案及适用的环境输入；为既有客户端保留固定的交付兼容适配。构造入口为 `node tooling/release/package-release.mjs`，开发命令和前提见 [CONTRIBUTING](../CONTRIBUTING.md)。
+当前使用场景是 **Linux 云服务器部署，用户通过 ClawChat 使用**。Hermes 由既有实例提供，本仓维护 Nora、Tavern、MCP、核心部署维护和发布工具。桌面启动器、Windows、macOS 以及三平台原生构建不属于当前发布范围。
 
-1. 固定干净源码提交、组件版本和共享维护输入；只有完整原生交付才固定适用平台与运行时。核对产品设计与数据边界。
-2. 先运行相关核心源码和共享消费者检查；按实际交付范围执行目标环境验收，记录通过、失败、跳过和未验收。
-3. 通用核心发布只构造核心 archives/modules；需要完整原生交付时指定经摘要验证的运行时清单，生成 `core-payload` 及平台 `nora-system` 元数据。
-4. 核对源码身份、依赖receipt、包内文件、校验和、旧版本升级/失败恢复与配置保留；候选不能代替真实安装结果。
-5. 只发布验收过的同一批实物。推送、上传、创建标签、外部发布或更新正式渠道都须另获明确授权。
+## 构建与验收原则
 
-打包器只构建，manifest 明确记录 `packaging-only`。本次拆分保留已发布资产、存量协议和所有用户目录。桌面构建及其更新渠道不属于本仓。
+1. 固定干净源码提交、组件版本和共享维护输入，核对产品设计与数据边界。
+2. 通用业务、源码投影、制品清单和摘要在固定参考环境验证；进程、安装、更新和恢复以 Linux 实际行为为准。
+3. 普通核心发布只生成通用核心 archives/modules，不读取 Hermes 三平台运行时锁，不生成 `core-payload` 或平台 `nora-system` 元数据。
+4. 记录通过、失败、跳过和未验收；候选包、本地测试和真实云端用户验收是不同证据。
+5. 只发布验收过的同一批文件。推送、创建标签、上传和渠道切换需要明确授权。
 
-<a id="2-构建与验收不发布"></a>
-## 独立核心流程
+打包器只负责构建，manifest 明确记录 `packaging-only`，不把构建成功写成测试通过。
 
-`core-ci.yml` 在 Linux、Windows、Mac 执行 `core-source-gate.mjs`：备份安全、固定输入/归属及发行合同、核心 JS/Python 消费者、MCP完整单元／集成、Story Profile Python集合和酒馆工作流。它只提供源码证据。该推送／PR自动检查是在拆分时新增的策略；不构造APP或自动发布。核心版本构建和发行仍由后面的两个手动流程分别执行。
+## 当前工作流
 
-`core-build.yml` 手动触发，`delivery` 默认选择 `components`。组件路径在 Ubuntu 执行同一源码门禁，再由 `build-core-components.mjs` 构造通用核心 archives/modules，核验并复制固定的存量客户端兼容资产，直接生成 `core-accepted-batch`。它不读取 Hermes 运行时锁，不生成 `core-payload` 或平台 `nora-system`，也不声称完成原生首装或三平台验收。
+### `core-ci.yml`
 
-只有显式选择 `delivery=native` 时，工作流才在 Windows x64、Mac ARM64/x64 上执行相同源码门禁，再由 `build-core.mjs` 构造和验收完整原生核心。复用的 Hermes 运行环境按 `tooling/runtime/runtime-inputs.lock.json` 固定原发行来源、大小和 SHA-256，不重建运行环境，也不读相邻仓源码。更新运行环境时必须单独审查并改锁，不能追随 latest。
+推送、PR 或手动触发后，只在 **Ubuntu 24.04** 执行 `core-source-gate.mjs`：备份安全、固定输入、源码投影、发行合同、核心 JS/Python 消费者、MCP、Story Profile 和 Tavern 工作流。
 
-每个平台实际恢复密封运行环境，运行真正的冷初始化、首装、酒馆 HTTP/MCP/技能检查、已提交安装的再次开启、两个本地模型端点的保存与实际 Hermes 调用、配置保留及停止/子进程关闭。模型端点是隔离夹具，不证明外部模型或真实 ClawChat 可用。源码失败恢复合同和此处原生成功流程分别记录，不能相互替代。
+它只提供源码与消费者证据，不构建 APP，不运行 Windows/macOS 任务，也不自动发布。
 
-`verify-core.mjs --native` 是实际解释器上的原生锁/执行者合同。`test_nora_native_model`、`test_model_native_flows`、`test_model_native_probe` 的专项仍保留，涉及这些功能的变更须按已安装的真实SDK/账号分别运行。固定运行环境中的可选SDK不能在零外网夹具里假定已安装；原生专项缺依赖、尝试按需下载或失败都单列，不能以基础执行者验收替代，也不能为通过基础构建偷偷改变密封运行环境。
+### `core-build.yml`
 
-完整原生交付的三份平台 receipt 绑定源码、共享输入、运行环境输入及全部包摘要。只有三平台都通过才由 `assemble-core.mjs` 组装原生 `core-accepted-batch`，不重新构建，发布器重新检查这些字节。组件批次由单次组件构造生成同名产物，但不包含原生回执。两种构建产物都保留30天；超期须重新构建验收。升级跨度、强制中断/恢复、文件权限和用户环境矩阵按本次变更风险另做目标环境验收，自动构建成功不等于这些场景通过，也不自动授权正式发布。
+手动触发后，只在 **Ubuntu 24.04** 执行同一源码门禁，再由 `build-core-components.mjs` 构造轻量核心组件，校验固定输入并复制存量客户端兼容资产，生成 `core-accepted-batch`。
+
+该流程没有 `native` 选项，不执行三平台原生构建。构建产物保留 30 天；超期需要重新构建验收。
+
+### `core-publish.yml`
+
+发布仍只消费成功 build run 中的 `core-accepted-batch`，不重新构建。发布前验证：
+
+- 组件提交、版本、标签和文件摘要；
+- 最终密封目录中的 Linux 核心更新选择；
+- 存量客户端兼容选择器及固定兼容资产；
+- GitHub 与极狐的不可变对象和渠道身份。
+
+验证不声称完成 Windows/macOS 或完整原生安装验收。
 
 ## 发布与重试
 
-1. 先完成本次核心版本及兼容声明的审查，提交干净源码，获得推送/创建版本标签的明确授权。核心标签必须与 `app/.tavern-release-version` 一致；不得把当前改动冒充已经发布的同版本标签。
-2. 在 GitHub 配置 `JIHULAB_PRIVATE_TOKEN` 和 `core-release` environment 的必要审阅人。权限/配置不能靠本地测试证明，本次不配置远端。
-3. 授权后运行核心构建；普通核心更新使用默认 `components`，运行环境、首装／更新恢复或其他需要完整原生目标证据的变化选择 `native`。核对适用的目标环境升级、失败恢复及配置保留证据。再手动启动 `core-publish.yml`，指定成功的 **core-build run ID**、解析到同一提交的远端标签和已审阅的发行说明。它下载该 run 的同一批实物，不调用打包器。
-4. 发布前再次执行包内实际核心选择器。组件发布使用最终密封目录离线选择三平台 update 并验证存量客户端；完整原生发布还验证三平台 install。两者都校验元数据、摘要及主资源源。发布使用 GitHub + 极狐，所有不可变对象校验成功才切换 **核心** stable/beta 指针；不会写桌面应用渠道。旧资产保留，不覆盖不同字节。跨站切换不是原子事务，失败保留进度。
-5. 任一失败下载 `core-publication-checkpoint` 和日志；保留接受过的 build run。重新触发发布时填写前一发布 `checkpoint_run` 和其 `publication-plan.json` 的可信 plan ID。恢复会检查同一源码、构建 run、目标、摘要和原目录字节；遇到上传结果未知时先核对远端，禁止盲目重传。也可用 `publish-release.mjs --resume --plan-id ...` 在受保护环境继续同一计划。
+1. 审查本次版本和兼容声明，完成适用测试，提交干净源码并获得推送与标签授权。核心标签必须与 `app/.tavern-release-version` 一致。
+2. 在 GitHub 准备 `JIHULAB_PRIVATE_TOKEN` 和带必要审阅人的 `core-release` 环境。
+3. 授权后运行 `core-build.yml`，确认 Ubuntu 构建成功并保留其 run ID。
+4. 手动运行 `core-publish.yml`，输入同一提交的 build run ID、远端标签和已审阅发行说明。所有不可变对象验证成功后才切换核心 stable/beta 渠道，不写桌面启动器渠道。
+5. 失败时保留原 build run，下载 `core-publication-checkpoint` 和日志。恢复必须绑定同一源码、构建 run、目标、摘要和原目录字节；上传结果未知时先核对远端，不盲目重传。
 
-本地 `publish-release.mjs` 默认 `--stage seal`，只生成计划并校验消费者；`prepare` 上传草稿与不可变文件，`promote` 切换已准备渠道，`all` 顺序完成两阶段。三个写入阶段都必须有明确授权和受保护凭据。凭据仅来自临时0600文件，不在包/receipt/checkpoint内。
-
-源码技术验证、组件构建、可选原生实物、远端工作流执行、适用的目标环境及实际发布须分别报告。本地流程实现不能写成“GitHub已发布”。
+本地 `publish-release.mjs` 默认 `--stage seal`，只生成计划并校验消费者；`prepare`、`promote` 和 `all` 的远端写入均须明确授权。凭据只来自临时 0600 文件，不进入包、回执或 checkpoint。
 
 ## 存量客户端交付兼容
 
-既有客户端会把最新普通核心发行当作 APP 查询的回退锚点。核心发行必须继续提供它们可识别的 APP 版本与轻量更新资产，否则核心源码虽独立，旧用户会失去已有更新。`tooling/release/legacy-app-input.lock.json` 固定已发布 APP 的原来源、实际版本、大小和 SHA-256；`minimumLauncherVersion` 仍是兼容下限，二者不能混用。
+保留 `tooling/release/legacy-app-input.lock.json` 固定的既有客户端描述符和轻量更新 ZIP，是为了避免既有消费者因核心渠道变化而失去更新入口。
 
-每个平台的核心 manifest 绑定该锁文件及其原来源提交；核心 payload 不增加 APP。组件构造和完整三平台组装都会获取并核验原描述符及三个轻量更新 ZIP，再按原字节放到普通发行目录。旧协议禁止这些资产跨 tag 引用，因此须继续托管相同字节。本仓不重建 APP、不修改其版本、不伪装它与新核心来自同一提交，也不交付完整桌面安装器。
+这些资产按原字节托管并核验，**不代表当前产品重新承担 Windows/macOS 或桌面启动器开发，也不需要三平台构建**。本仓不重建 APP、不修改其版本、不把旧 APP 与新核心伪装成同一提交。
 
-独立构建／离线准备可显式运行 `node tooling/release/legacy-app-delivery.mjs fetch`，`verify` 只校验缓存。缺失、损坏、错误来源或未审兼容声明一律拒绝；不能从相邻仓补源码或跟随 latest 下载。最终消费者门禁执行三个原轻量包内的真实选择器，并重放冻结的 2.1.1 与 v2.6.0（APP 2.2.8）选择器，覆盖主源及 GitHub 回退。冻结文件仅是核心生产者兼容证据，不是本仓维护的 APP 实现；它们的原 Git 提交与逐文件摘要随证据保留。
-
-写入前及每个渠道切换前，发布器只读核对 APP 独立渠道和 GitHub 发行目录；发现比锁定 APP 更新的正式版本便停止，先审查并固定新的原包。核心与 APP 对同一分发站点的发布必须串行；这些读检查不构成跨仓原子锁。核心不修改 `launcher-stable`，不因本地构造或校验成功自动上传或发布。旧版更新选择器通过是元数据兼容证据，不能替代目标系统的安装、替换、恢复和数据保留验收。
+写入前及渠道切换前，发布器只读检查 APP 独立渠道和 GitHub 发行目录；发现更新版本时停止并重新审查固定输入。核心与 APP 在同一分发站点的发布保持串行，核心不修改 `launcher-stable`。

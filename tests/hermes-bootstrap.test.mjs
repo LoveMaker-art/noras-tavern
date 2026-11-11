@@ -228,7 +228,9 @@ test('an unknown Hermes source is refused without modifying it', t => {
 
 test('core delivery restores the fixed sealed runtime and gates acceptance on the real cold initializer', () => {
     const workflow=fs.readFileSync(new URL('../.github/workflows/core-build.yml',import.meta.url),'utf8');
-    assert.ok(workflow.indexOf('runtime-inputs.mjs fetch')<workflow.indexOf('build-core.mjs'));
+    assert.ok(!workflow.includes('runtime-inputs.mjs fetch'));
+    assert.ok(!workflow.includes('build-core.mjs'));
+    assert.ok(workflow.includes('build-core-components.mjs'));
     const delivery=fs.readFileSync(new URL('../tooling/release/build-core.mjs',import.meta.url),'utf8');
     assert.ok(delivery.includes('prepareRuntime({offline:true})'));
     assert.ok(delivery.indexOf('core_product_refactor_smoke.cjs')<delivery.indexOf("schema:'nora-core-platform-acceptance/1'"));
@@ -239,5 +241,5 @@ test('core delivery restores the fixed sealed runtime and gates acceptance on th
     assert.ok(harness.indexOf("label:'runtime-bootstrap'")<harness.indexOf("run('cold-initialization'"));
     assert.ok(harness.includes("path.join(projection,'tooling/runtime/hermes-cold-init-check.py'),hermes"));
     assert.ok(harness.indexOf("run('cold-initialization'")<harness.indexOf("let firstInstaller="));
-    assert.ok(workflow.includes('/native-smoke.json'),'Keep the actual native cold-init receipt');
+    assert.ok(workflow.includes('core-component-evidence'),'Keep the Linux component source receipts');
 });
