@@ -214,7 +214,7 @@ class NativeStartupEvidenceTests(unittest.TestCase):
         # actual script/cwd identity and must not filter by process name.
         with mock.patch.object(processes.psutil.Process, 'name',
                                side_effect=AssertionError('process name is not an ownership identity')):
-            rows = processes.find_processes(script)
+            rows = processes.find_processes(script, strict=True, executable=NODE)
         own = [row for row in rows if row['pid'] == child.pid]
         self.assertEqual(len(own), 1)
         self.assertEqual(Path(own[0]['script']), script.resolve())

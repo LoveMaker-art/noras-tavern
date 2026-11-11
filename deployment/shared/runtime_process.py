@@ -80,17 +80,16 @@ def find_processes(script, *, strict=False, hint=None, executable=None):
         return [record for pid in pids if (record := process_record(pid, script))]
     expected = Path(script).resolve()
     names = {'node', 'node.exe', 'nodejs', 'nodejs.exe', 'bun', 'bun.exe'}
-    if executable:
-        names.add(Path(executable).resolve().name.casefold())
     result = []
     for pid in pids:
         relevant = pid == hint
         try:
             candidate = _candidate(pid)
-            name = candidate.name() if psutil is not None else (candidate / 'comm').read_text().strip()
-            relevant = relevant or name.casefold() in names
-            if not relevant:
-                continue
+            if not executable:
+                name = candidate.name() if psutil is not None else (candidate / 'comm').read_text().strip()
+                relevant = relevant or name.casefold() in names
+                if not relevant:
+                    continue
             birth = _birth(candidate)
             argv = _command(candidate)
             if not argv and not _process_gone(candidate):
