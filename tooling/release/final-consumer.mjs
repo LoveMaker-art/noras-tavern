@@ -48,9 +48,10 @@ async function consume({plan,release}) {
    else{const object=physical.get(url);assert.ok(object,'Final consumer requested an unsealed resource: '+url);checkedFile(object.file,object);bytes=fs.readFileSync(object.file);}
    calls.push({url,sha256:digest(bytes)});const response=new Response(bytes);Object.defineProperty(response,'url',{value:url});return response;
   };
-  const report={schema:'nora-core-final-consumer/1',commit:plan.commit,tag:plan.tag,scope:'actual-shipped-core-selector-sealed-metadata',platforms:{}};
+  const componentOnly=plan.mode==='components';
+  const report={schema:'nora-core-final-consumer/1',commit:plan.commit,tag:plan.tag,scope:componentOnly?'actual-shipped-core-update-selector-sealed-metadata':'actual-shipped-core-selector-sealed-metadata',platforms:{}};
   for(const target of targets){const [platform,arch]=target.split('-'),modes={};
-   for(const mode of ['install','update']){
+   for(const mode of componentOnly?['update']:['install','update']){
     const options={mode,tag:plan.tag,platform,arch,channel:plan.channel,client:'updater',updaterCapabilities:consumer.UPDATER_CAPABILITIES};
     const selected=await consumer.selectPlan({...options,fetcher,networkPolicy:{attempts:1,maxAttempts:1,totalBudgetMs:5000,attemptTimeoutMs:2000}});
     assert.equal(selected.commit,plan.commit);consumer.validatePlan(selected,options);

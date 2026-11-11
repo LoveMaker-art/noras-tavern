@@ -75,6 +75,7 @@ repeat every narrower suite after the full gate has passed.
 | `node tooling/checks/verify-core.mjs` | Deployment `.test.cjs` and `.test.mjs` plus Python consumer suites using one projected source identity | `.cache/core-source-result.json` and referenced run receipts |
 | `node tooling/checks/core-source-gate.mjs` | Backup safety, fixed-input/release contracts, deployment consumers, full MCP unit/integration suites, Story Profile Python tests and Tavern workflows | `.cache/core-qualification.json` plus the source result |
 | `node tooling/checks/verify-core.mjs --native` | Actual Hermes interpreter's lock/executor profile; requires its Python and read-only Hermes source | `.cache/core-native-result.json` |
+| `node tooling/release/build-core-components.mjs --output NEW_DIRECTORY` | Committed source, fixed legacy-client inputs and platform-neutral component packaging | The requested output's component acceptance receipt |
 | `node tooling/release/build-core.mjs --output NEW_DIRECTORY` | Committed source plus the fixed runtime and disposable native installation/model-fixture acceptance | The requested output's acceptance and native receipts |
 
 Real model providers, account pairing, historical upgrades, interruptions and
@@ -104,6 +105,19 @@ for provider-specific prerequisites; missing inputs and skips do not count as pa
 
 For Story Profile, edit `story-profile/` and explicitly run the engine's `sync:story-profile` and `check:story-profile-source` scripts. Do not edit `app/story_profile_runtime/` independently.
 
+## Accepted component construction
+
+After committing the source and passing `core-source-gate.mjs`, construct the platform-neutral core batch:
+
+```sh
+node tooling/release/build-core-components.mjs --output "$PWD/.cache/accepted-core-components-new"
+```
+
+The output must be new. This entry builds core archives/modules, verifies the fixed legacy-client delivery inputs and records source/input/package digests. It does not fetch a Hermes runtime, create platform `nora-system` metadata, execute native installation acceptance or publish. The GitHub `core-build.yml` workflow uses this component path by default.
+
+In PowerShell pass an explicit new absolute output path, for example
+`node tooling/release/build-core-components.mjs --output (Join-Path $PWD '.cache\accepted-core-components-new')`.
+
 ## Accepted native core construction
 
 After committing the source and passing `core-source-gate.mjs`, fetch the fixed native runtime and construct/accept the core without a desktop dependency:
@@ -129,7 +143,7 @@ node tooling/release/package-release.mjs --candidate --components-only
 node tooling/release/package-release.mjs --candidate --hermes-runtime-manifest /absolute/path/to/nora-hermes-runtime.json
 ```
 
-The first command builds core archives/modules. The second also verifies and includes the selected runtime and creates `core-payload/` plus platform system metadata. Both build Tavern/MCP and preserve existing installed paths, source hashes, file allowlists and dependency receipts. The packager does not execute tests; its manifest says `packaging-only`.
+The first command builds core archives/modules. The second also verifies and includes the selected runtime and creates `core-payload/` plus platform system metadata. Both build Tavern/MCP and preserve existing installed paths, source hashes, file allowlists and dependency receipts. Use the packager directly for local candidates; accepted component and native batches use their respective construction entries above. The packager does not execute tests; its manifest says `packaging-only`.
 
 Candidate mode includes unignored source and records dirty status. Stable construction requires a clean committed tree. Construction never constitutes publication permission; pushing, uploading, tagging and promotion require explicit authorization and exact accepted artifacts. Do not commit credentials, runtime homes, dependencies, logs or release outputs.
 

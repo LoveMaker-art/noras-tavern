@@ -202,4 +202,3 @@ test('changed sealed bytes, different source identity and tampered plan prevent 
         assert.deepEqual(f.events,[]);
     });
 });
-

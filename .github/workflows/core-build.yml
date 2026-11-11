@@ -1,6 +1,15 @@
 name: Build and accept Nora Tavern core (no publication)
 on:
   workflow_dispatch:
+    inputs:
+      delivery:
+        description: Component release or full native runtime acceptance
+        required: true
+        default: components
+        type: choice
+        options:
+          - components
+          - native
 permissions:
   contents: read
 concurrency:
@@ -10,7 +19,57 @@ env:
   PYTHONUTF8: '1'
   PYTHONIOENCODING: 'utf-8'
 jobs:
+  components:
+    if: inputs.delivery == 'components'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test the same Git bytes used by stable construction
+        run: git -c core.autocrlf=false -c core.eol=lf checkout-index --force --all
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node tooling/maintenance-input.mjs fetch
+      - name: Prepare core test environment
+        run: |
+          set -euo pipefail
+          python -m venv .cache/test-venv
+          "$PWD/.cache/test-venv/bin/python" -m pip install -r requirements-core-test.txt
+          printf 'NORA_TEST_PYTHON=%s\n' "$PWD/.cache/test-venv/bin/python" >> "$GITHUB_ENV"
+      - run: npm --prefix app/engine/sillytavern ci --no-audit --no-fund
+      - run: npm --prefix nora-mcp ci --ignore-scripts --no-audit --no-fund
+      - name: Qualify fixed core source and consumers
+        run: node tooling/checks/core-source-gate.mjs
+      - name: Build and accept platform-neutral core components
+        run: node tooling/release/build-core-components.mjs --output "$RUNNER_TEMP/core-batch"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-accepted-batch
+          path: ${{ runner.temp }}/core-batch
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-component-evidence
+          path: |
+            .cache/core-qualification.json
+            .cache/core-source-result.json
+          if-no-files-found: warn
+          retention-days: 30
   platform:
+    if: inputs.delivery == 'native'
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +141,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
   assemble:
+    if: inputs.delivery == 'native'
     needs: platform
     runs-on: ubuntu-24.04
     timeout-minutes: 20

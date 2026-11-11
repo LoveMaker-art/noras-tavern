@@ -14,6 +14,13 @@ function verifyAcceptance(proof,target,commit) {
  for(const hash of [proof.sourceGate.sourceDigest,proof.inputs.maintenance,proof.inputs.runtime,proof.native.manifestSha256])assert.match(hash,/^[a-f0-9]{64}$/);
 }
 
+function verifyComponentAcceptance(proof,commit) {
+ assert.equal(proof.schema,'nora-core-components-acceptance/1');assert.equal(proof.commit,commit);assert.equal(proof.qualified,true);
+ assert.deepEqual(proof.sourceGate.checks.map(c=>c.name),qualificationChecks);
+ assert.ok(proof.sourceGate.checks.every(c=>c.status===0&&!c.signal&&!c.error),'Source gate did not pass');
+ for(const hash of [proof.sourceGate.sourceDigest,proof.inputs.maintenance])assert.match(hash,/^[a-f0-9]{64}$/);
+}
+
 export function assembleCore({incoming,output,commit,legacyCache=path.resolve('.cache/legacy-app')}) {
  assert.match(commit,/^[a-f0-9]{40}$/);assert.ok(!fs.existsSync(output),'Do not replace a sealed batch');
  const accepted={};
@@ -40,9 +47,17 @@ export function assembleCore({incoming,output,commit,legacyCache=path.resolve('.
  } catch(error){fs.rmSync(output,{recursive:true,force:true});throw error;}
 }
 export function verifyBatch(root,{commit}={}) {
- const receipt=json(path.join(root,'core-batch-acceptance.json'));assert.equal(receipt.schema,'nora-core-batch-acceptance/1');
- if(commit)assert.equal(receipt.commit,commit);assert.deepEqual(Object.keys(receipt.targets).sort(),[...targets].sort());
+ const receipt=json(path.join(root,'core-batch-acceptance.json'));
+ const components=receipt.schema==='nora-core-components-acceptance/1';
+ if(!components)assert.equal(receipt.schema,'nora-core-batch-acceptance/1');
+ if(commit)assert.equal(receipt.commit,commit);
  const actual=files(root);delete actual['core-batch-acceptance.json'];assert.deepEqual(actual,receipt.files,'Accepted batch bytes changed');
+ if(components){
+  verifyComponentAcceptance(receipt,receipt.commit);
+  const checked=verifyCoreDirectory(root,{commit:receipt.commit,componentsOnly:true});
+  return {receipt,...checked};
+ }
+ assert.deepEqual(Object.keys(receipt.targets).sort(),[...targets].sort());
  const checked=verifyCoreDirectory(root,{commit:receipt.commit});
  for(const target of targets){const proof=receipt.targets[target];verifyAcceptance(proof,target,receipt.commit);
   const metadata=checked.files[`${target}-release-manifest.json`];assert.equal(proof.native.manifestSha256,metadata.sha256,'Native acceptance is for different bytes');

@@ -6,7 +6,7 @@ import path from 'node:path';
 import {targets,files,digest,json,nativeChecks,qualificationChecks,verifyCoreDirectory} from '../tooling/release/core-assets.mjs';
 import {assembleCore,verifyBatch} from '../tooling/release/assemble-core.mjs';
 import {prepareDistribution,assertRemoteTag} from '../tooling/release/publish-release.mjs';
-import {deliveryAsset,pinPath,declareLegacyApp,assertLegacyAppHead,verifyLegacyDelivery} from '../tooling/release/legacy-app-delivery.mjs';
+import {deliveryAsset,pinPath,declareLegacyApp,assertLegacyAppHead,copyLegacyDelivery,verifyLegacyDelivery} from '../tooling/release/legacy-app-delivery.mjs';
 import {prepareRuntime} from '../tooling/runtime/runtime-inputs.mjs';
 
 // Synthetic byte-closure fixtures. These do not establish native installation acceptance.
@@ -32,6 +32,31 @@ function fixture(t) {
  }
  return {root,incoming,output,commit,legacyCache,pin,assemble:()=>assembleCore({incoming,output,commit,legacyCache})};
 }
+function componentFixture(t) {
+ const f=fixture(t),assets=path.join(f.incoming,'core-darwin-arm64','assets');fs.mkdirSync(f.output);
+ for(const entry of fs.readdirSync(assets,{withFileTypes:true}))if(entry.isFile())fs.copyFileSync(path.join(assets,entry.name),path.join(f.output,entry.name));
+ copyLegacyDelivery(f.output,json(path.join(f.output,'release-manifest.json')),f.legacyCache);
+ const receipt={schema:'nora-core-components-acceptance/1',commit:f.commit,qualified:true,
+  sourceGate:{checks:qualificationChecks.map(name=>({name,status:0,signal:null,error:null})),sourceDigest:'c'.repeat(64)},
+  inputs:{maintenance:'d'.repeat(64)},files:files(f.output)};
+ fs.writeFileSync(path.join(f.output,'core-batch-acceptance.json'),JSON.stringify(receipt));
+ return f;
+}
+test('component batch publishes without native runtime receipts and retains legacy compatibility',async t=>{
+ const f=componentFixture(t),checked=verifyBatch(f.output,{commit:f.commit});
+ assert.equal(checked.receipt.schema,'nora-core-components-acceptance/1');assert.equal(Object.hasOwn(checked.receipt,'targets'),false);
+ const distribution=await prepareDistribution({root:f.output,output:path.join(f.root,'state/discovery'),tag:'v2.7.0',commit:f.commit});
+ assert.equal(distribution.plan.mode,'components');
+ assert.equal(distribution.release.assets.filter(a=>a.name.includes('Launcher')).length,3);
+ assert.equal(distribution.release.assets.some(a=>a.name.startsWith('nora-system-')||a.name.includes('hermes-runtime')),false);
+ fs.appendFileSync(path.join(f.output,'nora-tavern-app.tar.gz'),'changed');
+ assert.throws(()=>verifyBatch(f.output,{commit:f.commit}),/bytes changed/);
+});
+test('component batch requires the same complete source gate',t=>{
+ const f=componentFixture(t),file=path.join(f.output,'core-batch-acceptance.json'),proof=json(file);
+ proof.sourceGate.checks[0].status=1;fs.writeFileSync(file,JSON.stringify(proof));
+ assert.throws(()=>verifyBatch(f.output,{commit:f.commit}),/Source gate did not pass/);
+});
 test('core batch assembles accepted bytes and advertises only its core stable channel',async t=>{
  const f=fixture(t);f.assemble();const before=files(f.output);verifyBatch(f.output,{commit:f.commit});
  const distribution=await prepareDistribution({root:f.output,output:path.join(f.root,'state/discovery'),tag:'v2.7.0',commit:f.commit});

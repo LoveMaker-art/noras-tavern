@@ -36,16 +36,17 @@ export function checkedFile(file,expected){
     return file;
 }
 
-export function verifyCoreDirectory(root,{commit,target,allowCandidate=false}={}) {
+export function verifyCoreDirectory(root,{commit,target,allowCandidate=false,componentsOnly=false}={}) {
  const product=json(path.join(root,'release-manifest.json'));
  assert.equal(product.schema,'tavern-release/v2');assert.match(product.commit,/^[a-f0-9]{40}$/);
  if(commit)assert.equal(product.commit,commit,'Different core source');
  if(!allowCandidate){assert.equal(product.candidate,false,'Candidate core cannot publish');assert.equal(product.dirty,false,'Dirty core cannot publish');}
  assert.ok(!product.coreRelease,'Core publication cannot be APP-only');
+ if(componentsOnly)assert.ok(!product.hermesRuntime,'Component batch cannot contain a native runtime');
  assert.ok(!Object.keys(product.sourceFiles||{}).some(name=>name.startsWith('launcher/')),'Core contains desktop author source');
  for(const part of ['app','ops','nora-mcp']){const entry=product.archives[part];checkedFile(path.join(root,entry.name),entry);}
  for(const entry of Object.values(product.modules||{}))checkedFile(path.join(root,entry.name),entry);
- const selected=target?[target]:targets;
+ const selected=componentsOnly?[]:target?[target]:targets;
  const systemRoot=fs.existsSync(path.join(root,'system-assets'))?path.join(root,'system-assets'):root;
  for(const id of selected){
   const system=json(path.join(systemRoot,`nora-system-${id}.json`));

@@ -19,7 +19,7 @@ export async function prepareDistribution({root,output,tag,commit,body='',publis
  root=path.resolve(root);output=path.resolve(output);const relative=path.relative(root,output);
  assert.ok(relative&&relative.startsWith('..'+path.sep),'Catalogue must be outside accepted assets');
  assert.ok(!fs.existsSync(output),'Preserve an existing sealed publication');
- const {product}=verifyBatch(root,{commit});assert.equal(product.commit,commit);
+ const {product,receipt}=verifyBatch(root,{commit});assert.equal(product.commit,commit);
  assert.equal(tag,releasePublicationTag(product),'Publication tag differs from accepted core');
  assert.match(tag,/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/);
  assert.equal(tag,`v${product.versions.tavern}`,'Core tag must identify its actual version');
@@ -35,7 +35,7 @@ export async function prepareDistribution({root,output,tag,commit,body='',publis
   const file=path.join(output,key);fs.writeFileSync(file,JSON.stringify(value)+'\n',{flag:'wx'});objects.push({file,key,phase,...await fileDigest(file)});
  }
  // This repository owns the core pointer; it never promotes launcher-stable.
- return {release,plan:{tag,commit,mode:'full',channel,objects}};
+ return {release,plan:{tag,commit,mode:receipt.schema==='nora-core-components-acceptance/1'?'components':'full',channel,objects}};
 }
 export async function assertRemoteTag(tag,commit,{execute=command}={}) {
  let object=JSON.parse(await execute('gh',['api',`repos/${repository}/git/ref/tags/${encodeURIComponent(tag)}`],{capture:true,timeout:120000})).object;
